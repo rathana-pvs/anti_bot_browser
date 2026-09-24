@@ -1,0 +1,42 @@
+{
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devPath": "http://localhost:5174",
+    "distDir": "../dist"
+  },
+  "package": {
+    "productName": "IsolatedBrowserManager",
+    "version": "1.0.0"
+  },
+  "tauri": {
+    "allowlist": {
+      "all": false,
+      "shell": {
+        "all": false,
+        "open": true,
+        "execute": true,
+        "sidecar": true
+      }
+    },
+    "bundle": {
+      "active": true,
+      "identifier": "com.isolatedbrowser.manager",
+      "icon": []
+    },
+    "security": {
+      "csp": null
+    },
+    "windows": [
+      {
+        "title": "Isolated Browser Manager",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1024,
+        "minHeight": 700,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ]
+  }
+}

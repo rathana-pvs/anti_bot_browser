@@ -1,0 +1,9 @@
+opencv-python-headless>=4.8.0
+numpy>=1.24.0
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.14.0+cpu
+torchvision==0.29.0+cpu
+easyocr>=1.7.0
+scikit-image>=0.22.0

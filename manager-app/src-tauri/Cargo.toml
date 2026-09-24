@@ -1,0 +1,18 @@
+[package]
+name = "isolated-browser-manager"
+version = "1.0.0"
+description = "Isolated Browser Manager for Facebook Automation"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "1.5", features = [] }
+
+[dependencies]
+tauri = { version = "1.5", features = ["shell-open", "process-command-api"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+reqwest = { version = "0.11", features = ["json"] }
+tokio = { version = "1", features = ["full"] }
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]

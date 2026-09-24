@@ -16,13 +16,15 @@ manager-app/node_modules/
 manager-app/dist/
 manager-app/tsconfig.tsbuildinfo
 
-# Sensitive Browser Profile Data & Cookies (CRITICAL - DO NOT COMMIT)
+# Sensitive Browser Profile Data & Real Credentials (CRITICAL - PUBLIC REPO SAFETY)
 profiles/*/chrome_data/
 profiles/*/automation_evidence/
 profiles/*/element_cache.json
-
-# Uploaded Media & Runtime Data
+profiles/*/config.json
+profiles/shared_media/
 data/shared_media/
+data/posting_queue.json
+proxies/proxy_pool.json
 
 # Environment Variables & Logs
 *.log

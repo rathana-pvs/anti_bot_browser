@@ -1,0 +1,19 @@
+[
+  {
+    "id": "proxy_example_1",
+    "host": "127.0.0.1",
+    "port": 1080,
+    "username": "example_user",
+    "password": "example_password",
+    "type": "socks5",
+    "assigned": false,
+    "profile_id": null,
+    "latency_ms": 150,
+    "country": "United States",
+    "country_code": "US",
+    "region": "California",
+    "city": "Los Angeles",
+    "timezone": "America/Los_Angeles",
+    "last_checked": "2026-09-24T00:00:00.000Z"
+  }
+]
