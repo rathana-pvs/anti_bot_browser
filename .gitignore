@@ -1,0 +1,31 @@
+# Python & Environments
+__pycache__/
+*.py[cod]
+*$py.class
+automation/venv/
+automation/.venv/
+.venv/
+venv/
+
+# Deep Learning Models (EasyOCR / PyTorch weights)
+automation/models/easyocr/*.pth
+
+# Node & Build Outputs
+node_modules/
+manager-app/node_modules/
+manager-app/dist/
+manager-app/tsconfig.tsbuildinfo
+
+# Sensitive Browser Profile Data & Cookies (CRITICAL - DO NOT COMMIT)
+profiles/*/chrome_data/
+profiles/*/automation_evidence/
+profiles/*/element_cache.json
+
+# Uploaded Media & Runtime Data
+data/shared_media/
+
+# Environment Variables & Logs
+*.log
+.env
+.env.*
+.DS_Store
