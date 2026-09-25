@@ -401,18 +401,25 @@ class BaseTask:
         """
         self.log("STEP", f"Zero-CDP GTK file attachment: {file_path}")
 
-        # Wait up to 6s for GTK dialog to appear
+        # Wait up to 15s for GTK dialog to appear. Reel Studio can delay opening
+        # the native chooser while its upload UI initializes.
         win_id = None
-        for _ in range(12):
-            res = self.client.exec_cmd(
-                ["xdotool", "search", "--onlyvisible", "--name", "Open File"],
-                check=False,
-            )
-            if res.returncode == 0:
-                lines = res.stdout.strip().split()
-                if lines:
-                    win_id = lines[-1]
-                    break
+        matched_dialog_name = None
+        dialog_names = ("Open File", "File Upload", "Select a File", "Choose File", "^Open$")
+        for _ in range(30):
+            for dialog_name in dialog_names:
+                res = self.client.exec_cmd(
+                    ["xdotool", "search", "--onlyvisible", "--name", dialog_name],
+                    check=False,
+                )
+                if res.returncode == 0:
+                    lines = res.stdout.strip().split()
+                    if lines:
+                        win_id = lines[-1]
+                        matched_dialog_name = dialog_name
+                        break
+            if win_id:
+                break
             time.sleep(0.5)
 
         if win_id:
@@ -420,6 +427,15 @@ class BaseTask:
             time.sleep(0.3)
         else:
             self.log("ERROR", "GTK file chooser window ('Open File') was not detected; refusing blind input.")
+            visible_windows = self.client.exec_cmd(
+                ["xdotool", "search", "--onlyvisible", "--name", ".*"],
+                check=False,
+            )
+            self.capture_evidence(
+                "file_chooser_not_detected",
+                visible_window_ids=visible_windows.stdout.strip().split(),
+                searched_titles=list(dialog_names),
+            )
             return False
 
         file_check = self.client.exec_cmd(["test", "-f", file_path], check=False)
@@ -487,7 +503,7 @@ class BaseTask:
         for _ in range(12):
             time.sleep(0.5)
             check_dialog = self.client.exec_cmd(
-                ["xdotool", "search", "--onlyvisible", "--name", "Open File"],
+                ["xdotool", "search", "--onlyvisible", "--name", matched_dialog_name or "Open File"],
                 check=False,
             )
             if check_dialog.returncode != 0 or not check_dialog.stdout.strip():

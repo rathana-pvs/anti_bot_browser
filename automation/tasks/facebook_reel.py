@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import math
+import re
 import time
 
 from engine.screen_state import ScreenState
+from engine.vision import VisionEngine
 from .base_task import BaseTask
 
 
@@ -47,6 +49,41 @@ class FacebookReelTask(BaseTask):
                 min_confidence=min_confidence,
             )
             return match["center"] if match else None
+
+        return self.vision.find_stable(locate, attempts=2, tolerance_px=8.0)
+
+    def _find_reel_upload_target(self):
+        """Locate an actionable Reel upload control, never preview instructional text."""
+        def locate():
+            screen = self.client.screenshot()
+
+            # Preferred control: the enabled blue Upload button in the lower-left
+            # Reel sidebar. OCR is restricted to the detected button rectangle.
+            sidebar_bottom = (0.0, 0.55, 0.32, 1.0)
+            blue_buttons = self.vision.find_blue_action_buttons(
+                screen=screen,
+                region=sidebar_bottom,
+            )
+            if isinstance(blue_buttons, list):
+                for button in blue_buttons:
+                    x1, y1, x2, y2 = button["bounds"]
+                    for item in self.vision.read_text(
+                        screen,
+                        region=(x1, y1, x2 - x1, y2 - y1),
+                        min_confidence=0.15,
+                    ):
+                        words = set(re.sub(r"[^a-z0-9]+", " ", item["text"].casefold()).split())
+                        if "upload" in words:
+                            return button["center"]
+
+            # Secondary control: exact Add video label in the left dropzone.
+            sidebar = VisionEngine.get_pixel_region(screen.shape, (0.0, 0.05, 0.25, 0.78))
+            candidates = self.vision.read_text(screen, region=sidebar, min_confidence=0.20)
+            for item in sorted(candidates, key=lambda candidate: candidate["confidence"], reverse=True):
+                normalized = re.sub(r"[^a-z0-9]+", " ", item["text"].casefold()).strip()
+                if normalized in {"add video", "upload video", "select video"}:
+                    return item["center"]
+            return None
 
         return self.vision.find_stable(locate, attempts=2, tolerance_px=8.0)
 
@@ -214,14 +251,7 @@ class FacebookReelTask(BaseTask):
         self.set_stage("composing")
         self.log("STEP", "Locating Reel video dropzone in Create reel dialog...")
         dropzone_status, dropzone, screen = self._wait_for_target(
-            lambda: self._find_stable_text((
-                "add video",
-                "upload video",
-                "select video",
-                "add videos",
-                "drag and drop",
-                "upload",
-            ), region="composer_modal"),
+            self._find_reel_upload_target,
             timeout=35.0,
             label="reel_dropzone_ready",
         )

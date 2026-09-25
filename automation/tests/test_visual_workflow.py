@@ -324,6 +324,36 @@ class ActionTargetTests(unittest.TestCase):
         self.assertIsNone(task._stable_blue_text_target(("post", "publish")))
 
 
+class ReelUploadTargetTests(unittest.TestCase):
+    def make_task(self):
+        task = FacebookReelTask.__new__(FacebookReelTask)
+        task.client = Mock()
+        task.vision = Mock()
+        task.client.screenshot.return_value = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task.vision.find_stable.side_effect = lambda locator, **_: locator()
+        return task
+
+    def test_prefers_blue_upload_button_over_preview_instruction(self):
+        task = self.make_task()
+        task.vision.find_blue_action_buttons.return_value = [{
+            "center": (177, 790),
+            "bounds": (18, 771, 336, 809),
+            "area": 12084,
+        }]
+        task.vision.read_text.return_value = [
+            {"text": "Upload", "confidence": 0.99, "center": (177, 790)},
+        ]
+        self.assertEqual(task._find_reel_upload_target(), (177, 790))
+
+    def test_rejects_noninteractive_upload_preview_sentence(self):
+        task = self.make_task()
+        task.vision.find_blue_action_buttons.return_value = []
+        task.vision.read_text.return_value = [
+            {"text": "Upload your video in order to see a preview here", "confidence": 0.99, "center": (1129, 650)},
+        ]
+        self.assertIsNone(task._find_reel_upload_target())
+
+
 class PublicationVerificationTests(unittest.TestCase):
     def make_task(self, observations, similarities):
         task = FacebookPostTask.__new__(FacebookPostTask)
