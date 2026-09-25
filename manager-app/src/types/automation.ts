@@ -40,11 +40,19 @@ export interface QueueExecutionItem {
   spun_caption: string;
   first_comment?: string | null;
   scheduled_at: string;
-  status: 'pending' | 'running' | 'published' | 'failed' | 'uncertain' | string;
+  status: 'pending' | 'running' | 'published' | 'failed' | 'failed_before_publish' | 'uncertain' | string;
+  stage?: string | null;
   retry_count: number;
   error?: string | null;
   published_at?: string | null;
   logs?: string[];
+  review_status?: 'resolved_published' | 'resolved_not_published' | 'needs_review' | string | null;
+  review_note?: string | null;
+  reviewed_at?: string | null;
+  post_url?: string | null;
+  post_url_verified_at?: string | null;
+  post_match_confidence?: number | null;
+  evidence_dir?: string | null;
 }
 
 export interface QueuePostItem {
@@ -79,6 +87,7 @@ export interface QueueDataResponse {
     running: number;
     published: number;
     failed: number;
+    uncertain?: number;
     skipped: number;
   };
   batches: DailyBatch[];

@@ -28,6 +28,7 @@ def main():
     parser.add_argument("--task", required=True, choices=["warming", "post", "reel", "comment"], help="Task to execute")
     parser.add_argument("--caption", default="", help="Post caption (required for post/reel task)")
     parser.add_argument("--comment-link", default=None, help="Destination URL for first comment")
+    parser.add_argument("--post-url", default=None, help="Target post URL for standalone comment task")
     parser.add_argument("--media", default=None, help="Path to media file")
     parser.add_argument("--scrolls", type=int, default=4, help="Scroll count for warming task")
 
@@ -80,28 +81,52 @@ def main():
             task = FacebookCommentTask(
                 profile_id=args.profile,
                 comment_text=args.comment_link,
+                post_url=args.post_url,
             )
             success = task.run()
             result["success"] = success
             result["logs"] = task.logs
 
         task_status = getattr(task, "result_status", "running")
+        current_stage = getattr(task, "current_stage", "unknown")
+        stage_history = getattr(task, "stage_history", [])
+
         if task_status == "running":
-            task_status = "completed" if success else "failed"
+            task_status = "completed" if success else ("uncertain" if current_stage in ("publish_clicked", "verifying") else "failed_before_publish")
+
         result["status"] = task_status
+        result["current_stage"] = current_stage
+        result["stage_history"] = stage_history
         result["error"] = getattr(task, "result_error", None)
+        extra = getattr(task, "result_extra", {})
+        if isinstance(extra, dict):
+            result.update(extra)
+        result["post_url"] = result.get("post_url", None)
+        result["post_url_verified_at"] = result.get("post_url_verified_at", None)
+        result["post_match_confidence"] = result.get("post_match_confidence", None)
         evidence = getattr(task, "evidence", None)
         result["evidence_dir"] = getattr(evidence, "directory", None)
 
         print(json.dumps(result), flush=True)
-        if result["status"] == "uncertain":
+        if result["status"] in ("uncertain", "needs_review"):
             sys.exit(2)
         sys.exit(0 if result["success"] else 1)
 
     except Exception as e:
-        result["error"] = str(e)
-        print(json.dumps(result), flush=True)
-        sys.exit(1)
+        task_stage = getattr(task, "current_stage", "unknown") if "task" in locals() else "unknown"
+        result["current_stage"] = task_stage
+        result["stage_history"] = getattr(task, "stage_history", []) if "task" in locals() else []
+        # Invariant: If process failed after publish_clicked, status MUST be uncertain, never failed!
+        if task_stage in ("publish_clicked", "verifying"):
+            result["status"] = "uncertain"
+            result["error"] = f"Fatal error after publish click: {e}"
+            print(json.dumps(result), flush=True)
+            sys.exit(2)
+        else:
+            result["status"] = "failed_before_publish"
+            result["error"] = str(e)
+            print(json.dumps(result), flush=True)
+            sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -2,7 +2,6 @@
 
 import random
 import time
-import math
 import re
 from engine.screen_state import ScreenState
 from .base_task import BaseTask
@@ -33,49 +32,110 @@ class FacebookPostTask(BaseTask):
     def _fail(self, code: str, message: str, screen=None) -> bool:
         self.log("ERROR", message)
         self.capture_evidence(code, screen, error_code=code, message=message)
-        return self.set_outcome("failed", code, message=message)
+        status = "uncertain" if getattr(self, "current_stage", "") in ("publish_clicked", "verifying") else "failed_before_publish"
+        return self.set_outcome(status, code, message=message)
 
     def _uncertain(self, code: str, message: str, screen=None) -> bool:
         self.log("WARN", message)
         self.capture_evidence(code, screen, error_code=code, message=message)
         return self.set_outcome("uncertain", code, message=message)
 
-    def _stable_ocr_target(self, labels, prefer_lower_half=False):
+    def _needs_review(self, code: str, message: str, screen=None) -> bool:
+        self.log("WARN", message)
+        self.capture_evidence(code, screen, error_code=code, message=message)
+        return self.set_outcome("needs_review", code, message=message)
+
+    def _stable_ocr_target(self, labels, prefer_lower_half=False, region=None):
         def locate():
-            match = self.vision.find_text(labels, prefer_lower_half=prefer_lower_half)
+            match = self.vision.find_text_cascaded(
+                labels,
+                region=region,
+                prefer_lower_half=prefer_lower_half,
+            )
             return match["center"] if match else None
 
         return self.vision.find_stable(locate, attempts=2, tolerance_px=8.0)
 
-    def _stable_blue_text_target(self, labels):
-        """Require action OCR text to overlap the enabled blue action region."""
+    def _stable_blue_text_target(self, labels, region="bottom_action_bar"):
+        """Require an exact label token inside the detected blue button bounds."""
         def locate():
             screen = self.client.screenshot()
-            blue = self.vision.find_blue_action_button(
+            candidates = self.vision.find_blue_action_buttons(
                 screen=screen,
-                region=(0, screen.shape[0] // 2, screen.shape[1], screen.shape[0] // 2),
+                region=region,
             )
-            if not blue:
+            if not isinstance(candidates, list) or not candidates:
                 return None
-            text_match = self.vision.find_text(
-                labels,
-                screen=screen,
-                region=(max(0, blue[0] - 260), max(0, blue[1] - 50), 520, 100),
-                min_confidence=0.20,
-            )
-            if not text_match:
-                return None
-            if math.hypot(text_match["center"][0] - blue[0], text_match["center"][1] - blue[1]) > 180:
-                return None
-            return blue
+            button = candidates[0]
+            x1, y1, x2, y2 = button["bounds"]
+            wanted = {label.casefold().strip() for label in labels}
+            for item in self.vision.read_text(
+                screen,
+                region=(x1, y1, x2 - x1, y2 - y1),
+                min_confidence=0.15,
+            ):
+                words = set(re.sub(r"[^a-z0-9]+", " ", item["text"].casefold()).split())
+                if words & wanted:
+                    return button["center"]
+            return None
 
         return self.vision.find_stable(locate, attempts=2, tolerance_px=8.0)
 
-    def _stable_post_target(self):
-        return self._stable_blue_text_target(("post", "publish"))
+    def _stable_review_post_target(self):
+        """Use geometry only after the Post settings review was independently seen."""
+        def locate():
+            screen = self.client.screenshot()
+            observation = self.recognizer.observe(screen)
+            if (
+                observation.state != ScreenState.POST_ENABLED
+                or "post settings review" not in observation.signals
+            ):
+                return None
+            candidates = self.vision.find_blue_action_buttons(
+                screen=screen,
+                region="bottom_action_bar",
+            )
+            if not isinstance(candidates, list) or len(candidates) != 1:
+                return None
+            return candidates[0]["center"]
+
+        return self.vision.find_stable(locate, attempts=2, tolerance_px=8.0)
+
+    def _stable_post_target(self, review_confirmed=False):
+        target = self._stable_blue_text_target(("post", "publish"), region="bottom_action_bar")
+        if target:
+            return target
+        if review_confirmed:
+            target = self._stable_review_post_target()
+            if target:
+                return target
+        # Irreversible action: semantic fallback proposal triggers 'needs_review'
+        screen = self.client.screenshot()
+        allow, reason, semantic_pos = self.rank_candidates_semantically(
+            goal="identify the publish action",
+            screen=screen,
+            region="bottom_action_bar",
+            is_reversible=False,
+        )
+        if reason == "needs_review":
+            self._requires_review = True
+        return None
 
     def _stable_next_target(self):
-        return self._stable_blue_text_target(("next",))
+        target = self._stable_blue_text_target(("next",), region="bottom_action_bar")
+        if target:
+            return target
+        # Reversible action: guarded semantic fallback
+        screen = self.client.screenshot()
+        allow, reason, semantic_pos = self.rank_candidates_semantically(
+            goal="identify the next action",
+            screen=screen,
+            region="bottom_action_bar",
+            is_reversible=True,
+        )
+        if allow and semantic_pos:
+            return semantic_pos
+        return None
 
     def _stable_caption_target(self):
         """Locate the caption prompt inside the active composer modal only."""
@@ -83,7 +143,7 @@ class FacebookPostTask(BaseTask):
             screen = self.client.screenshot()
             blue = self.vision.find_blue_action_button(
                 screen=screen,
-                region=(0, screen.shape[0] // 2, screen.shape[1], screen.shape[0] // 2),
+                region="bottom_action_bar",
             )
             if not blue:
                 return None
@@ -111,56 +171,10 @@ class FacebookPostTask(BaseTask):
                     return item["center"]
                 if "write something" in normalized or "create a public post" in normalized:
                     return item["center"]
-            return None
+            # Visual fallback: caption input is centered above media preview in modal
+            return (blue[0] - 160, blue[1] - 340)
 
         return self.vision.find_stable(locate, attempts=2, tolerance_px=16.0)
-
-    def _find_first_comment_input(self, screen):
-        """Return the top-most Comment as/Write a comment field on the screen."""
-        candidates = []
-        for item in self.vision.read_text(screen, min_confidence=0.18):
-            normalized = re.sub(r"[^a-z0-9]+", " ", item["text"].casefold()).strip()
-            words = set(normalized.split())
-            if normalized.startswith("comment as") or {"write", "comment"}.issubset(words):
-                candidates.append(item)
-        if not candidates:
-            return None
-        candidates.sort(key=lambda item: item["center"][1])
-        return candidates[0]["center"]
-
-    def _open_profile_first_comment_input(self):
-        """Open the active profile and locate the first post card's comment field."""
-        self.client.navigate_to("https://www.facebook.com/me")
-        time.sleep(3.0)
-        posts_section_seen = False
-
-        for scan in range(1, 9):
-            screen = self.client.screenshot()
-            texts = self.vision.read_text(screen, min_confidence=0.20)
-            normalized = [
-                re.sub(r"[^a-z0-9]+", " ", item["text"].casefold()).strip()
-                for item in texts
-            ]
-            has_posts = any(text == "posts" or text.startswith("posts ") for text in normalized)
-            has_list_view = any("list view" in text for text in normalized)
-            if has_posts and has_list_view:
-                posts_section_seen = True
-
-            comment_target = self._find_first_comment_input(screen) if posts_section_seen else None
-            self.log_decision(
-                "Find first post comment",
-                "Posts/List view followed by the first Comment as field",
-                f"scan={scan}, posts_section={posts_section_seen}, target={comment_target}",
-                "use first post comment field" if comment_target else "scroll and scan again",
-                level="INFO",
-            )
-            if comment_target:
-                return comment_target, screen
-
-            self.human.scroll("down", notches=3)
-            time.sleep(1.0)
-
-        return None, None
 
     def _wait_until_media_ready(self, timeout: float = 75.0):
         deadline = time.time() + timeout
@@ -193,13 +207,49 @@ class FacebookPostTask(BaseTask):
             time.sleep(1.5)
         return last
 
-    def _verify_publication(self, before_publish, timeout: float = 35.0):
-        """Confirm publication or return an explicitly ambiguous outcome."""
+    def _is_recent_post_on_screen(self, screen, caption: str | None = None) -> bool:
+        if screen is None:
+            return False
+        ocr = self.vision.read_text(screen, min_confidence=0.18)
+        recent_indicators = {"just now", "a few seconds ago", "few seconds", "1m", "2m", "moment ago"}
+        for item in ocr:
+            clean = re.sub(r"[^a-z0-9]+", " ", item["text"].casefold()).strip()
+            if any(ind in clean for ind in recent_indicators):
+                return True
+        if caption:
+            cap_words = [w for w in re.sub(r"[^a-z0-9]+", " ", caption.casefold()).split() if len(w) >= 3]
+            if cap_words:
+                text_blob = " ".join(item["text"].casefold() for item in ocr)
+                matches = sum(1 for w in cap_words if w in text_blob)
+                if matches >= min(2, len(cap_words)):
+                    return True
+        return False
+
+    def _verify_publication(self, before_publish, timeout: float = 300.0):
+        """
+        Confirm publication.
+        Note: Post-publish prompt ('Not now') does not always appear; if absent,
+        composer closing and return to feed confirms publication.
+        """
         deadline = time.time() + timeout
-        feed_streak = 0
         last = None
+        feed_streak = 0
+        prompt_dismissed = False
+        confirmation_seen = False
         while time.time() < deadline:
             screen = self.client.screenshot()
+
+            # Dismiss post-publish prompts if present (e.g. "Speak With People Directly" -> "Not now")
+            # This prompt is optional. Once dismissed, the publish click has been
+            # accepted and the comment stage may begin without another navigation.
+            if not prompt_dismissed and self.check_and_dismiss_post_prompt(screen):
+                prompt_dismissed = True
+                self.log("INFO", "Dismissed post-publish prompt ('Not now').")
+                # Clicking the optional prompt is not itself the transition
+                # boundary. Wait until Facebook removes every publishing modal.
+                time.sleep(1.5)
+                continue
+
             observation = self.recognizer.observe(screen)
             similarity = self.vision.similarity(before_publish, screen)
             last = (observation, screen, similarity)
@@ -207,20 +257,49 @@ class FacebookPostTask(BaseTask):
             if observation.state == ScreenState.ERROR_DIALOG:
                 return "failed", last
             if observation.state == ScreenState.POST_CONFIRMED:
-                return "published", last
+                confirmation_seen = True
+                feed_streak = 0
+                self.log("INFO", "Facebook showed publication confirmation; waiting for the modal to close.")
+                time.sleep(1.5)
+                continue
 
-            # A changed screen followed by two stable feed observations means the
-            # composer closed and Facebook returned to the feed.
+            # Do not use caption text as confirmation while Facebook is still
+            # showing the review modal. The caption is visible behind "Posting"
+            # and previously caused verification to finish before the optional
+            # prompt appeared.
+            if observation.state in {
+                ScreenState.PUBLISHING,
+                ScreenState.POST_ENABLED,
+                ScreenState.COMPOSER_OPEN,
+                ScreenState.MEDIA_UPLOADING,
+                ScreenState.MEDIA_READY,
+            }:
+                feed_streak = 0
+                time.sleep(1.5)
+                continue
+
+            # Require two stable feed observations after the composer disappears.
+            # A single changed frame can be a transient dialog or navigation state.
             if observation.state == ScreenState.FEED_READY and similarity < 0.985:
                 feed_streak += 1
                 if feed_streak >= 2:
+                    prompt_note = " after dismissing 'Not now'" if prompt_dismissed else " without an optional prompt"
+                    confirmation_note = " after publication confirmation" if confirmation_seen else ""
+                    self.log("INFO", f"All publishing modals closed; Facebook returned to a stable profile feed{prompt_note}{confirmation_note}.")
                     return "published", last
             else:
                 feed_streak = 0
+
             time.sleep(1.5)
+
+        # Never navigate away or begin commenting while a publishing/review modal
+        # may still be open. This avoids confusing slow network processing with
+        # the no-prompt branch.
+        self.log("WARN", "Publishing modal did not fully close before the maximum verification wait.")
         return "uncertain", last
 
     def run(self) -> bool:
+        self.set_stage("preparing")
         self.log("STEP", "Starting Facebook auto-post task...")
 
         if not self.client.is_running():
@@ -230,67 +309,41 @@ class FacebookPostTask(BaseTask):
         if not self.verify_logged_in():
             return self._fail("session_unverified", "Facebook session is logged out or could not be verified after loading.")
 
-        # Step 3: Handle media attachment (Photo/Video)
+        # Step 2: Navigate directly to profile page (simplified profile-first flow)
+        self.log("STEP", "Navigating to profile page (https://www.facebook.com/me)...")
+        self.navigate_to("https://www.facebook.com/me", wait_seconds=3.0)
+
+        self.set_stage("composing")
+        # Step 3: Handle media attachment (Photo/Video) or text composer
         if self.media_path:
-            self.log("STEP", "Opening the Create Post composer before attaching media...")
-            composer_pos = self._stable_ocr_target((
-                "what's on your mind",
-                "what’s on your mind",
-                "whats on your mind",
-                "what s on your mind",
-                "write something",
-            ))
-            self.log_decision(
-                "Open composer",
-                "stable What's on your mind text",
-                f"target={composer_pos}" if composer_pos else "no stable text target",
-                "click target and verify Create post modal" if composer_pos else "use the Photo/video shortcut",
-            )
-            if composer_pos:
-                self.human.click(*composer_pos)
-                composer_result = self.wait_for_states(
-                    {ScreenState.COMPOSER_OPEN, ScreenState.POST_ENABLED},
-                    timeout=15.0,
-                    poll_interval=1.0,
-                )
-                if not composer_result or composer_result[0].state not in {
-                    ScreenState.COMPOSER_OPEN,
-                    ScreenState.POST_ENABLED,
-                }:
-                    return self._fail(
-                        "composer_open_failed",
-                        "The Create Post composer did not open after the visual click.",
-                        composer_result[1] if composer_result else None,
-                    )
+            self.log("STEP", f"Locating Photo/video button on profile for: {self.media_path}")
 
-            self.log("STEP", f"Opening media picker for: {self.media_path}")
-            # Prefer the modal label over a same-colored icon elsewhere on the
-            # feed; use visual icon detection only when OCR cannot read it.
-            photo_btn = self._stable_ocr_target((
-                "photo/video",
-                "photo / video",
-                "photolvideo",
-                "photo video",
-                "photos/videos",
-            ))
+            # Locate "Photo/video" button directly on the profile page
+            screen = self.client.screenshot()
+            photo_btn = self.vision.find_template(screen, "photo_video_btn", threshold=0.70)
             if not photo_btn:
-                photo_btn = self.vision.find_stable(
-                    self.vision.find_photo_video_button,
-                    attempts=2,
-                    tolerance_px=8.0,
-                )
+                photo_btn = self.vision.find_photo_video_button(screen=screen)
             if not photo_btn:
-                return self._fail("photo_button_not_found", "Photo/video control could not be located confidently.")
+                photo_btn = self._stable_ocr_target((
+                    "photo/video",
+                    "photo / video",
+                    "photo video",
+                    "photolvideo",
+                    "photoivideo",
+                    "photos/videos",
+                ), region="profile_post_stream")
 
             self.log_decision(
-                "Open media picker",
-                "stable Photo/video label or green media icon",
+                "Click Photo/video on profile",
+                "stable Photo/video button or green photo icon on profile stream",
                 f"target={photo_btn}",
-                "click target and require a visible file chooser",
+                "click target to trigger GTK file chooser" if photo_btn else "fail safe",
             )
-            self.capture_evidence("before_open_media_picker", target=list(photo_btn))
-            self.human.click(*photo_btn)
+            if not photo_btn:
+                return self._fail("photo_button_not_found", "Photo/video button on profile could not be located confidently.")
 
+            self.capture_evidence("before_click_photo_video", target=list(photo_btn))
+            self.human.click(*photo_btn)
             time.sleep(random.uniform(1.5, 2.5))
 
             # Trigger Zero-CDP GTK file chooser
@@ -338,7 +391,7 @@ class FacebookPostTask(BaseTask):
                     "whats on your mind",
                     "what s on your mind",
                     "write something",
-                ))
+                ), region="profile_post_stream")
             if not composer_pos:
                 return self._fail("composer_not_found", "Post composer could not be located confidently.")
             self.human.click(*composer_pos)
@@ -421,7 +474,8 @@ class FacebookPostTask(BaseTask):
                 )
 
         self.log("STEP", "Locating a stable enabled Post action...")
-        post_btn = self._stable_post_target()
+        self._requires_review = False
+        post_btn = self._stable_post_target(review_confirmed=bool(next_btn))
         self.log_decision(
             "Final publish",
             "Post or Publish text inside the enabled blue action button",
@@ -429,13 +483,21 @@ class FacebookPostTask(BaseTask):
             "click once and verify publication" if post_btn else "stop before publishing",
         )
         if not post_btn:
+            if getattr(self, "_requires_review", False):
+                return self._needs_review(
+                    "semantic_publish_gated",
+                    "Final publish action was semantically proposed but requires operator review before execution.",
+                )
             return self._fail("post_button_not_found", "Enabled Post button could not be confirmed.")
 
+        self.set_stage("ready_to_publish", target=list(post_btn))
         before_publish = self.client.screenshot()
         self.capture_evidence("before_publish", before_publish, target=list(post_btn))
         self.log("STEP", f"Clicking final Post action once at {post_btn}...")
+        self.set_stage("publish_clicked", target=list(post_btn))
         self.human.click(*post_btn)
 
+        self.set_stage("verifying")
         publication_status, verification = self._verify_publication(before_publish)
         if verification:
             observation, final_screen, similarity = verification
@@ -455,42 +517,23 @@ class FacebookPostTask(BaseTask):
         if publication_status != "published":
             return self._uncertain(
                 "publish_unconfirmed",
-                "The publish action was sent once, but publication could not be visually confirmed.",
+                "The final Post action was clicked once, but publication could not be positively confirmed. Automatic retry is blocked.",
                 final_screen,
             )
 
+        # Phase 1: Correlate published post and extract permalink
+        permalink_info = self.correlate_and_extract_permalink(
+            caption=self.caption,
+            media_type="photo" if self.media_path else "post",
+        )
+
         # Step 6: First-comment destination link (if provided)
         if self.comment_link:
-            self.log("STEP", "Opening the active profile to comment on its first post...")
-            time.sleep(random.uniform(2.0, 3.5))
-            comment_box_pos, comment_screen = self._open_profile_first_comment_input()
-            if not comment_box_pos:
-                self.log_decision(
-                    "Submit first comment",
-                    "first Comment as field under Posts/List view",
-                    "no verified comment field",
-                    "keep post published and skip comment",
-                    level="WARN",
-                )
-                return self.set_outcome("published", None, first_comment="failed_input_not_found")
-
-            self.capture_evidence("before_first_comment", comment_screen, target=list(comment_box_pos))
-            self.log_decision(
-                "Submit first comment",
-                "first Comment as field under Posts/List view",
-                f"target={comment_box_pos}",
-                "click, paste configured comment, and submit once",
+            comment_status = self.post_first_comment(
+                self.comment_link,
+                post_url=permalink_info.get("post_url"),
             )
-            self.human.click(*comment_box_pos)
-            time.sleep(1.0)
-            self.paste_text(self.comment_link)
-            time.sleep(0.5)
-            self.human.key_press("Return")
-            self.log("SUCCESS", "First comment was submitted once; no automatic retry will be attempted.")
-            time.sleep(3.0)
-            after_comment = self.client.screenshot()
-            self.capture_evidence("after_first_comment", after_comment)
-            return self.set_outcome("published", None, first_comment="submitted_unverified")
+            return self.set_outcome("published", None, first_comment=comment_status, **permalink_info)
 
         self.log("SUCCESS", "Facebook publication was visually confirmed.")
-        return self.set_outcome("published")
+        return self.set_outcome("published", None, **permalink_info)

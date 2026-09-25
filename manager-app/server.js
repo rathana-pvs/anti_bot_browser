@@ -574,6 +574,14 @@ function latestQueueTaskState(profileId) {
     return bTime - aTime;
   });
   const { execution, task } = candidates[0];
+  const active = activeAutomationTasks.get(profileId);
+  const isProcessActive = active && active.status === 'running' && active.process && !active.process.killed && active.process.exitCode === null;
+
+  let rawStatus = execution.status;
+  if (rawStatus === 'running' && !isProcessActive) {
+    rawStatus = 'stopped';
+  }
+
   const statusMap = {
     pending: 'idle',
     running: 'running',
@@ -585,7 +593,7 @@ function latestQueueTaskState(profileId) {
   return {
     profile_id: profileId,
     task,
-    status: statusMap[execution.status] || 'idle',
+    status: statusMap[rawStatus] || 'idle',
     started_at: execution.started_at || execution.scheduled_at,
     ended_at: execution.ended_at || execution.published_at || null,
     logs: (execution.logs || []).slice(-300).map((line) => normalizeStoredLog(line, profileId)),
@@ -725,10 +733,10 @@ app.post('/api/automation/run', (req, res) => {
 
       if (taskRecord.status === 'stopped') {
         appendLog(`[${taskRecord.ended_at}] [${profile_id}] [INFO] Task stopped by user.`, 'INFO');
-      } else if (taskRecord.result?.status === 'uncertain' || code === 2) {
-        taskRecord.status = 'uncertain';
-        taskRecord.error = taskRecord.result?.error || 'Publication could not be visually confirmed';
-        appendLog(`[${taskRecord.ended_at}] [${profile_id}] [WARN] Task outcome is uncertain and requires review.`, 'WARN');
+      } else if (taskRecord.result?.status === 'needs_review' || taskRecord.result?.status === 'uncertain' || code === 2) {
+        taskRecord.status = taskRecord.result?.status === 'needs_review' ? 'needs_review' : 'uncertain';
+        taskRecord.error = taskRecord.result?.error || 'Publication requires operator review or could not be visually confirmed';
+        appendLog(`[${taskRecord.ended_at}] [${profile_id}] [WARN] Task outcome is ${taskRecord.status} and requires review.`, 'WARN');
       } else if (code === 0) {
         taskRecord.status = 'completed';
         appendLog(`[${taskRecord.ended_at}] [${profile_id}] [SUCCESS] Task completed successfully.`, 'SUCCESS');
@@ -836,6 +844,33 @@ function savePostingQueue(data) {
     return false;
   }
 }
+
+function cleanupStaleQueueExecutions() {
+  try {
+    const queue = loadPostingQueue();
+    let modified = false;
+    for (const batch of queue.daily_batches || []) {
+      for (const post of batch.posts || []) {
+        for (const execItem of post.executions || []) {
+          if (execItem.status === 'running') {
+            console.log(`[Startup] Cleaning up stale running execution ${execItem.execution_id}...`);
+            execItem.status = 'stopped';
+            execItem.ended_at = new Date().toISOString();
+            execItem.error = 'Execution interrupted by server restart';
+            modified = true;
+          }
+        }
+      }
+    }
+    if (modified) {
+      savePostingQueue(queue);
+    }
+  } catch (err) {
+    console.error('Error during startup cleanup of posting queue:', err);
+  }
+}
+
+cleanupStaleQueueExecutions();
 
 // AI Caption Spinner Helper
 function generateSpunCaption(baseCaption, index = 0, profileId = '') {
@@ -971,7 +1006,8 @@ app.get('/api/queue', (req, res) => {
       pending: allExecutions.filter((e) => e.status === 'pending').length,
       running: allExecutions.filter((e) => e.status === 'running').length,
       published: allExecutions.filter((e) => e.status === 'published').length,
-      failed: allExecutions.filter((e) => e.status === 'failed').length,
+      failed: allExecutions.filter((e) => e.status === 'failed' || e.status === 'failed_before_publish').length,
+      uncertain: allExecutions.filter((e) => e.status === 'uncertain' || e.status === 'needs_review').length,
       skipped: allExecutions.filter((e) => e.status && e.status.startsWith('skipped')).length,
     };
 
@@ -1205,6 +1241,11 @@ function executeQueueItem(executionId) {
 
   if (!targetExec || !targetPost) return Promise.reject(new Error('Execution not found'));
 
+  // Invariant: Uncertain and needs_review executions cannot be rerun directly without manual resolution
+  if (targetExec.status === 'uncertain' || targetExec.status === 'needs_review') {
+    return Promise.reject(new Error(`Cannot rerun an execution in '${targetExec.status}' state directly. Please review on Facebook and manually resolve the outcome first to prevent duplicate posts.`));
+  }
+
   const profileId = targetExec.profile_id;
 
   // Check if profile is already running an automation task (only if actual OS process is active)
@@ -1219,6 +1260,7 @@ function executeQueueItem(executionId) {
   targetExec.started_at = new Date().toISOString();
   targetExec.ended_at = null;
   targetExec.error = null;
+  targetExec.logs = [];
   savePostingQueue(queue);
 
   const pythonBin = path.join(ROOT_DIR, 'automation', 'venv', 'bin', 'python');
@@ -1297,8 +1339,11 @@ function executeQueueItem(executionId) {
       if (queueStdoutBuffer.trim()) consumeQueueStdoutLine(queueStdoutBuffer);
       taskRecord.ended_at = new Date().toISOString();
       const reportedStatus = taskRecord.result?.status;
-      taskRecord.status = reportedStatus === 'uncertain'
-        ? 'uncertain'
+      const stage = taskRecord.result?.current_stage;
+      const reachedPublish = stage === 'publish_clicked' || stage === 'verifying';
+
+      taskRecord.status = (reportedStatus === 'needs_review' || reportedStatus === 'uncertain' || reachedPublish)
+        ? (reportedStatus === 'needs_review' ? 'needs_review' : 'uncertain')
         : (code === 0 ? 'completed' : 'failed');
       taskRecord.process = null;
 
@@ -1317,17 +1362,24 @@ function executeQueueItem(executionId) {
 
       if (execInDb) {
         execInDb.ended_at = new Date().toISOString();
+        execInDb.stage = stage || (reportedStatus === 'published' ? 'published' : 'unknown');
+
         if (reportedStatus === 'published') {
           execInDb.status = 'published';
           execInDb.published_at = new Date().toISOString();
           execInDb.error = null;
-        } else if (reportedStatus === 'uncertain' || code === 2) {
-          // Never automatically retry after a one-way publish click.
-          execInDb.status = 'uncertain';
-          execInDb.error = taskRecord.result?.error || 'Publication could not be visually confirmed';
+          if (taskRecord.result?.post_url) {
+            execInDb.post_url = taskRecord.result.post_url;
+            execInDb.post_url_verified_at = taskRecord.result.post_url_verified_at || new Date().toISOString();
+            execInDb.post_match_confidence = taskRecord.result.post_match_confidence || 1.0;
+          }
+        } else if (reportedStatus === 'needs_review' || reportedStatus === 'uncertain' || code === 2 || reachedPublish) {
+          // Never automatically retry after a one-way publish click or gated semantic fallback.
+          execInDb.status = reportedStatus === 'needs_review' ? 'needs_review' : 'uncertain';
+          execInDb.error = taskRecord.result?.error || 'Publication requires operator review or could not be visually confirmed';
         } else {
           execInDb.retry_count = (execInDb.retry_count || 0) + 1;
-          execInDb.status = 'failed';
+          execInDb.status = 'failed_before_publish';
           execInDb.error = taskRecord.result?.error
             || (code === 0
               ? 'Runner exited without a confirmed published outcome'
@@ -1356,8 +1408,94 @@ function executeQueueItem(executionId) {
 app.post('/api/queue/run-now/:execution_id', async (req, res) => {
   try {
     const { execution_id } = req.params;
+    const queue = loadPostingQueue();
+    let targetExec = null;
+
+    for (const batch of queue.daily_batches || []) {
+      for (const post of batch.posts || []) {
+        const match = (post.executions || []).find((e) => e.execution_id === execution_id);
+        if (match) {
+          targetExec = match;
+          break;
+        }
+      }
+      if (targetExec) break;
+    }
+
+    if (!targetExec) {
+      return res.status(404).json({ error: 'Execution not found' });
+    }
+
+    if (targetExec.status === 'uncertain' || targetExec.status === 'needs_review') {
+      return res.status(400).json({
+        error: `Cannot rerun an execution in '${targetExec.status}' state directly. Please review on Facebook and resolve the outcome first to prevent duplicate posts.`,
+      });
+    }
+
     executeQueueItem(execution_id).catch((err) => console.error('Run-now error:', err));
     res.json({ success: true, message: `Dispatched execution ${execution_id} immediately` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/queue/resolve-uncertain/:execution_id
+app.post('/api/queue/resolve-uncertain/:execution_id', async (req, res) => {
+  try {
+    const { execution_id } = req.params;
+    const { resolution, note, post_url } = req.body;
+
+    if (!['published', 'not_published'].includes(resolution)) {
+      return res.status(400).json({ error: "Resolution must be either 'published' or 'not_published'" });
+    }
+
+    const queue = loadPostingQueue();
+    let targetExec = null;
+    for (const batch of queue.daily_batches || []) {
+      for (const post of batch.posts || []) {
+        const match = (post.executions || []).find((e) => e.execution_id === execution_id);
+        if (match) {
+          targetExec = match;
+          break;
+        }
+      }
+      if (targetExec) break;
+    }
+
+    if (!targetExec) {
+      return res.status(404).json({ error: 'Execution not found' });
+    }
+
+    if (targetExec.status !== 'uncertain' && targetExec.status !== 'needs_review') {
+      return res.status(400).json({ error: `Execution is in '${targetExec.status}' state, not 'uncertain' or 'needs_review'` });
+    }
+
+    if (resolution === 'published') {
+      targetExec.status = 'published';
+      targetExec.published_at = new Date().toISOString();
+      targetExec.review_status = 'resolved_published';
+      targetExec.review_note = note || 'Manually confirmed published on Facebook';
+      targetExec.error = null;
+      if (post_url && typeof post_url === 'string' && post_url.trim()) {
+        targetExec.post_url = post_url.trim();
+        targetExec.post_url_verified_at = new Date().toISOString();
+        targetExec.post_match_confidence = 1.0;
+      }
+    } else {
+      // Operator verified it was NOT published. Reset to failed_before_publish so retry is permitted.
+      targetExec.status = 'failed_before_publish';
+      targetExec.review_status = 'resolved_not_published';
+      targetExec.review_note = note || 'Manually confirmed NOT published on Facebook';
+    }
+
+    targetExec.reviewed_at = new Date().toISOString();
+    savePostingQueue(queue);
+
+    res.json({
+      success: true,
+      message: `Execution resolved as ${resolution}`,
+      execution: targetExec,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

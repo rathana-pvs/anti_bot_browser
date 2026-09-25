@@ -74,3 +74,45 @@ class EvidenceRecorder:
         with open(result_path, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2, ensure_ascii=False)
         return result_path
+
+    def record_stage(self, stage: str, history: list[dict] | None = None) -> str:
+        """Atomically record the current execution stage and history."""
+        stage_path = os.path.join(self.directory, "stage.json")
+        payload = {
+            "run_id": self.run_id,
+            "current_stage": stage,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "history": history or [],
+        }
+        temp_path = f"{stage_path}.tmp"
+        with open(temp_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, ensure_ascii=False)
+        os.replace(temp_path, stage_path)
+        return stage_path
+
+    def record_semantic_fallback(
+        self,
+        goal: str,
+        state: str,
+        proposal: dict,
+        candidates: list[dict] | None = None,
+        screen: np.ndarray | None = None,
+    ) -> str:
+        """Save a semantic fallback audit record with optional screenshot."""
+        self._sequence += 1
+        stem = f"{self._sequence:02d}_semantic_fallback_{self._safe_name(goal)}"
+        if screen is not None:
+            image_path = os.path.join(self.directory, f"{stem}.png")
+            cv2.imwrite(image_path, screen)
+        metadata_path = os.path.join(self.directory, f"{stem}.json")
+        payload = {
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "goal": goal,
+            "state": state,
+            "proposal": proposal,
+            "candidates_count": len(candidates) if candidates else 0,
+            "candidates": candidates or [],
+        }
+        with open(metadata_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, ensure_ascii=False)
+        return metadata_path

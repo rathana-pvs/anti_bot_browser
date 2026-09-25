@@ -81,6 +81,45 @@ class ContainerClient:
         time.sleep(0.1)
         self.exec_cmd(["xdotool", "key"] + target_flag + ["Return"])
 
+    def refresh_page(self) -> None:
+        """Refresh the active browser tab via F5 keystroke."""
+        win_id = self.ensure_focus()
+        target_flag = ["--window", str(win_id)] if win_id > 0 else []
+        self.exec_cmd(["xdotool", "key"] + target_flag + ["F5"])
+
+    def dismiss_dialog_key(self) -> None:
+        """Send Return key to confirm default action (e.g. 'Leave' in Leave site dialog)."""
+        win_id = self.ensure_focus()
+        target_flag = ["--window", str(win_id)] if win_id > 0 else []
+        self.exec_cmd(["xdotool", "key"] + target_flag + ["Return"])
+
+    def get_current_url(self) -> str | None:
+        """
+        Read the active URL from Chrome's address bar via OS-level clipboard events
+        (Ctrl+L -> Ctrl+C -> Escape -> xclip). Pure OS-level event, zero CDP required.
+        """
+        try:
+            win_id = self.ensure_focus()
+            target_flag = f"--window {win_id}" if win_id > 0 else ""
+            focus_cmd = f"xdotool windowfocus --sync {win_id} && " if win_id > 0 else ""
+            script = (
+                f"echo -n '' | xclip -i -selection clipboard && "
+                f"{focus_cmd}"
+                f"xdotool key {target_flag} ctrl+l && "
+                f"sleep 0.15 && "
+                f"xdotool key {target_flag} ctrl+c && "
+                f"sleep 0.15 && "
+                f"xdotool key {target_flag} Escape && "
+                f"xclip -o -selection clipboard"
+            )
+            res = self.exec_cmd(["bash", "-c", script], check=False)
+            url = res.stdout.strip()
+            if url.startswith("http://") or url.startswith("https://"):
+                return url
+            return None
+        except Exception:
+            return None
+
     def xdo(self, command: str) -> None:
         """Execute an xdotool command inside the container."""
         cmd_args = ["xdotool"] + command.split()

@@ -25,8 +25,7 @@ class FacebookWarmingTask(BaseTask):
 
         # Step 1: Ensure window focus and navigate to Facebook
         self.log("STEP", "Navigating to facebook.com...")
-        self.client.navigate_to("https://www.facebook.com")
-        time.sleep(random.uniform(3.5, 6.0))
+        self.navigate_to("https://www.facebook.com", wait_seconds=random.uniform(3.5, 6.0))
 
         # Step 2: Human mouse movement across page
         w, h = self.client.get_screen_dimensions()

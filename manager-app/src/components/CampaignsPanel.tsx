@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Profile } from '../types/profile';
 import { AutomationTaskState } from '../types/automation';
-import { runAutomation, fetchAutomationTasks, stopAutomation } from '../services/api';
+import { runAutomation, fetchAutomationTasks, stopAutomation, uploadMediaFiles } from '../services/api';
 import { BatchPostCreator } from './BatchPostCreator';
 import { PostingQueuePanel } from './PostingQueuePanel';
 import {
@@ -20,6 +20,10 @@ import {
   PanelLeft,
   Calendar,
   Clock,
+  Image as ImageIcon,
+  Film,
+  X,
+  Play,
 } from 'lucide-react';
 
 interface CampaignsPanelProps {
@@ -41,6 +45,13 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
   const [scrolls, setScrolls] = useState<number>(4);
   const [caption, setCaption] = useState<string>('');
   const [commentLink, setCommentLink] = useState<string>('');
+  const [attachedMedia, setAttachedMedia] = useState<{
+    filename: string;
+    original_name: string;
+    type: 'photo' | 'reel';
+    url: string;
+  } | null>(null);
+  const [isUploadingMedia, setIsUploadingMedia] = useState<boolean>(false);
   const [isLaunching, setIsLaunching] = useState<boolean>(false);
   const [activeTasks, setActiveTasks] = useState<Record<string, AutomationTaskState>>({});
   const [selectedTaskProfileId, setSelectedTaskProfileId] = useState<string | null>(null);
@@ -77,6 +88,32 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
     );
   };
 
+  const handleMediaUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+    setErrorBanner(null);
+    setIsUploadingMedia(true);
+    try {
+      const file = e.target.files[0];
+      const formData = new FormData();
+      formData.append('files', file);
+      const res = await uploadMediaFiles(formData);
+      if (res.files && res.files.length > 0) {
+        const up = res.files[0];
+        setAttachedMedia({
+          filename: up.filename,
+          original_name: up.original_name || up.filename,
+          type: up.type,
+          url: `/shared_media/${up.filename}`,
+        });
+      }
+    } catch (err: any) {
+      setErrorBanner(err.message || 'Failed to upload media file');
+    } finally {
+      setIsUploadingMedia(false);
+      e.target.value = '';
+    }
+  };
+
   const handleLaunchCampaign = async () => {
     setErrorBanner(null);
     setSuccessBanner(null);
@@ -86,23 +123,27 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
       return;
     }
 
-    if (taskType === 'post' && !caption.trim()) {
-      setErrorBanner('Post caption is required for automated Facebook posting.');
+    if (taskType === 'post' && !caption.trim() && !attachedMedia) {
+      setErrorBanner('Either a post caption or media attachment (photo/video) is required.');
       return;
     }
 
     setIsLaunching(true);
     let launched = 0;
     const errors: string[] = [];
+    const effectiveTask = taskType === 'warming'
+      ? 'warming'
+      : (attachedMedia?.type === 'reel' ? 'reel' : 'post');
 
     for (const profileId of selectedProfileIds) {
       try {
         await runAutomation({
           profile_id: profileId,
-          task: taskType,
+          task: effectiveTask,
           scrolls: taskType === 'warming' ? scrolls : undefined,
-          caption: taskType === 'post' ? caption.trim() : undefined,
+          caption: taskType === 'post' && caption.trim() ? caption.trim() : undefined,
           comment_link: taskType === 'post' && commentLink.trim() ? commentLink.trim() : undefined,
+          media: taskType === 'post' && attachedMedia ? attachedMedia.filename : undefined,
         });
         launched++;
       } catch (err: any) {
@@ -116,10 +157,18 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
     if (errors.length > 0) {
       setErrorBanner(`Launched ${launched} tasks. Failed on: ${errors.join('; ')}`);
     } else {
-      setSuccessBanner(`Successfully launched "${taskType}" across ${launched} profile(s)!`);
+      const taskLabel = taskType === 'warming'
+        ? 'Feed Warming'
+        : attachedMedia?.type === 'reel'
+        ? 'Reel Posting'
+        : attachedMedia
+        ? 'Photo Post'
+        : 'Text Post';
+      setSuccessBanner(`Successfully launched "${taskLabel}" across ${launched} profile(s)!`);
       if (taskType === 'post') {
         setCaption('');
         setCommentLink('');
+        setAttachedMedia(null);
       }
     }
   };
@@ -298,7 +347,7 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
                   <span className="font-semibold text-xs text-zinc-100">Auto Post</span>
                 </div>
                 <p className="text-[11px] text-zinc-400 leading-snug">
-                  Types captions with human typing cadence and places external link in the 1st comment.
+                  Publishes text status updates, photos, or video reels with human typing cadence and 1st comment.
                 </p>
               </button>
             </div>
@@ -324,12 +373,125 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
               </div>
             ) : (
               <div className="space-y-3">
+                {/* Media Attachment (Photo or Reel Video) */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-xs text-zinc-300 font-medium flex items-center gap-1.5">
+                      <span>Media Attachment (Photo or Video)</span>
+                      <span className="text-[10px] text-zinc-500 font-normal">Optional</span>
+                    </label>
+                    {attachedMedia && (
+                      <span
+                        className={`text-[10px] px-2 py-0.5 rounded font-mono font-medium flex items-center gap-1 ${
+                          attachedMedia.type === 'reel'
+                            ? 'bg-purple-950 text-purple-300 border border-purple-800/80'
+                            : 'bg-blue-950 text-blue-300 border border-blue-800/80'
+                        }`}
+                      >
+                        {attachedMedia.type === 'reel' ? (
+                          <>
+                            <Film className="w-3 h-3 text-purple-400" /> Reel Video
+                          </>
+                        ) : (
+                          <>
+                            <ImageIcon className="w-3 h-3 text-blue-400" /> Photo Post
+                          </>
+                        )}
+                      </span>
+                    )}
+                  </div>
+
+                  {attachedMedia ? (
+                    <div className="p-2.5 rounded-lg bg-zinc-950 border border-zinc-800 flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="w-12 h-12 rounded-md overflow-hidden bg-black border border-zinc-700 shrink-0 flex items-center justify-center relative">
+                          {attachedMedia.type === 'reel' ? (
+                            <>
+                              <video
+                                src={attachedMedia.url}
+                                className="w-full h-full object-cover"
+                                preload="metadata"
+                              />
+                              <div className="absolute inset-0 flex items-center justify-center bg-black/40">
+                                <Play className="w-3.5 h-3.5 text-white fill-white" />
+                              </div>
+                            </>
+                          ) : (
+                            <img
+                              src={attachedMedia.url}
+                              alt="attached"
+                              className="w-full h-full object-cover"
+                            />
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-xs text-zinc-200 font-medium truncate max-w-[260px]">
+                            {attachedMedia.original_name}
+                          </div>
+                          <div className="text-[10px] text-zinc-500 font-mono mt-0.5">
+                            {attachedMedia.type === 'reel'
+                              ? 'Facebook Reel Studio flow'
+                              : 'Standard Composer Photo attachment'}
+                          </div>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => setAttachedMedia(null)}
+                        className="p-1.5 rounded-md text-zinc-500 hover:text-red-400 hover:bg-zinc-800 transition-colors"
+                        title="Remove attached media"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ) : (
+                    <label
+                      className={`flex flex-col items-center justify-center p-3 border border-dashed rounded-lg cursor-pointer transition-all ${
+                        isUploadingMedia
+                          ? 'border-blue-500/50 bg-blue-950/20'
+                          : 'border-zinc-800 hover:border-zinc-700 bg-zinc-950/60 hover:bg-zinc-950'
+                      }`}
+                    >
+                      <input
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm"
+                        onChange={handleMediaUpload}
+                        disabled={isUploadingMedia}
+                        className="hidden"
+                      />
+                      {isUploadingMedia ? (
+                        <div className="flex items-center gap-2 text-xs text-blue-400 py-1">
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <span>Uploading media file...</span>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col items-center gap-1 text-center py-1">
+                          <div className="flex items-center gap-2 text-zinc-400">
+                            <ImageIcon className="w-4 h-4 text-blue-400" />
+                            <span className="text-[11px] text-zinc-600">/</span>
+                            <Film className="w-4 h-4 text-purple-400" />
+                            <span className="text-xs font-medium text-zinc-300 ml-1">Attach Photo or Video</span>
+                          </div>
+                          <span className="text-[10px] text-zinc-500">
+                            Click to browse JPG, PNG, WEBP (Photo) or MP4, MOV (Reel)
+                          </span>
+                        </div>
+                      )}
+                    </label>
+                  )}
+                </div>
+
                 <div>
                   <label className="text-xs text-zinc-300 block mb-1 font-medium">Post Caption</label>
                   <textarea
                     value={caption}
                     onChange={(e) => setCaption(e.target.value)}
-                    placeholder="Enter engaging Facebook status text..."
+                    placeholder={
+                      attachedMedia
+                        ? 'Enter post caption (optional when media attached)...'
+                        : 'Enter engaging Facebook status text...'
+                    }
                     rows={3}
                     className="w-full p-2.5 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-blue-500"
                   />
@@ -448,10 +610,23 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
                   <Loader2 className="w-4 h-4 animate-spin" />
                 ) : taskType === 'warming' ? (
                   <Flame className="w-4 h-4" />
+                ) : attachedMedia?.type === 'reel' ? (
+                  <Film className="w-4 h-4" />
+                ) : attachedMedia?.type === 'photo' ? (
+                  <ImageIcon className="w-4 h-4" />
                 ) : (
                   <Send className="w-4 h-4" />
                 )}
-                <span>Launch {taskType === 'warming' ? 'Warming Routine' : 'Posting Campaign'}</span>
+                <span>
+                  Launch{' '}
+                  {taskType === 'warming'
+                    ? 'Warming Routine'
+                    : attachedMedia?.type === 'reel'
+                    ? 'Reel Campaign'
+                    : attachedMedia?.type === 'photo'
+                    ? 'Photo Post'
+                    : 'Posting Campaign'}
+                </span>
               </button>
             </div>
           </div>

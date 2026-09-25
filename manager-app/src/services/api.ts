@@ -208,7 +208,28 @@ export async function runExecutionNow(executionId: string): Promise<{ success: b
   const res = await fetch(`${API_BASE}/queue/run-now/${executionId}`, {
     method: 'POST',
   });
-  if (!res.ok) throw new Error('Failed to run execution now');
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to run execution now');
+  }
+  return res.json();
+}
+
+export async function resolveUncertainExecution(
+  executionId: string,
+  resolution: 'published' | 'not_published',
+  note?: string,
+  post_url?: string
+): Promise<{ success: boolean; message: string; execution: import('../types/automation').QueueExecutionItem }> {
+  const res = await fetch(`${API_BASE}/queue/resolve-uncertain/${executionId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ resolution, note, post_url }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to resolve uncertain execution');
+  }
   return res.json();
 }
 

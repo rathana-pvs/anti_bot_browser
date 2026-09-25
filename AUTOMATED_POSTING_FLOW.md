@@ -142,29 +142,38 @@ sequenceDiagram
     Host->>Runner: Execute facebook_reel (profile_id, video_file, caption)
     Runner->>X11: Navigate to 'https://www.facebook.com/me'
     Runner->>Runner: verify_logged_in() — abort if session expired
-    Runner->>X11: Navigate to 'https://www.facebook.com/reel/create/'
-    X11->>Chrome: Load Desktop Reel Creator
+    Runner->>X11: Locate & Click 'Reel' button on profile page
+    Chrome-->>ReelStudio: Open Desktop Reel Creator
     Runner->>X11: Click 'Add video' dropzone
-    Chrome-->>X11: GTK File Chooser opens
-    Runner->>X11: Press '/' key → Type '/data/shared_media/reel_01.mp4' → Return
+    Chrome-->>X11: GTK File Chooser opens ('Open File')
+    Runner->>X11: Ctrl+L → Type '/data/shared_media/reel_01.mp4' → Click Open
     Chrome-->>ReelStudio: Upload .mp4 video
-    Runner->>Runner: Poll 'Next' button every 5s until blue (max 60s timeout)
-    Runner->>X11: Click 'Next' button
+    Runner->>Runner: Poll 'Next' button until blue
+    Runner->>X11: Click 'Next' button (Video step)
+    opt Intermediate Edit Reel Step
+        Runner->>X11: Click 'Next' button (Edit reel step)
+    end
     Runner->>X11: Click 'Describe your reel...' textarea
     Runner->>X11: Type reel description, hashtags & emojis
-    Runner->>X11: Click blue 'Publish' button
-    Runner->>Runner: Wait for 'Your reel is being processed' toast (timeout: 15s)
-    Runner-->>Host: Status: SUCCESS / UNCERTAIN (toast not detected)
+    Runner->>Runner: Poll 'Post' button until blue (copyright/processing check)
+    Runner->>X11: Click blue 'Post' button
+    Runner->>Runner: Wait for modal close / feed update (timeout: 45s)
+    opt 1st Comment Link Enabled
+        Runner->>X11: Open profile ('/me'), scan down to published Reel
+        Runner->>X11: Click 'Comment as...' field, paste link + Return
+    end
+    Runner-->>Host: Status: SUCCESS / UNCERTAIN
 ```
 
 #### Step Details
 
-1. **Login Gate:** Verify session before navigating to Reel Studio.
-2. **Navigate to Reel Studio:** Open `https://www.facebook.com/reel/create/` directly. Guarantees Facebook treats it as a 9:16 Reel with full algorithmic distribution, not a regular feed video.
-3. **Zero-CDP File Chooser:** Press `/` key, type full container path, press `Return`.
-4. **Transcode Readiness Poll:** Poll the `"Next"` button's color every 5 seconds until it turns active blue (`#1877F2`). Maximum wait: 60 seconds. If exceeded, mark as `failed_transcode_timeout`.
-5. **Description & Hashtags:** Type reel description with trending hashtags (`#reels #viral #fyp`).
-6. **Publish & Verify:** Click `"Publish"`, wait up to 15s for the confirmation toast. If toast not detected, mark as `uncertain` for manual review — do not retry automatically (to avoid duplicate posts).
+1. **Login Gate & Profile Navigation:** Navigate to `https://www.facebook.com/me` and verify session is authenticated.
+2. **Open Reel Creator:** Locate and click the `"Reel"` button beneath the composer or the `"Reels"` tab on the profile page.
+3. **Zero-CDP File Chooser:** Click the `"Add video"` / `"drag and drop"` dropzone to trigger the GTK file chooser dialog (`Open File`), send `Ctrl+L`, type the file path, and visually click `"Open"`.
+4. **Video Processing & Next:** Poll for the enabled blue `"Next"` action button, click it, and advance through any intermediate `"Edit reel"` step.
+5. **Description & Hashtags:** Click `"Describe your reel..."` and enter the caption/hashtags via clipboard/keyboard.
+6. **Publish & Verify:** Wait for background video/copyright checks to enable the blue `"Post"` button, click it once, and verify publication via confirmation toast or modal closure back to the feed.
+7. **First Comment Link:** If configured, navigate to `https://www.facebook.com/me`, scan for the published Reel's `"Comment as..."` field, click, paste the external link, and submit once with `Return`.
 
 ---
 

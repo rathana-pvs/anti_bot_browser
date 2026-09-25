@@ -6,7 +6,7 @@ from .facebook_post import FacebookPostTask
 
 
 class FacebookCommentTask(FacebookPostTask):
-    def __init__(self, profile_id: str, comment_text: str):
+    def __init__(self, profile_id: str, comment_text: str, post_url: str | None = None):
         super().__init__(
             profile_id=profile_id,
             caption="",
@@ -14,6 +14,7 @@ class FacebookCommentTask(FacebookPostTask):
             media_path=None,
         )
         self.comment_text = comment_text
+        self.post_url = post_url
 
     def run(self) -> bool:
         self.log("STEP", "Starting standalone first-post comment task...")
@@ -30,26 +31,12 @@ class FacebookCommentTask(FacebookPostTask):
                 "Facebook session is logged out or could not be verified.",
             )
 
-        target, screen = self._open_profile_first_comment_input()
-        if not target:
+        comment_status = self.post_first_comment(self.comment_text, post_url=self.post_url)
+        if comment_status == "submitted_unverified":
+            self.log("SUCCESS", "Standalone comment submitted once; no retry attempted.")
+            return self.set_outcome("completed", None, first_comment="submitted_unverified")
+        else:
             return self._fail(
                 "comment_input_not_found",
-                "The first post's Comment as field could not be visually confirmed.",
+                "The 'Comment as ...' field could not be visually confirmed.",
             )
-
-        self.log_decision(
-            "Standalone comment",
-            "first Comment as field under Posts/List view",
-            f"target={target}",
-            "click, paste the test comment, and submit once",
-        )
-        self.capture_evidence("before_comment", screen, target=list(target))
-        self.human.click(*target)
-        time.sleep(0.8)
-        self.paste_text(self.comment_text)
-        time.sleep(0.5)
-        self.human.key_press("Return")
-        time.sleep(3.0)
-        self.capture_evidence("after_comment")
-        self.log("SUCCESS", "Standalone comment submitted once; no retry attempted.")
-        return self.set_outcome("completed", None, first_comment="submitted_unverified")

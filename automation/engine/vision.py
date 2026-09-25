@@ -8,7 +8,9 @@ Implements the 3-Tier Hybrid Locator:
 
 import json
 import os
+import re
 import time
+from datetime import datetime, timezone
 import cv2
 import numpy as np
 from .container_client import ContainerClient
@@ -23,8 +25,21 @@ TEMPLATE_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "templates")
 )
 
+# Canonical normalized regions: (x1_norm, y1_norm, x2_norm, y2_norm)
+NORMALIZED_REGIONS = {
+    "bottom_action_bar": (0.00, 0.68, 1.00, 1.00),
+    "modal_header_alerts": (0.18, 0.03, 0.82, 0.30),
+    "reel_sidebar": (0.58, 0.10, 1.00, 1.00),
+    "profile_post_stream": (0.12, 0.20, 0.88, 1.00),
+    "composer_modal": (0.20, 0.15, 0.80, 0.85),
+    "feed_composer": (0.20, 0.10, 0.80, 0.55),
+}
+
 
 class VisionEngine:
+    NORMALIZED_REGIONS = NORMALIZED_REGIONS
+    CACHE_TTL_HOURS = 72
+    MAX_CONSECUTIVE_FAILURES = 3
     _ocr_readers: dict[tuple[str, ...], object] = {}
 
     def __init__(self, client: ContainerClient):
@@ -41,10 +56,18 @@ class VisionEngine:
 
     @classmethod
     def _get_ocr_reader(cls, languages: tuple[str, ...] = ("en",)):
-        """Lazily initialize one pretrained EasyOCR reader per language set."""
+        """Lazily initialize one pretrained EasyOCR reader per language set with 4-thread CPU tuning and warmup."""
         if languages in cls._ocr_readers:
             return cls._ocr_readers[languages]
         try:
+            import warnings
+            warnings.filterwarnings(
+                "ignore",
+                category=UserWarning,
+                message=r".*torch\.quantize_per_tensor.*deprecated.*",
+            )
+            import torch
+            torch.set_num_threads(4)
             import easyocr
 
             model_dir = os.path.abspath(
@@ -56,8 +79,11 @@ class VisionEngine:
                 gpu=False,
                 verbose=False,
                 model_storage_directory=model_dir,
-                download_enabled=True,
+                download_enabled=False,
             )
+            # Warm up detector and recognizer with a minimal dummy image to eliminate cold-start lag
+            dummy = np.zeros((64, 128, 3), dtype=np.uint8)
+            reader.readtext(dummy)
         except Exception as exc:
             print(f"Warning: EasyOCR is unavailable: {exc}")
             reader = None
@@ -65,15 +91,64 @@ class VisionEngine:
         return reader
 
     @staticmethod
-    def _crop_region(screen: np.ndarray, region: tuple[int, int, int, int] | None):
+    def get_pixel_region(
+        screen_shape: tuple[int, ...],
+        normalized_box: tuple[float, float, float, float] | str,
+    ) -> tuple[int, int, int, int]:
+        """
+        Convert normalized (x1_norm, y1_norm, x2_norm, y2_norm) into (x, y, width, height) pixels
+        based on the screen's actual dimensions (height, width).
+        """
+        if isinstance(normalized_box, str):
+            normalized_box = NORMALIZED_REGIONS.get(normalized_box.strip().lower(), (0.0, 0.0, 1.0, 1.0))
+        sh, sw = screen_shape[:2]
+        x1_norm, y1_norm, x2_norm, y2_norm = normalized_box
+        x1 = int(round(max(0.0, min(1.0, x1_norm)) * sw))
+        y1 = int(round(max(0.0, min(1.0, y1_norm)) * sh))
+        x2 = int(round(max(0.0, min(1.0, x2_norm)) * sw))
+        y2 = int(round(max(0.0, min(1.0, y2_norm)) * sh))
+        return (x1, y1, max(1, x2 - x1), max(1, y2 - y1))
+
+    @staticmethod
+    def expand_region(
+        screen_shape: tuple[int, ...],
+        pixel_region: tuple[int, int, int, int],
+        ratio: float = 0.20,
+    ) -> tuple[int, int, int, int]:
+        """Expand a pixel region by ratio (e.g. 20%) in all directions, clipped to screen boundaries."""
+        sh, sw = screen_shape[:2]
+        x, y, w, h = pixel_region
+        pad_x = int(w * ratio)
+        pad_y = int(h * ratio)
+        new_x = max(0, x - pad_x)
+        new_y = max(0, y - pad_y)
+        new_w = min(sw - new_x, w + (pad_x * 2))
+        new_h = min(sh - new_y, h + (pad_y * 2))
+        return (new_x, new_y, new_w, new_h)
+
+    @staticmethod
+    def _crop_region(
+        screen: np.ndarray,
+        region: tuple[int, int, int, int] | tuple[float, float, float, float] | str | None,
+    ):
         if region is None:
             return screen, 0, 0
+        if isinstance(region, str):
+            region = VisionEngine.get_pixel_region(screen.shape, region)
+        elif (
+            isinstance(region, (tuple, list))
+            and len(region) == 4
+            and all(isinstance(v, (float, int)) and 0.0 <= v <= 1.0 for v in region)
+            and any(isinstance(v, float) for v in region)
+        ):
+            region = VisionEngine.get_pixel_region(screen.shape, region)
+
         x, y, width, height = region
         sh, sw = screen.shape[:2]
-        x = max(0, min(sw, x))
-        y = max(0, min(sh, y))
-        width = max(0, min(sw - x, width))
-        height = max(0, min(sh - y, height))
+        x = max(0, min(sw, int(x)))
+        y = max(0, min(sh, int(y)))
+        width = max(0, min(sw - x, int(width)))
+        height = max(0, min(sh - y, int(height)))
         return screen[y : y + height, x : x + width], x, y
 
     def read_text(
@@ -152,6 +227,71 @@ class VisionEngine:
         candidates.sort(key=lambda item: (item["confidence"], item["center"][1]), reverse=True)
         return candidates[0]
 
+    def find_text_cascaded(
+        self,
+        labels: str | tuple[str, ...] | list[str],
+        region: str | tuple[float, float, float, float] | tuple[int, int, int, int] | None = None,
+        screen: np.ndarray | None = None,
+        min_confidence: float = 0.45,
+        prefer_lower_half: bool = False,
+        expand_ratio: float = 0.20,
+    ) -> dict | None:
+        """
+        Find an OCR label using a 3-tier cascade:
+          Tier 1: Target region search (localized crop, ~420ms on host).
+          Tier 2: Expanded region (+20-25%) search to catch slight layout shifts.
+          Tier 3: Measured full-screen fallback search.
+        """
+        screen = self.capture_screen() if screen is None else screen
+        if screen is None or screen.size == 0:
+            return None
+
+        if region is not None:
+            if isinstance(region, str):
+                pixel_region = self.get_pixel_region(screen.shape, region)
+            elif (
+                isinstance(region, (tuple, list))
+                and len(region) == 4
+                and all(isinstance(v, (float, int)) and 0.0 <= v <= 1.0 for v in region)
+                and any(isinstance(v, float) for v in region)
+            ):
+                pixel_region = self.get_pixel_region(screen.shape, region)
+            else:
+                pixel_region = region
+
+            # Tier 1: Search targeted region
+            match = self.find_text(
+                labels,
+                screen=screen,
+                region=pixel_region,
+                min_confidence=min_confidence,
+                prefer_lower_half=False,
+            )
+            if match:
+                return match
+
+            # Tier 2: Search expanded region
+            expanded = self.expand_region(screen.shape, pixel_region, ratio=expand_ratio)
+            if expanded != pixel_region:
+                match = self.find_text(
+                    labels,
+                    screen=screen,
+                    region=expanded,
+                    min_confidence=min_confidence,
+                    prefer_lower_half=False,
+                )
+                if match:
+                    return match
+
+        # Tier 3: Measured full-screen fallback
+        return self.find_text(
+            labels,
+            screen=screen,
+            region=None,
+            min_confidence=min_confidence,
+            prefer_lower_half=prefer_lower_half,
+        )
+
     @staticmethod
     def similarity(before: np.ndarray, after: np.ndarray) -> float:
         """Return structural screen similarity in the range 0..1."""
@@ -175,13 +315,111 @@ class VisionEngine:
         return {}
 
     def _save_cache(self) -> None:
-        """Persist element position cache."""
+        """Persist element position cache atomically."""
         os.makedirs(self.cache_dir, exist_ok=True)
+        tmp_file = f"{self.cache_file}.tmp"
         try:
-            with open(self.cache_file, "w") as f:
+            with open(tmp_file, "w") as f:
                 json.dump(self._cache, f, indent=2)
+            os.replace(tmp_file, self.cache_file)
         except Exception as e:
             print(f"Warning: Failed to save element cache: {e}")
+            if os.path.exists(tmp_file):
+                try:
+                    os.remove(tmp_file)
+                except OSError:
+                    pass
+
+    def get_cached_hint(
+        self,
+        label: str,
+        screen_shape: tuple[int, ...],
+    ) -> tuple[int, int] | None:
+        """
+        Retrieve cached coordinate hint if valid (not expired by TTL and < MAX_CONSECUTIVE_FAILURES).
+        Supports both new normalized metadata format and legacy [x, y] format.
+        """
+        if label not in self._cache:
+            return None
+
+        entry = self._cache[label]
+
+        # Handle legacy format: [x, y]
+        if isinstance(entry, (list, tuple)) and len(entry) == 2:
+            return (int(entry[0]), int(entry[1]))
+
+        if not isinstance(entry, dict):
+            return None
+
+        # Check consecutive failures
+        if entry.get("failure_count", 0) >= self.MAX_CONSECUTIVE_FAILURES:
+            del self._cache[label]
+            self._save_cache()
+            return None
+
+        # Check TTL
+        last_verified = entry.get("last_verified_at")
+        if last_verified:
+            try:
+                verified_dt = datetime.fromisoformat(last_verified)
+                if verified_dt.tzinfo is None:
+                    verified_dt = verified_dt.replace(tzinfo=timezone.utc)
+                now_dt = datetime.now(timezone.utc)
+                age_hours = (now_dt - verified_dt).total_seconds() / 3600.0
+                if age_hours > self.CACHE_TTL_HOURS:
+                    del self._cache[label]
+                    self._save_cache()
+                    return None
+            except Exception:
+                pass
+
+        norm = entry.get("normalized_center")
+        if norm and len(norm) == 2:
+            sh, sw = screen_shape[:2]
+            cx = int(round(norm[0] * sw))
+            cy = int(round(norm[1] * sh))
+            return (cx, cy)
+
+        return None
+
+    def record_cache_hit(
+        self,
+        label: str,
+        pos: tuple[int, int],
+        screen_shape: tuple[int, ...],
+    ) -> None:
+        """Record a verified element localization into persistent cache."""
+        sh, sw = screen_shape[:2]
+        norm_x = round(pos[0] / max(1, sw), 4)
+        norm_y = round(pos[1] / max(1, sh), 4)
+
+        entry = self._cache.get(label)
+        success_count = 1
+        if isinstance(entry, dict):
+            success_count = entry.get("success_count", 0) + 1
+
+        self._cache[label] = {
+            "normalized_center": [norm_x, norm_y],
+            "screen_size": [sw, sh],
+            "last_verified_at": datetime.now(timezone.utc).isoformat(),
+            "success_count": success_count,
+            "failure_count": 0,
+        }
+        self._save_cache()
+
+    def record_cache_miss(self, label: str) -> None:
+        """Record a verification miss; auto-invalidates after MAX_CONSECUTIVE_FAILURES."""
+        if label not in self._cache:
+            return
+        entry = self._cache[label]
+        if isinstance(entry, dict):
+            failures = entry.get("failure_count", 0) + 1
+            entry["failure_count"] = failures
+            if failures >= self.MAX_CONSECUTIVE_FAILURES:
+                del self._cache[label]
+        else:
+            del self._cache[label]
+        self._save_cache()
 
     def find_template(
         self,
@@ -250,23 +488,29 @@ class VisionEngine:
         3. Cache verified coordinates
         """
         screen = self.client.screenshot()
+        if screen is None or screen.size == 0:
+            return None
 
         # Tier 1: Check cache
-        if use_cache and label in self._cache:
-            cached_pos = self._cache[label]
-            # Quick crop validation: ensure element is still near cached location
-            matched = self.find_template(screen, label, threshold=threshold)
-            if matched:
-                # If template matches within 30px of cached position, use it
-                dist = np.hypot(matched[0] - cached_pos[0], matched[1] - cached_pos[1])
-                if dist < 40:
-                    return cached_pos
+        if use_cache:
+            cached_pos = self.get_cached_hint(label, screen.shape)
+            if cached_pos:
+                # Quick crop validation: ensure element is still near cached location
+                matched = self.find_template(screen, label, threshold=threshold)
+                if matched:
+                    dist = np.hypot(matched[0] - cached_pos[0], matched[1] - cached_pos[1])
+                    if dist < 40:
+                        self.record_cache_hit(label, cached_pos, screen.shape)
+                        return cached_pos
+                    else:
+                        self.record_cache_miss(label)
+                else:
+                    self.record_cache_miss(label)
 
         # Tier 2: Template match
         pos = self.find_template(screen, label, threshold=threshold)
         if pos:
-            self._cache[label] = list(pos)
-            self._save_cache()
+            self.record_cache_hit(label, pos, screen.shape)
             return pos
 
         return None
@@ -275,6 +519,7 @@ class VisionEngine:
         self,
         threshold: float = 0.72,
         screen: np.ndarray | None = None,
+        region: tuple[int, int, int, int] | str | None = None,
     ) -> tuple[int, int] | None:
         """
         Locate Facebook's 'Photo/video' button with multi-tier detection:
@@ -283,24 +528,35 @@ class VisionEngine:
         3. Signature HSV color segmentation for Facebook's #45BD62 photo icon
         """
         screen = self.capture_screen() if screen is None else screen
+        if screen is None or screen.size == 0:
+            return None
 
-        # Tier 1: Cache check
-        if "photo_video_btn" in self._cache:
-            cached_pos = self._cache["photo_video_btn"]
-            matched = self.find_template(screen, "photo_icon", threshold=0.70)
-            if matched and np.hypot(matched[0] - cached_pos[0], matched[1] - cached_pos[1]) < 60:
-                return cached_pos
+        crop, offset_x, offset_y = self._crop_region(screen, region)
+        if crop.size == 0:
+            return None
+
+        # Tier 1: Cache check (only for full-screen queries without custom region)
+        if region is None:
+            cached_pos = self.get_cached_hint("photo_video_btn", screen.shape)
+            if cached_pos:
+                matched = self.find_template(screen, "photo_icon", threshold=0.70)
+                if matched and np.hypot(matched[0] - cached_pos[0], matched[1] - cached_pos[1]) < 60:
+                    self.record_cache_hit("photo_video_btn", cached_pos, screen.shape)
+                    return cached_pos
+                else:
+                    self.record_cache_miss("photo_video_btn")
 
         # Tier 2: Template match full button or icon
         for tpl in ("photo_video_btn", "photo_icon", "modal_photo_icon"):
-            pos = self.find_template(screen, tpl, threshold=threshold)
+            pos = self.find_template(crop, tpl, threshold=threshold)
             if pos:
-                self._cache["photo_video_btn"] = list(pos)
-                self._save_cache()
-                return pos
+                full_pos = (pos[0] + offset_x, pos[1] + offset_y)
+                if region is None:
+                    self.record_cache_hit("photo_video_btn", full_pos, screen.shape)
+                return full_pos
 
         # Tier 3: HSV color segmentation for signature green icon (#45BD62)
-        hsv = cv2.cvtColor(screen, cv2.COLOR_BGR2HSV)
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
         lower_green = np.array([65, 120, 120])
         upper_green = np.array([85, 255, 255])
         mask = cv2.inRange(hsv, lower_green, upper_green)
@@ -312,46 +568,109 @@ class VisionEngine:
             area = cv2.contourArea(cnt)
             # Facebook photo camera icon is ~18x18 to 28x28
             if 80 < area < 1000 and 0.6 < (w / h) < 1.6:
-                candidates.append((x + w // 2, y + h // 2, area))
+                candidates.append((x + w // 2 + offset_x, y + h // 2 + offset_y, area))
 
         if candidates:
             # Sort by area/prominence
             candidates.sort(key=lambda c: c[2], reverse=True)
             best_pos = (candidates[0][0], candidates[0][1])
-            self._cache["photo_video_btn"] = list(best_pos)
-            self._save_cache()
+            if region is None:
+                self.record_cache_hit("photo_video_btn", best_pos, screen.shape)
             return best_pos
 
         return None
 
-    def find_blue_action_button(
+    def find_comment_input(
         self,
         screen: np.ndarray | None = None,
-        region: tuple[int, int, int, int] | None = None,
     ) -> tuple[int, int] | None:
         """
-        Locate Facebook's primary blue CTA button in modals (e.g. 'Next' or 'Post').
-        Uses signature Facebook primary blue (#0866FF) HSV color segmentation.
+        Locate the Facebook 'Comment as ...' or 'Write a comment...' input field.
+        Scans native-resolution regions (preventing downscale blur on grey placeholder text).
+        Returns clickable coordinates inside the input pill, or None.
+        """
+        screen = self.capture_screen() if screen is None else screen
+        if screen is None or screen.size == 0:
+            return None
+
+        h, w = screen.shape[:2]
+
+        candidate_regions = [
+            # 1. Active modal bottom area (e.g. permalink overlay / post view)
+            (max(0, int(w * 0.25)), int(h * 0.40), min(w, int(w * 0.55)), int(h * 0.60)),
+            # 2. Main feed post stream column (e.g. profile page or newsfeed)
+            (max(0, int(w * 0.28)), 0, min(w - int(w * 0.28), 1050), h),
+            # 3. Full-screen fallback
+            None,
+        ]
+
+        for region in candidate_regions:
+            ocr_items = self.read_text(screen, region=region, min_confidence=0.15)
+            matches = []
+            for item in ocr_items:
+                raw_text = item["text"].casefold().strip()
+                normalized = re.sub(r"[^a-z0-9]+", " ", raw_text).strip()
+                words = set(normalized.split())
+
+                if "comment as" in raw_text or raw_text.startswith("comment as") or {"comment", "as"}.issubset(words):
+                    matches.append((item, 10))
+                elif any(phrase in raw_text for phrase in ("write a comment", "write a public comment")):
+                    matches.append((item, 8))
+
+            if matches:
+                matches.sort(key=lambda m: (m[1], m[0]["confidence"]), reverse=True)
+                best_item = matches[0][0]
+                bx1, by1, bx2, by2 = best_item["bounds"]
+                click_x = min(w - 20, bx1 + 60)
+                click_y = (by1 + by2) // 2
+                return (click_x, click_y)
+
+        return None
+
+    def find_blue_action_buttons(
+        self,
+        screen: np.ndarray | None = None,
+        region: tuple[int, int, int, int] | tuple[float, float, float, float] | str | None = None,
+    ) -> list[dict]:
+        """
+        Locate enabled Facebook-blue CTA rectangles.
+
+        Returning the detected bounds lets callers OCR only pixels belonging to
+        the button instead of using a fixed-width crop that can include feed text.
         """
         screen = self.capture_screen() if screen is None else screen
         if screen is None:
-            return None
+            return []
         crop, offset_x, offset_y = self._crop_region(screen, region)
+        if crop.size == 0:
+            return []
         hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
         lower_blue = np.array([100, 150, 150])
         upper_blue = np.array([130, 255, 255])
         mask = cv2.inRange(hsv, lower_blue, upper_blue)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        candidates = []
+        candidates: list[dict] = []
         for c in contours:
             x, y, w, h = cv2.boundingRect(c)
             if w > 80 and 20 < h < 60:
-                candidates.append((x + w // 2 + offset_x, y + h // 2 + offset_y, y + offset_y))
-        if candidates:
-            # Sort by Y position descending to get bottom-most modal CTA
-            candidates.sort(key=lambda item: item[2], reverse=True)
-            return (candidates[0][0], candidates[0][1])
-        return None
+                x1 = x + offset_x
+                y1 = y + offset_y
+                candidates.append({
+                    "center": (x1 + w // 2, y1 + h // 2),
+                    "bounds": (x1, y1, x1 + w, y1 + h),
+                    "area": int(w * h),
+                })
+        candidates.sort(key=lambda item: (item["center"][1], item["area"]), reverse=True)
+        return candidates
+
+    def find_blue_action_button(
+        self,
+        screen: np.ndarray | None = None,
+        region: tuple[int, int, int, int] | tuple[float, float, float, float] | str | None = None,
+    ) -> tuple[int, int] | None:
+        """Return the center of the bottom-most enabled Facebook-blue CTA."""
+        candidates = self.find_blue_action_buttons(screen=screen, region=region)
+        return candidates[0]["center"] if candidates else None
 
     def find_stable(
         self,
@@ -388,4 +707,57 @@ class VisionEngine:
             if pos:
                 return pos
             time.sleep(poll_interval)
+        return None
+
+    def find_leave_site_button(
+        self,
+        screen: np.ndarray | None = None,
+    ) -> tuple[int, int] | None:
+        """
+        Detect Chrome's native 'Leave site?' / 'Changes you made may not be saved'
+        beforeunload modal prompt and return the center (x, y) coordinates of the 'Leave' button.
+        """
+        import re
+        screen = self.capture_screen() if screen is None else screen
+        if screen is None or screen.size == 0:
+            return None
+
+        for search_region in ("modal_header_alerts", None):
+            items = self.read_text(screen, region=search_region, min_confidence=0.30)
+            if not items:
+                continue
+
+            has_leave_prompt = False
+            leave_candidate = None
+
+            for item in items:
+                norm_text = re.sub(r"[^a-z0-9 ]+", " ", item["text"].strip().lower()).strip()
+                if (
+                    "leave site" in norm_text
+                    or "changes you made" in norm_text
+                    or "may not be saved" in norm_text
+                ):
+                    has_leave_prompt = True
+                if norm_text == "leave" or norm_text.endswith(" leave"):
+                    leave_candidate = item
+
+            # If both "Cancel" and "Leave" exist in the alert area, it is the beforeunload prompt
+            has_cancel = any("cancel" in re.sub(r"[^a-z0-9 ]+", " ", item["text"].strip().lower()).split() for item in items)
+            if has_cancel and leave_candidate:
+                has_leave_prompt = True
+
+            if has_leave_prompt and leave_candidate:
+                return leave_candidate["center"]
+
+            # If prompt was recognized, check for blue action button within that region
+            if has_leave_prompt:
+                blue = self.find_blue_action_button(screen=screen, region=search_region)
+                if blue:
+                    return blue
+                if leave_candidate:
+                    return leave_candidate["center"]
+
+            if has_leave_prompt:
+                break
+
         return None
