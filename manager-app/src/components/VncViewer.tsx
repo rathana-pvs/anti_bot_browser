@@ -41,6 +41,8 @@ export const VncViewer: React.FC<VncViewerProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const rfbRef = useRef<RFB | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('disconnected');
+  const [reconnectTrigger, setReconnectTrigger] = useState(0);
+  const [retryCount, setRetryCount] = useState(0);
 
   // Clipboard synchronization state
   const [isClipboardOpen, setIsClipboardOpen] = useState(false);
@@ -95,48 +97,99 @@ export const VncViewer: React.FC<VncViewerProps> = ({
   const wsPort = profile?.container.ws_port || (profile ? profile.container.vnc_port + 180 : 6081);
 
   useEffect(() => {
+    let isCancelled = false;
+    let retryTimer: any = null;
+    let attempt = 0;
+    const MAX_RETRIES = 20;
+
     if (!profile || profile.status === 'stopped' || !containerRef.current) {
       if (rfbRef.current) {
-        rfbRef.current.disconnect();
+        try {
+          rfbRef.current.disconnect();
+        } catch (_) {}
         rfbRef.current = null;
       }
+      if (containerRef.current) {
+        containerRef.current.innerHTML = '';
+      }
       setConnectionStatus('disconnected');
+      setRetryCount(0);
       return;
     }
 
-    setConnectionStatus('connecting');
+    const connect = () => {
+      if (isCancelled || !containerRef.current) return;
 
-    const wsUrl = `ws://${window.location.hostname}:${wsPort}`;
-    console.log(`Connecting noVNC to ${wsUrl}...`);
+      if (rfbRef.current) {
+        try {
+          rfbRef.current.disconnect();
+        } catch (_) {}
+        rfbRef.current = null;
+      }
 
-    try {
-      const rfb = new RFB(containerRef.current, wsUrl, {
-        wsProtocols: ['binary'],
-      });
+      if (containerRef.current) {
+        containerRef.current.innerHTML = '';
+      }
 
-      rfb.scaleViewport = true;
-      rfb.resizeSession = false;
+      setConnectionStatus('connecting');
 
-      rfb.addEventListener('connect', () => {
-        console.log('noVNC connected');
-        setConnectionStatus('connected');
-      });
+      const wsUrl = `ws://${window.location.hostname}:${wsPort}`;
+      console.log(`Connecting noVNC to ${wsUrl} (attempt ${attempt + 1})...`);
 
-      rfb.addEventListener('disconnect', (e: any) => {
-        console.log('noVNC disconnected:', e.detail);
-        setConnectionStatus('disconnected');
-      });
+      try {
+        const rfb = new RFB(containerRef.current, wsUrl, {
+          wsProtocols: ['binary'],
+        });
 
-      rfb.addEventListener('securityfailure', (e: any) => {
-        console.error('noVNC security failure:', e.detail);
-        setConnectionStatus('disconnected');
-      });
+        rfb.scaleViewport = true;
+        rfb.resizeSession = false;
 
-      rfbRef.current = rfb;
-    } catch (err) {
-      console.error('Failed to initialize RFB:', err);
-      setConnectionStatus('disconnected');
-    }
+        rfb.addEventListener('connect', () => {
+          if (isCancelled) return;
+          console.log('noVNC connected');
+          attempt = 0;
+          setRetryCount(0);
+          setConnectionStatus('connected');
+        });
+
+        rfb.addEventListener('disconnect', (e: any) => {
+          if (isCancelled) return;
+          console.log('noVNC disconnected:', e.detail);
+          rfbRef.current = null;
+
+          // If container is still marked running, retry connecting since websockify/x11vnc might still be initializing
+          if (profile.status === 'running' && attempt < MAX_RETRIES) {
+            attempt++;
+            setRetryCount(attempt);
+            setConnectionStatus('connecting');
+            const delay = Math.min(1500, 600 + attempt * 150);
+            retryTimer = setTimeout(connect, delay);
+          } else {
+            setConnectionStatus('disconnected');
+          }
+        });
+
+        rfb.addEventListener('securityfailure', (e: any) => {
+          if (isCancelled) return;
+          console.error('noVNC security failure:', e.detail);
+          setConnectionStatus('disconnected');
+        });
+
+        rfbRef.current = rfb;
+      } catch (err) {
+        console.error('Failed to initialize RFB:', err);
+        if (profile.status === 'running' && attempt < MAX_RETRIES) {
+          attempt++;
+          setRetryCount(attempt);
+          const delay = Math.min(1500, 600 + attempt * 150);
+          retryTimer = setTimeout(connect, delay);
+        } else {
+          setConnectionStatus('disconnected');
+        }
+      }
+    };
+
+    connect();
 
     const handleContextMenu = (e: MouseEvent) => {
       e.preventDefault();
@@ -148,22 +201,29 @@ export const VncViewer: React.FC<VncViewerProps> = ({
     }
 
     return () => {
+      isCancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
       if (containerEl) {
         containerEl.removeEventListener('contextmenu', handleContextMenu);
       }
       if (rfbRef.current) {
-        rfbRef.current.disconnect();
+        try {
+          rfbRef.current.disconnect();
+        } catch (_) {}
         rfbRef.current = null;
       }
     };
-  }, [profile?.id, profile?.status, wsPort]);
+  }, [profile?.id, profile?.status, wsPort, reconnectTrigger]);
 
   const handleReconnect = () => {
     if (rfbRef.current) {
-      rfbRef.current.disconnect();
+      try {
+        rfbRef.current.disconnect();
+      } catch (_) {}
+      rfbRef.current = null;
     }
-    // Re-trigger by toggling connecting status
-    setConnectionStatus('connecting');
+    setRetryCount(0);
+    setReconnectTrigger((prev) => prev + 1);
   };
 
   const handleFullscreen = () => {
@@ -542,9 +602,31 @@ export const VncViewer: React.FC<VncViewerProps> = ({
         )}
 
         {profile.status === 'running' && connectionStatus === 'connecting' && (
-          <div className="absolute inset-0 bg-zinc-950/80 flex flex-col items-center justify-center z-10">
-            <RotateCcw className="w-6 h-6 text-zinc-400 animate-spin mb-2" />
-            <p className="text-xs text-zinc-400">Connecting to noVNC WebSocket (port {wsPort})...</p>
+          <div className="absolute inset-0 bg-zinc-950/80 backdrop-blur-[1px] flex flex-col items-center justify-center z-10">
+            <RotateCcw className="w-6 h-6 text-emerald-400 animate-spin mb-2" />
+            <p className="text-xs text-zinc-300 font-medium">Connecting to browser display...</p>
+            <p className="text-[11px] text-zinc-500 mt-1 font-mono">
+              Port {wsPort} {retryCount > 0 ? `· Initializing display service (attempt ${retryCount + 1})...` : '· Connecting WebSocket...'}
+            </p>
+          </div>
+        )}
+
+        {profile.status === 'running' && connectionStatus === 'disconnected' && (
+          <div className="absolute inset-0 bg-zinc-950/85 flex flex-col items-center justify-center p-6 text-center z-10">
+            <div className="w-12 h-12 rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center mb-3">
+              <RotateCcw className="w-5 h-5 text-amber-400" />
+            </div>
+            <h3 className="text-sm font-medium text-zinc-200">Display Disconnected</h3>
+            <p className="text-xs text-zinc-400 max-w-sm mt-1 mb-4">
+              WebSocket connection on port {wsPort} was closed or not ready yet.
+            </p>
+            <button
+              onClick={handleReconnect}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-semibold text-xs border border-zinc-700 transition-colors"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Reconnect Display</span>
+            </button>
           </div>
         )}
 
