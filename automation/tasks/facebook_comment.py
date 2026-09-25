@@ -32,11 +32,17 @@ class FacebookCommentTask(FacebookPostTask):
             )
 
         comment_status = self.post_first_comment(self.comment_text, post_url=self.post_url)
-        if comment_status == "submitted_unverified":
-            self.log("SUCCESS", "Standalone comment submitted once; no retry attempted.")
-            return self.set_outcome("completed", None, first_comment="submitted_unverified")
-        else:
-            return self._fail(
-                "comment_input_not_found",
-                "The 'Comment as ...' field could not be visually confirmed.",
+        if comment_status in {"submitted_verified", "submitted_unverified"}:
+            self.log("SUCCESS", f"Standalone comment result: {comment_status}; no retry attempted.")
+            return self.set_outcome("completed", None, first_comment=comment_status)
+        if comment_status == "submission_pending":
+            return self.set_outcome(
+                "uncertain",
+                "comment_submission_pending",
+                first_comment=comment_status,
+                message="The comment was submitted once but Facebook did not reach a settled visual state.",
             )
+        return self._fail(
+            "comment_input_not_found",
+            "The 'Comment as ...' field could not be visually confirmed.",
+        )

@@ -160,6 +160,8 @@ class LoginGateTests(unittest.TestCase):
     def make_task(self, observations):
         task = BaseTask.__new__(BaseTask)
         task.client = Mock()
+        task.vision = Mock()
+        task.vision.detect_theme.return_value = ("dark", 0.91)
         task.client.navigate_to = Mock()
         task.client.exec_cmd.return_value = Mock(returncode=0, stdout="Facebook")
         task.client.screenshot.return_value = np.zeros((100, 100, 3), dtype=np.uint8)
@@ -179,6 +181,7 @@ class LoginGateTests(unittest.TestCase):
         with unittest.mock.patch("tasks.base_task.time.sleep", return_value=None):
             self.assertTrue(task.verify_logged_in())
         self.assertEqual(task.recognizer.observe.call_count, 2)
+        task.vision.detect_theme.assert_called_once()
 
     def test_actual_login_screen_is_rejected(self):
         task = self.make_task([StateObservation(ScreenState.LOGIN_REQUIRED, 0.98, ["log in"])])
@@ -256,30 +259,75 @@ class FileChooserTests(unittest.TestCase):
 
 
 class CaptionTargetTests(unittest.TestCase):
-    def make_task(self, detected_text):
+    def make_task(self, detected_text, include_modal_title=True):
         task = FacebookPostTask.__new__(FacebookPostTask)
         task.client = Mock()
         task.vision = Mock()
+        task.record_locator_telemetry = Mock()
         task.client.screenshot.return_value = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task.vision.find_blue_action_button.return_value = (952, 840)
-        task.vision.read_text.return_value = [
+        task.vision.get_pixel_region.return_value = (384, 162, 1152, 756)
+        detected = [
             {"text": "AI label off", "center": (919, 400)},
-            {"text": detected_text, "center": (787, 437)},
+            {"text": detected_text, "center": (787, 517), "confidence": 0.92},
         ]
+        if include_modal_title:
+            detected.insert(0, {"text": "Create post", "center": (952, 399), "confidence": 0.99})
+        task.vision.read_text.return_value = detected
         task.vision.find_stable.side_effect = lambda locator, **_: locator()
         return task
 
     def test_caption_target_tolerates_apostrophe_ocr_noise(self):
         task = self.make_task("What'$ on your mind,")
 
-        self.assertEqual(task._stable_caption_target(), (787, 437))
+        self.assertEqual(task._stable_caption_target(), (787, 517))
         region = task.vision.read_text.call_args.kwargs["region"]
         self.assertTrue(region[0] <= 787 <= region[0] + region[2])
-        self.assertTrue(region[1] <= 437 <= region[1] + region[3])
+        self.assertTrue(region[1] <= 517 <= region[1] + region[3])
 
     def test_caption_target_accepts_whats_as_one_ocr_token(self):
         task = self.make_task("Whats on your mind, name?")
-        self.assertEqual(task._stable_caption_target(), (787, 437))
+        self.assertEqual(task._stable_caption_target(), (787, 517))
+
+    def test_caption_target_accepts_dark_mode_easyocr_substitution(self):
+        task = self.make_task("Whal 5 on your mind?")
+
+        self.assertEqual(task._stable_caption_target(), (787, 517))
+
+    def test_caption_target_works_while_next_button_is_disabled(self):
+        task = self.make_task("What's on your mind?")
+
+        self.assertEqual(task._stable_caption_target(), (787, 517))
+        task.vision.find_blue_action_button.assert_not_called()
+
+    def test_caption_target_rejects_feed_prompt_without_modal_title(self):
+        task = self.make_task("What's on your mind?", include_modal_title=False)
+
+        self.assertIsNone(task._stable_caption_target())
+
+
+class FeedComposerTargetTests(unittest.TestCase):
+    def make_task(self, detected_text):
+        task = FacebookPostTask.__new__(FacebookPostTask)
+        task.client = Mock()
+        task.vision = Mock()
+        task.record_locator_telemetry = Mock()
+        task.client.screenshot.return_value = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task.vision.get_pixel_region.return_value = (230, 216, 1460, 864)
+        task.vision.read_text.return_value = [
+            {"text": detected_text, "center": (1202, 476), "confidence": 0.6983},
+        ]
+        task.vision.find_stable.side_effect = lambda locator, **_: locator()
+        return task
+
+    def test_feed_composer_accepts_observed_dark_mode_ocr_text(self):
+        task = self.make_task("Whal 5 on your mind?")
+
+        self.assertEqual(task._stable_feed_composer_target(), (1202, 476))
+
+    def test_feed_composer_rejects_partial_phrase(self):
+        task = self.make_task("Share something on your page")
+
+        self.assertIsNone(task._stable_feed_composer_target())
 
 
 class ActionTargetTests(unittest.TestCase):
@@ -511,6 +559,36 @@ class FirstCommentTargetTests(unittest.TestCase):
         self.assertEqual(result, "submission_pending")
         task.human.click.assert_called_once_with(90, 75)
 
+    def test_post_first_comment_visibly_verifies_submitted_text(self):
+        task = FacebookReelTask.__new__(FacebookReelTask)
+        task.log = Mock()
+        task.log_decision = Mock()
+        task.capture_evidence = Mock()
+        task.human = Mock()
+        task.client = Mock()
+        task.client.screenshot.return_value = np.zeros((100, 100, 3), dtype=np.uint8)
+        task.vision = Mock()
+        task.vision.read_text.return_value = [
+            {"text": "Canary comment test September 25 2026", "confidence": 0.95, "center": (60, 60)},
+            {"text": "Comment as Fat Frog", "confidence": 0.95, "center": (60, 95)},
+        ]
+        task.paste_text = Mock()
+        task._open_profile_first_comment_input = Mock(
+            return_value=((90, 75), np.zeros((100, 100, 3)))
+        )
+
+        with unittest.mock.patch("time.sleep", return_value=None), \
+             unittest.mock.patch("tasks.base_task.random.uniform", return_value=1.0):
+            result = task.post_first_comment("Canary comment test — September 25, 2026")
+
+        self.assertEqual(result, "submitted_verified")
+        task.capture_evidence.assert_any_call(
+            "after_first_comment",
+            task.client.screenshot.return_value,
+            comment_status="submitted_verified",
+            comment_match_confidence=1.0,
+        )
+
     def test_vision_find_comment_input_locates_pill(self):
         vision = VisionEngine(Mock(profile_id="test"))
         vision.read_text = Mock(return_value=[
@@ -521,6 +599,26 @@ class FirstCommentTargetTests(unittest.TestCase):
         self.assertIsNotNone(target)
         self.assertEqual(target, (660, 960))
 
+    def test_vision_comment_input_prefers_first_post_over_higher_confidence(self):
+        vision = VisionEngine(Mock(profile_id="test"))
+        vision.read_text = Mock(return_value=[
+            {"text": "Comment as Page", "bounds": (1100, 850, 1300, 890), "center": (1200, 870), "confidence": 0.99},
+            {"text": "Comment as Page", "bounds": (1100, 410, 1300, 450), "center": (1200, 430), "confidence": 0.70},
+        ])
+        screen = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        self.assertEqual(vision.find_comment_input(screen), (1160, 430))
+
+    def test_comment_action_prefers_first_post(self):
+        task = FacebookPostTask.__new__(FacebookPostTask)
+        task.vision = Mock()
+        task.vision.read_text.return_value = [
+            {"text": "Comment", "center": (1130, 820), "confidence": 0.99},
+            {"text": "Comment", "center": (1130, 390), "confidence": 0.75},
+            {"text": "2 comments", "center": (1400, 350), "confidence": 0.98},
+        ]
+        screen = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        self.assertEqual(task._find_first_comment_action(screen)["center"], (1130, 390))
+
     def test_standalone_comment_task_flow(self):
         from tasks.facebook_comment import FacebookCommentTask
         task = FacebookCommentTask.__new__(FacebookCommentTask)
@@ -530,12 +628,15 @@ class FirstCommentTargetTests(unittest.TestCase):
         task.client = Mock()
         task.client.is_running.return_value = True
         task.verify_logged_in = Mock(return_value=True)
-        task.post_first_comment = Mock(return_value="submitted_unverified")
+        task.post_first_comment = Mock(return_value="submitted_verified")
         task.set_outcome = Mock(return_value=True)
         task.log = Mock()
 
         self.assertTrue(task.run())
         task.post_first_comment.assert_called_once_with("https://example.com", post_url=None)
+        task.set_outcome.assert_called_once_with(
+            "completed", None, first_comment="submitted_verified"
+        )
 
 
 if __name__ == "__main__":

@@ -20,17 +20,19 @@ from tasks.facebook_warming import FacebookWarmingTask
 from tasks.facebook_post import FacebookPostTask
 from tasks.facebook_reel import FacebookReelTask
 from tasks.facebook_comment import FacebookCommentTask
+from tasks.facebook_preparation import FacebookPreparationTask
 
 
 def main():
     parser = argparse.ArgumentParser(description="Isolated Browser Automation Runner")
     parser.add_argument("--profile", required=True, help="Profile ID (e.g. profile_001)")
-    parser.add_argument("--task", required=True, choices=["warming", "post", "reel", "comment"], help="Task to execute")
+    parser.add_argument("--task", required=True, choices=["warming", "preparation", "post", "reel", "comment"], help="Task to execute")
     parser.add_argument("--caption", default="", help="Post caption (required for post/reel task)")
     parser.add_argument("--comment-link", default=None, help="Destination URL for first comment")
     parser.add_argument("--post-url", default=None, help="Target post URL for standalone comment task")
     parser.add_argument("--media", default=None, help="Path to media file")
     parser.add_argument("--scrolls", type=int, default=4, help="Scroll count for warming task")
+    parser.add_argument("--preparation-mode", choices=["brief", "extended"], default="brief")
 
     args = parser.parse_args()
 
@@ -43,7 +45,12 @@ def main():
     }
 
     try:
-        if args.task == "warming":
+        if args.task == "preparation":
+            task = FacebookPreparationTask(profile_id=args.profile, mode=args.preparation_mode)
+            success = task.run()
+            result["success"] = success
+            result["logs"] = task.logs
+        elif args.task == "warming":
             task = FacebookWarmingTask(profile_id=args.profile, scroll_count=args.scrolls)
             success = task.run()
             result["success"] = success
@@ -101,6 +108,13 @@ def main():
         extra = getattr(task, "result_extra", {})
         if isinstance(extra, dict):
             result.update(extra)
+        if "telemetry" not in result:
+            telemetry = getattr(task, "telemetry", None)
+            if telemetry is not None:
+                try:
+                    result["telemetry"] = telemetry.finalize(task_status)
+                except Exception as exc:
+                    task.log("WARN", f"Could not finalize runner telemetry: {exc}")
         result["post_url"] = result.get("post_url", None)
         result["post_url_verified_at"] = result.get("post_url_verified_at", None)
         result["post_match_confidence"] = result.get("post_match_confidence", None)
@@ -116,15 +130,26 @@ def main():
         task_stage = getattr(task, "current_stage", "unknown") if "task" in locals() else "unknown"
         result["current_stage"] = task_stage
         result["stage_history"] = getattr(task, "stage_history", []) if "task" in locals() else []
+        telemetry = getattr(task, "telemetry", None) if "task" in locals() else None
         # Invariant: If process failed after publish_clicked, status MUST be uncertain, never failed!
         if task_stage in ("publish_clicked", "verifying"):
             result["status"] = "uncertain"
             result["error"] = f"Fatal error after publish click: {e}"
+            if telemetry is not None:
+                try:
+                    result["telemetry"] = telemetry.finalize(result["status"])
+                except Exception:
+                    pass
             print(json.dumps(result), flush=True)
             sys.exit(2)
         else:
             result["status"] = "failed_before_publish"
             result["error"] = str(e)
+            if telemetry is not None:
+                try:
+                    result["telemetry"] = telemetry.finalize(result["status"])
+                except Exception:
+                    pass
             print(json.dumps(result), flush=True)
             sys.exit(1)
 

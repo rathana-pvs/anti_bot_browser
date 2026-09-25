@@ -3,7 +3,8 @@ import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { exec, execSync, spawn } from 'child_process';
+import { exec, execFile, execFileSync, execSync, spawn } from 'child_process';
+import { randomUUID } from 'crypto';
 import os from 'os';
 import multer from 'multer';
 import {
@@ -16,6 +17,36 @@ import {
   deleteProxy,
   testProxyPing,
 } from './proxyManager.js';
+import {
+  applyCommentEvidenceBackfill,
+  applyVerifiedPermalinkBackfill,
+  batchContainsUnresolvedExecution,
+  classifyInterruptedExecution,
+  isExecutionDeletionLocked,
+  validateFacebookPermalink,
+} from './queueSafety.js';
+import { buildQueueTelemetrySummary } from './telemetrySummary.js';
+import {
+  countBufferedPreparations,
+  orderedDueExecutions,
+  shuffledProfileOrder,
+} from './profilePipeline.js';
+import {
+  RESOURCE_MODE_LIMITS,
+  resolveResourceMode,
+  resourceAdmissionDecision,
+} from './resourceModes.js';
+import {
+  DEFAULT_SCHEDULER_CONFIG,
+  canAcquireSchedulerSlot,
+  claimExecutionLease,
+  computeExecutionSchedule,
+  findStaleRunningExecutions,
+  isLeaseActive,
+  refreshExecutionLease,
+  releaseExecutionLease,
+  schedulerSnapshot,
+} from './queueScheduler.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -25,9 +56,64 @@ const SCRIPTS_DIR = path.join(ROOT_DIR, 'scripts');
 const DATA_DIR = path.join(ROOT_DIR, 'data');
 const SHARED_MEDIA_DIR = path.join(PROFILES_DIR, 'shared_media');
 const QUEUE_FILE = path.join(DATA_DIR, 'posting_queue.json');
+const QUEUE_CLAIM_LOCK_FILE = path.join(DATA_DIR, 'posting_queue.claim.lock');
+const MANAGER_SETTINGS_FILE = path.join(DATA_DIR, 'manager_settings.json');
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(SHARED_MEDIA_DIR)) fs.mkdirSync(SHARED_MEDIA_DIR, { recursive: true });
+
+function positiveInteger(value, fallback, minimum = 1) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= minimum ? parsed : fallback;
+}
+
+const configuredLeaseTtlMs = positiveInteger(
+  process.env.AUTOMATION_LEASE_TTL_MS,
+  DEFAULT_SCHEDULER_CONFIG.lease_ttl_ms,
+  10_000,
+);
+const configuredHeartbeatMs = positiveInteger(
+  process.env.AUTOMATION_HEARTBEAT_INTERVAL_MS,
+  DEFAULT_SCHEDULER_CONFIG.heartbeat_interval_ms,
+  2_000,
+);
+function loadManagerSettings() {
+  try {
+    if (fs.existsSync(MANAGER_SETTINGS_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(MANAGER_SETTINGS_FILE, 'utf-8'));
+      if (['auto', 'low', 'medium', 'high'].includes(parsed.resource_mode)) return parsed;
+    }
+  } catch (error) {
+    console.error('Could not load manager settings:', error);
+  }
+  return { resource_mode: 'auto' };
+}
+
+function saveManagerSettings(settings) {
+  const tmpFile = `${MANAGER_SETTINGS_FILE}.tmp`;
+  fs.writeFileSync(tmpFile, JSON.stringify(settings, null, 2), 'utf-8');
+  fs.renameSync(tmpFile, MANAGER_SETTINGS_FILE);
+}
+
+const hostTotalMemoryGb = os.totalmem() / (1024 ** 3);
+let managerSettings = loadManagerSettings();
+let resourceModeResolution = resolveResourceMode(managerSettings.resource_mode, hostTotalMemoryGb, os.cpus().length);
+if (!resourceModeResolution.supported) {
+  managerSettings = { resource_mode: 'auto', updated_at: new Date().toISOString() };
+  resourceModeResolution = resolveResourceMode('auto', hostTotalMemoryGb, os.cpus().length);
+  saveManagerSettings(managerSettings);
+}
+
+function buildSchedulerConfig() {
+  return Object.freeze({
+    ...RESOURCE_MODE_LIMITS[resourceModeResolution.effective],
+    lease_ttl_ms: configuredLeaseTtlMs,
+    heartbeat_interval_ms: Math.min(configuredHeartbeatMs, Math.floor(configuredLeaseTtlMs / 2)),
+  });
+}
+
+let SCHEDULER_CONFIG = buildSchedulerConfig();
+const MANAGER_INSTANCE_ID = `manager_${process.pid}_${randomUUID()}`;
 
 const mediaStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, SHARED_MEDIA_DIR),
@@ -51,6 +137,7 @@ app.use('/shared_media', express.static(SHARED_MEDIA_DIR));
 // ==========================================
 let prevCpuTimes = null;
 let currentCpuPercent = 0;
+const recentCpuSamples = [];
 const cpuCores = os.cpus().length;
 const cpuModel = os.cpus()[0]?.model || '';
 
@@ -66,9 +153,16 @@ function sampleCpu() {
     const diffTotal = total - prevCpuTimes.total;
     if (diffTotal > 0) {
       currentCpuPercent = Math.min(100, Math.max(0, Math.round((1 - diffIdle / diffTotal) * 100)));
+      recentCpuSamples.push(currentCpuPercent);
+      if (recentCpuSamples.length > 15) recentCpuSamples.shift();
     }
   }
   prevCpuTimes = { idle, total };
+}
+
+function sustainedCpuPercent() {
+  if (!recentCpuSamples.length) return currentCpuPercent;
+  return recentCpuSamples.reduce((total, value) => total + value, 0) / recentCpuSamples.length;
 }
 
 let prevGpu = null;
@@ -128,6 +222,71 @@ function sampleGpu() {
 }
 
 let containerStatsCache = {};
+let profileDiskUsageCache = {};
+
+function sampleProfileDiskUsage() {
+  try {
+    if (!fs.existsSync(PROFILES_DIR)) return;
+    const entries = fs.readdirSync(PROFILES_DIR, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        const profileId = entry.name;
+        const profilePath = path.join(PROFILES_DIR, profileId);
+        if (!fs.existsSync(path.join(profilePath, 'config.json'))) continue;
+        try {
+          const out = execSync(`du -sk "${profilePath}"`, {
+            encoding: 'utf-8',
+            stdio: ['ignore', 'pipe', 'ignore'],
+            timeout: 4000,
+          }).trim();
+          const match = out.match(/^(\d+)/);
+          if (match) {
+            const kb = parseInt(match[1], 10);
+            let formatted;
+            if (kb >= 1024 * 1024) {
+              formatted = `${(kb / (1024 * 1024)).toFixed(1)} GiB`;
+            } else if (kb >= 1024) {
+              formatted = `${(kb / 1024).toFixed(1)} MiB`;
+            } else {
+              formatted = `${kb} KiB`;
+            }
+            profileDiskUsageCache[profileId] = formatted;
+          }
+        } catch (_) {}
+      }
+    }
+  } catch (_) {}
+}
+
+function getProfileDiskUsage(profileId) {
+  if (profileDiskUsageCache[profileId]) {
+    return profileDiskUsageCache[profileId];
+  }
+  const profilePath = path.join(PROFILES_DIR, profileId);
+  if (!fs.existsSync(profilePath)) return null;
+  try {
+    const out = execSync(`du -sk "${profilePath}"`, {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 3000,
+    }).trim();
+    const match = out.match(/^(\d+)/);
+    if (match) {
+      const kb = parseInt(match[1], 10);
+      let formatted;
+      if (kb >= 1024 * 1024) {
+        formatted = `${(kb / (1024 * 1024)).toFixed(1)} GiB`;
+      } else if (kb >= 1024) {
+        formatted = `${(kb / 1024).toFixed(1)} MiB`;
+      } else {
+        formatted = `${kb} KiB`;
+      }
+      profileDiskUsageCache[profileId] = formatted;
+      return formatted;
+    }
+  } catch (_) {}
+  return null;
+}
 
 function sampleContainerStats() {
   try {
@@ -163,6 +322,7 @@ function sampleContainerStats() {
 sampleCpu();
 sampleGpu();
 sampleContainerStats();
+sampleProfileDiskUsage();
 
 // Periodic background samplers
 setInterval(() => {
@@ -173,6 +333,10 @@ setInterval(() => {
 setInterval(() => {
   sampleContainerStats();
 }, 4000);
+
+setInterval(() => {
+  sampleProfileDiskUsage();
+}, 10000);
 
 // Helper: Query docker container status
 function getContainerStatus(profileId) {
@@ -191,6 +355,155 @@ function getContainerStatus(profileId) {
     return 'stopped';
   }
 }
+
+function countRunningProfileContainers() {
+  try {
+    const output = execSync(
+      'docker ps --filter "name=^/isolated_" --format "{{.Names}}"',
+      { encoding: 'utf-8' },
+    ).trim();
+    return output ? output.split('\n').filter(Boolean).length : 0;
+  } catch (_) {
+    return 0;
+  }
+}
+
+let memoryAdmissionPaused = false;
+let lastQueueContainerStartAt = 0;
+const CONTAINER_START_SPACING_MS = 10_000;
+
+function resourceModeSnapshot() {
+  const totalMemoryBytes = os.totalmem();
+  const usedMemoryBytes = totalMemoryBytes - os.freemem();
+  const memoryUsedPercent = totalMemoryBytes > 0 ? (usedMemoryBytes / totalMemoryBytes) * 100 : 0;
+  const cpuPercent = sustainedCpuPercent();
+  const admission = resourceAdmissionDecision({
+    memoryUsedPercent,
+    cpuPercent,
+    pausedForMemory: memoryAdmissionPaused,
+    millisecondsSinceLastStart: Date.now() - lastQueueContainerStartAt,
+    startSpacingMs: CONTAINER_START_SPACING_MS,
+  });
+  return {
+    selected_mode: resourceModeResolution.selected,
+    effective_mode: resourceModeResolution.effective,
+    recommended_mode: resourceModeResolution.recommended,
+    limits: { ...SCHEDULER_CONFIG },
+    hardware: {
+      total_memory_gb: Math.round(hostTotalMemoryGb * 10) / 10,
+      cpu_threads: cpuCores,
+      cpu_model: cpuModel,
+    },
+    supported_modes: {
+      low: resolveResourceMode('low', hostTotalMemoryGb, cpuCores).supported,
+      medium: resolveResourceMode('medium', hostTotalMemoryGb, cpuCores).supported,
+      high: resolveResourceMode('high', hostTotalMemoryGb, cpuCores).supported,
+    },
+    runtime: {
+      memory_used_percent: Math.round(memoryUsedPercent * 10) / 10,
+      sustained_cpu_percent: Math.round(cpuPercent * 10) / 10,
+      active_profile_containers: countRunningProfileContainers(),
+      admission_allowed: admission.allowed,
+      admission_reason: admission.reason,
+      memory_paused: memoryAdmissionPaused,
+    },
+  };
+}
+
+function claimContainerStartAdmission() {
+  const totalMemoryBytes = os.totalmem();
+  const memoryUsedPercent = totalMemoryBytes > 0
+    ? ((totalMemoryBytes - os.freemem()) / totalMemoryBytes) * 100
+    : 0;
+  const decision = resourceAdmissionDecision({
+    memoryUsedPercent,
+    cpuPercent: sustainedCpuPercent(),
+    pausedForMemory: memoryAdmissionPaused,
+    millisecondsSinceLastStart: Date.now() - lastQueueContainerStartAt,
+    startSpacingMs: CONTAINER_START_SPACING_MS,
+  });
+  memoryAdmissionPaused = decision.memoryPaused;
+  if (decision.allowed) lastQueueContainerStartAt = Date.now();
+  return decision;
+}
+
+function runProfileLifecycleAction(profileId, action, timeoutMs = 90_000) {
+  const scriptPath = path.join(SCRIPTS_DIR, 'run_profile.sh');
+  return new Promise((resolve, reject) => {
+    execFile('bash', [scriptPath, profileId, action], { cwd: ROOT_DIR, timeout: timeoutMs }, (error, stdout, stderr) => {
+      if (error) {
+        reject(new Error((stderr || stdout || error.message).trim()));
+        return;
+      }
+      resolve((stdout || '').trim());
+    });
+  });
+}
+
+function waitMilliseconds(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function ensureProfileContainerReady(profileId) {
+  const originalStatus = getContainerStatus(profileId);
+  if (originalStatus === 'paused') {
+    await runProfileLifecycleAction(profileId, 'unpause');
+  } else if (originalStatus !== 'running') {
+    await runProfileLifecycleAction(profileId, 'start');
+  }
+
+  const deadline = Date.now() + 45_000;
+  const containerName = `isolated_${profileId}`;
+  while (Date.now() < deadline) {
+    if (getContainerStatus(profileId) !== 'running') {
+      await waitMilliseconds(750);
+      continue;
+    }
+    try {
+      const windowId = execFileSync(
+        'docker',
+        ['exec', '-u', 'chromeuser', '-e', 'DISPLAY=:99', containerName, 'sh', '-lc', 'xdotool search --onlyvisible --class google-chrome | head -1'],
+        { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3_000 },
+      ).trim();
+      if (windowId) return { started: originalStatus !== 'running', status: 'running' };
+    } catch (_) {}
+    await waitMilliseconds(750);
+  }
+  throw new Error(`Container ${containerName} started but Chrome was not ready within 45 seconds`);
+}
+
+async function stopProfileContainerAfterReport(profileId) {
+  if (getContainerStatus(profileId) === 'stopped') {
+    return { stopped: true, already_stopped: true };
+  }
+  await runProfileLifecycleAction(profileId, 'stop');
+  return { stopped: getContainerStatus(profileId) === 'stopped', already_stopped: false };
+}
+
+// GET /api/settings/resource-mode
+app.get('/api/settings/resource-mode', (_req, res) => {
+  res.json(resourceModeSnapshot());
+});
+
+// PUT /api/settings/resource-mode
+app.put('/api/settings/resource-mode', (req, res) => {
+  const mode = String(req.body?.mode || '').toLowerCase();
+  if (!['auto', 'low', 'medium', 'high'].includes(mode)) {
+    return res.status(400).json({ error: 'Resource mode must be auto, low, medium, or high.' });
+  }
+  const resolution = resolveResourceMode(mode, hostTotalMemoryGb, cpuCores);
+  if (!resolution.supported) {
+    return res.status(400).json({
+      error: `${mode} mode is not supported by this machine. Recommended maximum: ${resolution.recommended}.`,
+      recommended_mode: resolution.recommended,
+    });
+  }
+  managerSettings = { resource_mode: mode, updated_at: new Date().toISOString() };
+  saveManagerSettings(managerSettings);
+  resourceModeResolution = resolution;
+  SCHEDULER_CONFIG = buildSchedulerConfig();
+  return res.json(resourceModeSnapshot());
+});
 
 // ==========================================
 // Profile Endpoints
@@ -218,6 +531,10 @@ app.get('/api/profiles', (req, res) => {
             if (containerStatsCache[containerName]) {
               data.cpu_usage = containerStatsCache[containerName].cpu;
               data.ram_usage = containerStatsCache[containerName].mem;
+            }
+            const diskUsage = getProfileDiskUsage(data.id);
+            if (diskUsage) {
+              data.disk_usage = diskUsage;
             }
             profiles.push(data);
           } catch (e) {
@@ -459,6 +776,7 @@ app.delete('/api/profiles/:id', (req, res) => {
       }
     }
 
+    delete profileDiskUsageCache[id];
     res.json({ success: true });
   } catch (err) {
     console.error(`Failed to delete profile ${id}:`, err);
@@ -584,10 +902,14 @@ function latestQueueTaskState(profileId) {
 
   const statusMap = {
     pending: 'idle',
+    ready: 'idle',
+    preparing: 'running',
     running: 'running',
     published: 'completed',
     failed: 'failed',
+    failed_before_publish: 'failed',
     uncertain: 'uncertain',
+    needs_review: 'uncertain',
     stopped: 'stopped',
   };
   return {
@@ -627,6 +949,31 @@ app.post('/api/automation/run', (req, res) => {
       return res.status(404).json({ error: `Profile "${profile_id}" not found` });
     }
 
+    const slotKind = task === 'warming' ? 'preparer' : 'publisher';
+    const slotCheck = canAcquireSchedulerSlot(
+      loadPostingQueue(),
+      activeInMemorySchedulerLeases(),
+      slotKind,
+      profile_id,
+      SCHEDULER_CONFIG,
+    );
+    if (!slotCheck.allowed) {
+      return res.status(409).json({
+        error: `Scheduler capacity unavailable: ${slotCheck.reason}`,
+        scheduler: slotCheck.snapshot,
+      });
+    }
+    const manualLeaseNow = Date.now();
+    const manualLease = {
+      lease_id: randomUUID(),
+      owner_id: MANAGER_INSTANCE_ID,
+      kind: slotKind,
+      profile_id,
+      claimed_at: new Date(manualLeaseNow).toISOString(),
+      heartbeat_at: new Date(manualLeaseNow).toISOString(),
+      expires_at: new Date(manualLeaseNow + SCHEDULER_CONFIG.lease_ttl_ms).toISOString(),
+    };
+
     const pythonBin = path.join(ROOT_DIR, 'automation', 'venv', 'bin', 'python');
     const runnerScript = path.join(ROOT_DIR, 'automation', 'runner.py');
 
@@ -658,6 +1005,8 @@ app.post('/api/automation/run', (req, res) => {
       result: null,
       error: null,
       process: null,
+      scheduler_lease: manualLease,
+      last_activity_at: new Date().toISOString(),
     };
 
     const proc = spawn(pythonBin, args, {
@@ -706,6 +1055,7 @@ app.post('/api/automation/run', (req, res) => {
 
     let stdoutBuffer = '';
     proc.stdout.on('data', (data) => {
+      taskRecord.last_activity_at = new Date().toISOString();
       stdoutBuffer += data.toString();
       const lines = stdoutBuffer.split('\n');
       stdoutBuffer = lines.pop();
@@ -716,6 +1066,7 @@ app.post('/api/automation/run', (req, res) => {
 
     let stderrBuffer = '';
     proc.stderr.on('data', (data) => {
+      taskRecord.last_activity_at = new Date().toISOString();
       stderrBuffer += data.toString();
       const lines = stderrBuffer.split('\n');
       stderrBuffer = lines.pop();
@@ -730,6 +1081,8 @@ app.post('/api/automation/run', (req, res) => {
 
       taskRecord.ended_at = new Date().toISOString();
       taskRecord.process = null;
+      taskRecord.last_scheduler_lease = taskRecord.scheduler_lease;
+      taskRecord.scheduler_lease = null;
 
       if (taskRecord.status === 'stopped') {
         appendLog(`[${taskRecord.ended_at}] [${profile_id}] [INFO] Task stopped by user.`, 'INFO');
@@ -752,6 +1105,8 @@ app.post('/api/automation/run', (req, res) => {
       taskRecord.error = err.message;
       taskRecord.ended_at = new Date().toISOString();
       taskRecord.process = null;
+      taskRecord.last_scheduler_lease = taskRecord.scheduler_lease;
+      taskRecord.scheduler_lease = null;
       appendLog(`[${taskRecord.ended_at}] [${profile_id}] [ERROR] Failed to start task: ${err.message}`, 'ERROR');
     });
 
@@ -845,32 +1200,165 @@ function savePostingQueue(data) {
   }
 }
 
-function cleanupStaleQueueExecutions() {
+function withQueueClaimLock(callback) {
+  let descriptor = null;
+  try {
+    try {
+      descriptor = fs.openSync(QUEUE_CLAIM_LOCK_FILE, 'wx');
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+      const stat = fs.statSync(QUEUE_CLAIM_LOCK_FILE);
+      if (Date.now() - stat.mtimeMs <= SCHEDULER_CONFIG.lease_ttl_ms) {
+        throw new Error('queue_claim_in_progress');
+      }
+      fs.unlinkSync(QUEUE_CLAIM_LOCK_FILE);
+      descriptor = fs.openSync(QUEUE_CLAIM_LOCK_FILE, 'wx');
+    }
+    fs.writeFileSync(descriptor, JSON.stringify({ owner_id: MANAGER_INSTANCE_ID, pid: process.pid }));
+    return callback();
+  } finally {
+    if (descriptor !== null) {
+      try { fs.closeSync(descriptor); } catch (_) {}
+      try { fs.unlinkSync(QUEUE_CLAIM_LOCK_FILE); } catch (_) {}
+    }
+  }
+}
+
+function isTaskProcessActive(record) {
+  return Boolean(
+    record?.status === 'running'
+    && (
+      record.lifecycle_active === true
+      || (record.process && !record.process.killed && record.process.exitCode === null)
+    )
+  );
+}
+
+function activeInMemorySchedulerLeases() {
+  const leases = [];
+  for (const record of activeAutomationTasks.values()) {
+    if (isTaskProcessActive(record) && isLeaseActive(record.scheduler_lease)) {
+      leases.push(record.scheduler_lease);
+    }
+  }
+  return leases;
+}
+
+function currentSchedulerSnapshot(queue = loadPostingQueue()) {
+  return schedulerSnapshot(queue, activeInMemorySchedulerLeases(), SCHEDULER_CONFIG);
+}
+
+function findQueueExecution(queue, executionId) {
+  for (const batch of queue.daily_batches || []) {
+    for (const post of batch.posts || []) {
+      const execution = (post.executions || []).find((item) => item.execution_id === executionId);
+      if (execution) return { execution, post, batch };
+    }
+  }
+  return null;
+}
+
+function persistQueueExecutionStage(executionId, stage, timestamp = new Date().toISOString(), leaseId = null) {
+  if (!executionId || !stage) return false;
+  const queue = loadPostingQueue();
+  const match = findQueueExecution(queue, executionId);
+  if (!match) return false;
+
+  const { execution } = match;
+  if (leaseId && execution.scheduler_lease?.lease_id !== leaseId) return false;
+  const history = Array.isArray(execution.stage_history) ? execution.stage_history : [];
+  const previous = history[history.length - 1];
+  if (!previous || previous.stage !== stage) {
+    history.push({ stage, timestamp });
+  }
+  execution.stage = stage;
+  execution.stage_history = history;
+  execution.stage_updated_at = timestamp;
+  return savePostingQueue(queue);
+}
+
+function applyInterruptedExecutionRecovery(execution, now = new Date().toISOString()) {
+  const recovery = classifyInterruptedExecution(execution);
+  execution.last_active_stage = recovery.interruptedStage;
+  execution.status = recovery.status;
+  execution.stage = recovery.stage;
+  execution.ended_at = now;
+  execution.recovered_at = now;
+  execution.error = recovery.error;
+  execution.stage_history = Array.isArray(execution.stage_history) ? execution.stage_history : [];
+  execution.stage_history.push({
+    stage: recovery.stage,
+    timestamp: now,
+    reason: 'manager_restart_recovery',
+    interrupted_stage: recovery.interruptedStage,
+  });
+}
+
+function recoverStaleQueueExecutions(reason = 'expired_scheduler_lease') {
   try {
     const queue = loadPostingQueue();
     let modified = false;
-    for (const batch of queue.daily_batches || []) {
-      for (const post of batch.posts || []) {
-        for (const execItem of post.executions || []) {
-          if (execItem.status === 'running') {
-            console.log(`[Startup] Cleaning up stale running execution ${execItem.execution_id}...`);
-            execItem.status = 'stopped';
-            execItem.ended_at = new Date().toISOString();
-            execItem.error = 'Execution interrupted by server restart';
-            modified = true;
-          }
-        }
-      }
+    const liveLeaseIds = new Set(activeInMemorySchedulerLeases().map((lease) => lease.lease_id));
+    for (const execItem of findStaleRunningExecutions(queue, liveLeaseIds)) {
+      const staleLease = execItem.scheduler_lease || null;
+      applyInterruptedExecutionRecovery(execItem);
+      execItem.scheduler_recovery_reason = reason;
+      execItem.last_scheduler_lease = staleLease;
+      execItem.scheduler_lease = null;
+      console.log(
+        `[Scheduler] Recovered stale execution ${execItem.execution_id} as ${execItem.status} `
+        + `(last active stage: ${execItem.last_active_stage}).`
+      );
+      modified = true;
     }
     if (modified) {
       savePostingQueue(queue);
     }
   } catch (err) {
-    console.error('Error during startup cleanup of posting queue:', err);
+    console.error('Error recovering stale queue leases:', err);
   }
 }
 
-cleanupStaleQueueExecutions();
+recoverStaleQueueExecutions('manager_startup_stale_lease');
+
+function heartbeatSchedulerLeases() {
+  const nowMs = Date.now();
+  const queue = loadPostingQueue();
+  let queueModified = false;
+  for (const record of activeAutomationTasks.values()) {
+    if (!isTaskProcessActive(record) || !record.scheduler_lease?.lease_id) continue;
+    const lastActivityMs = Date.parse(record.last_activity_at || record.started_at || 0) || 0;
+    if (nowMs - lastActivityMs >= SCHEDULER_CONFIG.lease_ttl_ms) {
+      record.status = 'stale';
+      record.error = 'Worker heartbeat expired without recent output or stage activity';
+      try { record.process?.kill('SIGTERM'); } catch (_) {}
+      setTimeout(() => {
+        try {
+          if (record.process && record.process.exitCode === null) record.process.kill('SIGKILL');
+        } catch (_) {}
+      }, 2_000).unref?.();
+      continue;
+    }
+    const leaseId = record.scheduler_lease.lease_id;
+    if (record.queue_execution_id) {
+      const match = findQueueExecution(queue, record.queue_execution_id);
+      if (match && refreshExecutionLease(match.execution, leaseId, SCHEDULER_CONFIG, nowMs)) {
+        record.scheduler_lease = { ...match.execution.scheduler_lease };
+        queueModified = true;
+      }
+    } else if (refreshExecutionLease(record, leaseId, SCHEDULER_CONFIG, nowMs)) {
+      record.scheduler_lease = { ...record.scheduler_lease };
+    }
+  }
+  if (queueModified) savePostingQueue(queue);
+  recoverStaleQueueExecutions('scheduler_lease_expired');
+}
+
+const schedulerHeartbeatTimer = setInterval(
+  heartbeatSchedulerLeases,
+  SCHEDULER_CONFIG.heartbeat_interval_ms,
+);
+schedulerHeartbeatTimer.unref?.();
 
 // AI Caption Spinner Helper
 function generateSpunCaption(baseCaption, index = 0, profileId = '') {
@@ -1003,8 +1491,8 @@ app.get('/api/queue', (req, res) => {
 
     const stats = {
       total: allExecutions.length,
-      pending: allExecutions.filter((e) => e.status === 'pending').length,
-      running: allExecutions.filter((e) => e.status === 'running').length,
+      pending: allExecutions.filter((e) => ['pending', 'ready'].includes(e.status)).length,
+      running: allExecutions.filter((e) => ['running', 'preparing'].includes(e.status)).length,
       published: allExecutions.filter((e) => e.status === 'published').length,
       failed: allExecutions.filter((e) => e.status === 'failed' || e.status === 'failed_before_publish').length,
       uncertain: allExecutions.filter((e) => e.status === 'uncertain' || e.status === 'needs_review').length,
@@ -1014,6 +1502,8 @@ app.get('/api/queue', (req, res) => {
     res.json({
       queue_version: queue.queue_version,
       stats,
+      scheduler: currentSchedulerSnapshot(queue),
+      telemetry_summary: buildQueueTelemetrySummary(allExecutions),
       batches: queue.daily_batches || [],
       executions: allExecutions,
     });
@@ -1039,6 +1529,10 @@ app.post('/api/queue/batch', (req, res) => {
     const startTimeStr = schedule_window?.start_time || '09:00';
     const endTimeStr = schedule_window?.end_time || '21:00';
     const staggerMins = parseInt(schedule_window?.profile_stagger_minutes, 10) || 15;
+    const preparationMode = schedule_window?.session_preparation_mode || 'off';
+    if (!['off', 'brief', 'extended'].includes(preparationMode)) {
+      return res.status(400).json({ error: "session_preparation_mode must be 'off', 'brief', or 'extended'" });
+    }
 
     // Filter target profiles by profile configuration killswitch
     const acceptedProfiles = [];
@@ -1064,6 +1558,11 @@ app.post('/api/queue/batch', (req, res) => {
         skipped: skippedProfiles,
       });
     }
+
+    const previousBatch = (queue.daily_batches || [])[0];
+    const previousOrder = previousBatch?.profile_execution_order || previousBatch?.target_profiles || [];
+    const previousLastProfile = previousOrder[previousOrder.length - 1] || null;
+    const profileExecutionOrder = shuffledProfileOrder(acceptedProfiles, previousLastProfile);
 
     // Generate posting order shuffle per profile
     const postingOrders = {};
@@ -1097,24 +1596,22 @@ app.post('/api/queue/batch', (req, res) => {
       const postId = `p_${postIdx + 1}`;
       const executions = [];
 
-      acceptedProfiles.forEach((pid, pIdx) => {
+      profileExecutionOrder.forEach((pid, pIdx) => {
         // Find profile's slot for this post via its shuffled order
         const slotIdx = postingOrders[pid].indexOf(postIdx);
-        let scheduledTime;
-
-        if (isStartNow && slotIdx === 0) {
-          // First post slot starts immediately now for the lead profile, staggered for others
-          scheduledTime = new Date(now.getTime() + pIdx * staggerMins * 60 * 1000);
-        } else if (isStartNow) {
-          const staggerOffset = pIdx * staggerMins * 60 * 1000;
-          const jitter = (Math.random() * 4 - 2) * 60 * 1000;
-          scheduledTime = new Date(now.getTime() + slotIdx * postSlotMs + staggerOffset + jitter);
-        } else {
-          const baseSlotTime = windowStart.getTime() + slotIdx * postSlotMs;
-          const staggerOffset = pIdx * staggerMins * 60 * 1000;
-          const jitter = (Math.random() * 6 - 3) * 60 * 1000;
-          scheduledTime = new Date(Math.max(now.getTime() + 60000, baseSlotTime + staggerOffset + jitter));
-        }
+        const jitter = slotIdx === 0 && isStartNow
+          ? 0
+          : (Math.random() * (isStartNow ? 4 : 6) - (isStartNow ? 2 : 3)) * 60 * 1000;
+        const scheduledTime = new Date(computeExecutionSchedule({
+          nowMs: now.getTime(),
+          isStartNow,
+          slotIndex: slotIdx,
+          profileIndex: pIdx,
+          staggerMs: staggerMins * 60 * 1000,
+          postSlotMs,
+          windowStartMs: windowStart.getTime(),
+          jitterMs: jitter,
+        }));
 
         const spunCaption = post.ai_spin !== false
           ? generateSpunCaption(post.base_caption || '', pIdx, pid)
@@ -1126,6 +1623,10 @@ app.post('/api/queue/batch', (req, res) => {
           scheduled_at: scheduledTime.toISOString(),
           spun_caption: spunCaption,
           status: 'pending',
+          stage: 'pending',
+          stage_history: [{ stage: 'pending', timestamp: new Date().toISOString() }],
+          preparation_mode: preparationMode,
+          preparation_status: preparationMode === 'off' ? 'not_requested' : 'pending',
           retry_count: 0,
           error: null,
           published_at: null,
@@ -1149,10 +1650,13 @@ app.post('/api/queue/batch', (req, res) => {
       name: name || `Daily Batch ${new Date().toLocaleDateString()}`,
       created_at: new Date().toISOString(),
       target_profiles: acceptedProfiles,
+      profile_execution_order: profileExecutionOrder,
       schedule_window: {
         start_time: startTimeStr,
         end_time: endTimeStr,
         profile_stagger_minutes: staggerMins,
+        session_preparation_mode: preparationMode,
+        start_now: isStartNow,
       },
       posting_order_per_profile: postingOrders,
       posts: formattedPosts,
@@ -1185,6 +1689,15 @@ app.delete('/api/queue/batch/:batch_id', (req, res) => {
   try {
     const { batch_id } = req.params;
     const queue = loadPostingQueue();
+    const targetBatch = (queue.daily_batches || []).find((batch) => batch.batch_id === batch_id);
+    if (!targetBatch) {
+      return res.status(404).json({ error: 'Batch not found' });
+    }
+    if (batchContainsUnresolvedExecution(targetBatch)) {
+      return res.status(409).json({
+        error: 'Cannot delete a batch containing active, uncertain, or needs-review executions. Stop safely or resolve every ambiguous outcome first.',
+      });
+    }
     queue.daily_batches = (queue.daily_batches || []).filter((b) => b.batch_id !== batch_id);
     savePostingQueue(queue);
     res.json({ success: true, message: `Batch ${batch_id} removed` });
@@ -1203,6 +1716,11 @@ app.delete('/api/queue/execution/:execution_id', (req, res) => {
       for (const post of batch.posts || []) {
         const idx = (post.executions || []).findIndex((e) => e.execution_id === execution_id);
         if (idx !== -1) {
+          if (isExecutionDeletionLocked(post.executions[idx])) {
+            return res.status(409).json({
+              error: 'Cannot delete an active or unresolved execution. Stop safely or resolve its publication outcome first.',
+            });
+          }
           post.executions.splice(idx, 1);
           found = true;
           break;
@@ -1221,47 +1739,234 @@ app.delete('/api/queue/execution/:execution_id', (req, res) => {
   }
 });
 
-// Trigger a queue execution
-function executeQueueItem(executionId) {
-  const queue = loadPostingQueue();
-  let targetExec = null;
-  let targetPost = null;
-
-  for (const batch of queue.daily_batches || []) {
-    for (const post of batch.posts || []) {
-      const match = (post.executions || []).find((e) => e.execution_id === executionId);
-      if (match) {
-        targetExec = match;
-        targetPost = post;
-        break;
-      }
+function claimQueueExecution(executionId, kind = 'publisher') {
+  return withQueueClaimLock(() => {
+    const queue = loadPostingQueue();
+    const match = findQueueExecution(queue, executionId);
+    if (!match) throw new Error('Execution not found');
+    const { execution: targetExec, post: targetPost } = match;
+    const preparationMode = targetExec.preparation_mode || 'off';
+    if (kind === 'preparer' && (preparationMode === 'off' || targetExec.preparation_status !== 'pending')) {
+      const error = new Error('Execution does not require passive preparation');
+      error.schedulerReason = 'preparation_not_pending';
+      throw error;
     }
-    if (targetExec) break;
-  }
+    if (kind === 'publisher' && preparationMode !== 'off' && targetExec.preparation_status !== 'ready') {
+      const error = new Error('Execution is not ready for the publisher slot');
+      error.schedulerReason = 'preparation_not_ready';
+      throw error;
+    }
+    const leaseId = randomUUID();
+    const claim = claimExecutionLease(queue, targetExec, {
+      leaseId,
+      ownerId: MANAGER_INSTANCE_ID,
+      kind,
+      config: SCHEDULER_CONFIG,
+      additionalLeases: activeInMemorySchedulerLeases(),
+    });
+    if (!claim.claimed) {
+      const error = new Error(`Scheduler could not claim execution: ${claim.reason}`);
+      error.schedulerReason = claim.reason;
+      throw error;
+    }
 
-  if (!targetExec || !targetPost) return Promise.reject(new Error('Execution not found'));
+    const now = new Date().toISOString();
+    targetExec.status = kind === 'preparer' ? 'preparing' : 'running';
+    targetExec.started_at = now;
+    targetExec.ended_at = null;
+    targetExec.error = null;
+    targetExec.logs = [];
+    targetExec.stage_history = Array.isArray(targetExec.stage_history) ? targetExec.stage_history : [];
+    targetExec.stage = kind === 'preparer' ? 'preparing' : 'preparing';
+    targetExec.stage_history.push({
+      stage: 'preparing',
+      timestamp: now,
+      reason: `${kind}_scheduler_lease_claimed`,
+      lease_id: leaseId,
+    });
+    targetExec.stage_updated_at = now;
+    if (!savePostingQueue(queue)) throw new Error('Failed to persist scheduler claim');
+    return { targetExec, targetPost, leaseId, lease: claim.lease };
+  });
+}
 
-  // Invariant: Uncertain and needs_review executions cannot be rerun directly without manual resolution
-  if (targetExec.status === 'uncertain' || targetExec.status === 'needs_review') {
-    return Promise.reject(new Error(`Cannot rerun an execution in '${targetExec.status}' state directly. Please review on Facebook and manually resolve the outcome first to prevent duplicate posts.`));
-  }
-
+async function executeQueuePreparation(executionId) {
+  const { targetExec, leaseId, lease } = claimQueueExecution(executionId, 'preparer');
   const profileId = targetExec.profile_id;
-
-  // Check if profile is already running an automation task (only if actual OS process is active)
-  const existing = activeAutomationTasks.get(profileId);
-  const isProcessActive = existing && existing.status === 'running' && existing.process && !existing.process.killed && existing.process.exitCode === null;
-  if (isProcessActive) {
-    return Promise.reject(new Error(`Profile ${profileId} is currently busy with another task`));
+  const pythonBin = path.join(ROOT_DIR, 'automation', 'venv', 'bin', 'python');
+  const runnerScript = path.join(ROOT_DIR, 'automation', 'runner.py');
+  const args = [
+    '-u', runnerScript,
+    '--profile', profileId,
+    '--task', 'preparation',
+    '--preparation-mode', targetExec.preparation_mode,
+  ];
+  const taskRecord = {
+    profile_id: profileId,
+    task: 'preparation',
+    status: 'running',
+    started_at: new Date().toISOString(),
+    ended_at: null,
+    logs: [],
+    result: null,
+    current_stage: 'preparing',
+    error: null,
+    process: null,
+    lifecycle_active: true,
+    queue_execution_id: executionId,
+    scheduler_lease: lease,
+    last_activity_at: new Date().toISOString(),
+  };
+  activeAutomationTasks.set(profileId, taskRecord);
+  try {
+    const lifecycle = await ensureProfileContainerReady(profileId);
+    taskRecord.container_started_by_queue = lifecycle.started;
+    taskRecord.last_activity_at = new Date().toISOString();
+    taskRecord.lifecycle_active = false;
+  } catch (error) {
+    taskRecord.lifecycle_active = false;
+    taskRecord.status = 'failed';
+    taskRecord.error = error.message;
+    taskRecord.ended_at = new Date().toISOString();
+    const queue = loadPostingQueue();
+    const match = findQueueExecution(queue, executionId);
+    if (match && match.execution.scheduler_lease?.lease_id === leaseId) {
+      match.execution.status = 'failed_before_publish';
+      match.execution.stage = 'failed_before_publish';
+      match.execution.preparation_status = 'failed';
+      match.execution.error = `Container startup failed: ${error.message}`;
+      match.execution.ended_at = taskRecord.ended_at;
+      releaseExecutionLease(match.execution, leaseId);
+      savePostingQueue(queue);
+    }
+    try { await stopProfileContainerAfterReport(profileId); } catch (_) {}
+    setTimeout(() => dispatchPendingQueue().catch((dispatchError) => console.error('Post-startup-failure dispatch error:', dispatchError)), 100);
+    return { success: false, status: 'failed_before_publish', error: error.message };
   }
+  const proc = spawn(pythonBin, args, {
+    cwd: ROOT_DIR,
+    env: { ...process.env, PYTHONUNBUFFERED: '1' },
+  });
+  taskRecord.process = proc;
 
-  // Update status to running
-  targetExec.status = 'running';
-  targetExec.started_at = new Date().toISOString();
-  targetExec.ended_at = null;
-  targetExec.error = null;
-  targetExec.logs = [];
-  savePostingQueue(queue);
+  let stdoutBuffer = '';
+  const consumeLine = (line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === 'object' && ('status' in parsed || 'success' in parsed)) {
+          taskRecord.result = parsed;
+          return;
+        }
+      } catch (_) {}
+    }
+    taskRecord.logs.push(normalizeStoredLog(trimmed, profileId));
+    const stageMatch = trimmed.match(/^\[(.*?)\]\s*\[(.*?)\]\s*\[STAGE\]\s*Execution stage:\s*([a-z_]+)\s*$/i);
+    if (stageMatch) {
+      taskRecord.current_stage = stageMatch[3];
+      persistQueueExecutionStage(executionId, stageMatch[3], stageMatch[1], leaseId);
+    }
+  };
+  proc.stdout.on('data', (chunk) => {
+    taskRecord.last_activity_at = new Date().toISOString();
+    stdoutBuffer += chunk.toString();
+    const lines = stdoutBuffer.split('\n');
+    stdoutBuffer = lines.pop();
+    for (const line of lines) consumeLine(line);
+  });
+  proc.stderr.on('data', (chunk) => {
+    taskRecord.last_activity_at = new Date().toISOString();
+    for (const line of chunk.toString().split('\n')) {
+      if (line.trim()) taskRecord.logs.push(normalizeStoredLog(`[STDERR] ${line.trim()}`, profileId));
+    }
+  });
+
+  return new Promise((resolve) => {
+    proc.on('close', async (code) => {
+      if (stdoutBuffer.trim()) consumeLine(stdoutBuffer);
+      taskRecord.ended_at = new Date().toISOString();
+      taskRecord.process = null;
+      const queue = loadPostingQueue();
+      const match = findQueueExecution(queue, executionId);
+      if (!match || match.execution.scheduler_lease?.lease_id !== leaseId) {
+        taskRecord.status = 'fenced';
+        resolve({ success: false, status: 'fenced', code });
+        return;
+      }
+      const execution = match.execution;
+      const reportedStatus = taskRecord.result?.status;
+      if (code === 0 && reportedStatus === 'completed') {
+        execution.status = 'ready';
+        execution.stage = 'ready';
+        execution.preparation_status = 'ready';
+        execution.preparation_completed_at = new Date().toISOString();
+        execution.error = null;
+        taskRecord.status = 'completed';
+      } else if (reportedStatus === 'needs_review' || reportedStatus === 'uncertain' || code === 2) {
+        execution.status = 'needs_review';
+        execution.stage = 'needs_review';
+        execution.preparation_status = 'needs_review';
+        execution.error = taskRecord.result?.error || 'Passive preparation requires operator review';
+        taskRecord.status = 'needs_review';
+      } else {
+        execution.status = 'failed_before_publish';
+        execution.stage = 'failed_before_publish';
+        execution.preparation_status = 'failed';
+        execution.error = taskRecord.result?.error || `Preparation exited with code ${code}`;
+        taskRecord.status = 'failed';
+      }
+      execution.preparation_evidence_dir = taskRecord.result?.evidence_dir || null;
+      execution.preparation_telemetry = taskRecord.result?.telemetry || null;
+      execution.stage_history = Array.isArray(taskRecord.result?.stage_history)
+        ? taskRecord.result.stage_history
+        : execution.stage_history;
+      releaseExecutionLease(execution, leaseId);
+      savePostingQueue(queue);
+      if (execution.status !== 'ready') {
+        let cleanup;
+        let cleanupError = null;
+        try {
+          cleanup = await stopProfileContainerAfterReport(profileId);
+        } catch (error) {
+          cleanupError = error.message;
+        }
+        const cleanupQueue = loadPostingQueue();
+        const cleanupMatch = findQueueExecution(cleanupQueue, executionId);
+        if (cleanupMatch) {
+          cleanupMatch.execution.container_stopped_at = cleanup?.stopped ? new Date().toISOString() : null;
+          cleanupMatch.execution.container_cleanup = cleanup || null;
+          cleanupMatch.execution.container_cleanup_error = cleanupError;
+          savePostingQueue(cleanupQueue);
+        }
+      }
+      setTimeout(() => dispatchPendingQueue().catch((error) => console.error('Post-preparation dispatch error:', error)), 100);
+      resolve({ success: execution.status === 'ready', status: execution.status, code });
+    });
+    proc.on('error', async (error) => {
+      taskRecord.status = 'failed';
+      taskRecord.error = error.message;
+      taskRecord.process = null;
+      const queue = loadPostingQueue();
+      const match = findQueueExecution(queue, executionId);
+      if (match && match.execution.scheduler_lease?.lease_id === leaseId) {
+        applyInterruptedExecutionRecovery(match.execution);
+        match.execution.preparation_status = 'failed';
+        releaseExecutionLease(match.execution, leaseId);
+        savePostingQueue(queue);
+      }
+      try { await stopProfileContainerAfterReport(profileId); } catch (_) {}
+      setTimeout(() => dispatchPendingQueue().catch((dispatchError) => console.error('Post-preparation-error dispatch error:', dispatchError)), 100);
+      resolve({ success: false, error: error.message });
+    });
+  });
+}
+
+// Trigger a queue execution
+async function executeQueueItem(executionId) {
+  const { targetExec, targetPost, leaseId, lease } = claimQueueExecution(executionId);
+  const profileId = targetExec.profile_id;
 
   const pythonBin = path.join(ROOT_DIR, 'automation', 'venv', 'bin', 'python');
   const runnerScript = path.join(ROOT_DIR, 'automation', 'runner.py');
@@ -1286,9 +1991,40 @@ function executeQueueItem(executionId) {
     ended_at: null,
     logs: [],
     result: null,
+    current_stage: targetExec.stage,
+    queue_execution_id: executionId,
+    scheduler_lease: lease,
+    last_activity_at: new Date().toISOString(),
     error: null,
     process: null,
+    lifecycle_active: true,
   };
+
+  activeAutomationTasks.set(profileId, taskRecord);
+  try {
+    const lifecycle = await ensureProfileContainerReady(profileId);
+    taskRecord.container_started_by_queue = lifecycle.started;
+    taskRecord.last_activity_at = new Date().toISOString();
+    taskRecord.lifecycle_active = false;
+  } catch (error) {
+    taskRecord.lifecycle_active = false;
+    taskRecord.status = 'failed';
+    taskRecord.error = error.message;
+    taskRecord.ended_at = new Date().toISOString();
+    const queue = loadPostingQueue();
+    const match = findQueueExecution(queue, executionId);
+    if (match && match.execution.scheduler_lease?.lease_id === leaseId) {
+      match.execution.status = 'failed_before_publish';
+      match.execution.stage = 'failed_before_publish';
+      match.execution.error = `Container startup failed: ${error.message}`;
+      match.execution.ended_at = taskRecord.ended_at;
+      releaseExecutionLease(match.execution, leaseId);
+      savePostingQueue(queue);
+    }
+    try { await stopProfileContainerAfterReport(profileId); } catch (_) {}
+    setTimeout(() => dispatchPendingQueue().catch((dispatchError) => console.error('Post-startup-failure dispatch error:', dispatchError)), 100);
+    return { success: false, status: 'failed_before_publish', error: error.message };
+  }
 
   const proc = spawn(pythonBin, args, {
     cwd: ROOT_DIR,
@@ -1296,7 +2032,6 @@ function executeQueueItem(executionId) {
   });
 
   taskRecord.process = proc;
-  activeAutomationTasks.set(profileId, taskRecord);
 
   let queueStdoutBuffer = '';
   const consumeQueueStdoutLine = (line) => {
@@ -1313,9 +2048,15 @@ function executeQueueItem(executionId) {
       }
       targetExec.logs.push(trimmed);
       taskRecord.logs.push(normalizeStoredLog(trimmed, profileId));
+      const stageMatch = trimmed.match(/^\[(.*?)\]\s*\[(.*?)\]\s*\[STAGE\]\s*Execution stage:\s*([a-z_]+)\s*$/i);
+      if (stageMatch) {
+        taskRecord.current_stage = stageMatch[3];
+        persistQueueExecutionStage(executionId, stageMatch[3], stageMatch[1], leaseId);
+      }
   };
 
   proc.stdout.on('data', (chunk) => {
+    taskRecord.last_activity_at = new Date().toISOString();
     queueStdoutBuffer += chunk.toString();
     const lines = queueStdoutBuffer.split('\n');
     queueStdoutBuffer = lines.pop();
@@ -1325,6 +2066,7 @@ function executeQueueItem(executionId) {
   });
 
   proc.stderr.on('data', (chunk) => {
+    taskRecord.last_activity_at = new Date().toISOString();
     const lines = chunk.toString().split('\n');
     for (const line of lines) {
       const trimmed = line.trim();
@@ -1335,11 +2077,11 @@ function executeQueueItem(executionId) {
   });
 
   return new Promise((resolve) => {
-    proc.on('close', (code) => {
+    proc.on('close', async (code) => {
       if (queueStdoutBuffer.trim()) consumeQueueStdoutLine(queueStdoutBuffer);
       taskRecord.ended_at = new Date().toISOString();
       const reportedStatus = taskRecord.result?.status;
-      const stage = taskRecord.result?.current_stage;
+      const stage = taskRecord.result?.current_stage || taskRecord.current_stage;
       const reachedPublish = stage === 'publish_clicked' || stage === 'verifying';
 
       taskRecord.status = (reportedStatus === 'needs_review' || reportedStatus === 'uncertain' || reachedPublish)
@@ -1361,8 +2103,16 @@ function executeQueueItem(executionId) {
       }
 
       if (execInDb) {
+        if (execInDb.scheduler_lease?.lease_id !== leaseId) {
+          console.warn(`[Scheduler] Ignored fenced completion for ${executionId}; lease token no longer matches.`);
+          resolve({ success: false, status: 'fenced', code });
+          return;
+        }
         execInDb.ended_at = new Date().toISOString();
         execInDb.stage = stage || (reportedStatus === 'published' ? 'published' : 'unknown');
+        if (Array.isArray(taskRecord.result?.stage_history)) {
+          execInDb.stage_history = taskRecord.result.stage_history;
+        }
 
         if (reportedStatus === 'published') {
           execInDb.status = 'published';
@@ -1372,6 +2122,14 @@ function executeQueueItem(executionId) {
             execInDb.post_url = taskRecord.result.post_url;
             execInDb.post_url_verified_at = taskRecord.result.post_url_verified_at || new Date().toISOString();
             execInDb.post_match_confidence = taskRecord.result.post_match_confidence || 1.0;
+            execInDb.permalink_status = 'verified';
+            execInDb.permalink_source = 'automation_correlation';
+          }
+          if (taskRecord.result?.first_comment) {
+            execInDb.first_comment_status = taskRecord.result.first_comment;
+            if (taskRecord.result.first_comment === 'submitted_verified') {
+              execInDb.first_comment_verified_at = new Date().toISOString();
+            }
           }
         } else if (reportedStatus === 'needs_review' || reportedStatus === 'uncertain' || code === 2 || reachedPublish) {
           // Never automatically retry after a one-way publish click or gated semantic fallback.
@@ -1388,17 +2146,47 @@ function executeQueueItem(executionId) {
         if (taskRecord.result?.evidence_dir) {
           execInDb.evidence_dir = taskRecord.result.evidence_dir;
         }
+        if (taskRecord.result?.telemetry) {
+          execInDb.telemetry = taskRecord.result.telemetry;
+        }
         execInDb.logs = targetExec.logs;
+        releaseExecutionLease(execInDb, leaseId);
         savePostingQueue(updatedQueue);
+        let cleanup;
+        let cleanupError = null;
+        try {
+          cleanup = await stopProfileContainerAfterReport(profileId);
+        } catch (error) {
+          cleanupError = error.message;
+        }
+        const cleanupQueue = loadPostingQueue();
+        const cleanupMatch = findQueueExecution(cleanupQueue, executionId);
+        if (cleanupMatch) {
+          cleanupMatch.execution.container_stopped_at = cleanup?.stopped ? new Date().toISOString() : null;
+          cleanupMatch.execution.container_cleanup = cleanup || null;
+          cleanupMatch.execution.container_cleanup_error = cleanupError;
+          savePostingQueue(cleanupQueue);
+        }
+        setTimeout(() => dispatchPendingQueue().catch((error) => console.error('Post-publish dispatch error:', error)), 100);
       }
       resolve({ success: execInDb?.status === 'published', status: execInDb?.status, code });
     });
 
-    proc.on('error', (err) => {
+    proc.on('error', async (err) => {
       taskRecord.ended_at = new Date().toISOString();
       taskRecord.status = 'failed';
       taskRecord.error = err.message;
       taskRecord.process = null;
+      const failedQueue = loadPostingQueue();
+      const failedMatch = findQueueExecution(failedQueue, executionId);
+      if (failedMatch && failedMatch.execution.scheduler_lease?.lease_id === leaseId) {
+        applyInterruptedExecutionRecovery(failedMatch.execution);
+        failedMatch.execution.error = `Automation process error: ${err.message}. ${failedMatch.execution.error}`;
+        releaseExecutionLease(failedMatch.execution, leaseId);
+        savePostingQueue(failedQueue);
+      }
+      try { await stopProfileContainerAfterReport(profileId); } catch (_) {}
+      setTimeout(() => dispatchPendingQueue().catch((error) => console.error('Post-publish-error dispatch error:', error)), 100);
       resolve({ success: false, error: err.message });
     });
   });
@@ -1432,9 +2220,43 @@ app.post('/api/queue/run-now/:execution_id', async (req, res) => {
       });
     }
 
-    executeQueueItem(execution_id).catch((err) => console.error('Run-now error:', err));
-    res.json({ success: true, message: `Dispatched execution ${execution_id} immediately` });
+    const needsPreparation = (
+      targetExec.status === 'pending'
+      && (targetExec.preparation_mode || 'off') !== 'off'
+      && targetExec.preparation_status === 'pending'
+    );
+    if (
+      needsPreparation
+      && countBufferedPreparations(queue, execution_id) >= SCHEDULER_CONFIG.max_preparers
+    ) {
+      return res.status(409).json({ error: 'All preparation buffers are currently occupied.' });
+    }
+    if (
+      getContainerStatus(targetExec.profile_id) !== 'running'
+      && countRunningProfileContainers() >= SCHEDULER_CONFIG.max_active_profile_containers
+    ) {
+      return res.status(409).json({ error: 'The active profile-container limit has been reached.' });
+    }
+    if (getContainerStatus(targetExec.profile_id) !== 'running') {
+      const admission = claimContainerStartAdmission();
+      if (!admission.allowed) {
+        return res.status(409).json({ error: `Container start delayed: ${admission.reason}.` });
+      }
+    }
+    const executionPromise = needsPreparation
+      ? executeQueuePreparation(execution_id)
+      : executeQueueItem(execution_id);
+    executionPromise.catch((err) => console.error('Run-now error:', err));
+    res.json({
+      success: true,
+      message: needsPreparation
+        ? `Started passive preparation for execution ${execution_id}`
+        : `Dispatched execution ${execution_id} immediately`,
+    });
   } catch (err) {
+    if (err.schedulerReason) {
+      return res.status(409).json({ error: err.message, scheduler_reason: err.schedulerReason });
+    }
     res.status(500).json({ error: err.message });
   }
 });
@@ -1451,11 +2273,13 @@ app.post('/api/queue/resolve-uncertain/:execution_id', async (req, res) => {
 
     const queue = loadPostingQueue();
     let targetExec = null;
+    let targetPost = null;
     for (const batch of queue.daily_batches || []) {
       for (const post of batch.posts || []) {
         const match = (post.executions || []).find((e) => e.execution_id === execution_id);
         if (match) {
           targetExec = match;
+          targetPost = post;
           break;
         }
       }
@@ -1470,25 +2294,49 @@ app.post('/api/queue/resolve-uncertain/:execution_id', async (req, res) => {
       return res.status(400).json({ error: `Execution is in '${targetExec.status}' state, not 'uncertain' or 'needs_review'` });
     }
 
+    let validatedPostUrl = null;
+    if (resolution === 'published' && post_url && typeof post_url === 'string' && post_url.trim()) {
+      validatedPostUrl = validateFacebookPermalink(
+        post_url,
+        targetPost?.type === 'reel' ? 'reel' : 'post'
+      );
+      if (!validatedPostUrl) {
+        return res.status(400).json({
+          error: 'The supplied URL is not a recognized Facebook post or reel permalink.',
+        });
+      }
+    }
+
+    const reviewedAt = new Date().toISOString();
+    targetExec.stage_history = Array.isArray(targetExec.stage_history) ? targetExec.stage_history : [];
+
     if (resolution === 'published') {
       targetExec.status = 'published';
-      targetExec.published_at = new Date().toISOString();
+      targetExec.stage = 'published';
+      targetExec.published_at = reviewedAt;
       targetExec.review_status = 'resolved_published';
       targetExec.review_note = note || 'Manually confirmed published on Facebook';
       targetExec.error = null;
-      if (post_url && typeof post_url === 'string' && post_url.trim()) {
-        targetExec.post_url = post_url.trim();
+      if (validatedPostUrl) {
+        targetExec.post_url = validatedPostUrl;
         targetExec.post_url_verified_at = new Date().toISOString();
         targetExec.post_match_confidence = 1.0;
       }
     } else {
       // Operator verified it was NOT published. Reset to failed_before_publish so retry is permitted.
       targetExec.status = 'failed_before_publish';
+      targetExec.stage = 'failed_before_publish';
       targetExec.review_status = 'resolved_not_published';
       targetExec.review_note = note || 'Manually confirmed NOT published on Facebook';
     }
 
-    targetExec.reviewed_at = new Date().toISOString();
+    targetExec.stage_history.push({
+      stage: targetExec.stage,
+      timestamp: reviewedAt,
+      reason: `operator_resolved_${resolution}`,
+    });
+    targetExec.stage_updated_at = reviewedAt;
+    targetExec.reviewed_at = reviewedAt;
     savePostingQueue(queue);
 
     res.json({
@@ -1501,43 +2349,125 @@ app.post('/api/queue/resolve-uncertain/:execution_id', async (req, res) => {
   }
 });
 
+// POST /api/queue/backfill-permalink/:execution_id
+app.post('/api/queue/backfill-permalink/:execution_id', (req, res) => {
+  try {
+    const { execution_id } = req.params;
+    const { post_url, note, match_confidence, source } = req.body || {};
+    const queue = loadPostingQueue();
+    const match = findQueueExecution(queue, execution_id);
+    if (!match) {
+      return res.status(404).json({ error: 'Execution not found' });
+    }
+    try {
+      applyVerifiedPermalinkBackfill(
+        match.execution,
+        post_url,
+        match.post?.type === 'reel' ? 'reel' : 'post',
+        {
+          note,
+          matchConfidence: match_confidence,
+          source: source || 'manual_backfill',
+        },
+      );
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+    savePostingQueue(queue);
+    return res.json({
+      success: true,
+      message: 'Verified permalink attached to published execution',
+      execution: match.execution,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/queue/backfill-comment/:execution_id
+app.post('/api/queue/backfill-comment/:execution_id', (req, res) => {
+  try {
+    const { execution_id } = req.params;
+    const { status, note, evidence_dir, source } = req.body || {};
+    const queue = loadPostingQueue();
+    const match = findQueueExecution(queue, execution_id);
+    if (!match) {
+      return res.status(404).json({ error: 'Execution not found' });
+    }
+    try {
+      applyCommentEvidenceBackfill(match.execution, status, {
+        note,
+        evidenceDir: evidence_dir,
+        source: source || 'manual_backfill',
+      });
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+    savePostingQueue(queue);
+    return res.json({
+      success: true,
+      message: 'Comment evidence attached to published execution',
+      execution: match.execution,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // Periodic Background Queue Dispatcher (Every 25 seconds)
 let isDispatching = false;
 async function dispatchPendingQueue() {
   if (isDispatching) return;
   isDispatching = true;
   try {
-    const queue = loadPostingQueue();
-    const now = new Date();
+    recoverStaleQueueExecutions('dispatcher_stale_lease');
+    const dueExecutionIds = orderedDueExecutions(loadPostingQueue(), Date.now())
+      .map((execution) => execution.execution_id);
 
-    for (const batch of queue.daily_batches || []) {
-      for (const post of batch.posts || []) {
-        for (const execItem of post.executions || []) {
-          if (execItem.status === 'pending' && new Date(execItem.scheduled_at) <= now) {
-            const pid = execItem.profile_id;
-            const containerName = `isolated_${pid}`;
-            const isRunning = getContainerStatus(pid) === 'running';
+    for (const executionId of dueExecutionIds) {
+      const currentQueue = loadPostingQueue();
+      const match = findQueueExecution(currentQueue, executionId);
+      if (!match || !['pending', 'ready'].includes(match.execution.status)) continue;
+      const pid = match.execution.profile_id;
 
-            if (!isRunning) {
-              execItem.status = 'skipped_stopped';
-              execItem.error = 'Profile container was not running at scheduled time';
-              savePostingQueue(queue);
-              continue;
-            }
+      const needsPreparation = (
+        match.execution.status === 'pending'
+        && (match.execution.preparation_mode || 'off') !== 'off'
+        && match.execution.preparation_status === 'pending'
+      );
+      if (
+        needsPreparation
+        && countBufferedPreparations(currentQueue, executionId) >= SCHEDULER_CONFIG.max_preparers
+      ) continue;
+      if (
+        getContainerStatus(pid) !== 'running'
+        && countRunningProfileContainers() >= SCHEDULER_CONFIG.max_active_profile_containers
+      ) continue;
+      const slotKind = needsPreparation ? 'preparer' : 'publisher';
+      const availability = canAcquireSchedulerSlot(
+        currentQueue, activeInMemorySchedulerLeases(), slotKind, pid, SCHEDULER_CONFIG,
+      );
+      if (!availability.allowed) continue;
 
-            const active = activeAutomationTasks.get(pid);
-            const isProcessActive = active && active.status === 'running' && active.process && !active.process.killed && active.process.exitCode === null;
-            if (isProcessActive) {
-              // Defer 2 minutes if profile is busy
-              execItem.scheduled_at = new Date(Date.now() + 120000).toISOString();
-              savePostingQueue(queue);
-              continue;
-            }
-
-            // Launch execution
-            console.log(`[Queue Dispatcher] Firing scheduled post ${execItem.execution_id} on profile ${pid}...`);
-            executeQueueItem(execItem.execution_id).catch((e) => console.error('Dispatch error:', e));
+      if (getContainerStatus(pid) !== 'running') {
+        const admission = claimContainerStartAdmission();
+        if (!admission.allowed) {
+          if (admission.reason === 'container_start_spacing') {
+            setTimeout(() => dispatchPendingQueue().catch((error) => console.error('Spaced dispatch error:', error)), CONTAINER_START_SPACING_MS + 100);
           }
+          continue;
+        }
+      }
+
+      console.log(`[Queue Dispatcher] Claiming ${slotKind} slot for ${executionId} on profile ${pid}...`);
+      try {
+        const executionPromise = needsPreparation
+          ? executeQueuePreparation(executionId)
+          : executeQueueItem(executionId);
+        executionPromise.catch((e) => console.error('Dispatch error:', e));
+      } catch (error) {
+        if (!['publisher_capacity_reached', 'preparer_capacity_reached', 'profile_busy'].includes(error.schedulerReason)) {
+          console.error('Dispatch claim error:', error);
         }
       }
     }
@@ -1548,7 +2478,8 @@ async function dispatchPendingQueue() {
   }
 }
 
-setInterval(dispatchPendingQueue, 25000);
+const queueDispatchTimer = setInterval(dispatchPendingQueue, 25000);
+queueDispatchTimer.unref?.();
 
 // ==========================================
 // System Stats Endpoint
@@ -1602,6 +2533,49 @@ app.get('/api/system/stats', (req, res) => {
   }
 });
 
-app.listen(PORT, '127.0.0.1', () => {
+const httpServer = app.listen(PORT, '127.0.0.1', () => {
   console.log(`Manager backend bridge listening on http://127.0.0.1:${PORT}`);
+  console.log(
+    `[Scheduler] publishers=${SCHEDULER_CONFIG.max_publishers}, `
+    + `preparers=${SCHEDULER_CONFIG.max_preparers}, `
+    + `total=${SCHEDULER_CONFIG.max_total_automation_tasks}, `
+    + `containers=${SCHEDULER_CONFIG.max_active_profile_containers}, `
+    + `lease_ttl_ms=${SCHEDULER_CONFIG.lease_ttl_ms}`
+  );
 });
+
+let shutdownStarted = false;
+function gracefulShutdown(signal) {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+  console.log(`[Shutdown] ${signal} received; stopping dispatcher and active automation workers...`);
+  clearInterval(queueDispatchTimer);
+  clearInterval(schedulerHeartbeatTimer);
+  httpServer.close();
+
+  for (const record of activeAutomationTasks.values()) {
+    if (isTaskProcessActive(record)) {
+      record.shutdown_requested_at = new Date().toISOString();
+      try { record.process.kill('SIGTERM'); } catch (_) {}
+    }
+  }
+
+  const deadline = Date.now() + 5_000;
+  const shutdownPoll = setInterval(() => {
+    const active = [...activeAutomationTasks.values()].filter(isTaskProcessActive);
+    if (active.length === 0) {
+      clearInterval(shutdownPoll);
+      process.exit(0);
+    }
+    if (Date.now() >= deadline) {
+      for (const record of active) {
+        try { record.process.kill('SIGKILL'); } catch (_) {}
+      }
+      clearInterval(shutdownPoll);
+      process.exit(1);
+    }
+  }, 100);
+}
+
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));

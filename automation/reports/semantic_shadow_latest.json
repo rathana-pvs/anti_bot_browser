@@ -1,0 +1,414 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-09-25T13:40:16.502178+00:00",
+  "mode": "offline_saved_evidence_shadow_replay",
+  "provider": "heuristic",
+  "shadow_mode": true,
+  "tolerance_px": 180.0,
+  "discovered_ground_truth_samples": 50,
+  "summary": {
+    "samples": 12,
+    "proposals": 12,
+    "correct": 12,
+    "incorrect": 0,
+    "abstained": 0,
+    "coverage_pct": 100.0,
+    "precision_pct": 100.0,
+    "accuracy_pct": 100.0,
+    "executable_clicks": 0
+  },
+  "breakdown": {
+    "scenario": {
+      "feed_next": {
+        "samples": 3,
+        "proposals": 3,
+        "correct": 3,
+        "incorrect": 0,
+        "abstained": 0,
+        "coverage_pct": 100.0,
+        "precision_pct": 100.0,
+        "accuracy_pct": 100.0,
+        "executable_clicks": 0
+      },
+      "feed_publish": {
+        "samples": 3,
+        "proposals": 3,
+        "correct": 3,
+        "incorrect": 0,
+        "abstained": 0,
+        "coverage_pct": 100.0,
+        "precision_pct": 100.0,
+        "accuracy_pct": 100.0,
+        "executable_clicks": 0
+      },
+      "reel_next": {
+        "samples": 3,
+        "proposals": 3,
+        "correct": 3,
+        "incorrect": 0,
+        "abstained": 0,
+        "coverage_pct": 100.0,
+        "precision_pct": 100.0,
+        "accuracy_pct": 100.0,
+        "executable_clicks": 0
+      },
+      "reel_publish": {
+        "samples": 3,
+        "proposals": 3,
+        "correct": 3,
+        "incorrect": 0,
+        "abstained": 0,
+        "coverage_pct": 100.0,
+        "precision_pct": 100.0,
+        "accuracy_pct": 100.0,
+        "executable_clicks": 0
+      }
+    },
+    "state": {
+      "media_ready": {
+        "samples": 6,
+        "proposals": 6,
+        "correct": 6,
+        "incorrect": 0,
+        "abstained": 0,
+        "coverage_pct": 100.0,
+        "precision_pct": 100.0,
+        "accuracy_pct": 100.0,
+        "executable_clicks": 0
+      },
+      "post_enabled": {
+        "samples": 6,
+        "proposals": 6,
+        "correct": 6,
+        "incorrect": 0,
+        "abstained": 0,
+        "coverage_pct": 100.0,
+        "precision_pct": 100.0,
+        "accuracy_pct": 100.0,
+        "executable_clicks": 0
+      }
+    },
+    "locale": {
+      "en-US": {
+        "samples": 12,
+        "proposals": 12,
+        "correct": 12,
+        "incorrect": 0,
+        "abstained": 0,
+        "coverage_pct": 100.0,
+        "precision_pct": 100.0,
+        "accuracy_pct": 100.0,
+        "executable_clicks": 0
+      }
+    }
+  },
+  "safety": {
+    "browser_connections": 0,
+    "input_events": 0,
+    "external_provider_calls": 0,
+    "temporal_freshness_evaluated": false,
+    "publish_gate_expected_result": "needs_review"
+  },
+  "results": [
+    {
+      "profile_id": "profile_002",
+      "locale": "en-US",
+      "scenario": "feed_next",
+      "action": "next",
+      "state": "media_ready",
+      "image_path": "/home/rathana/Desktop/automat_fb/profiles/profile_002/automation_evidence/20260925T125122_832030Z_FacebookPostTask/02_before_next.png",
+      "target": [
+        952,
+        763
+      ],
+      "candidate_count": 15,
+      "proposal_candidate_id": "c15",
+      "proposal_text": "Next",
+      "proposal_confidence": 1.0,
+      "proposal_center": [
+        953,
+        765
+      ],
+      "distance_to_target_px": 2.24,
+      "outcome": "correct",
+      "guard_result": "shadow_mode_active",
+      "executable_click": false,
+      "latency_ms": 0.41484832763671875
+    },
+    {
+      "profile_id": "profile_003",
+      "locale": "en-US",
+      "scenario": "feed_next",
+      "action": "next",
+      "state": "media_ready",
+      "image_path": "/home/rathana/Desktop/automat_fb/profiles/profile_003/automation_evidence/20260925T112518_100184Z_FacebookPostTask/05_before_next.png",
+      "target": [
+        952,
+        899
+      ],
+      "candidate_count": 12,
+      "proposal_candidate_id": "c12",
+      "proposal_text": "Next",
+      "proposal_confidence": 1.0,
+      "proposal_center": [
+        953,
+        900
+      ],
+      "distance_to_target_px": 1.41,
+      "outcome": "correct",
+      "guard_result": "shadow_mode_active",
+      "executable_click": false,
+      "latency_ms": 0.22077560424804688
+    },
+    {
+      "profile_id": "profile_003",
+      "locale": "en-US",
+      "scenario": "feed_next",
+      "action": "next",
+      "state": "media_ready",
+      "image_path": "/home/rathana/Desktop/automat_fb/profiles/profile_003/automation_evidence/20260925T111509_829155Z_FacebookPostTask/05_before_next.png",
+      "target": [
+        952,
+        939
+      ],
+      "candidate_count": 15,
+      "proposal_candidate_id": "c9",
+      "proposal_text": "Next",
+      "proposal_confidence": 1.0,
+      "proposal_center": [
+        953,
+        940
+      ],
+      "distance_to_target_px": 1.41,
+      "outcome": "correct",
+      "guard_result": "shadow_mode_active",
+      "executable_click": false,
+      "latency_ms": 0.33974647521972656
+    },
+    {
+      "profile_id": "profile_002",
+      "locale": "en-US",
+      "scenario": "feed_publish",
+      "action": "publish",
+      "state": "post_enabled",
+      "image_path": "/home/rathana/Desktop/automat_fb/profiles/profile_002/automation_evidence/20260925T125122_832030Z_FacebookPostTask/04_before_publish.png",
+      "target": [
+        1072,
+        814
+      ],
+      "candidate_count": 18,
+      "proposal_candidate_id": "c18",
+      "proposal_text": "Post",
+      "proposal_confidence": 1.0,
+      "proposal_center": [
+        1073,
+        815
+      ],
+      "distance_to_target_px": 1.41,
+      "outcome": "correct",
+      "guard_result": "needs_review",
+      "executable_click": false,
+      "latency_ms": 0.3199577331542969
+    },
+    {
+      "profile_id": "profile_003",
+      "locale": "en-US",
+      "scenario": "feed_publish",
+      "action": "publish",
+      "state": "post_enabled",
+      "image_path": "/home/rathana/Desktop/automat_fb/profiles/profile_003/automation_evidence/20260925T112518_100184Z_FacebookPostTask/07_before_publish.png",
+      "target": [
+        1072,
+        858
+      ],
+      "candidate_count": 15,
+      "proposal_candidate_id": "c15",
+      "proposal_text": "Post",
+      "proposal_confidence": 1.0,
+      "proposal_center": [
+        1073,
+        860
+      ],
+      "distance_to_target_px": 2.24,
+      "outcome": "correct",
+      "guard_result": "needs_review",
+      "executable_click": false,
+      "latency_ms": 0.22125244140625
+    },
+    {
+      "profile_id": "profile_003",
+      "locale": "en-US",
+      "scenario": "feed_publish",
+      "action": "publish",
+      "state": "post_enabled",
+      "image_path": "/home/rathana/Desktop/automat_fb/profiles/profile_003/automation_evidence/20260925T111509_829155Z_FacebookPostTask/07_before_publish.png",
+      "target": [
+        1072,
+        858
+      ],
+      "candidate_count": 17,
+      "proposal_candidate_id": "c17",
+      "proposal_text": "Post",
+      "proposal_confidence": 1.0,
+      "proposal_center": [
+        1073,
+        860
+      ],
+      "distance_to_target_px": 2.24,
+      "outcome": "correct",
+      "guard_result": "needs_review",
+      "executable_click": false,
+      "latency_ms": 0.2791881561279297
+    },
+    {
+      "profile_id": "profile_002",
+      "locale": "en-US",
+      "scenario": "reel_next",
+      "action": "next",
+      "state": "media_ready",
+      "image_path": "/home/rathana/Desktop/automat_fb/profiles/profile_002/automation_evidence/20260925T120302_727944Z_FacebookReelTask/07_reel_edit_next_ready.png",
+      "target": [
+        290,
+        980
+      ],
+      "candidate_count": 8,
+      "proposal_candidate_id": "c6",
+      "proposal_text": "Next",
+      "proposal_confidence": 1.0,
+      "proposal_center": [
+        292,
+        981
+      ],
+      "distance_to_target_px": 2.24,
+      "outcome": "correct",
+      "guard_result": "shadow_mode_active",
+      "executable_click": false,
+      "latency_ms": 0.19407272338867188
+    },
+    {
+      "profile_id": "profile_003",
+      "locale": "en-US",
+      "scenario": "reel_next",
+      "action": "next",
+      "state": "media_ready",
+      "image_path": "/home/rathana/Desktop/automat_fb/profiles/profile_003/automation_evidence/20260925T113918_669856Z_FacebookReelTask/07_reel_edit_next_ready.png",
+      "target": [
+        290,
+        980
+      ],
+      "candidate_count": 5,
+      "proposal_candidate_id": "c4",
+      "proposal_text": "Next",
+      "proposal_confidence": 1.0,
+      "proposal_center": [
+        292,
+        981
+      ],
+      "distance_to_target_px": 2.24,
+      "outcome": "correct",
+      "guard_result": "shadow_mode_active",
+      "executable_click": false,
+      "latency_ms": 0.0896453857421875
+    },
+    {
+      "profile_id": "profile_003",
+      "locale": "en-US",
+      "scenario": "reel_next",
+      "action": "next",
+      "state": "media_ready",
+      "image_path": "/home/rathana/Desktop/automat_fb/profiles/profile_003/automation_evidence/20260925T113918_669856Z_FacebookReelTask/06_reel_next_ready.png",
+      "target": [
+        290,
+        980
+      ],
+      "candidate_count": 4,
+      "proposal_candidate_id": "c3",
+      "proposal_text": "Next",
+      "proposal_confidence": 1.0,
+      "proposal_center": [
+        292,
+        981
+      ],
+      "distance_to_target_px": 2.24,
+      "outcome": "correct",
+      "guard_result": "shadow_mode_active",
+      "executable_click": false,
+      "latency_ms": 0.08988380432128906
+    },
+    {
+      "profile_id": "profile_002",
+      "locale": "en-US",
+      "scenario": "reel_publish",
+      "action": "publish",
+      "state": "post_enabled",
+      "image_path": "/home/rathana/Desktop/automat_fb/profiles/profile_002/automation_evidence/20260925T120302_727944Z_FacebookReelTask/10_before_reel_publish.png",
+      "target": [
+        376,
+        980
+      ],
+      "candidate_count": 15,
+      "proposal_candidate_id": "c13",
+      "proposal_text": "Post",
+      "proposal_confidence": 1.0,
+      "proposal_center": [
+        378,
+        981
+      ],
+      "distance_to_target_px": 2.24,
+      "outcome": "correct",
+      "guard_result": "needs_review",
+      "executable_click": false,
+      "latency_ms": 0.3921985626220703
+    },
+    {
+      "profile_id": "profile_003",
+      "locale": "en-US",
+      "scenario": "reel_publish",
+      "action": "publish",
+      "state": "post_enabled",
+      "image_path": "/home/rathana/Desktop/automat_fb/profiles/profile_003/automation_evidence/20260925T113918_669856Z_FacebookReelTask/10_before_reel_publish.png",
+      "target": [
+        376,
+        980
+      ],
+      "candidate_count": 13,
+      "proposal_candidate_id": "c12",
+      "proposal_text": "Post",
+      "proposal_confidence": 1.0,
+      "proposal_center": [
+        378,
+        981
+      ],
+      "distance_to_target_px": 2.24,
+      "outcome": "correct",
+      "guard_result": "needs_review",
+      "executable_click": false,
+      "latency_ms": 0.20647048950195312
+    },
+    {
+      "profile_id": "profile_003",
+      "locale": "en-US",
+      "scenario": "reel_publish",
+      "action": "publish",
+      "state": "post_enabled",
+      "image_path": "/home/rathana/Desktop/automat_fb/profiles/profile_003/automation_evidence/20260925T113918_669856Z_FacebookReelTask/09_reel_publish_ready.png",
+      "target": [
+        376,
+        980
+      ],
+      "candidate_count": 13,
+      "proposal_candidate_id": "c12",
+      "proposal_text": "Post",
+      "proposal_confidence": 1.0,
+      "proposal_center": [
+        378,
+        981
+      ],
+      "distance_to_target_px": 2.24,
+      "outcome": "correct",
+      "guard_result": "needs_review",
+      "executable_click": false,
+      "latency_ms": 0.1995563507080078
+    }
+  ]
+}

@@ -47,6 +47,7 @@ export interface Profile {
   account: ProfileAccount;
   ram_usage?: string;
   cpu_usage?: string;
+  disk_usage?: string;
 }
 
 export interface SystemStats {

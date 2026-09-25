@@ -113,6 +113,51 @@ class PermalinkCorrelationTests(unittest.TestCase):
         self.assertEqual(result["post_match_confidence"], 0.0)
         self.assertIsNone(result["post_url_verified_at"])
 
+    def test_recent_timestamp_accepts_observed_dark_mode_ocr_substitutions(self):
+        self.assertTrue(BaseTask._is_recent_timestamp_text("a tew seconds a00"))
+        self.assertTrue(BaseTask._is_recent_timestamp_text("Jusl n0w"))
+        self.assertTrue(BaseTask._is_recent_timestamp_text("7Minutes Ano"))
+        self.assertFalse(BaseTask._is_recent_timestamp_text("published last year"))
+
+    @patch("time.sleep", return_value=None)
+    def test_correlates_canary_when_caption_is_split_and_timestamp_has_ocr_noise(self, _):
+        self.task.vision.read_text.return_value = [
+            {"text": "Fat Frog", "confidence": 0.93, "center": (1135, 851)},
+            {"text": "a tew seconds a00", "confidence": 0.25, "center": (1348, 871)},
+            {"text": "Telemetry canary test", "confidence": 0.98, "center": (1173, 903)},
+            {"text": "September 25, 2026", "confidence": 0.76, "center": (1432, 901)},
+        ]
+        self.task.client.get_current_url.return_value = (
+            "https://www.facebook.com/fatfrog/posts/pfbidCanary123?mibextid=tracking"
+        )
+
+        result = self.task.correlate_and_extract_permalink(
+            caption="Telemetry canary test — September 25, 2026",
+            media_type="post",
+        )
+
+        self.assertEqual(
+            result["post_url"],
+            "https://www.facebook.com/fatfrog/posts/pfbidCanary123",
+        )
+        self.task.human.click.assert_called_with(1348, 871)
+
+    @patch("time.sleep", return_value=None)
+    def test_does_not_bind_unrelated_recent_timestamp_to_caption(self, _):
+        self.task.vision.read_text.return_value = [
+            {"text": "Just now", "confidence": 0.95, "center": (50, 50)},
+            {"text": "Special announcement today", "confidence": 0.95, "center": (300, 250)},
+        ]
+
+        result = self.task.correlate_and_extract_permalink(
+            caption="Special announcement today",
+            media_type="post",
+            max_scans=1,
+        )
+
+        self.assertIsNone(result["post_url"])
+        self.task.human.click.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

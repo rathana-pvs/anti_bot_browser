@@ -79,6 +79,13 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
     return parseInt(localStorage.getItem('batch_creator_stagger') || '15', 10) || 15;
   });
 
+  const [preparationMode, setPreparationMode] = useState<'off' | 'brief' | 'extended'>(() => {
+    const rollingPipelineEnabled = localStorage.getItem('batch_creator_rolling_pipeline_v1') === 'true';
+    if (!rollingPipelineEnabled) return 'brief';
+    const saved = localStorage.getItem('batch_creator_preparation_mode');
+    return saved === 'off' || saved === 'brief' || saved === 'extended' ? saved : 'brief';
+  });
+
   const [aiSpinAll, setAiSpinAll] = useState(() => {
     const saved = localStorage.getItem('batch_creator_ai_spin');
     return saved !== null ? saved === 'true' : true;
@@ -117,7 +124,9 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
     localStorage.setItem('batch_creator_stagger', String(staggerMinutes));
     localStorage.setItem('batch_creator_ai_spin', String(aiSpinAll));
     localStorage.setItem('batch_creator_start_now', String(startNow));
-  }, [startTime, endTime, staggerMinutes, aiSpinAll, startNow]);
+    localStorage.setItem('batch_creator_preparation_mode', preparationMode);
+    localStorage.setItem('batch_creator_rolling_pipeline_v1', 'true');
+  }, [startTime, endTime, staggerMinutes, aiSpinAll, startNow, preparationMode]);
 
   const [isUploading, setIsUploading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -375,6 +384,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
           start_time: startTime,
           end_time: endTime,
           profile_stagger_minutes: staggerMinutes,
+          session_preparation_mode: preparationMode,
           start_now: executeImmediate,
         },
         posts: posts.map((p) => ({
@@ -868,7 +878,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
           3. Daily Pacing & Profile Stagger Schedule
         </h3>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
           <div>
             <label className="block text-zinc-400 mb-1 font-medium">Daily Start Time</label>
             <input
@@ -901,6 +911,20 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
               onChange={(e) => setStaggerMinutes(parseInt(e.target.value, 10) || 15)}
               className="w-full px-3 py-2 rounded-lg bg-zinc-950 border border-zinc-800 text-white focus:outline-none focus:border-blue-500"
             />
+          </div>
+
+          <div>
+            <label className="block text-zinc-400 mb-1 font-medium">Rolling Session Preparation</label>
+            <select
+              value={preparationMode}
+              onChange={(e) => setPreparationMode(e.target.value as 'off' | 'brief' | 'extended')}
+              className="w-full px-3 py-2 rounded-lg bg-zinc-950 border border-zinc-800 text-white focus:outline-none focus:border-blue-500"
+            >
+              <option value="off">Off</option>
+              <option value="brief">Brief browsing (40–55s)</option>
+              <option value="extended">Extended browsing (55–70s)</option>
+            </select>
+            <p className="text-[10px] text-zinc-500 mt-1">Starts the next profile, validates login/theme, scrolls without engagement, then keeps it ready.</p>
           </div>
         </div>
 
@@ -942,7 +966,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
             <strong className="text-white">{totalExecutions} total scheduled executions today</strong>.
           </div>
           <div className="text-zinc-400 font-mono text-[11px]">
-            Anti-pattern order shuffle enabled per profile
+            Persisted shuffled profile order · maximum two open containers
           </div>
         </div>
 

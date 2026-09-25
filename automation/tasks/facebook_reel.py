@@ -7,6 +7,7 @@ import re
 import time
 
 from engine.screen_state import ScreenState
+from engine.telemetry import timed_telemetry_step
 from engine.vision import VisionEngine
 from .base_task import BaseTask
 
@@ -138,19 +139,39 @@ class FacebookReelTask(BaseTask):
         return self.vision.find_stable(locate, attempts=2, tolerance_px=8.0)
 
     def _wait_for_target(self, locator, timeout: float, label: str):
+        started = time.perf_counter()
+
+        def finish(status: str) -> None:
+            step_names = {
+                "reel_next_ready": "media_processing",
+                "reel_publish_ready": "publish_readiness",
+            }
+            telemetry = getattr(self, "telemetry", None)
+            if telemetry is not None:
+                telemetry.record_step(
+                    step_names.get(label, "target_wait"),
+                    (time.perf_counter() - started) * 1000.0,
+                    outcome=status,
+                    target=label,
+                )
+
         deadline = time.time() + timeout
         while time.time() < deadline:
             screen = self.client.screenshot()
             observation = self.recognizer.observe(screen)
             if observation.state == ScreenState.ERROR_DIALOG:
+                finish("error")
                 return "error", None, screen
             target = locator()
             if target:
                 self.capture_evidence(label, screen, target=list(target))
+                finish("ready")
                 return "ready", target, screen
             time.sleep(2.0)
+        finish("timeout")
         return "timeout", None, None
 
+    @timed_telemetry_step("publication_verification")
     def _verify_reel_publication(self, before_publish, timeout: float = 300.0):
         deadline = time.time() + timeout
         last = None

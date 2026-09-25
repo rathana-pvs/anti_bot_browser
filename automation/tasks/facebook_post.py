@@ -4,6 +4,7 @@ import random
 import time
 import re
 from engine.screen_state import ScreenState
+from engine.telemetry import timed_telemetry_step
 from .base_task import BaseTask
 
 
@@ -56,15 +57,58 @@ class FacebookPostTask(BaseTask):
 
         return self.vision.find_stable(locate, attempts=2, tolerance_px=8.0)
 
+    @staticmethod
+    def _is_caption_prompt(text: str) -> bool:
+        """Recognize the caption prompt while tolerating narrow OCR substitutions."""
+        normalized = re.sub(r"[^a-z0-9]+", " ", text.casefold()).strip()
+        words = set(normalized.split())
+        # EasyOCR commonly reads the final 't' as lowercase 'l' or uppercase 'I'
+        # and may split the apostrophe-s into a separate 5/$ token.
+        has_what = bool(words & {"what", "whats", "what5", "whal", "whai"})
+        return has_what and {"on", "your", "mind"}.issubset(words)
+
+    def _stable_feed_composer_target(self):
+        """Locate the profile feed composer using a stable, region-gated phrase."""
+        def locate():
+            started = time.perf_counter()
+            screen = self.client.screenshot()
+            region = self.vision.get_pixel_region(screen.shape, "profile_post_stream")
+            candidates = self.vision.read_text(screen, region=region, min_confidence=0.20)
+            match = next(
+                (item for item in candidates if self._is_caption_prompt(item["text"])),
+                None,
+            )
+            self.record_locator_telemetry(
+                "profile_composer_prompt",
+                "region_phrase_ocr",
+                "profile_post_stream",
+                (time.perf_counter() - started) * 1000.0,
+                bool(match),
+                confidence=match.get("confidence") if match else None,
+                fallback_reason=None if match else "caption_phrase_missing",
+            )
+            return match["center"] if match else None
+
+        return self.vision.find_stable(locate, attempts=2, tolerance_px=8.0)
+
     def _stable_blue_text_target(self, labels, region="bottom_action_bar"):
         """Require an exact label token inside the detected blue button bounds."""
         def locate():
+            started = time.perf_counter()
             screen = self.client.screenshot()
             candidates = self.vision.find_blue_action_buttons(
                 screen=screen,
                 region=region,
             )
             if not isinstance(candidates, list) or not candidates:
+                self.record_locator_telemetry(
+                    "enabled_action:" + "|".join(labels),
+                    "enabled_blue_geometry",
+                    region,
+                    (time.perf_counter() - started) * 1000.0,
+                    False,
+                    fallback_reason="no_enabled_blue_button",
+                )
                 return None
             button = candidates[0]
             x1, y1, x2, y2 = button["bounds"]
@@ -76,7 +120,23 @@ class FacebookPostTask(BaseTask):
             ):
                 words = set(re.sub(r"[^a-z0-9]+", " ", item["text"].casefold()).split())
                 if words & wanted:
+                    self.record_locator_telemetry(
+                        "enabled_action:" + "|".join(labels),
+                        "enabled_blue_plus_ocr",
+                        region,
+                        (time.perf_counter() - started) * 1000.0,
+                        True,
+                        confidence=item["confidence"],
+                    )
                     return button["center"]
+            self.record_locator_telemetry(
+                "enabled_action:" + "|".join(labels),
+                "enabled_blue_plus_ocr",
+                region,
+                (time.perf_counter() - started) * 1000.0,
+                False,
+                fallback_reason="button_label_mismatch",
+            )
             return None
 
         return self.vision.find_stable(locate, attempts=2, tolerance_px=8.0)
@@ -84,23 +144,40 @@ class FacebookPostTask(BaseTask):
     def _stable_review_post_target(self):
         """Use geometry only after the Post settings review was independently seen."""
         def locate():
+            started = time.perf_counter()
             screen = self.client.screenshot()
             observation = self.recognizer.observe(screen)
             if (
                 observation.state != ScreenState.POST_ENABLED
                 or "post settings review" not in observation.signals
             ):
+                self.record_locator_telemetry(
+                    "review_post_action", "state_gated_geometry", "bottom_action_bar",
+                    (time.perf_counter() - started) * 1000.0, False,
+                    confidence=observation.confidence, fallback_reason="review_state_not_confirmed",
+                )
                 return None
             candidates = self.vision.find_blue_action_buttons(
                 screen=screen,
                 region="bottom_action_bar",
             )
             if not isinstance(candidates, list) or len(candidates) != 1:
+                self.record_locator_telemetry(
+                    "review_post_action", "state_gated_geometry", "bottom_action_bar",
+                    (time.perf_counter() - started) * 1000.0, False,
+                    confidence=observation.confidence, fallback_reason="action_not_unique",
+                )
                 return None
+            self.record_locator_telemetry(
+                "review_post_action", "state_gated_geometry", "bottom_action_bar",
+                (time.perf_counter() - started) * 1000.0, True,
+                confidence=observation.confidence,
+            )
             return candidates[0]["center"]
 
         return self.vision.find_stable(locate, attempts=2, tolerance_px=8.0)
 
+    @timed_telemetry_step("publish_readiness")
     def _stable_post_target(self, review_confirmed=False):
         target = self._stable_blue_text_target(("post", "publish"), region="bottom_action_bar")
         if target:
@@ -138,44 +215,57 @@ class FacebookPostTask(BaseTask):
         return None
 
     def _stable_caption_target(self):
-        """Locate the caption prompt inside the active composer modal only."""
+        """Locate the caption prompt inside a visually confirmed composer modal."""
         def locate():
+            started = time.perf_counter()
             screen = self.client.screenshot()
-            blue = self.vision.find_blue_action_button(
-                screen=screen,
-                region="bottom_action_bar",
-            )
-            if not blue:
-                return None
-            # The caption row is above the modal's bottom CTA. Cropping avoids
-            # matching the feed composer or the adjacent AI-label control.
-            region = (
-                max(0, blue[0] - 280),
-                max(0, blue[1] - 540),
-                560,
-                360,
+            region = self.vision.get_pixel_region(
+                screen.shape,
+                "composer_modal",
             )
             candidates = self.vision.read_text(
-                screen,
+                screen=screen,
                 region=region,
                 min_confidence=0.20,
             )
+            title_target = None
+            caption_target = None
             for item in candidates:
                 normalized = re.sub(r"[^a-z0-9]+", " ", item["text"].casefold()).strip()
                 words = set(normalized.split())
-                # OCR commonly renders the apostrophe as 5, $, or whitespace.
-                # Requiring all four words inside the modal caption region is
+                if {"create", "post"}.issubset(words) and len(words) <= 4:
+                    title_target = item
+                    continue
+                # Requiring the full phrase inside the modal caption region is
                 # strict enough to reject the neighboring AI-label control.
-                has_what = "what" in words or "whats" in words or "what5" in words
-                if has_what and {"on", "your", "mind"}.issubset(words):
-                    return item["center"]
+                if self._is_caption_prompt(item["text"]):
+                    caption_target = item
                 if "write something" in normalized or "create a public post" in normalized:
-                    return item["center"]
-            # Visual fallback: caption input is centered above media preview in modal
-            return (blue[0] - 160, blue[1] - 340)
+                    caption_target = item
+
+            # Before any caption is entered, Facebook's Next button is disabled
+            # and gray. Confirm the modal using its title instead of requiring an
+            # enabled blue action. The vertical ordering rejects the identical
+            # prompt that remains visible in the dimmed feed behind the modal.
+            found = bool(
+                title_target
+                and caption_target
+                and title_target["center"][1] < caption_target["center"][1]
+            )
+            self.record_locator_telemetry(
+                "composer_caption_prompt",
+                "modal_title_plus_ocr",
+                "composer_modal",
+                (time.perf_counter() - started) * 1000.0,
+                found,
+                confidence=caption_target.get("confidence") if found else None,
+                fallback_reason=None if found else "modal_title_or_caption_missing",
+            )
+            return caption_target["center"] if found else None
 
         return self.vision.find_stable(locate, attempts=2, tolerance_px=16.0)
 
+    @timed_telemetry_step("media_processing")
     def _wait_until_media_ready(self, timeout: float = 75.0):
         deadline = time.time() + timeout
         last = None
@@ -225,6 +315,7 @@ class FacebookPostTask(BaseTask):
                     return True
         return False
 
+    @timed_telemetry_step("publication_verification")
     def _verify_publication(self, before_publish, timeout: float = 300.0):
         """
         Confirm publication.
@@ -384,6 +475,8 @@ class FacebookPostTask(BaseTask):
                 attempts=2,
                 tolerance_px=8.0,
             )
+            if not composer_pos:
+                composer_pos = self._stable_feed_composer_target()
             if not composer_pos:
                 composer_pos = self._stable_ocr_target((
                     "what's on your mind",

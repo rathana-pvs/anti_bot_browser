@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { QueueDataResponse, QueueExecutionItem } from '../types/automation';
+import { QueueDataResponse, QueueExecutionItem, ResourceMode, ResourceModeSettings } from '../types/automation';
 import { Profile } from '../types/profile';
-import { fetchQueue, deleteBatch, deleteExecution, runExecutionNow, resolveUncertainExecution } from '../services/api';
+import { backfillExecutionPermalink, fetchQueue, fetchResourceMode, updateResourceMode, deleteBatch, deleteExecution, runExecutionNow, resolveUncertainExecution } from '../services/api';
 import {
   Clock,
   Play,
@@ -42,6 +42,8 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [actionError, setActionError] = useState<string | null>(null);
   const [lightboxMedia, setLightboxMedia] = useState<LightboxMedia | null>(null);
+  const [resourceSettings, setResourceSettings] = useState<ResourceModeSettings | null>(null);
+  const [savingResourceMode, setSavingResourceMode] = useState(false);
 
   // Phase 0 & Phase 1: Review & Resolve Uncertain State
   const [resolvingItem, setResolvingItem] = useState<QueueExecutionItem | null>(null);
@@ -58,6 +60,27 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
       console.error('Failed to load queue:', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadResourceSettings = async () => {
+    try {
+      setResourceSettings(await fetchResourceMode());
+    } catch (err) {
+      console.error('Failed to load resource mode:', err);
+    }
+  };
+
+  const handleResourceModeChange = async (mode: ResourceMode) => {
+    setSavingResourceMode(true);
+    setActionError(null);
+    try {
+      setResourceSettings(await updateResourceMode(mode));
+      await loadQueue();
+    } catch (err: any) {
+      setActionError(err.message || 'Failed to update resource mode');
+    } finally {
+      setSavingResourceMode(false);
     }
   };
 
@@ -85,7 +108,11 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
 
   useEffect(() => {
     loadQueue();
-    const interval = setInterval(loadQueue, 5000);
+    loadResourceSettings();
+    const interval = setInterval(() => {
+      loadQueue();
+      loadResourceSettings();
+    }, 5000);
     return () => clearInterval(interval);
   }, []);
 
@@ -118,6 +145,24 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
     }
   };
 
+  const handlePermalinkBackfill = async (item: QueueExecutionItem) => {
+    const postUrl = window.prompt('Paste the verified Facebook permalink for this published execution:');
+    if (!postUrl?.trim()) return;
+    setActionError(null);
+    try {
+      await backfillExecutionPermalink(
+        item.execution_id,
+        postUrl.trim(),
+        1.0,
+        'Operator-supplied verified permalink',
+        'dashboard_manual_backfill',
+      );
+      await loadQueue();
+    } catch (err: any) {
+      setActionError(err.message || 'Failed to attach verified permalink');
+    }
+  };
+
   const getProfileName = (id: string) => {
     const p = profiles.find((prof) => prof.id === id);
     return p ? p.name : id;
@@ -132,6 +177,16 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
     }
   };
 
+  const formatDuration = (durationMs: number | null | undefined) => {
+    if (durationMs === null || durationMs === undefined) return '—';
+    if (durationMs >= 60_000) return `${(durationMs / 60_000).toFixed(1)}m`;
+    if (durationMs >= 1_000) return `${(durationMs / 1_000).toFixed(1)}s`;
+    return `${Math.round(durationMs)}ms`;
+  };
+
+  const formatPercent = (value: number | null | undefined) =>
+    value === null || value === undefined ? '—' : `${value.toFixed(1)}%`;
+
   const getStatusBadge = (status: string, executionId?: string) => {
     switch (status) {
       case 'published':
@@ -144,6 +199,18 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
         return (
           <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-blue-950 text-blue-300 border border-blue-800/80 flex items-center gap-1 animate-pulse">
             <Loader2 className="w-3 h-3 text-blue-400 animate-spin" /> Running
+          </span>
+        );
+      case 'preparing':
+        return (
+          <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-violet-950 text-violet-300 border border-violet-800/80 flex items-center gap-1 animate-pulse">
+            <Loader2 className="w-3 h-3 text-violet-400 animate-spin" /> Preparing
+          </span>
+        );
+      case 'ready':
+        return (
+          <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-cyan-950 text-cyan-300 border border-cyan-800/80 flex items-center gap-1">
+            <CheckCircle2 className="w-3 h-3 text-cyan-400" /> Ready for Publisher
           </span>
         );
       case 'failed':
@@ -198,6 +265,10 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
         if (execItem.status !== 'failed' && execItem.status !== 'failed_before_publish') return false;
       } else if (filterStatus === 'uncertain') {
         if (execItem.status !== 'uncertain' && execItem.status !== 'needs_review') return false;
+      } else if (filterStatus === 'pending') {
+        if (execItem.status !== 'pending' && execItem.status !== 'ready') return false;
+      } else if (filterStatus === 'running') {
+        if (execItem.status !== 'running' && execItem.status !== 'preparing') return false;
       } else if (execItem.status !== filterStatus) {
         return false;
       }
@@ -214,8 +285,63 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
         </div>
       )}
 
+      <div className="p-4 rounded-xl bg-zinc-900/60 border border-zinc-800 space-y-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h4 className="text-xs font-semibold text-zinc-200 uppercase tracking-wider flex items-center gap-2">
+              <Layers className="w-4 h-4 text-violet-400" /> Resource Mode
+            </h4>
+            <p className="text-[11px] text-zinc-500 mt-1">
+              Changes apply to new scheduler claims; active posts are never interrupted.
+            </p>
+          </div>
+          {resourceSettings && (
+            <div className="text-right text-[10px] text-zinc-500 font-mono">
+              <div>{resourceSettings.hardware.total_memory_gb} GB RAM · {resourceSettings.hardware.cpu_threads} threads</div>
+              <div>Recommended: <span className="text-violet-300 uppercase">{resourceSettings.recommended_mode}</span></div>
+            </div>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          {(['auto', 'low', 'medium', 'high'] as ResourceMode[]).map((mode) => {
+            const supported = Boolean(resourceSettings) && (
+              mode === 'auto' || resourceSettings!.supported_modes[mode as 'low' | 'medium' | 'high']
+            );
+            const selected = resourceSettings?.selected_mode === mode;
+            return (
+              <button
+                key={mode}
+                type="button"
+                disabled={!supported || savingResourceMode}
+                onClick={() => handleResourceModeChange(mode)}
+                className={`rounded-lg border px-3 py-2 text-xs font-semibold uppercase transition-all ${
+                  selected
+                    ? 'bg-violet-600/20 border-violet-500 text-violet-200'
+                    : supported
+                      ? 'bg-zinc-950/70 border-zinc-800 text-zinc-400 hover:border-zinc-600 hover:text-zinc-200'
+                      : 'bg-zinc-950/30 border-zinc-900 text-zinc-700 cursor-not-allowed'
+                }`}
+              >
+                {mode}{mode === 'auto' && resourceSettings ? ` (${resourceSettings.effective_mode})` : ''}
+              </button>
+            );
+          })}
+        </div>
+
+        {resourceSettings && (
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-[10px] font-mono">
+            <div className="rounded bg-zinc-950/70 border border-zinc-800 p-2 text-zinc-400">Publishers <span className="text-white">{resourceSettings.limits.max_publishers}</span></div>
+            <div className="rounded bg-zinc-950/70 border border-zinc-800 p-2 text-zinc-400">Preparers <span className="text-white">{resourceSettings.limits.max_preparers}</span></div>
+            <div className="rounded bg-zinc-950/70 border border-zinc-800 p-2 text-zinc-400">Containers <span className="text-white">{resourceSettings.runtime.active_profile_containers}/{resourceSettings.limits.max_active_profile_containers}</span></div>
+            <div className="rounded bg-zinc-950/70 border border-zinc-800 p-2 text-zinc-400">RAM <span className="text-white">{resourceSettings.runtime.memory_used_percent}%</span></div>
+            <div className="rounded bg-zinc-950/70 border border-zinc-800 p-2 text-zinc-400">CPU <span className="text-white">{resourceSettings.runtime.sustained_cpu_percent}%</span></div>
+          </div>
+        )}
+      </div>
+
       {/* Top Telemetry Stats Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-7 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
         <div className="p-3 rounded-xl bg-zinc-900/60 border border-zinc-800 text-center">
           <div className="text-[11px] text-zinc-500 uppercase font-medium tracking-wider">Total</div>
           <div className="text-xl font-bold text-white mt-0.5 font-mono">{queueData?.stats?.total || 0}</div>
@@ -252,6 +378,116 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
           <div className="text-[11px] text-zinc-500 uppercase font-medium tracking-wider">Skipped</div>
           <div className="text-xl font-bold text-zinc-500 mt-0.5 font-mono">{queueData?.stats?.skipped || 0}</div>
         </div>
+        <div
+          className="p-3 rounded-xl bg-violet-950/20 border border-violet-900/40 text-center"
+          title={`Publishers ${queueData?.scheduler?.active.publishers || 0}/${queueData?.scheduler?.config.max_publishers || 1}; preparers ${queueData?.scheduler?.active.preparers || 0}/${queueData?.scheduler?.config.max_preparers || 1}`}
+        >
+          <div className="text-[11px] text-violet-400 uppercase font-medium tracking-wider">Worker slots</div>
+          <div className="text-xl font-bold text-violet-300 mt-0.5 font-mono">
+            {queueData?.scheduler?.active.total || 0}/{queueData?.scheduler?.config.max_total_automation_tasks || 2}
+          </div>
+        </div>
+      </div>
+
+      {/* Evidence-backed baseline telemetry. Empty until measured executions exist. */}
+      <div className="p-4 rounded-xl bg-zinc-900/60 border border-zinc-800 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h4 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider flex items-center gap-2">
+            <Clock className="w-3.5 h-3.5 text-cyan-400" /> Measured Reliability Baseline
+          </h4>
+          <span className="text-[10px] text-zinc-500 font-mono">
+            {queueData?.telemetry_summary?.measured_executions || 0} measured / {queueData?.telemetry_summary?.terminal_executions || 0} terminal
+          </span>
+        </div>
+
+        {(queueData?.telemetry_summary?.measured_executions || 0) === 0 ? (
+          <div className="text-[11px] text-zinc-500 border border-dashed border-zinc-800 rounded-lg p-3">
+            No measured executions yet. New runs will populate duration, OCR, locator, and review metrics automatically.
+          </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+              {[
+                ['Confirmed', formatPercent(queueData?.telemetry_summary?.confirmed_publication_rate_pct)],
+                ['Uncertain', formatPercent(queueData?.telemetry_summary?.uncertain_rate_pct)],
+                ['Human review', formatPercent(queueData?.telemetry_summary?.human_review_rate_pct)],
+                ['Median run', formatDuration(queueData?.telemetry_summary?.median_execution_duration_ms)],
+                ['P95 run', formatDuration(queueData?.telemetry_summary?.p95_execution_duration_ms)],
+                ['P95 OCR', formatDuration(queueData?.telemetry_summary?.p95_ocr_duration_ms)],
+              ].map(([label, value]) => (
+                <div key={label} className="rounded-lg bg-zinc-950/70 border border-zinc-800 p-2.5">
+                  <div className="text-[9px] uppercase tracking-wider text-zinc-500">{label}</div>
+                  <div className="text-sm font-semibold text-zinc-200 font-mono mt-0.5">{value}</div>
+                </div>
+              ))}
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+              <div className="rounded-lg bg-zinc-950/50 border border-zinc-800 p-3">
+                <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-2">
+                  OCR inference latency ({queueData?.telemetry_summary?.ocr_inference_calls ?? queueData?.telemetry_summary?.ocr_calls ?? 0} runs,
+                  {' '}{queueData?.telemetry_summary?.ocr_cache_hits || 0} cache hits,
+                  {' '}{formatPercent(queueData?.telemetry_summary?.ocr_cache_hit_rate_pct)})
+                </div>
+                <div className="space-y-1.5">
+                  {Object.entries(queueData?.telemetry_summary?.ocr_by_region || {})
+                    .sort(([, a], [, b]) => b.calls - a.calls)
+                    .slice(0, 5)
+                    .map(([region, stats]) => (
+                      <div key={region} className="grid grid-cols-[1fr_auto_auto] gap-3 text-[10px] font-mono">
+                        <span className="text-zinc-400 truncate" title={region}>{region}</span>
+                        <span className="text-zinc-500">n={stats.calls}</span>
+                        <span className="text-cyan-300">p95 {formatDuration(stats.p95_duration_ms)}</span>
+                      </div>
+                    ))}
+                </div>
+              </div>
+
+              <div className="rounded-lg bg-zinc-950/50 border border-zinc-800 p-3">
+                <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-2 flex justify-between">
+                  <span>Locator tiers</span>
+                  <span>fallback {formatPercent(queueData?.telemetry_summary?.locator_fallback_rate_pct)}</span>
+                </div>
+                <div className="space-y-1.5">
+                  {Object.entries(queueData?.telemetry_summary?.locator_tier_counts || {})
+                    .sort(([, a], [, b]) => b - a)
+                    .slice(0, 5)
+                    .map(([tier, count]) => (
+                      <div key={tier} className="flex items-center justify-between gap-3 text-[10px] font-mono">
+                        <span className="text-zinc-400 truncate" title={tier}>{tier.replace(/_/g, ' ')}</span>
+                        <span className="text-violet-300">{count}</span>
+                      </div>
+                    ))}
+                </div>
+              </div>
+
+              <div className="rounded-lg bg-zinc-950/50 border border-zinc-800 p-3">
+                <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-2 flex justify-between">
+                  <span>Semantic shadow</span>
+                  <span>{queueData?.telemetry_summary?.semantic_shadow_blocked || 0} clicks blocked</span>
+                </div>
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-3 text-[10px] font-mono">
+                    <span className="text-zinc-400">validated proposals</span>
+                    <span className="text-amber-300">
+                      {queueData?.telemetry_summary?.semantic_validated || 0}/
+                      {queueData?.telemetry_summary?.semantic_proposals || 0}
+                      {' '}({formatPercent(queueData?.telemetry_summary?.semantic_validation_rate_pct)})
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-3 text-[10px] font-mono">
+                    <span className="text-zinc-400">fresh label confirmations</span>
+                    <span className="text-emerald-300">{queueData?.telemetry_summary?.semantic_fresh_confirmed || 0}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-3 text-[10px] font-mono">
+                    <span className="text-zinc-400">p95 provider latency</span>
+                    <span className="text-cyan-300">{formatDuration(queueData?.telemetry_summary?.p95_semantic_latency_ms)}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </>
+        )}
       </div>
 
       {/* Filter and Control Bar */}
@@ -423,6 +659,27 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                       </div>
                     )}
 
+                    {item.first_comment_status && item.first_comment_status !== 'not_requested' && (
+                      <div
+                        className={`text-[10px] font-medium ${
+                          item.first_comment_status === 'submitted_verified'
+                            ? 'text-emerald-400'
+                            : item.first_comment_status === 'submission_pending'
+                              ? 'text-amber-400'
+                              : 'text-zinc-400'
+                        }`}
+                        title={item.first_comment_verified_at
+                          ? `Verified at ${new Date(item.first_comment_verified_at).toLocaleString()}`
+                          : 'Comment submission was not visually verified'}
+                      >
+                        {item.first_comment_status === 'submitted_verified'
+                          ? '✓ Comment verified'
+                          : item.first_comment_status === 'submission_pending'
+                            ? '⚠ Comment pending review'
+                            : '◌ Comment submitted, unverified'}
+                      </div>
+                    )}
+
                     {item.stage && (
                       <div className="text-[10px] text-zinc-500 font-mono mt-0.5">
                         Stage: <span className="text-zinc-400">{item.stage}</span>
@@ -449,11 +706,23 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                       target="_blank"
                       rel="noreferrer"
                       className="px-2.5 py-1 rounded text-[11px] font-semibold bg-blue-950/80 hover:bg-blue-900 text-blue-300 hover:text-blue-100 border border-blue-800/80 hover:border-blue-600 flex items-center gap-1.5 transition-all shadow-sm group"
-                      title={`Verified Facebook Permalink (Match Confidence: ${Math.round((item.post_match_confidence || 1.0) * 100)}%)`}
+                      title={`Verified Facebook Permalink (Match Confidence: ${Math.round((item.post_match_confidence ?? 1.0) * 100)}%)`}
                     >
                       <ExternalLink className="w-3 h-3 text-blue-400 group-hover:scale-110 transition-transform" />
                       <span>View on FB</span>
                     </a>
+                  )}
+
+                  {item.status === 'published' && !item.post_url && (
+                    <button
+                      type="button"
+                      onClick={() => handlePermalinkBackfill(item)}
+                      className="px-2.5 py-1 rounded text-[11px] font-semibold bg-amber-950/80 hover:bg-amber-900 text-amber-300 border border-amber-800/80 hover:border-amber-600 flex items-center gap-1.5 transition-all"
+                      title="Publication is confirmed, but the permalink is unresolved. Attach a validated Facebook URL."
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                      Add verified link
+                    </button>
                   )}
 
                   {item.status === 'pending' && (
@@ -496,14 +765,23 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                     </button>
                   )}
 
-                  <button
-                    type="button"
-                    onClick={() => handleDeleteExecution(item.execution_id)}
-                    className="p-1 rounded text-zinc-500 hover:text-red-400 transition-colors cursor-pointer"
-                    title="Remove from queue"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                  {!['running', 'uncertain', 'needs_review'].includes(item.status) ? (
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteExecution(item.execution_id)}
+                      className="p-1 rounded text-zinc-500 hover:text-red-400 transition-colors cursor-pointer"
+                      title="Remove from queue"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  ) : (
+                    <span
+                      className="p-1 text-amber-500/70"
+                      title="Deletion is locked while execution is active or its publication outcome is unresolved"
+                    >
+                      <Lock className="w-3.5 h-3.5" />
+                    </span>
+                  )}
                 </div>
               </div>
             ))}

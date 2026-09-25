@@ -19,6 +19,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
 
+import cv2
 import numpy as np
 
 import sys
@@ -176,6 +177,51 @@ class VisionCascadeTests(unittest.TestCase):
         self.assertEqual(self.vision.find_text.call_count, 3)
 
 
+class OcrOptimizationTests(unittest.TestCase):
+    def setUp(self):
+        self.client = Mock(profile_id="ocr_cache_profile")
+        self.vision = VisionEngine(self.client)
+        self.screen = np.full((120, 240, 3), 45, dtype=np.uint8)
+
+    def test_identical_screen_region_reuses_ocr_inference(self):
+        reader = Mock()
+        reader.readtext.return_value = [
+            ([[10, 10], [110, 10], [110, 30], [10, 30]], "Post", 0.75),
+        ]
+        self.vision.telemetry = Mock()
+
+        with patch.object(VisionEngine, "_get_ocr_reader", return_value=reader):
+            first = self.vision.read_text(
+                self.screen,
+                region=(0, 0, 200, 80),
+                min_confidence=0.50,
+            )
+            second = self.vision.read_text(
+                self.screen.copy(),
+                region=(0, 0, 200, 80),
+                min_confidence=0.80,
+            )
+
+        self.assertEqual(reader.readtext.call_count, 1)
+        self.assertEqual(first[0]["text"], "Post")
+        self.assertEqual(second, [])
+        self.assertEqual(
+            self.vision.telemetry.record_ocr.call_args_list[-1].kwargs["outcome"],
+            "cache_hit",
+        )
+
+    def test_dark_targeted_preprocessing_changes_luminance_only_path(self):
+        gradient = np.tile(np.arange(40, 100, dtype=np.uint8), (80, 1))
+        crop = cv2.cvtColor(gradient, cv2.COLOR_GRAY2BGR)
+        self.vision.theme = "dark"
+
+        prepared, scale = self.vision._prepare_ocr_image(crop, targeted=True)
+
+        self.assertEqual(scale, 1.0)
+        self.assertEqual(prepared.shape, crop.shape)
+        self.assertFalse(np.array_equal(prepared, crop))
+
+
 class ResilientElementCacheTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp()
@@ -271,6 +317,19 @@ class ResilientElementCacheTests(unittest.TestCase):
 
         hint = self.vision.get_cached_hint("legacy_btn", screen)
         self.assertEqual(hint, (450, 600))
+
+    def test_cache_isolated_by_theme_resolution_locale_and_zoom(self):
+        screen = (1080, 1920, 3)
+        self.vision.set_runtime_context("1920x1080", "en-US", 1.0)
+        self.vision.theme = "light"
+        self.vision.record_cache_hit("context_btn", (960, 540), screen)
+
+        self.assertEqual(self.vision.get_cached_hint("context_btn", screen), (960, 540))
+        self.vision.theme = "dark"
+        self.assertIsNone(self.vision.get_cached_hint("context_btn", screen))
+        self.vision.theme = "light"
+        self.vision.locale = "fr-FR"
+        self.assertIsNone(self.vision.get_cached_hint("context_btn", screen))
 
 
 if __name__ == "__main__":

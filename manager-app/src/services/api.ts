@@ -173,6 +173,27 @@ export async function fetchQueue(): Promise<import('../types/automation').QueueD
   return res.json();
 }
 
+export async function fetchResourceMode(): Promise<import('../types/automation').ResourceModeSettings> {
+  const res = await fetch(`${API_BASE}/settings/resource-mode`);
+  if (!res.ok) throw new Error('Failed to fetch resource mode');
+  return res.json();
+}
+
+export async function updateResourceMode(
+  mode: import('../types/automation').ResourceMode
+): Promise<import('../types/automation').ResourceModeSettings> {
+  const res = await fetch(`${API_BASE}/settings/resource-mode`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode }),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.error || 'Failed to update resource mode');
+  }
+  return res.json();
+}
+
 export async function createBatch(
   params: import('../types/automation').CreateBatchParams
 ): Promise<{ success: boolean; batch_id: string; total_executions: number; batch: import('../types/automation').DailyBatch }> {
@@ -233,6 +254,44 @@ export async function resolveUncertainExecution(
   return res.json();
 }
 
+export async function backfillExecutionPermalink(
+  executionId: string,
+  post_url: string,
+  match_confidence?: number,
+  note?: string,
+  source?: string
+): Promise<{ success: boolean; message: string; execution: import('../types/automation').QueueExecutionItem }> {
+  const res = await fetch(`${API_BASE}/queue/backfill-permalink/${executionId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ post_url, match_confidence, note, source }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to attach verified permalink');
+  }
+  return res.json();
+}
+
+export async function backfillExecutionCommentStatus(
+  executionId: string,
+  status: 'submitted_verified' | 'submitted_unverified' | 'submission_pending',
+  evidence_dir?: string,
+  note?: string,
+  source?: string
+): Promise<{ success: boolean; message: string; execution: import('../types/automation').QueueExecutionItem }> {
+  const res = await fetch(`${API_BASE}/queue/backfill-comment/${executionId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status, evidence_dir, note, source }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to attach comment evidence');
+  }
+  return res.json();
+}
+
 export async function fetchMediaList(): Promise<import('../types/automation').MediaItem[]> {
   const res = await fetch(`${API_BASE}/media/list`);
   if (!res.ok) throw new Error('Failed to fetch media list');
@@ -266,5 +325,3 @@ export async function generateAiSpins(
   if (!res.ok) throw new Error('Failed to generate AI spins');
   return res.json();
 }
-
-

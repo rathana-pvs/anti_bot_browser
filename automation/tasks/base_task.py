@@ -1,5 +1,7 @@
 """Base Task Class for Browser Automation."""
 
+import json
+import os
 import random
 import re
 import time
@@ -11,7 +13,12 @@ from engine.evidence import EvidenceRecorder
 from engine.human_input import HumanInput
 from engine.screen_state import FacebookStateRecognizer, ScreenState
 from engine.vision import VisionEngine
-from engine.semantic_fallback import SemanticFallbackEngine
+from engine.semantic_fallback import (
+    EXPECTED_ACTION_STATES,
+    SemanticFallbackEngine,
+    collect_action_candidates,
+)
+from engine.telemetry import TelemetryRecorder, timed_telemetry_step
 
 
 class BaseTask:
@@ -22,6 +29,12 @@ class BaseTask:
         self.vision = VisionEngine(self.client)
         self.recognizer = FacebookStateRecognizer(self.vision)
         self.evidence = EvidenceRecorder(profile_id, self.__class__.__name__)
+        self.telemetry = TelemetryRecorder(
+            profile_id,
+            self.__class__.__name__,
+            self.evidence.directory,
+        )
+        self.vision.telemetry = self.telemetry
         self.semantic_fallback = SemanticFallbackEngine()
         self.logs: list[dict] = []
         self.result_status = "running"
@@ -29,6 +42,44 @@ class BaseTask:
         self.result_extra: dict = {}
         self.current_stage: str = "pending"
         self.stage_history: list[dict] = []
+        self._load_environment_context()
+
+    def _load_environment_context(self) -> None:
+        """Load stable profile context; runtime screen observations fill the remaining fields."""
+        config_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "profiles", self.profile_id, "config.json")
+        )
+        try:
+            with open(config_path, "r", encoding="utf-8") as handle:
+                config = json.load(handle)
+            fingerprint = config.get("fingerprint", {})
+            browser_zoom = config.get("browser_zoom")
+            self.telemetry.set_environment(
+                configured_screen_resolution=fingerprint.get("screen_resolution"),
+                locale=fingerprint.get("language"),
+                browser_zoom=browser_zoom,
+            )
+            self.vision.set_runtime_context(
+                configured_resolution=fingerprint.get("screen_resolution"),
+                locale=fingerprint.get("language"),
+                browser_zoom=browser_zoom,
+            )
+        except Exception:
+            pass
+
+    def detect_visual_theme(self, screen=None) -> tuple[str, float]:
+        """Run visual theme preflight before any Facebook workflow locators."""
+        vision = getattr(self, "vision", None)
+        if vision is None or not hasattr(vision, "detect_theme"):
+            return "unknown", 0.0
+        try:
+            screen = self.client.screenshot() if screen is None else screen
+            theme, confidence = vision.detect_theme(screen)
+            self.log("INFO", f"Visual preflight theme={theme}, confidence={confidence:.2f}")
+            return theme, confidence
+        except Exception as exc:
+            self.log("WARN", f"Visual theme preflight failed; using theme-neutral locators: {exc}")
+            return "unknown", 0.0
 
     def set_stage(self, stage: str, **metadata) -> None:
         """Atomically transition execution stage and persist progress."""
@@ -41,6 +92,9 @@ class BaseTask:
         if not hasattr(self, "stage_history"):
             self.stage_history = []
         self.stage_history.append(entry)
+        telemetry = getattr(self, "telemetry", None)
+        if telemetry is not None:
+            telemetry.record_stage(stage)
         self.log("STAGE", f"Execution stage: {stage}")
         try:
             if hasattr(self, "evidence") and self.evidence:
@@ -58,6 +112,11 @@ class BaseTask:
         }
         self.logs.append(entry)
         print(f"[{entry['timestamp']}] [{self.profile_id}] [{entry['level']}] {message}", flush=True)
+
+    def record_locator_telemetry(self, *args, **kwargs) -> None:
+        telemetry = getattr(self, "telemetry", None)
+        if telemetry is not None:
+            telemetry.record_locator(*args, **kwargs)
 
     def log_decision(
         self,
@@ -91,8 +150,14 @@ class BaseTask:
         """Persist a final outcome and return whether it represents publication."""
         self.result_status = status
         self.result_error = error
-        self.result_extra = extra
         self.set_stage(status, error=error, **extra)
+        telemetry = getattr(self, "telemetry", None)
+        if telemetry is not None:
+            try:
+                extra = {**extra, "telemetry": telemetry.finalize(status)}
+            except Exception as exc:
+                self.log("WARN", f"Could not finalize execution telemetry: {exc}")
+        self.result_extra = extra
         try:
             self.evidence.write_result(status, error, **extra)
         except Exception as exc:
@@ -112,12 +177,21 @@ class BaseTask:
         Audits proposal via evidence recorder and enforces deterministic safety gates.
         Returns: (allow_click, status_reason, target_coords)
         """
-        candidates = self.vision.read_text(screen, region=region, min_confidence=min_ocr_confidence)
+        candidates = collect_action_candidates(
+            self.vision, screen, region, min_confidence=min_ocr_confidence,
+        )
         if not candidates:
             return False, "no_candidates", None
 
         obs = self.recognizer.observe(screen)
         state_name = obs.state.value
+        blocked_reason = self.semantic_fallback.blocked_observation_reason(obs)
+        if blocked_reason:
+            self.log(
+                "WARN",
+                f"Semantic fallback skipped before provider invocation: {blocked_reason}",
+            )
+            return False, blocked_reason, None
 
         proposal, candidate_map = self.semantic_fallback.rank_candidates(
             state=state_name,
@@ -126,17 +200,30 @@ class BaseTask:
             expected_region=region,
         )
 
-        if not proposal or not proposal.candidate_id:
+        if not proposal:
             return False, "no_proposal", None
 
+        # Re-capture and re-read after ranking. The provider never supplies
+        # executable coordinates; only a locally re-observed candidate can.
+        fresh_screen = self.client.screenshot()
+        fresh_candidates = collect_action_candidates(
+            self.vision, fresh_screen, region, min_confidence=min_ocr_confidence,
+        )
         allow_click, status_reason, target_coords = self.semantic_fallback.validate_proposal(
             proposal=proposal,
             candidate_map=candidate_map,
-            current_screen=screen,
+            current_screen=fresh_screen,
             expected_region=region,
             recognizer=self.recognizer,
             is_reversible=is_reversible,
+            fresh_candidates=fresh_candidates,
+            expected_states=EXPECTED_ACTION_STATES.get(goal.strip().casefold()),
+            require_enabled_action=True,
         )
+
+        telemetry = getattr(self, "telemetry", None)
+        if telemetry is not None:
+            telemetry.record_semantic(proposal.to_dict(), goal, state_name)
 
         # Audit fallback in evidence
         try:
@@ -146,7 +233,7 @@ class BaseTask:
                 state=state_name,
                 proposal=proposal.to_dict(),
                 candidates=structured_candidates,
-                screen=screen,
+                screen=fresh_screen,
             )
         except Exception as exc:
             self.log("WARN", f"Could not record semantic fallback audit: {exc}")
@@ -276,12 +363,22 @@ class BaseTask:
         Navigate to URL via container client and automatically handle any blocking
         'Leave site?' beforeunload prompt.
         """
-        if hasattr(self, "client") and self.client is not None:
-            self.client.navigate_to(url)
-        time.sleep(1.0)
-        self.handle_leave_site_dialog()
-        if wait_seconds > 1.0:
-            time.sleep(wait_seconds - 1.0)
+        started = time.perf_counter()
+        outcome = "completed"
+        try:
+            if hasattr(self, "client") and self.client is not None:
+                self.client.navigate_to(url)
+            time.sleep(1.0)
+            self.handle_leave_site_dialog()
+            if wait_seconds > 1.0:
+                time.sleep(wait_seconds - 1.0)
+        except Exception:
+            outcome = "exception"
+            raise
+        finally:
+            telemetry = getattr(self, "telemetry", None)
+            if telemetry is not None:
+                telemetry.record_navigation(url, (time.perf_counter() - started) * 1000.0, outcome)
 
     def refresh_page(self, wait_seconds: float = 2.0) -> None:
         """
@@ -335,6 +432,10 @@ class BaseTask:
         """
         self.log("INFO", "Verifying Facebook session login state...")
         self.navigate_to("https://www.facebook.com/", wait_seconds=2.0)
+
+        # Facebook theme is only reliable after the page has loaded. Detect it
+        # once here, before login-state OCR and every task-specific locator.
+        self.detect_visual_theme()
 
         # Check window title first because it is cheap and works without OCR.
         try:
@@ -392,6 +493,7 @@ class BaseTask:
             return False
         return True
 
+    @timed_telemetry_step("media_upload")
     def attach_file_gtk(self, file_path: str) -> bool:
         """
         Attach a file using the native Linux GTK file chooser dialog (Zero-CDP).
@@ -541,6 +643,25 @@ class BaseTask:
         candidates.sort(key=lambda item: item["center"][1])
         return candidates[0]["center"]
 
+    def _find_first_comment_action(self, screen):
+        """Return the topmost exact Comment action in the profile post stream."""
+        height, width = screen.shape[:2]
+        region = (
+            max(0, int(width * 0.28)),
+            0,
+            min(width - int(width * 0.28), 1050),
+            height,
+        )
+        candidates = []
+        for item in self.vision.read_text(screen, region=region, min_confidence=0.35):
+            normalized = re.sub(r"[^a-z]+", " ", item.get("text", "").casefold()).strip()
+            if normalized == "comment":
+                candidates.append(item)
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item.get("center", (0, height + 1))[1])
+        return candidates[0]
+
     def _open_profile_first_comment_input(self, post_url: str | None = None):
         """
         Locate the post card's 'Comment as ...' field:
@@ -588,13 +709,8 @@ class BaseTask:
                 return target, screen
 
             # If comment input not expanded, check for 'Comment' button under post card
-            action_btn = self.vision.find_text(
-                ("comment",),
-                screen=screen,
-                region=(max(0, int(screen.shape[1] * 0.28)), 0, min(screen.shape[1] - int(screen.shape[1] * 0.28), 1050), screen.shape[0]),
-                min_confidence=0.45,
-            )
-            if action_btn and action_btn["text"].casefold().strip() == "comment":
+            action_btn = self._find_first_comment_action(screen)
+            if action_btn:
                 self.log("INFO", f"Clicking 'Comment' action at {action_btn['center']} to expand input...")
                 self.human.click(*action_btn["center"])
                 time.sleep(1.5)
@@ -608,6 +724,32 @@ class BaseTask:
             time.sleep(1.2)
 
         return None, None
+
+    @staticmethod
+    def _comment_match_confidence(comment_text: str, ocr_items: list[dict], max_y: int) -> float:
+        """Measure whether submitted comment text is visible above the input row."""
+        normalized_target = re.sub(r"[^a-z0-9]+", " ", comment_text.casefold()).strip()
+        target_tokens = [token for token in normalized_target.split() if len(token) >= 2]
+        if not target_tokens:
+            return 0.0
+
+        visible_parts = []
+        for item in ocr_items:
+            if item.get("center", (0, max_y + 1))[1] > max_y:
+                continue
+            normalized = re.sub(r"[^a-z0-9]+", " ", item.get("text", "").casefold()).strip()
+            if normalized.startswith("comment as") or normalized.startswith("write a comment"):
+                continue
+            visible_parts.append(normalized)
+
+        visible_text = " ".join(visible_parts)
+        if not visible_text:
+            return 0.0
+        if normalized_target in visible_text:
+            return 1.0
+        visible_tokens = set(visible_text.split())
+        matched = sum(1 for token in target_tokens if token in visible_tokens)
+        return matched / len(target_tokens)
 
     def post_first_comment(self, comment_link: str, post_url: str | None = None) -> str:
         """
@@ -648,6 +790,8 @@ class BaseTask:
 
         after_comment = None
         clear_streak = 0
+        visible_streak = 0
+        best_comment_confidence = 0.0
         for _ in range(30):
             time.sleep(2.0)
             after_comment = self.client.screenshot()
@@ -658,18 +802,26 @@ class BaseTask:
                 int(screen_w * 0.45),
                 int(screen_h * 0.46),
             )
-            comment_text = " ".join(
-                item["text"].casefold()
-                for item in self.vision.read_text(
-                    after_comment,
-                    region=comment_region,
-                    min_confidence=0.15,
-                )
+            comment_items = self.vision.read_text(
+                after_comment,
+                region=comment_region,
+                min_confidence=0.15,
             )
+            comment_text = " ".join(item["text"].casefold() for item in comment_items)
             submission_pending = any(
                 marker in comment_text
                 for marker in ("posting", "sending", "submitting")
             )
+            comment_confidence = self._comment_match_confidence(
+                comment_link,
+                comment_items,
+                max_y=int(screen_h * 0.87),
+            )
+            best_comment_confidence = max(best_comment_confidence, comment_confidence)
+            if comment_confidence >= 0.60:
+                visible_streak += 1
+            else:
+                visible_streak = 0
             if submission_pending:
                 clear_streak = 0
                 continue
@@ -679,13 +831,32 @@ class BaseTask:
 
         if after_comment is None:
             after_comment = self.client.screenshot()
-        self.capture_evidence("after_first_comment", after_comment)
+        comment_status = (
+            "submitted_verified"
+            if visible_streak >= 2
+            else "submitted_unverified"
+        )
+        self.capture_evidence(
+            "after_first_comment",
+            after_comment,
+            comment_status=comment_status,
+            comment_match_confidence=round(best_comment_confidence, 3),
+        )
 
         if clear_streak < 2:
             self.log("WARN", "First comment is still submitting; leaving the post modal open and not retrying.")
             return "submission_pending"
 
-        self.log("SUCCESS", "First comment submission settled; no automatic retry will be attempted.")
+        if comment_status == "submitted_verified":
+            self.log(
+                "SUCCESS",
+                f"First comment text was visibly verified (confidence={best_comment_confidence:.2f}).",
+            )
+        else:
+            self.log(
+                "WARN",
+                "First comment submission settled, but its text was not visibly verified; no automatic retry will be attempted.",
+            )
 
         # The permalink/comment view is normally a centered modal. Click a
         # resolution-relative point on the dimmed backdrop to close it without
@@ -703,7 +874,7 @@ class BaseTask:
         self.log("INFO", f"Post-comment warm-down for {warm_seconds:.1f}s...")
         time.sleep(warm_seconds)
         self.capture_evidence("after_comment_modal_close", self.client.screenshot())
-        return "submitted_unverified"
+        return comment_status
 
     @staticmethod
     def validate_facebook_permalink(url: str, post_type: str = "post") -> tuple[bool, str | None]:
@@ -780,6 +951,36 @@ class BaseTask:
         ))
         return True, clean_url
 
+    @staticmethod
+    def _is_recent_timestamp_text(text: str) -> bool:
+        """Recognize recent Facebook timestamps with bounded OCR-error tolerance."""
+        clean = re.sub(r"[^a-z0-9]+", " ", (text or "").casefold()).strip()
+        if not clean:
+            return False
+        if clean in {"just now", "1m", "2m", "3m", "a few seconds ago", "moment ago"}:
+            return True
+        if re.fullmatch(r"\d+\s*(m|min|mins|minute|minutes|s|sec|secs|second|seconds)", clean):
+            return True
+
+        words = set(clean.split())
+        now_like = bool(words & {"now", "n0w"})
+        just_like = bool(words & {"just", "jusl", "jusi"})
+        ago_like = bool(words & {"ago", "ag0", "a00", "aoo", "ano"})
+        few_like = bool(words & {"few", "tew"})
+        seconds_like = bool(words & {"second", "seconds", "sec", "secs"})
+        numeric_time_like = any(
+            re.fullmatch(r"\d+(m|min|mins|minute|minutes|s|sec|secs|second|seconds)", word)
+            for word in words
+        )
+        moment_like = bool(words & {"moment", "mornent"})
+        return (
+            (just_like and now_like)
+            or (seconds_like and (few_like or ago_like))
+            or (numeric_time_like and ago_like)
+            or (moment_like and ago_like)
+        )
+
+    @timed_telemetry_step("permalink_correlation")
     def correlate_and_extract_permalink(
         self,
         caption: str | None = None,
@@ -811,14 +1012,14 @@ class BaseTask:
             all_tokens = [w for w in normalized_cap.split() if len(w) >= 3]
             search_tokens = set(all_tokens[:8])
 
-        recent_timestamp_indicators = {"just now", "1m", "2m", "3m", "a few seconds ago", "moment ago"}
-
         for scan in range(1, max_scans + 1):
             screen = self.client.screenshot()
             ocr_items = self.vision.read_text(screen, min_confidence=0.18)
 
             caption_match_center = None
             timestamp_match_center = None
+            timestamp_match_text = None
+            timestamp_candidates = []
             matched_tokens_count = 0
 
             # Scan visible text items
@@ -834,13 +1035,30 @@ class BaseTask:
                         caption_match_center = item["center"]
 
                 # 2. Timestamp matching
-                is_timestamp = (
-                    text_clean in recent_timestamp_indicators
-                    or any(ind in text_clean for ind in ("just now", "few seconds", "1 min", "2 min"))
-                    or bool(re.match(r"^\d+\s*(m|min|s)$", text_clean))
-                )
-                if is_timestamp and not timestamp_match_center:
-                    timestamp_match_center = item["center"]
+                if self._is_recent_timestamp_text(item["text"]):
+                    timestamp_candidates.append(item)
+
+            # Bind the timestamp to the matched post card. A recent timestamp
+            # elsewhere on the feed must not be allowed to identify this post.
+            if caption_match_center:
+                cx, cy = caption_match_center
+                nearby_timestamps = [
+                    item for item in timestamp_candidates
+                    if 0 <= cy - item["center"][1] <= 120
+                    and abs(cx - item["center"][0]) <= 450
+                ]
+                if nearby_timestamps:
+                    nearby_timestamps.sort(
+                        key=lambda item: (
+                            cy - item["center"][1],
+                            -float(item.get("confidence", 0.0)),
+                        )
+                    )
+                    timestamp_match_center = nearby_timestamps[0]["center"]
+                    timestamp_match_text = nearby_timestamps[0]["text"]
+            elif not search_tokens and timestamp_candidates:
+                timestamp_match_center = timestamp_candidates[0]["center"]
+                timestamp_match_text = timestamp_candidates[0]["text"]
 
             # If caption was matched, scan specifically in the header region above the caption for timestamp
             if caption_match_center and not timestamp_match_center:
@@ -852,13 +1070,15 @@ class BaseTask:
                 )
                 header_items = self.vision.read_text(screen, region=header_region, min_confidence=0.18)
                 for h_item in header_items:
-                    h_clean = re.sub(r"[^a-z0-9]+", " ", h_item["text"].casefold()).strip()
+                    hx, hy = h_item["center"]
+                    rx, ry, rw, rh = header_region
                     if (
-                        h_clean in recent_timestamp_indicators
-                        or any(ind in h_clean for ind in ("just now", "few seconds", "1 min", "2 min", "second", "moment"))
-                        or bool(re.match(r"^\d+\s*(m|min|s)$", h_clean))
+                        rx <= hx <= rx + rw
+                        and ry <= hy <= ry + rh
+                        and self._is_recent_timestamp_text(h_item["text"])
                     ):
                         timestamp_match_center = h_item["center"]
+                        timestamp_match_text = h_item["text"]
                         break
 
             # Compute correlation confidence
@@ -875,7 +1095,8 @@ class BaseTask:
             self.log_decision(
                 "Correlate published post",
                 f"caption tokens={search_tokens or 'none'}, recent timestamp",
-                f"scan={scan}, matched_tokens={matched_tokens_count}, ts_target={timestamp_match_center}, confidence={confidence:.2f}",
+                f"scan={scan}, matched_tokens={matched_tokens_count}, ts_text={timestamp_match_text!r}, "
+                f"ts_target={timestamp_match_center}, confidence={confidence:.2f}",
                 "click timestamp link" if (confidence >= 0.50 and timestamp_match_center) else "scroll to next section",
                 level="INFO",
             )

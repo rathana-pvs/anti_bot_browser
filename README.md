@@ -32,6 +32,11 @@ Instead of relying on fragile, obfuscated CSS class names (`x1i10hfl xjbqb8w`) o
 * **100% Proxy Tunneling:** All network traffic routes through dedicated residential SOCKS5 proxies per container.
 * **Fingerprint Decoupling:** Hardware concurrency, WebGL vendor/renderer, screen resolution, and user agents are individualized per profile.
 
+### 4. Evidence-Backed Execution Telemetry
+* Every new execution writes `telemetry.json` beside its screenshots under `profiles/<id>/automation_evidence/<run_id>/`.
+* Measurements include total and stage duration, navigation/upload/readiness/verification timing, OCR latency and candidate counts, locator tiers and fallback reasons, semantic-provider latency, and available screen/locale/theme context.
+* The queue dashboard calculates observed outcome rates plus median and p95 execution/OCR latency. It shows an empty baseline until measured executions exist; no performance target is presented as achieved without local runs.
+
 ---
 
 ## 📊 System Architecture
@@ -90,11 +95,12 @@ flowchart TD
 │   │   ├── evidence.py         # Screenshot & diagnostic JSON recorder
 │   │   ├── human_input.py      # Bézier curves, natural typing, xclip
 │   │   ├── screen_state.py     # Facebook visual state machine & OCR signals
+│   │   ├── telemetry.py        # Bounded timing, OCR, locator & environment metrics
 │   │   └── vision.py           # Multi-tier CV (Cache, Template, HSV, EasyOCR)
 │   ├── models/easyocr/         # Pretrained OCR weights (CRAFT + CRNN)
 │   ├── tasks/                  # Task definitions (Post, Reel, Warming, Comment)
 │   ├── templates/              # OpenCV visual templates (icons, buttons)
-│   ├── tests/                  # Offline unit test suite (17 tests)
+│   ├── tests/                  # Offline reliability and safety test suite
 │   ├── requirements.txt        # Python dependencies
 │   └── runner.py               # CLI task dispatcher
 ├── container/                  # Docker container definitions
@@ -143,7 +149,6 @@ pip install -r requirements.txt
 Run the offline visual verification test suite:
 ```bash
 python3 -m unittest discover -s tests
-# Ran 17 tests in 0.018s -> OK
 ```
 
 ### 4. Setup Manager Application
@@ -188,6 +193,71 @@ Copy `profiles/config.example.json` into a profile directory (e.g. `profiles/pro
 
 ### Configuring Proxies
 Copy `proxies/proxy_pool.example.json` to `proxies/proxy_pool.json` to manage rotating SOCKS5 residential proxies.
+
+### Guarded Semantic Fallback
+
+Semantic candidate ranking is in shadow mode by default. It receives only local
+OCR labels and candidate IDs, then records its proposal without clicking. A
+proposal must be found again on a fresh screenshot, remain in the expected
+region, match the expected screen state, and have an enabled visual action.
+Final Post/Publish actions always remain behind the manual review gate.
+
+Runtime controls:
+
+```bash
+SEMANTIC_FALLBACK_PROVIDER=heuristic       # heuristic, gemini, or openai
+SEMANTIC_FALLBACK_SHADOW_MODE=true         # keep true during evaluation
+SEMANTIC_FALLBACK_MIN_CONFIDENCE=0.80
+SEMANTIC_FALLBACK_MODEL=<provider-model>   # only for an external provider
+```
+
+The queue dashboard reports shadow proposals, deterministic validation rate,
+fresh-label confirmations, blocked clicks, and provider latency. These are
+evaluation metrics, not permission to enable automatic publishing.
+
+Replay saved evidence without opening or controlling a browser:
+
+```bash
+python3 automation/evaluate_semantic_shadow.py --max-per-scenario 3
+```
+
+The latest balanced report is written to
+`automation/reports/semantic_shadow_latest.json`. Offline replay measures
+ranking against recorded targets; temporal freshness still requires passive or
+normal-run shadow observations.
+
+### Bounded Scheduler
+
+Scheduled automation uses persisted, heartbeat-backed leases. Defaults permit
+one publisher, one optional passive preparer, and two total automation workers.
+Only one task may hold a lease for a profile. Lease IDs are fencing tokens, so a
+stale process cannot overwrite the outcome of a newer claim. Expired work is
+recovered using the persisted execution stage: pre-publish interruptions fail
+before publish, while post-click interruptions become `uncertain`.
+
+Resource Mode is configured from the Posting Queue dashboard and persisted in
+`data/manager_settings.json`. Auto selects the lowest tier supported by both RAM
+and CPU: Low uses 1 publisher + 1 preparer (2 containers), Medium uses 2 + 2
+(4 containers), and High uses 3 + 3 (6 containers). New container starts pause
+at 80% RAM until usage falls below 70%, pause at 85% sustained CPU, and are
+spaced by at least 10 seconds. Mode changes affect only new claims and never
+interrupt active tasks. Lease timing remains configurable when needed:
+
+```bash
+AUTOMATION_LEASE_TTL_MS=60000
+AUTOMATION_HEARTBEAT_INTERVAL_MS=15000
+```
+
+Batch session preparation uses a rolling resource-mode pipeline. Brief mode
+browses for 40–55 seconds and Extended mode for 55–70 seconds. Preparation
+starts the next profile only when capacity is available, verifies authentication
+and theme, scrolls without likes/reactions/comments, returns to the top, and
+keeps that profile ready while the current profile publishes. Profile order is
+shuffled once per batch and persisted across restarts. After every terminal
+publish outcome, the report is saved before the profile container is stopped.
+The queue exposes the persisted flow
+`pending → preparing → ready → running → verifying → published`, with at most
+one publisher, one preparer, and two active profile containers by default.
 
 ---
 

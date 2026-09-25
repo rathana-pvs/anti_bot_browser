@@ -7,6 +7,7 @@ Implements the 3-Tier Hybrid Locator:
 """
 
 import json
+import hashlib
 import os
 import re
 import time
@@ -40,6 +41,7 @@ class VisionEngine:
     NORMALIZED_REGIONS = NORMALIZED_REGIONS
     CACHE_TTL_HOURS = 72
     MAX_CONSECUTIVE_FAILURES = 3
+    OCR_CACHE_MAX_ENTRIES = 24
     _ocr_readers: dict[tuple[str, ...], object] = {}
 
     def __init__(self, client: ContainerClient):
@@ -49,6 +51,125 @@ class VisionEngine:
         )
         self.cache_file = os.path.join(self.cache_dir, "element_cache.json")
         self._cache = self._load_cache()
+        self.telemetry = None
+        self.theme = "unknown"
+        self.theme_confidence = 0.0
+        self.configured_resolution = None
+        self.locale = "unknown"
+        self.browser_zoom = None
+        self._ocr_cache: dict[tuple, list[dict]] = {}
+
+    def set_runtime_context(
+        self,
+        configured_resolution: str | None = None,
+        locale: str | None = None,
+        browser_zoom: float | None = None,
+    ) -> None:
+        """Set stable context used to isolate locator and OCR caches."""
+        if configured_resolution:
+            self.configured_resolution = str(configured_resolution)
+        if locale:
+            self.locale = str(locale)
+        if browser_zoom is not None:
+            self.browser_zoom = float(browser_zoom)
+
+    def _context_signature(self) -> str:
+        zoom = "auto" if self.browser_zoom is None else str(round(self.browser_zoom, 3))
+        return "|".join((
+            self.theme or "unknown",
+            self.configured_resolution or "unknown",
+            self.locale or "unknown",
+            zoom,
+        ))
+
+    def _element_cache_key(self, label: str) -> str:
+        signature = self._context_signature()
+        if signature == "unknown|unknown|unknown|auto":
+            return label
+        return f"{label}@@{signature}"
+
+    @staticmethod
+    def infer_theme(screen: np.ndarray | None) -> tuple[str, float]:
+        """Infer Facebook's light/dark theme from the page viewport."""
+        if screen is None or not getattr(screen, "size", 0):
+            return "unknown", 0.0
+        height, width = screen.shape[:2]
+        # Exclude browser chrome and narrow outer edges. These areas do not
+        # represent Facebook's active theme and can skew small screenshots.
+        viewport = screen[
+            int(height * 0.10) : max(int(height * 0.10) + 1, int(height * 0.95)),
+            int(width * 0.05) : max(int(width * 0.05) + 1, int(width * 0.95)),
+        ]
+        if viewport.size == 0:
+            return "unknown", 0.0
+        gray = cv2.cvtColor(viewport, cv2.COLOR_BGR2GRAY)
+        dark_fraction = float(np.mean(gray < 105))
+        light_fraction = float(np.mean(gray > 170))
+        if dark_fraction >= 0.55:
+            return "dark", round(min(1.0, dark_fraction), 3)
+        if light_fraction >= 0.55:
+            return "light", round(min(1.0, light_fraction), 3)
+        return "unknown", round(max(dark_fraction, light_fraction), 3)
+
+    def detect_theme(self, screen: np.ndarray | None = None) -> tuple[str, float]:
+        """Detect and cache theme before theme-sensitive visual work begins."""
+        screen = self.capture_screen() if screen is None else screen
+        theme, confidence = self.infer_theme(screen)
+        self.theme = theme
+        self.theme_confidence = confidence
+        telemetry = getattr(self, "telemetry", None)
+        if telemetry is not None:
+            telemetry.observe_screen(screen)
+            telemetry.set_environment(theme=theme, theme_confidence=confidence)
+        return theme, confidence
+
+    @staticmethod
+    def _content_digest(image: np.ndarray) -> str:
+        contiguous = np.ascontiguousarray(image)
+        return hashlib.blake2b(memoryview(contiguous), digest_size=8).hexdigest()
+
+    def _prepare_ocr_image(self, crop: np.ndarray, targeted: bool) -> tuple[np.ndarray, float]:
+        """Resize and lightly normalize OCR input for the detected visual theme."""
+        max_dimension = max(crop.shape[:2])
+        # Keep inference bounded at the measured 1280px ceiling. Targeted
+        # regions preserve detail naturally because their crops are smaller.
+        dimension_cap = 1280.0
+        scale = min(1.0, dimension_cap / max_dimension)
+        prepared = crop
+        if scale < 1.0:
+            prepared = cv2.resize(
+                crop,
+                (int(crop.shape[1] * scale), int(crop.shape[0] * scale)),
+                interpolation=cv2.INTER_AREA,
+            )
+        if self.theme == "dark" and targeted:
+            # Mild luminance-only CLAHE raises low-contrast dark-mode text while
+            # retaining Facebook's color geometry for EasyOCR detection.
+            lab = cv2.cvtColor(prepared, cv2.COLOR_BGR2LAB)
+            luminance, channel_a, channel_b = cv2.split(lab)
+            enhanced_luminance = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8)).apply(luminance)
+            enhanced = cv2.cvtColor(
+                cv2.merge((enhanced_luminance, channel_a, channel_b)),
+                cv2.COLOR_LAB2BGR,
+            )
+            prepared = cv2.addWeighted(prepared, 0.35, enhanced, 0.65, 0)
+        return prepared, scale
+
+    @staticmethod
+    def _region_name(region) -> str:
+        if region is None:
+            return "full_screen"
+        if isinstance(region, str):
+            return region
+        if isinstance(region, (tuple, list)) and len(region) == 4:
+            values = ",".join(str(round(float(value), 4)) for value in region)
+            return f"region:{values}"
+        return "custom_region"
+
+    def _record_locator(self, **event) -> None:
+        telemetry = getattr(self, "telemetry", None)
+        if telemetry is not None:
+            telemetry.record_locator(**event)
 
     def capture_screen(self) -> np.ndarray:
         """Capture the current screen through the configured container client."""
@@ -154,44 +275,65 @@ class VisionEngine:
     def read_text(
         self,
         screen: np.ndarray | None = None,
-        region: tuple[int, int, int, int] | None = None,
+        region: tuple[int, int, int, int] | tuple[float, float, float, float] | str | None = None,
         min_confidence: float = 0.35,
         languages: tuple[str, ...] = ("en",),
     ) -> list[dict]:
         """Return OCR text, confidence, bounds, and center in screen coordinates."""
+        started = time.perf_counter()
+        region_name = self._region_name(region)
         screen = self.capture_screen() if screen is None else screen
+        telemetry = getattr(self, "telemetry", None)
+        if telemetry is not None:
+            telemetry.observe_screen(screen)
         crop, offset_x, offset_y = self._crop_region(screen, region)
         if crop.size == 0:
+            if telemetry is not None:
+                telemetry.record_ocr((time.perf_counter() - started) * 1000.0, region_name, 0, outcome="empty_region")
             return []
-        # UI text does not require native 1080p resolution. Capping the OCR input
-        # substantially reduces CPU inference time while preserving readable text.
-        scale = min(1.0, 1280.0 / max(crop.shape[:2]))
-        ocr_image = crop
-        if scale < 1.0:
-            ocr_image = cv2.resize(
-                crop,
-                (int(crop.shape[1] * scale), int(crop.shape[0] * scale)),
-                interpolation=cv2.INTER_AREA,
-            )
+        cache_key = (
+            self._content_digest(crop),
+            crop.shape,
+            int(offset_x),
+            int(offset_y),
+            tuple(languages),
+            self._context_signature(),
+        )
+        cached_results = self._ocr_cache.get(cache_key)
+        if cached_results is not None:
+            results = [dict(item) for item in cached_results if item["confidence"] >= min_confidence]
+            if telemetry is not None:
+                telemetry.record_ocr(
+                    (time.perf_counter() - started) * 1000.0,
+                    region_name,
+                    len(results),
+                    [item["confidence"] for item in results],
+                    outcome="cache_hit",
+                )
+            return results
+
+        ocr_image, scale = self._prepare_ocr_image(crop, targeted=region is not None)
         reader = self._get_ocr_reader(languages)
         if reader is None:
+            if telemetry is not None:
+                telemetry.record_ocr((time.perf_counter() - started) * 1000.0, region_name, 0, outcome="reader_unavailable")
             return []
 
-        results = []
+        raw_items = []
         try:
             raw_results = reader.readtext(ocr_image, detail=1, paragraph=False)
         except Exception as exc:
             print(f"Warning: OCR failed: {exc}")
+            if telemetry is not None:
+                telemetry.record_ocr((time.perf_counter() - started) * 1000.0, region_name, 0, outcome="error")
             return []
 
         for box, text, confidence in raw_results:
             confidence = float(confidence)
-            if confidence < min_confidence:
-                continue
             xs = [int(point[0] / scale) + offset_x for point in box]
             ys = [int(point[1] / scale) + offset_y for point in box]
             bounds = (min(xs), min(ys), max(xs), max(ys))
-            results.append(
+            raw_items.append(
                 {
                     "text": str(text).strip(),
                     "confidence": confidence,
@@ -199,13 +341,24 @@ class VisionEngine:
                     "center": ((bounds[0] + bounds[2]) // 2, (bounds[1] + bounds[3]) // 2),
                 }
             )
+        self._ocr_cache[cache_key] = raw_items
+        while len(self._ocr_cache) > self.OCR_CACHE_MAX_ENTRIES:
+            self._ocr_cache.pop(next(iter(self._ocr_cache)))
+        results = [dict(item) for item in raw_items if item["confidence"] >= min_confidence]
+        if telemetry is not None:
+            telemetry.record_ocr(
+                (time.perf_counter() - started) * 1000.0,
+                region_name,
+                len(results),
+                [item["confidence"] for item in results],
+            )
         return results
 
     def find_text(
         self,
         labels: str | tuple[str, ...] | list[str],
         screen: np.ndarray | None = None,
-        region: tuple[int, int, int, int] | None = None,
+        region: tuple[int, int, int, int] | tuple[float, float, float, float] | str | None = None,
         min_confidence: float = 0.45,
         prefer_lower_half: bool = False,
     ) -> dict | None:
@@ -242,8 +395,16 @@ class VisionEngine:
           Tier 2: Expanded region (+20-25%) search to catch slight layout shifts.
           Tier 3: Measured full-screen fallback search.
         """
+        started = time.perf_counter()
         screen = self.capture_screen() if screen is None else screen
+        locator_name = "text:" + "|".join((labels,) if isinstance(labels, str) else labels)
+        region_name = self._region_name(region)
         if screen is None or screen.size == 0:
+            self._record_locator(
+                locator=locator_name, tier="screen_unavailable", region=region_name,
+                duration_ms=(time.perf_counter() - started) * 1000.0, found=False,
+                fallback_reason="screen_unavailable",
+            )
             return None
 
         if region is not None:
@@ -268,6 +429,11 @@ class VisionEngine:
                 prefer_lower_half=False,
             )
             if match:
+                self._record_locator(
+                    locator=locator_name, tier="target_region_ocr", region=region_name,
+                    duration_ms=(time.perf_counter() - started) * 1000.0, found=True,
+                    confidence=match.get("confidence"),
+                )
                 return match
 
             # Tier 2: Search expanded region
@@ -281,16 +447,28 @@ class VisionEngine:
                     prefer_lower_half=False,
                 )
                 if match:
+                    self._record_locator(
+                        locator=locator_name, tier="expanded_region_ocr", region=self._region_name(expanded),
+                        duration_ms=(time.perf_counter() - started) * 1000.0, found=True,
+                        confidence=match.get("confidence"), fallback_reason="target_region_miss",
+                    )
                     return match
 
         # Tier 3: Measured full-screen fallback
-        return self.find_text(
+        match = self.find_text(
             labels,
             screen=screen,
             region=None,
             min_confidence=min_confidence,
             prefer_lower_half=prefer_lower_half,
         )
+        self._record_locator(
+            locator=locator_name, tier="full_screen_ocr", region="full_screen",
+            duration_ms=(time.perf_counter() - started) * 1000.0, found=bool(match),
+            confidence=match.get("confidence") if match else None,
+            fallback_reason="local_regions_exhausted" if region is not None else None,
+        )
+        return match
 
     @staticmethod
     def similarity(before: np.ndarray, after: np.ndarray) -> float:
@@ -339,10 +517,16 @@ class VisionEngine:
         Retrieve cached coordinate hint if valid (not expired by TTL and < MAX_CONSECUTIVE_FAILURES).
         Supports both new normalized metadata format and legacy [x, y] format.
         """
-        if label not in self._cache:
+        cache_key = self._element_cache_key(label)
+        if cache_key in self._cache:
+            entry_key = cache_key
+        elif label in self._cache:
+            # Backwards-compatible lookup for caches created before context keys.
+            entry_key = label
+        else:
             return None
 
-        entry = self._cache[label]
+        entry = self._cache[entry_key]
 
         # Handle legacy format: [x, y]
         if isinstance(entry, (list, tuple)) and len(entry) == 2:
@@ -353,7 +537,7 @@ class VisionEngine:
 
         # Check consecutive failures
         if entry.get("failure_count", 0) >= self.MAX_CONSECUTIVE_FAILURES:
-            del self._cache[label]
+            del self._cache[entry_key]
             self._save_cache()
             return None
 
@@ -367,7 +551,7 @@ class VisionEngine:
                 now_dt = datetime.now(timezone.utc)
                 age_hours = (now_dt - verified_dt).total_seconds() / 3600.0
                 if age_hours > self.CACHE_TTL_HOURS:
-                    del self._cache[label]
+                    del self._cache[entry_key]
                     self._save_cache()
                     return None
             except Exception:
@@ -393,12 +577,13 @@ class VisionEngine:
         norm_x = round(pos[0] / max(1, sw), 4)
         norm_y = round(pos[1] / max(1, sh), 4)
 
-        entry = self._cache.get(label)
+        cache_key = self._element_cache_key(label)
+        entry = self._cache.get(cache_key)
         success_count = 1
         if isinstance(entry, dict):
             success_count = entry.get("success_count", 0) + 1
 
-        self._cache[label] = {
+        self._cache[cache_key] = {
             "normalized_center": [norm_x, norm_y],
             "screen_size": [sw, sh],
             "last_verified_at": datetime.now(timezone.utc).isoformat(),
@@ -409,16 +594,19 @@ class VisionEngine:
 
     def record_cache_miss(self, label: str) -> None:
         """Record a verification miss; auto-invalidates after MAX_CONSECUTIVE_FAILURES."""
-        if label not in self._cache:
+        cache_key = self._element_cache_key(label)
+        if cache_key not in self._cache and label in self._cache:
+            cache_key = label
+        if cache_key not in self._cache:
             return
-        entry = self._cache[label]
+        entry = self._cache[cache_key]
         if isinstance(entry, dict):
             failures = entry.get("failure_count", 0) + 1
             entry["failure_count"] = failures
             if failures >= self.MAX_CONSECUTIVE_FAILURES:
-                del self._cache[label]
+                del self._cache[cache_key]
         else:
-            del self._cache[label]
+            del self._cache[cache_key]
         self._save_cache()
 
     def find_template(
@@ -487,8 +675,14 @@ class VisionEngine:
         2. OpenCV template match (10-30ms)
         3. Cache verified coordinates
         """
+        started = time.perf_counter()
         screen = self.client.screenshot()
         if screen is None or screen.size == 0:
+            self._record_locator(
+                locator=label, tier="screen_unavailable", region="full_screen",
+                duration_ms=(time.perf_counter() - started) * 1000.0, found=False,
+                fallback_reason="screen_unavailable",
+            )
             return None
 
         # Tier 1: Check cache
@@ -501,6 +695,10 @@ class VisionEngine:
                     dist = np.hypot(matched[0] - cached_pos[0], matched[1] - cached_pos[1])
                     if dist < 40:
                         self.record_cache_hit(label, cached_pos, screen.shape)
+                        self._record_locator(
+                            locator=label, tier="validated_cache_hint", region="cached_neighborhood",
+                            duration_ms=(time.perf_counter() - started) * 1000.0, found=True,
+                        )
                         return cached_pos
                     else:
                         self.record_cache_miss(label)
@@ -511,8 +709,18 @@ class VisionEngine:
         pos = self.find_template(screen, label, threshold=threshold)
         if pos:
             self.record_cache_hit(label, pos, screen.shape)
+            self._record_locator(
+                locator=label, tier="template_match", region="full_screen",
+                duration_ms=(time.perf_counter() - started) * 1000.0, found=True,
+                fallback_reason="cache_miss" if use_cache else None,
+            )
             return pos
 
+        self._record_locator(
+            locator=label, tier="template_match", region="full_screen",
+            duration_ms=(time.perf_counter() - started) * 1000.0, found=False,
+            fallback_reason="all_local_tiers_missed",
+        )
         return None
 
     def find_photo_video_button(
@@ -618,7 +826,14 @@ class VisionEngine:
                     matches.append((item, 8))
 
             if matches:
-                matches.sort(key=lambda m: (m[1], m[0]["confidence"]), reverse=True)
+                # A profile can expose several post comment pills at once. The
+                # first post is the topmost matching pill, not the OCR match
+                # with the highest confidence (which may belong to a later post).
+                matches.sort(key=lambda m: (
+                    m[0].get("center", (0, h + 1))[1],
+                    -m[1],
+                    -m[0].get("confidence", 0.0),
+                ))
                 best_item = matches[0][0]
                 bx1, by1, bx2, by2 = best_item["bounds"]
                 click_x = min(w - 20, bx1 + 60)

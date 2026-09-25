@@ -1,7 +1,6 @@
 import React from 'react';
 import { Profile } from '../types/profile';
-import { Shield, Trash2, Calendar, HardDrive, Network, PanelRightClose, Activity } from 'lucide-react';
-import { AutomationControl } from './AutomationControl';
+import { Shield, Trash2, HardDrive, Network, PanelRightClose, Activity } from 'lucide-react';
 
 interface ProfileDetailsProps {
   profile: Profile | null;
@@ -9,7 +8,6 @@ interface ProfileDetailsProps {
   onEdit?: () => void;
   isOpen?: boolean;
   onToggle?: () => void;
-  onRefresh?: () => void;
 }
 
 export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
@@ -18,11 +16,8 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
   onEdit,
   isOpen = true,
   onToggle,
-  onRefresh,
 }) => {
   if (!profile) return null;
-
-  const warmingProgress = Math.min(100, Math.round((profile.account.warming_week / 4) * 100));
 
   return (
     <aside
@@ -83,6 +78,12 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
                   </span>
                 </div>
                 <div className="flex justify-between items-center">
+                  <span className="text-zinc-500">Container Disk</span>
+                  <span className="text-amber-400 font-mono text-[11px] font-medium">
+                    {profile.disk_usage || 'Active'}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center">
                   <span className="text-zinc-500">Display Ports</span>
                   <span className="text-zinc-400 font-mono text-[11px]">
                     VNC :{profile.container.vnc_port} · WS :{profile.container.ws_port || profile.container.vnc_port + 180}
@@ -91,37 +92,6 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
               </div>
             </div>
           )}
-
-        {/* Account Warming Progress */}
-        <div className="p-3 rounded-lg bg-zinc-950 border border-zinc-800">
-          <div className="flex items-center justify-between text-xs mb-2">
-            <span className="flex items-center gap-1.5 text-zinc-300 font-medium">
-              <Calendar className="w-3.5 h-3.5 text-amber-500" />
-              Warming Schedule
-            </span>
-            <span className="text-zinc-400 font-mono text-[11px]">
-              Week {profile.account.warming_week} of 4
-            </span>
-          </div>
-
-          <div className="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
-            <div
-              className={`h-full transition-all duration-500 ${
-                profile.account.warming_complete ? 'bg-green-500' : 'bg-amber-500'
-              }`}
-              style={{ width: `${warmingProgress}%` }}
-            />
-          </div>
-
-          <p className="text-[11px] text-zinc-500 mt-2">
-            {profile.account.warming_week < 4
-              ? '⚠️ Manual browsing only. Automation locked.'
-              : '✅ Account warm. Safe for automated posting.'}
-          </p>
-        </div>
-
-        {/* Zero-CDP Automation Engine Controls */}
-        <AutomationControl profile={profile} onRefreshProfile={onRefresh} />
 
         {/* Network & Proxy */}
         <div className="space-y-2">
@@ -189,10 +159,17 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
 
         {/* Persistent Storage */}
         <div className="space-y-1">
-          <span className="text-[11px] text-zinc-500 flex items-center gap-1">
-            <HardDrive className="w-3 h-3" />
-            Storage Mount
-          </span>
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] text-zinc-500 flex items-center gap-1">
+              <HardDrive className="w-3 h-3" />
+              Storage Mount
+            </span>
+            {profile.disk_usage && (
+              <span className="text-[11px] text-zinc-400 font-mono">
+                {profile.disk_usage}
+              </span>
+            )}
+          </div>
           <p className="text-[11px] text-zinc-400 font-mono bg-zinc-950 p-2 rounded border border-zinc-800 truncate">
             {profile.container.volume_path}
           </p>

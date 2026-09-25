@@ -13,6 +13,7 @@ Implements Phase 3 from OPTIMIZATION_AND_SAFETY_PLAN.md:
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import time
@@ -24,6 +25,66 @@ import numpy as np
 
 from .screen_state import ScreenState, FacebookStateRecognizer
 from .vision import VisionEngine
+
+
+BLOCKED_SCREEN_PHRASES = (
+    "captcha",
+    "security check",
+    "verify your account",
+    "confirm your identity",
+    "account restricted",
+    "account suspended",
+    "community standards",
+)
+
+EXPECTED_ACTION_STATES: dict[str, set[ScreenState]] = {
+    "identify the next action": {ScreenState.MEDIA_READY},
+    "identify the publish action": {ScreenState.POST_ENABLED},
+}
+
+
+def collect_action_candidates(
+    vision: VisionEngine,
+    screen: np.ndarray,
+    region,
+    min_confidence: float = 0.20,
+) -> list[dict]:
+    """Collect regional OCR plus native-resolution text from enabled CTAs."""
+    candidates = list(vision.read_text(
+        screen,
+        region=region,
+        min_confidence=min_confidence,
+    ))
+    try:
+        buttons = vision.find_blue_action_buttons(screen=screen, region=region)
+    except (AttributeError, TypeError):
+        buttons = []
+    for button in buttons if isinstance(buttons, list) else []:
+        try:
+            x1, y1, x2, y2 = button["bounds"]
+            tight = vision.read_text(
+                screen,
+                region=(x1, y1, x2 - x1, y2 - y1),
+                min_confidence=0.10,
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+        for item in tight:
+            enriched = {**item, "region": "enabled_action"}
+            normalized = SemanticFallbackEngine._normalize_text(str(item.get("text", "")))
+            existing = next((
+                candidate for candidate in candidates
+                if SemanticFallbackEngine._normalize_text(str(candidate.get("text", ""))) == normalized
+                and math.hypot(
+                    candidate.get("center", (0, 0))[0] - item.get("center", (0, 0))[0],
+                    candidate.get("center", (0, 0))[1] - item.get("center", (0, 0))[1],
+                ) <= 40
+            ), None)
+            if existing is not None:
+                existing.update(enriched)
+            else:
+                candidates.append(enriched)
+    return candidates
 
 
 @dataclass
@@ -54,6 +115,8 @@ class SemanticProposal:
     shadow_mode: bool = True
     validated: bool = False
     validation_reason: str = ""
+    fresh_candidate_confirmed: bool = False
+    observed_state: str | None = None
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def to_dict(self) -> dict:
@@ -67,6 +130,8 @@ class SemanticProposal:
             "shadow_mode": self.shadow_mode,
             "validated": self.validated,
             "validation_reason": self.validation_reason,
+            "fresh_candidate_confirmed": self.fresh_candidate_confirmed,
+            "observed_state": self.observed_state,
             "timestamp": self.timestamp,
         }
 
@@ -144,32 +209,39 @@ class HeuristicProvider(BaseSemanticProvider):
             cleaned_text = re.sub(r"[^a-z0-9 ]+", " ", text).strip()
             words = set(cleaned_text.split())
 
-            # 1. Exact match with any synonym
+            candidate_score = 0.0
+            candidate_reason = ""
+            # Exact and partial text matching remain deterministic. A label
+            # independently observed inside an enabled CTA wins close ties over
+            # similarly worded settings such as "Boost post" or "Share to story".
             for syn in synonyms:
                 syn_cleaned = re.sub(r"[^a-z0-9 ]+", " ", syn).strip()
                 if cleaned_text == syn_cleaned:
                     score = 0.98
                     reason = f"Exact match with synonym '{syn}'"
-                    if score > best_score:
-                        best_score, best_id, best_reason = score, c["id"], reason
                 elif syn_cleaned in cleaned_text:
                     score = 0.90
                     reason = f"Contains synonym substring '{syn}'"
-                    if score > best_score:
-                        best_score, best_id, best_reason = score, c["id"], reason
                 else:
                     syn_words = set(syn_cleaned.split())
                     if syn_words and syn_words.issubset(words):
                         score = 0.88
                         reason = f"Contains all words of synonym '{syn}'"
-                        if score > best_score:
-                            best_score, best_id, best_reason = score, c["id"], reason
                     elif syn_words & words:
                         overlap_ratio = len(syn_words & words) / float(len(syn_words))
                         score = 0.60 + (0.25 * overlap_ratio)
                         reason = f"Partial word overlap with synonym '{syn}'"
-                        if score > best_score:
-                            best_score, best_id, best_reason = score, c["id"], reason
+                    else:
+                        score = 0.0
+                        reason = ""
+                if score > candidate_score:
+                    candidate_score, candidate_reason = score, reason
+
+            if candidate_score and c.get("region") == "enabled_action":
+                candidate_score = min(1.0, candidate_score + 0.02)
+                candidate_reason = f"{candidate_reason}; confirmed inside enabled action"
+            if candidate_score > best_score:
+                best_score, best_id, best_reason = candidate_score, c["id"], candidate_reason
 
         if best_id and best_score >= 0.70:
             return best_id, best_score, best_reason, "heuristic-v1"
@@ -356,7 +428,7 @@ class SemanticFallbackEngine:
             cand = CandidateItem(
                 id=cid,
                 text=item.get("text", "").strip(),
-                region=expected_region or "unknown",
+                region=item.get("region") or expected_region or "unknown",
                 bounds=bounds,
                 center=center,
                 confidence=float(item.get("confidence", 1.0)),
@@ -371,6 +443,35 @@ class SemanticFallbackEngine:
         cid, conf, reason, model_name = self.provider.rank(state, goal, structured_list)
         latency_ms = (time.time() - start_time) * 1000.0
 
+        # Enforce the provider boundary before considering its answer. Provider
+        # output may identify an input ID, but may never invent coordinates or
+        # return malformed confidence values.
+        schema_error = None
+        if cid is not None and not isinstance(cid, str):
+            schema_error = "candidate_id_must_be_string_or_null"
+        try:
+            conf = float(conf)
+            if not math.isfinite(conf) or not 0.0 <= conf <= 1.0:
+                schema_error = "confidence_must_be_between_0_and_1"
+        except (TypeError, ValueError):
+            conf = 0.0
+            schema_error = "confidence_must_be_numeric"
+        if not isinstance(reason, str):
+            schema_error = "reason_must_be_string"
+        if schema_error:
+            proposal = SemanticProposal(
+                candidate_id=None,
+                confidence=0.0,
+                reason=f"Rejected invalid provider response: {schema_error}",
+                latency_ms=latency_ms,
+                provider=self.provider.name,
+                model=str(model_name),
+                shadow_mode=self.shadow_mode,
+                validated=False,
+                validation_reason=f"provider_schema_invalid:{schema_error}",
+            )
+            return proposal, candidate_map
+
         # Strict hallucination guard: candidate_id must be in the input candidates!
         if cid is not None and cid not in candidate_map:
             proposal = SemanticProposal(
@@ -379,7 +480,7 @@ class SemanticFallbackEngine:
                 reason=f"Rejected hallucinated candidate ID '{cid}' not in input set",
                 latency_ms=latency_ms,
                 provider=self.provider.name,
-                model=model_name,
+                model=str(model_name),
                 shadow_mode=self.shadow_mode,
                 validated=False,
                 validation_reason="hallucinated_candidate_id",
@@ -392,12 +493,23 @@ class SemanticFallbackEngine:
             reason=reason,
             latency_ms=latency_ms,
             provider=self.provider.name,
-            model=model_name,
+            model=str(model_name),
             shadow_mode=self.shadow_mode,
             validated=False,
             validation_reason="",
         )
         return proposal, candidate_map
+
+    @staticmethod
+    def blocked_observation_reason(observation) -> str | None:
+        """Return a checkpoint reason before any external provider is invoked."""
+        if observation.state == ScreenState.ERROR_DIALOG:
+            return "screen_in_error_dialog"
+        if observation.state == ScreenState.LOGIN_REQUIRED:
+            return "screen_in_login_required"
+        visible_text = " ".join(observation.text).casefold()
+        blocker = next((phrase for phrase in BLOCKED_SCREEN_PHRASES if phrase in visible_text), None)
+        return f"blocked_screen:{blocker}" if blocker else None
 
     def validate_proposal(
         self,
@@ -407,16 +519,20 @@ class SemanticFallbackEngine:
         expected_region: str | tuple[int, int, int, int] | tuple[float, float, float, float] | None = None,
         recognizer: FacebookStateRecognizer | None = None,
         is_reversible: bool = True,
+        fresh_candidates: list[dict] | None = None,
+        expected_states: set[ScreenState] | None = None,
+        require_enabled_action: bool = True,
     ) -> tuple[bool, str, tuple[int, int] | None]:
         """
         Deterministic Pre-Click Guard (Section 6.2).
 
         Verifies:
           1. Candidate ID was valid and proposed with confidence >= min_confidence.
-          2. Bounds lie inside the permitted region.
-          3. Screen state is not ERROR_DIALOG or LOGIN_REQUIRED.
-          4. Irreversible actions (is_reversible=False) produce 'needs_review' rather than clicking.
-          5. Shadow mode blocks clicks while validating proposals.
+          2. The same OCR label still exists near the proposal in a fresh screenshot.
+          3. Fresh bounds lie inside the permitted region.
+          4. Screen state is expected, safe, and exposes an enabled action.
+          5. Irreversible actions (is_reversible=False) produce 'needs_review' rather than clicking.
+          6. Shadow mode blocks clicks while validating proposals.
 
         Returns: (allow_click, status_reason, target_coords)
         """
@@ -432,7 +548,44 @@ class SemanticFallbackEngine:
             proposal.validation_reason = f"low_confidence_{proposal.confidence:.2f}_below_{self.min_confidence:.2f}"
             return False, proposal.validation_reason, candidate.center
 
-        # Check region bounds if expected_region is provided
+        # A semantic answer is only a proposal. Re-identify its exact OCR label
+        # on a newly captured screenshot before trusting coordinates.
+        if fresh_candidates is None:
+            proposal.validated = False
+            proposal.validation_reason = "fresh_observation_required"
+            return False, proposal.validation_reason, None
+
+        normalized_target = self._normalize_text(candidate.text)
+        height, width = current_screen.shape[:2]
+        max_dx = max(40, int(width * 0.05))
+        max_dy = max(30, int(height * 0.05))
+        fresh_match = None
+        fresh_distance = None
+        for item in fresh_candidates:
+            if self._normalize_text(str(item.get("text", ""))) != normalized_target:
+                continue
+            bounds = tuple(item.get("bounds", (0, 0, 0, 0)))
+            center = tuple(item.get("center", ((bounds[0] + bounds[2]) // 2, (bounds[1] + bounds[3]) // 2)))
+            distance = abs(center[0] - candidate.center[0]) + abs(center[1] - candidate.center[1])
+            if abs(center[0] - candidate.center[0]) <= max_dx and abs(center[1] - candidate.center[1]) <= max_dy:
+                if fresh_distance is None or distance < fresh_distance:
+                    fresh_match = CandidateItem(
+                        id=candidate.id,
+                        text=str(item.get("text", "")).strip(),
+                        region=candidate.region,
+                        bounds=bounds,
+                        center=center,
+                        confidence=float(item.get("confidence", 0.0)),
+                    )
+                    fresh_distance = distance
+        if fresh_match is None:
+            proposal.validated = False
+            proposal.validation_reason = "candidate_missing_from_fresh_observation"
+            return False, proposal.validation_reason, None
+        candidate = fresh_match
+        proposal.fresh_candidate_confirmed = True
+
+        # Check fresh region bounds if expected_region is provided
         if expected_region is not None and current_screen is not None:
             px_region = VisionEngine.get_pixel_region(current_screen.shape, expected_region)
             rx, ry, rw, rh = px_region
@@ -448,14 +601,61 @@ class SemanticFallbackEngine:
         # Check screen state safety
         if recognizer is not None and current_screen is not None:
             observation = recognizer.observe(current_screen)
-            if observation.state == ScreenState.ERROR_DIALOG:
+            proposal.observed_state = observation.state.value
+            blocked_reason = self.blocked_observation_reason(observation)
+            if blocked_reason:
                 proposal.validated = False
-                proposal.validation_reason = "screen_in_error_dialog"
-                return False, "screen_in_error_dialog", candidate.center
-            if observation.state == ScreenState.LOGIN_REQUIRED:
+                proposal.validation_reason = blocked_reason
+                return False, proposal.validation_reason, candidate.center
+
+            enabled_confirmed = "enabled blue action" in observation.signals
+            if not enabled_confirmed:
+                # For a localized or newly-worded CTA, the state recognizer may
+                # know that the composer is open without knowing the action
+                # label. Confirm enabled geometry around the freshly re-found
+                # OCR candidate instead of trusting semantic coordinates.
+                try:
+                    buttons = recognizer.vision.find_blue_action_buttons(
+                        screen=current_screen,
+                        region=expected_region,
+                    )
+                    enabled_confirmed = bool(
+                        isinstance(buttons, list)
+                        and any(
+                            math.hypot(
+                                candidate.center[0] - button["center"][0],
+                                candidate.center[1] - button["center"][1],
+                            ) <= 180
+                            for button in buttons
+                        )
+                    )
+                except (AttributeError, KeyError, TypeError):
+                    enabled_confirmed = False
+
+            observed_state = observation.state
+            if (
+                expected_states
+                and observed_state == ScreenState.COMPOSER_OPEN
+                and enabled_confirmed
+                and len(expected_states) == 1
+            ):
+                # Composer markers + a freshly grounded enabled CTA establish
+                # the goal-specific ready state without requiring its English
+                # label to be understood by the deterministic recognizer.
+                observed_state = next(iter(expected_states))
+                proposal.observed_state = f"{observation.state.value}->{observed_state.value}"
+
+            if expected_states and observed_state not in expected_states:
+                expected = ",".join(sorted(state.value for state in expected_states))
                 proposal.validated = False
-                proposal.validation_reason = "screen_in_login_required"
-                return False, "screen_in_login_required", candidate.center
+                proposal.validation_reason = (
+                    f"unexpected_screen_state:{observed_state.value}:expected:{expected}"
+                )
+                return False, proposal.validation_reason, candidate.center
+            if require_enabled_action and not enabled_confirmed:
+                proposal.validated = False
+                proposal.validation_reason = "enabled_action_not_confirmed"
+                return False, proposal.validation_reason, candidate.center
 
         # Irreversible Action Safety Gate:
         # If the action is irreversible (like final Publish) and required semantic fallback,
@@ -474,3 +674,7 @@ class SemanticFallbackEngine:
         proposal.validated = True
         proposal.validation_reason = "validated_clickable"
         return True, "validated", candidate.center
+
+    @staticmethod
+    def _normalize_text(value: str) -> str:
+        return " ".join(re.findall(r"[a-z0-9]+", value.casefold()))

@@ -31,6 +31,7 @@ from engine.semantic_fallback import (
     HeuristicProvider,
     SemanticFallbackEngine,
     SemanticProposal,
+    collect_action_candidates,
 )
 from engine.evidence import EvidenceRecorder
 from tasks.facebook_post import FacebookPostTask
@@ -84,6 +85,38 @@ class SemanticRankingTests(unittest.TestCase):
         self.assertIsNone(cid)
         self.assertEqual(conf, 0.0)
 
+    def test_enabled_action_wins_over_similar_settings_text(self):
+        candidates = [
+            {"id": "c1", "text": "Boost post", "region": "bottom_action_bar"},
+            {"id": "c2", "text": "Post", "region": "enabled_action"},
+            {"id": "c3", "text": "Share to story", "region": "bottom_action_bar"},
+        ]
+
+        cid, conf, _, _ = self.provider.rank(
+            state="post_enabled",
+            goal="identify the publish action",
+            candidates=candidates,
+        )
+
+        self.assertEqual(cid, "c2")
+        self.assertEqual(conf, 1.0)
+
+    def test_collect_action_candidates_marks_tight_blue_button_ocr(self):
+        vision = Mock()
+        screen = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        vision.read_text.side_effect = [
+            [{"text": "Boost post", "bounds": (760, 760, 860, 810), "center": (810, 785), "confidence": 0.9}],
+            [{"text": "Post", "bounds": (1010, 835, 1130, 880), "center": (1070, 857), "confidence": 0.95}],
+        ]
+        vision.find_blue_action_buttons.return_value = [{
+            "bounds": (950, 830, 1190, 885), "center": (1070, 857),
+        }]
+
+        candidates = collect_action_candidates(vision, screen, "bottom_action_bar")
+
+        self.assertEqual(len(candidates), 2)
+        self.assertEqual(candidates[1]["region"], "enabled_action")
+
 
 class HallucinationGuardTests(unittest.TestCase):
     def test_hallucinated_candidate_id_rejected(self):
@@ -110,11 +143,38 @@ class HallucinationGuardTests(unittest.TestCase):
         self.assertIn("Rejected hallucinated candidate", proposal.reason)
         self.assertEqual(proposal.validation_reason, "hallucinated_candidate_id")
 
+    def test_malformed_provider_confidence_is_rejected(self):
+        engine = SemanticFallbackEngine(provider_name="heuristic", shadow_mode=True)
+        engine.provider = Mock()
+        engine.provider.name = "mock_invalid_provider"
+        engine.provider.rank.return_value = ("c1", float("nan"), "Invalid confidence", "mock-model")
+
+        proposal, _ = engine.rank_candidates(
+            state="media_ready",
+            goal="identify the next action",
+            raw_candidates=[{
+                "text": "Next", "bounds": (900, 800, 1020, 850), "center": (960, 825),
+            }],
+            expected_region="bottom_action_bar",
+        )
+
+        self.assertIsNone(proposal.candidate_id)
+        self.assertIn("provider_schema_invalid", proposal.validation_reason)
+
 
 class DeterministicPreClickGuardTests(unittest.TestCase):
     def setUp(self):
         self.engine = SemanticFallbackEngine(provider_name="heuristic", shadow_mode=False)
         self.screen = np.zeros((1080, 1920, 3), dtype=np.uint8)
+
+    @staticmethod
+    def _fresh(candidate):
+        return [{
+            "text": candidate.text,
+            "bounds": candidate.bounds,
+            "center": candidate.center,
+            "confidence": candidate.confidence,
+        }]
 
     def test_rejects_candidate_out_of_region_bounds(self):
         # Candidate at top of screen (y=50), but expected region is bottom_action_bar (y > 700)
@@ -143,6 +203,8 @@ class DeterministicPreClickGuardTests(unittest.TestCase):
             expected_region="bottom_action_bar",
             recognizer=None,
             is_reversible=True,
+            fresh_candidates=self._fresh(candidate),
+            require_enabled_action=False,
         )
 
         self.assertFalse(allow)
@@ -177,6 +239,7 @@ class DeterministicPreClickGuardTests(unittest.TestCase):
             expected_region="bottom_action_bar",
             recognizer=recognizer,
             is_reversible=True,
+            fresh_candidates=self._fresh(candidate),
         )
 
         self.assertFalse(allow)
@@ -203,7 +266,9 @@ class DeterministicPreClickGuardTests(unittest.TestCase):
         )
 
         recognizer = Mock()
-        recognizer.observe.return_value = StateObservation(ScreenState.POST_ENABLED, 0.95, ["share to feed"])
+        recognizer.observe.return_value = StateObservation(
+            ScreenState.POST_ENABLED, 0.95, ["share to feed", "enabled blue action"]
+        )
 
         allow, reason, target = self.engine.validate_proposal(
             proposal=proposal,
@@ -212,6 +277,8 @@ class DeterministicPreClickGuardTests(unittest.TestCase):
             expected_region="bottom_action_bar",
             recognizer=recognizer,
             is_reversible=False,  # Irreversible!
+            fresh_candidates=self._fresh(candidate),
+            expected_states={ScreenState.POST_ENABLED},
         )
 
         self.assertFalse(allow)
@@ -240,7 +307,9 @@ class DeterministicPreClickGuardTests(unittest.TestCase):
         )
 
         recognizer = Mock()
-        recognizer.observe.return_value = StateObservation(ScreenState.MEDIA_READY, 0.95, ["next"])
+        recognizer.observe.return_value = StateObservation(
+            ScreenState.MEDIA_READY, 0.95, ["next", "enabled blue action"]
+        )
 
         allow, reason, target = self.engine.validate_proposal(
             proposal=proposal,
@@ -249,6 +318,8 @@ class DeterministicPreClickGuardTests(unittest.TestCase):
             expected_region="bottom_action_bar",
             recognizer=recognizer,
             is_reversible=True,
+            fresh_candidates=self._fresh(candidate),
+            expected_states={ScreenState.MEDIA_READY},
         )
 
         # In shadow mode, click is blocked
@@ -277,7 +348,9 @@ class DeterministicPreClickGuardTests(unittest.TestCase):
         )
 
         recognizer = Mock()
-        recognizer.observe.return_value = StateObservation(ScreenState.MEDIA_READY, 0.95, ["next"])
+        recognizer.observe.return_value = StateObservation(
+            ScreenState.MEDIA_READY, 0.95, ["next", "enabled blue action"]
+        )
 
         allow, reason, target = self.engine.validate_proposal(
             proposal=proposal,
@@ -286,11 +359,85 @@ class DeterministicPreClickGuardTests(unittest.TestCase):
             expected_region="bottom_action_bar",
             recognizer=recognizer,
             is_reversible=True,
+            fresh_candidates=self._fresh(candidate),
+            expected_states={ScreenState.MEDIA_READY},
         )
 
         self.assertTrue(allow)
         self.assertEqual(reason, "validated")
         self.assertEqual(target, (960, 825))
+
+    def test_rejects_candidate_missing_from_fresh_observation(self):
+        candidate = CandidateItem(
+            id="c1", text="Next", region="bottom_action_bar",
+            bounds=(900, 800, 1020, 850), center=(960, 825), confidence=0.95,
+        )
+        proposal = SemanticProposal(
+            candidate_id="c1", confidence=0.95, reason="Matched synonym",
+            latency_ms=1.0, provider="heuristic", model="heuristic-v1", shadow_mode=True,
+        )
+
+        allow, reason, target = self.engine.validate_proposal(
+            proposal, {"c1": candidate}, self.screen,
+            expected_region="bottom_action_bar", fresh_candidates=[],
+        )
+
+        self.assertFalse(allow)
+        self.assertEqual(reason, "candidate_missing_from_fresh_observation")
+        self.assertIsNone(target)
+
+    def test_rejects_unexpected_state_before_shadow_decision(self):
+        candidate = CandidateItem(
+            id="c1", text="Next", region="bottom_action_bar",
+            bounds=(900, 800, 1020, 850), center=(960, 825), confidence=0.95,
+        )
+        proposal = SemanticProposal(
+            candidate_id="c1", confidence=0.95, reason="Matched synonym",
+            latency_ms=1.0, provider="heuristic", model="heuristic-v1", shadow_mode=True,
+        )
+        recognizer = Mock()
+        recognizer.observe.return_value = StateObservation(
+            ScreenState.COMPOSER_OPEN, 0.82, ["composer text"], ["Next"]
+        )
+
+        allow, reason, _ = self.engine.validate_proposal(
+            proposal, {"c1": candidate}, self.screen,
+            expected_region="bottom_action_bar", recognizer=recognizer,
+            fresh_candidates=self._fresh(candidate),
+            expected_states={ScreenState.MEDIA_READY},
+        )
+
+        self.assertFalse(allow)
+        self.assertIn("unexpected_screen_state:composer_open", reason)
+
+    def test_localized_action_can_derive_ready_state_from_enabled_geometry(self):
+        candidate = CandidateItem(
+            id="c1", text="Continuer", region="bottom_action_bar",
+            bounds=(900, 800, 1020, 850), center=(960, 825), confidence=0.95,
+        )
+        proposal = SemanticProposal(
+            candidate_id="c1", confidence=0.95, reason="Provider match",
+            latency_ms=1.0, provider="mock", model="mock-v1", shadow_mode=True,
+        )
+        recognizer = Mock()
+        recognizer.observe.return_value = StateObservation(
+            ScreenState.COMPOSER_OPEN, 0.82, ["composer text"], ["Continuer"]
+        )
+        recognizer.vision.find_blue_action_buttons.return_value = [{
+            "center": (960, 825), "bounds": (880, 790, 1040, 860),
+        }]
+        self.engine.shadow_mode = True
+
+        allow, reason, _ = self.engine.validate_proposal(
+            proposal, {"c1": candidate}, self.screen,
+            expected_region="bottom_action_bar", recognizer=recognizer,
+            fresh_candidates=self._fresh(candidate),
+            expected_states={ScreenState.MEDIA_READY},
+        )
+
+        self.assertFalse(allow)
+        self.assertEqual(reason, "shadow_mode_active")
+        self.assertEqual(proposal.observed_state, "composer_open->media_ready")
 
 
 class EvidenceAuditTests(unittest.TestCase):
