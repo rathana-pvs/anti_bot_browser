@@ -26,15 +26,17 @@ class FacebookCommentTask(FacebookPostTask):
                 f"Container {self.client.container_name} is not running.",
             )
         if not self.verify_logged_in():
-            return self._fail(
-                "session_unverified",
-                "Facebook session is logged out or could not be verified.",
-            )
+            return self.skip_unverified_session()
 
         comment_status = self.post_first_comment(self.comment_text, post_url=self.post_url)
         if comment_status in {"submitted_verified", "submitted_unverified"}:
             self.log("SUCCESS", f"Standalone comment result: {comment_status}; no retry attempted.")
-            return self.set_outcome("completed", None, first_comment=comment_status)
+            return self.set_outcome(
+                "completed",
+                None,
+                first_comment=comment_status,
+                first_comment_method=getattr(self, "last_comment_method", None),
+            )
         if comment_status == "submission_pending":
             return self.set_outcome(
                 "uncertain",

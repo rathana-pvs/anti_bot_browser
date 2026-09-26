@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 
 import {
   recommendedResourceMode,
+  recommendedOcrThreads,
+  resolveOcrDevice,
   resolveResourceMode,
   resourceAdmissionDecision,
 } from '../resourceModes.js';
@@ -25,6 +27,22 @@ test('explicit modes expose limits and hardware support', () => {
     max_active_profile_containers: 4,
   });
   assert.equal(resolveResourceMode('high', 32, 16).supported, false);
+});
+
+test('OCR threads are divided across active tasks and capped at four', () => {
+  assert.equal(recommendedOcrThreads(8, 2), 4);
+  assert.equal(recommendedOcrThreads(16, 4), 4);
+  assert.equal(recommendedOcrThreads(20, 6), 3);
+  assert.equal(recommendedOcrThreads(32, 6), 4);
+  assert.equal(recommendedOcrThreads(4, 2), 2);
+});
+
+test('OCR device selects CUDA only when both NVIDIA hardware and runtime are usable', () => {
+  assert.equal(resolveOcrDevice(true, true, 'RTX Test').device, 'cuda');
+  const cpuFallback = resolveOcrDevice(true, false, 'RTX Test');
+  assert.equal(cpuFallback.device, 'cpu');
+  assert.match(cpuFallback.fallback_reason, /CUDA-enabled PyTorch/);
+  assert.equal(resolveOcrDevice(false, false).device, 'cpu');
 });
 
 test('resource admission applies memory hysteresis, CPU pressure, and start spacing', () => {

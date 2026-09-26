@@ -28,15 +28,19 @@ class FacebookPreparationTask(BaseTask):
         try:
             first = self.client.screenshot()
             self.detect_visual_theme(first)
-            first_observation = self.recognizer.observe(first)
+            first_observation = self.recognizer.observe_session_gate(first)
+            if first_observation.state == ScreenState.UNKNOWN:
+                first_observation = self.recognizer.observe(first)
             if first_observation.state not in valid_states:
                 return False
             time.sleep(1.0)
             second = self.client.screenshot()
-            second_observation = self.recognizer.observe(second)
+            second_observation = self.recognizer.observe_session_gate(second)
+            if second_observation.state == ScreenState.UNKNOWN:
+                second_observation = self.recognizer.observe(second)
             return (
                 second_observation.state in valid_states
-                and self.vision.screen_similarity(first, second) >= 0.985
+                and self.vision.similarity(first, second) >= 0.985
             )
         except Exception as exc:
             self.log("DEBUG", f"Passive current-session check could not establish stability: {exc}")
@@ -53,11 +57,7 @@ class FacebookPreparationTask(BaseTask):
         if session_already_stable:
             self.log("INFO", "Authenticated Facebook session is already stable; skipping navigation.")
         elif not self.verify_logged_in():
-            self.capture_evidence("preparation_requires_review")
-            return self.set_outcome(
-                "needs_review",
-                "Passive preparation could not verify an authenticated, unrestricted Facebook session.",
-            )
+            return self.skip_unverified_session()
 
         duration_seconds = random.uniform(*self.DURATION_RANGES[self.mode])
         deadline = time.time() + duration_seconds
@@ -73,7 +73,7 @@ class FacebookPreparationTask(BaseTask):
                 break
             time.sleep(min(remaining, random.uniform(3.0, 6.0)))
             current = self.client.screenshot()
-            similarity = self.vision.screen_similarity(previous, current)
+            similarity = self.vision.similarity(previous, current)
             stable_observations = stable_observations + 1 if similarity >= 0.985 else 0
             previous = current
 

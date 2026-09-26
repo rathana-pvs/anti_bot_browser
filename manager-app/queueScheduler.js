@@ -7,6 +7,27 @@ export const DEFAULT_SCHEDULER_CONFIG = Object.freeze({
   heartbeat_interval_ms: 15_000,
 });
 
+const MINUTE_MS = 60_000;
+
+/**
+ * Maximum time a live worker may produce no stdout/stderr for its current stage.
+ * OCR and video processing can legitimately be quiet for well over the lease
+ * TTL, so process liveness keeps the short lease alive while this independent
+ * limit still recovers a genuinely stuck worker.
+ */
+export function workerSilenceTimeoutMs(stage, leaseTtlMs = DEFAULT_SCHEDULER_CONFIG.lease_ttl_ms) {
+  const stageLimits = {
+    preparing: 6 * MINUTE_MS,
+    warming: 8 * MINUTE_MS,
+    composing: 12 * MINUTE_MS,
+    ready_to_publish: 6 * MINUTE_MS,
+    publish_clicked: 12 * MINUTE_MS,
+    verifying: 12 * MINUTE_MS,
+    commenting: 10 * MINUTE_MS,
+  };
+  return Math.max(leaseTtlMs * 3, stageLimits[stage] || 6 * MINUTE_MS);
+}
+
 const RUNNABLE_STATUSES = new Set([
   'pending',
   'ready',

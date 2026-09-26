@@ -44,6 +44,8 @@ class VisionLeaveSiteTests(unittest.TestCase):
         with patch.object(self.vision, "read_text", return_value=mock_ocr):
             coords = self.vision.find_leave_site_button(dummy_screen)
             self.assertEqual(coords, (1040, 200))
+            self.vision.read_text.assert_called_once()
+            self.assertEqual(self.vision.read_text.call_args.kwargs["region"], "browser_dialog")
 
     def test_find_leave_site_button_with_cancel_and_leave(self):
         dummy_screen = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -72,9 +74,11 @@ class VisionLeaveSiteTests(unittest.TestCase):
             {"text": "What's on your mind?", "center": (500, 300), "confidence": 0.95},
             {"text": "Photo/video", "center": (500, 400), "confidence": 0.95},
         ]
-        with patch.object(self.vision, "read_text", return_value=mock_ocr):
+        with patch.object(self.vision, "read_text", return_value=mock_ocr) as read_text:
             coords = self.vision.find_leave_site_button(dummy_screen)
             self.assertIsNone(coords)
+            read_text.assert_called_once()
+            self.assertIsNotNone(read_text.call_args.kwargs["region"])
 
     def test_find_leave_site_returns_none_on_empty_screen(self):
         coords = self.vision.find_leave_site_button(np.array([]))
@@ -123,6 +127,16 @@ class BaseTaskLeaveSiteTests(unittest.TestCase):
             self.task.navigate_to("https://www.facebook.com/me", wait_seconds=2.0)
             self.task.client.navigate_to.assert_called_once_with("https://www.facebook.com/me")
             mock_handler.assert_called_once()
+
+    def test_task_start_navigation_can_defer_leave_dialog_ocr(self):
+        with patch.object(self.task, "handle_leave_site_dialog") as mock_handler, \
+             patch("time.sleep", return_value=None):
+            self.task.navigate_to(
+                "https://www.facebook.com/",
+                wait_seconds=2.0,
+                check_leave_dialog=False,
+            )
+            mock_handler.assert_not_called()
 
     def test_refresh_page_calls_client_and_checks_leave_dialog(self):
         with patch.object(self.task, "handle_leave_site_dialog") as mock_handler, \

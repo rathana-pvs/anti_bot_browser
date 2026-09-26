@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { Profile } from '../types/profile';
-import { AutomationTaskState } from '../types/automation';
-import { runAutomation, fetchAutomationTasks, stopAutomation, uploadMediaFiles } from '../services/api';
+import { AutomationTaskState, CreateBatchParams } from '../types/automation';
+import { createBatch, fetchAutomationTasks, stopAutomation, uploadMediaFiles } from '../services/api';
 import { BatchPostCreator } from './BatchPostCreator';
 import { PostingQueuePanel } from './PostingQueuePanel';
+import { ResourceModeControl } from './ResourceModeControl';
 import {
   Flame,
   Send,
@@ -58,8 +59,6 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const [successBanner, setSuccessBanner] = useState<string | null>(null);
 
-  const runningProfiles = profiles.filter((p) => p.status === 'running');
-
   // Load active tasks periodically
   const loadTasks = async () => {
     try {
@@ -74,11 +73,11 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
     return () => clearInterval(interval);
   }, []);
 
-  const handleSelectAllRunning = () => {
-    if (selectedProfileIds.length === runningProfiles.length) {
+  const handleSelectAll = () => {
+    if (selectedProfileIds.length === profiles.length) {
       setSelectedProfileIds([]);
     } else {
-      setSelectedProfileIds(runningProfiles.map((p) => p.id));
+      setSelectedProfileIds(profiles.map((p) => p.id));
     }
   };
 
@@ -119,7 +118,7 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
     setSuccessBanner(null);
 
     if (selectedProfileIds.length === 0) {
-      setErrorBanner('Please select at least one running container profile.');
+      setErrorBanner('Please select at least one profile.');
       return;
     }
 
@@ -129,34 +128,7 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
     }
 
     setIsLaunching(true);
-    let launched = 0;
-    const errors: string[] = [];
-    const effectiveTask = taskType === 'warming'
-      ? 'warming'
-      : (attachedMedia?.type === 'reel' ? 'reel' : 'post');
-
-    for (const profileId of selectedProfileIds) {
-      try {
-        await runAutomation({
-          profile_id: profileId,
-          task: effectiveTask,
-          scrolls: taskType === 'warming' ? scrolls : undefined,
-          caption: taskType === 'post' && caption.trim() ? caption.trim() : undefined,
-          comment_link: taskType === 'post' && commentLink.trim() ? commentLink.trim() : undefined,
-          media: taskType === 'post' && attachedMedia ? attachedMedia.filename : undefined,
-        });
-        launched++;
-      } catch (err: any) {
-        errors.push(`${profileId}: ${err.message}`);
-      }
-    }
-
-    setIsLaunching(false);
-    await loadTasks();
-
-    if (errors.length > 0) {
-      setErrorBanner(`Launched ${launched} tasks. Failed on: ${errors.join('; ')}`);
-    } else {
+    try {
       const taskLabel = taskType === 'warming'
         ? 'Feed Warming'
         : attachedMedia?.type === 'reel'
@@ -164,12 +136,46 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
         : attachedMedia
         ? 'Photo Post'
         : 'Text Post';
-      setSuccessBanner(`Successfully launched "${taskLabel}" across ${launched} profile(s)!`);
+      const payload: CreateBatchParams = {
+        name: `Instant ${taskLabel} · ${new Date().toLocaleString()}`,
+        target_profiles: selectedProfileIds,
+        start_now: true,
+        schedule_window: {
+          start_time: '00:00',
+          end_time: '23:59',
+          profile_stagger_seconds: 0,
+          session_preparation_mode: taskType === 'warming' ? 'off' : 'brief',
+          start_now: true,
+        },
+        posts: taskType === 'warming'
+          ? [{
+              type: 'warming',
+              media_file: '',
+              base_caption: '',
+              scrolls: Math.max(1, scrolls),
+              ai_spin: false,
+            }]
+          : [{
+              type: attachedMedia?.type || 'photo',
+              media_file: attachedMedia?.filename || '',
+              base_caption: caption.trim(),
+              first_comment: commentLink.trim() || undefined,
+              ai_spin: false,
+            }],
+      };
+      await createBatch(payload);
+      setSuccessBanner(`Queued "${taskLabel}" for ${selectedProfileIds.length} profile(s). Resource Mode will start them safely.`);
       if (taskType === 'post') {
         setCaption('');
         setCommentLink('');
         setAttachedMedia(null);
       }
+      setActiveMainTab('queue_monitor');
+      await loadTasks();
+    } catch (err: any) {
+      setErrorBanner(err.message || 'Failed to queue the instant campaign.');
+    } finally {
+      setIsLaunching(false);
     }
   };
 
@@ -251,6 +257,8 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
           </button>
         </div>
       )}
+
+      <ResourceModeControl />
 
       {/* Sub-Tab Navigation Bar */}
       <div className="flex items-center gap-2 border-b border-border px-6 pt-2 bg-surface/40 shrink-0">
@@ -527,18 +535,18 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
               </h3>
               <button
                 type="button"
-                onClick={handleSelectAllRunning}
+                onClick={handleSelectAll}
                 className="text-xs text-emerald-400 hover:text-emerald-300 font-medium"
               >
-                {selectedProfileIds.length === runningProfiles.length && runningProfiles.length > 0
+                {selectedProfileIds.length === profiles.length && profiles.length > 0
                   ? 'Deselect All'
-                  : 'Select All Running'}
+                  : 'Select All'}
               </button>
             </div>
 
-            {runningProfiles.length === 0 ? (
+            {profiles.length === 0 ? (
               <div className="p-6 rounded-lg bg-zinc-950 border border-zinc-800 text-center text-xs text-zinc-500 my-auto">
-                No active containers running. Start a profile from the Profiles tab to automate it.
+                No profiles configured yet.
               </div>
             ) : (
               <div className="space-y-1.5 overflow-y-auto max-h-56 pr-1">
@@ -550,11 +558,9 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
                   return (
                     <div
                       key={p.id}
-                      onClick={() => isRunning && toggleProfileSelection(p.id)}
+                      onClick={() => toggleProfileSelection(p.id)}
                       className={`flex items-center justify-between p-2.5 rounded-lg border text-xs cursor-pointer transition-colors ${
-                        !isRunning
-                          ? 'opacity-40 bg-zinc-950/40 border-zinc-900 cursor-not-allowed'
-                          : isSelected
+                        isSelected
                           ? 'bg-zinc-850 border-emerald-500/50 text-white'
                           : 'bg-zinc-950 border-zinc-800/80 text-zinc-400 hover:border-zinc-700'
                       }`}
@@ -562,7 +568,6 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
                       <div className="flex items-center gap-2.5 truncate">
                         <input
                           type="checkbox"
-                          disabled={!isRunning}
                           checked={isSelected}
                           onChange={() => {}}
                           className="rounded border-zinc-700 text-emerald-600 focus:ring-0"

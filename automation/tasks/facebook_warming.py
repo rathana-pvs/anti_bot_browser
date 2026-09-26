@@ -17,15 +17,20 @@ class FacebookWarmingTask(BaseTask):
         self.scroll_count = scroll_count
 
     def run(self) -> bool:
+        self.set_stage("warming", scroll_count=self.scroll_count)
         self.log("STEP", "Starting Facebook warming session...")
 
         if not self.client.is_running():
             self.log("ERROR", f"Container {self.client.container_name} is not running.")
-            return False
+            return self.set_outcome(
+                "failed_before_publish",
+                reason="profile_container_not_running",
+            )
 
-        # Step 1: Ensure window focus and navigate to Facebook
-        self.log("STEP", "Navigating to facebook.com...")
-        self.navigate_to("https://www.facebook.com", wait_seconds=random.uniform(3.5, 6.0))
+        # Step 1: Verify the authenticated session and stop on any checkpoint.
+        self.log("STEP", "Verifying the Facebook session before passive browsing...")
+        if not self.verify_logged_in():
+            return self.skip_unverified_session()
 
         # Step 2: Human mouse movement across page
         w, h = self.client.get_screen_dimensions()
@@ -54,4 +59,4 @@ class FacebookWarmingTask(BaseTask):
         time.sleep(random.uniform(1.0, 2.5))
 
         self.log("SUCCESS", "Facebook warming session completed successfully.")
-        return True
+        return self.set_outcome("completed", scroll_count=self.scroll_count)

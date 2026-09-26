@@ -325,3 +325,61 @@ export async function generateAiSpins(
   if (!res.ok) throw new Error('Failed to generate AI spins');
   return res.json();
 }
+
+export interface CleanEvidenceResult {
+  success: boolean;
+  profile_id?: string;
+  days_kept: number;
+  deleted_runs: number;
+  freed_bytes: number;
+  freed_mb: number;
+  freed_formatted: string;
+  kept_runs: number;
+  new_disk_usage?: string | null;
+}
+
+export interface CleanAllEvidenceResult {
+  success: boolean;
+  days_kept: number;
+  total_deleted_runs: number;
+  total_freed_bytes: number;
+  total_freed_mb: number;
+  total_freed_formatted: string;
+  total_kept_runs: number;
+  profiles: Record<
+    string,
+    {
+      deleted_runs: number;
+      freed_bytes: number;
+      freed_mb: number;
+      freed_formatted: string;
+      kept_runs: number;
+    }
+  >;
+}
+
+export async function cleanProfileEvidence(profileId: string, days = 3): Promise<CleanEvidenceResult> {
+  const res = await fetch(`${API_BASE}/profiles/${profileId}/clean-evidence`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ days }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to clean profile evidence');
+  }
+  return res.json();
+}
+
+export async function cleanAllEvidence(days = 3): Promise<CleanAllEvidenceResult> {
+  const res = await fetch(`${API_BASE}/evidence/clean`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ days }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to clean evidence across profiles');
+  }
+  return res.json();
+}

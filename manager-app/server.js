@@ -33,6 +33,8 @@ import {
 } from './profilePipeline.js';
 import {
   RESOURCE_MODE_LIMITS,
+  recommendedOcrThreads,
+  resolveOcrDevice,
   resolveResourceMode,
   resourceAdmissionDecision,
 } from './resourceModes.js';
@@ -46,7 +48,9 @@ import {
   refreshExecutionLease,
   releaseExecutionLease,
   schedulerSnapshot,
+  workerSilenceTimeoutMs,
 } from './queueScheduler.js';
+import { cleanProfileEvidence, cleanAllProfilesEvidence } from './evidenceCleanup.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -114,6 +118,42 @@ function buildSchedulerConfig() {
 
 let SCHEDULER_CONFIG = buildSchedulerConfig();
 const MANAGER_INSTANCE_ID = `manager_${process.pid}_${randomUUID()}`;
+
+function detectOcrRuntime() {
+  let nvidiaDetected = false;
+  let gpuName = null;
+  try {
+    const output = execFileSync(
+      'nvidia-smi',
+      ['--query-gpu=name', '--format=csv,noheader'],
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 4_000 },
+    ).trim();
+    if (output) {
+      nvidiaDetected = true;
+      gpuName = output.split('\n')[0].trim();
+    }
+  } catch (_) {}
+
+  let cudaRuntimeAvailable = false;
+  try {
+    const pythonBin = path.join(ROOT_DIR, 'automation', 'venv', 'bin', 'python');
+    const probe = execFileSync(
+      pythonBin,
+      ['-c', 'import json, torch; print(json.dumps({"available": bool(torch.cuda.is_available()), "name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None}))'],
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 8_000 },
+    ).trim();
+    const parsed = JSON.parse(probe);
+    cudaRuntimeAvailable = parsed.available === true;
+    if (cudaRuntimeAvailable) {
+      nvidiaDetected = true;
+      gpuName = parsed.name || gpuName;
+    }
+  } catch (_) {}
+  return resolveOcrDevice(nvidiaDetected, cudaRuntimeAvailable, gpuName);
+}
+
+const OCR_RUNTIME = detectOcrRuntime();
+console.log(`[OCR] Runtime selected: ${OCR_RUNTIME.label}${OCR_RUNTIME.gpu_name ? ` (${OCR_RUNTIME.gpu_name})` : ''}`);
 
 const mediaStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, SHARED_MEDIA_DIR),
@@ -388,11 +428,18 @@ function resourceModeSnapshot() {
     selected_mode: resourceModeResolution.selected,
     effective_mode: resourceModeResolution.effective,
     recommended_mode: resourceModeResolution.recommended,
-    limits: { ...SCHEDULER_CONFIG },
+    limits: {
+      ...SCHEDULER_CONFIG,
+      ocr_threads_per_worker: recommendedOcrThreads(
+        cpuCores,
+        SCHEDULER_CONFIG.max_total_automation_tasks,
+      ),
+    },
     hardware: {
       total_memory_gb: Math.round(hostTotalMemoryGb * 10) / 10,
       cpu_threads: cpuCores,
       cpu_model: cpuModel,
+      ocr: OCR_RUNTIME,
     },
     supported_modes: {
       low: resolveResourceMode('low', hostTotalMemoryGb, cpuCores).supported,
@@ -407,6 +454,18 @@ function resourceModeSnapshot() {
       admission_reason: admission.reason,
       memory_paused: memoryAdmissionPaused,
     },
+  };
+}
+
+function automationWorkerEnv() {
+  return {
+    ...process.env,
+    PYTHONUNBUFFERED: '1',
+    AUTOMATION_OCR_THREADS: String(recommendedOcrThreads(
+      cpuCores,
+      SCHEDULER_CONFIG.max_total_automation_tasks,
+    )),
+    AUTOMATION_OCR_DEVICE: OCR_RUNTIME.device,
   };
 }
 
@@ -784,6 +843,54 @@ app.delete('/api/profiles/:id', (req, res) => {
   }
 });
 
+// POST /api/profiles/:id/clean-evidence
+app.post('/api/profiles/:id/clean-evidence', (req, res) => {
+  const { id } = req.params;
+  const days = Number(req.body?.days) > 0 ? Number(req.body.days) : 3;
+  const profileDir = path.join(PROFILES_DIR, id);
+
+  if (!fs.existsSync(profileDir)) {
+    return res.status(404).json({ error: `Profile ${id} not found` });
+  }
+
+  try {
+    const result = cleanProfileEvidence(profileDir, days);
+    delete profileDiskUsageCache[id];
+    const newDiskUsage = getProfileDiskUsage(id);
+
+    res.json({
+      success: true,
+      profile_id: id,
+      days_kept: days,
+      ...result,
+      new_disk_usage: newDiskUsage,
+    });
+  } catch (err) {
+    console.error(`Failed to clean evidence for ${id}:`, err);
+    res.status(500).json({ error: err.message || 'Failed to clean evidence' });
+  }
+});
+
+// POST /api/evidence/clean
+app.post('/api/evidence/clean', (req, res) => {
+  const days = Number(req.body?.days) > 0 ? Number(req.body.days) : 3;
+
+  try {
+    const result = cleanAllProfilesEvidence(PROFILES_DIR, days);
+    profileDiskUsageCache = {};
+    sampleProfileDiskUsage();
+
+    res.json({
+      success: true,
+      days_kept: days,
+      ...result,
+    });
+  } catch (err) {
+    console.error('Failed to clean evidence across all profiles:', err);
+    res.status(500).json({ error: err.message || 'Failed to clean evidence' });
+  }
+});
+
 // ==========================================
 // Proxy Management Endpoints
 // ==========================================
@@ -880,7 +987,10 @@ function latestQueueTaskState(profileId) {
     for (const post of batch.posts || []) {
       for (const execution of post.executions || []) {
         if (execution.profile_id === profileId) {
-          candidates.push({ execution, task: post.type === 'reel' ? 'reel' : 'post' });
+          candidates.push({
+            execution,
+            task: post.type === 'warming' ? 'warming' : (post.type === 'reel' ? 'reel' : 'post'),
+          });
         }
       }
     }
@@ -906,6 +1016,7 @@ function latestQueueTaskState(profileId) {
     preparing: 'running',
     running: 'running',
     published: 'completed',
+    completed: 'completed',
     failed: 'failed',
     failed_before_publish: 'failed',
     uncertain: 'uncertain',
@@ -1011,7 +1122,7 @@ app.post('/api/automation/run', (req, res) => {
 
     const proc = spawn(pythonBin, args, {
       cwd: ROOT_DIR,
-      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      env: automationWorkerEnv(),
     });
 
     taskRecord.process = proc;
@@ -1086,6 +1197,10 @@ app.post('/api/automation/run', (req, res) => {
 
       if (taskRecord.status === 'stopped') {
         appendLog(`[${taskRecord.ended_at}] [${profile_id}] [INFO] Task stopped by user.`, 'INFO');
+      } else if (taskRecord.result?.status?.startsWith('skipped_')) {
+        taskRecord.status = taskRecord.result.status;
+        taskRecord.error = taskRecord.result.error || null;
+        appendLog(`[${taskRecord.ended_at}] [${profile_id}] [INFO] Profile safely skipped: ${taskRecord.status}.`, 'INFO');
       } else if (taskRecord.result?.status === 'needs_review' || taskRecord.result?.status === 'uncertain' || code === 2) {
         taskRecord.status = taskRecord.result?.status === 'needs_review' ? 'needs_review' : 'uncertain';
         taskRecord.error = taskRecord.result?.error || 'Publication requires operator review or could not be visually confirmed';
@@ -1328,9 +1443,11 @@ function heartbeatSchedulerLeases() {
   for (const record of activeAutomationTasks.values()) {
     if (!isTaskProcessActive(record) || !record.scheduler_lease?.lease_id) continue;
     const lastActivityMs = Date.parse(record.last_activity_at || record.started_at || 0) || 0;
-    if (nowMs - lastActivityMs >= SCHEDULER_CONFIG.lease_ttl_ms) {
+    const stage = record.current_stage || record.result?.current_stage || 'unknown';
+    const silenceTimeoutMs = workerSilenceTimeoutMs(stage, SCHEDULER_CONFIG.lease_ttl_ms);
+    if (nowMs - lastActivityMs >= silenceTimeoutMs) {
       record.status = 'stale';
-      record.error = 'Worker heartbeat expired without recent output or stage activity';
+      record.error = `Live worker exceeded the ${Math.round(silenceTimeoutMs / 60000)}-minute silence limit in stage '${stage}'`;
       try { record.process?.kill('SIGTERM'); } catch (_) {}
       setTimeout(() => {
         try {
@@ -1481,6 +1598,7 @@ app.get('/api/queue', (req, res) => {
             media_file: post.media_file,
             base_caption: post.base_caption,
             first_comment: post.first_comment,
+            scrolls: post.scrolls,
           });
         });
       });
@@ -1494,6 +1612,7 @@ app.get('/api/queue', (req, res) => {
       pending: allExecutions.filter((e) => ['pending', 'ready'].includes(e.status)).length,
       running: allExecutions.filter((e) => ['running', 'preparing'].includes(e.status)).length,
       published: allExecutions.filter((e) => e.status === 'published').length,
+      completed: allExecutions.filter((e) => e.status === 'completed').length,
       failed: allExecutions.filter((e) => e.status === 'failed' || e.status === 'failed_before_publish').length,
       uncertain: allExecutions.filter((e) => e.status === 'uncertain' || e.status === 'needs_review').length,
       skipped: allExecutions.filter((e) => e.status && e.status.startsWith('skipped')).length,
@@ -1528,7 +1647,13 @@ app.post('/api/queue/batch', (req, res) => {
     const batchId = `batch_${Date.now()}`;
     const startTimeStr = schedule_window?.start_time || '09:00';
     const endTimeStr = schedule_window?.end_time || '21:00';
-    const staggerMins = parseInt(schedule_window?.profile_stagger_minutes, 10) || 15;
+    const rawStaggerSeconds = parseInt(schedule_window?.profile_stagger_seconds, 10);
+    const legacyStaggerMinutes = parseInt(schedule_window?.profile_stagger_minutes, 10);
+    const staggerSeconds = !Number.isNaN(rawStaggerSeconds)
+      ? Math.max(0, rawStaggerSeconds)
+      : !Number.isNaN(legacyStaggerMinutes)
+        ? Math.max(0, legacyStaggerMinutes) * 60
+        : 60;
     const preparationMode = schedule_window?.session_preparation_mode || 'off';
     if (!['off', 'brief', 'extended'].includes(preparationMode)) {
       return res.status(400).json({ error: "session_preparation_mode must be 'off', 'brief', or 'extended'" });
@@ -1607,7 +1732,7 @@ app.post('/api/queue/batch', (req, res) => {
           isStartNow,
           slotIndex: slotIdx,
           profileIndex: pIdx,
-          staggerMs: staggerMins * 60 * 1000,
+          staggerMs: staggerSeconds * 1000,
           postSlotMs,
           windowStartMs: windowStart.getTime(),
           jitterMs: jitter,
@@ -1640,6 +1765,7 @@ app.post('/api/queue/batch', (req, res) => {
         media_file: post.media_file || '',
         base_caption: post.base_caption || '',
         first_comment: post.first_comment || null,
+        scrolls: Math.max(1, parseInt(post.scrolls, 10) || 4),
         ai_spin: post.ai_spin !== false,
         executions,
       };
@@ -1654,7 +1780,7 @@ app.post('/api/queue/batch', (req, res) => {
       schedule_window: {
         start_time: startTimeStr,
         end_time: endTimeStr,
-        profile_stagger_minutes: staggerMins,
+        profile_stagger_seconds: staggerSeconds,
         session_preparation_mode: preparationMode,
         start_now: isStartNow,
       },
@@ -1745,8 +1871,9 @@ function claimQueueExecution(executionId, kind = 'publisher') {
     const match = findQueueExecution(queue, executionId);
     if (!match) throw new Error('Execution not found');
     const { execution: targetExec, post: targetPost } = match;
+    const standaloneWarming = targetPost.type === 'warming';
     const preparationMode = targetExec.preparation_mode || 'off';
-    if (kind === 'preparer' && (preparationMode === 'off' || targetExec.preparation_status !== 'pending')) {
+    if (kind === 'preparer' && !standaloneWarming && (preparationMode === 'off' || targetExec.preparation_status !== 'pending')) {
       const error = new Error('Execution does not require passive preparation');
       error.schedulerReason = 'preparation_not_pending';
       throw error;
@@ -1771,15 +1898,15 @@ function claimQueueExecution(executionId, kind = 'publisher') {
     }
 
     const now = new Date().toISOString();
-    targetExec.status = kind === 'preparer' ? 'preparing' : 'running';
+    targetExec.status = kind === 'preparer' && !standaloneWarming ? 'preparing' : 'running';
     targetExec.started_at = now;
     targetExec.ended_at = null;
     targetExec.error = null;
     targetExec.logs = [];
     targetExec.stage_history = Array.isArray(targetExec.stage_history) ? targetExec.stage_history : [];
-    targetExec.stage = kind === 'preparer' ? 'preparing' : 'preparing';
+    targetExec.stage = standaloneWarming ? 'warming' : 'preparing';
     targetExec.stage_history.push({
-      stage: 'preparing',
+      stage: targetExec.stage,
       timestamp: now,
       reason: `${kind}_scheduler_lease_claimed`,
       lease_id: leaseId,
@@ -1845,7 +1972,7 @@ async function executeQueuePreparation(executionId) {
   }
   const proc = spawn(pythonBin, args, {
     cwd: ROOT_DIR,
-    env: { ...process.env, PYTHONUNBUFFERED: '1' },
+    env: automationWorkerEnv(),
   });
   taskRecord.process = proc;
 
@@ -1904,6 +2031,12 @@ async function executeQueuePreparation(executionId) {
         execution.preparation_completed_at = new Date().toISOString();
         execution.error = null;
         taskRecord.status = 'completed';
+      } else if (reportedStatus?.startsWith('skipped_')) {
+        execution.status = reportedStatus;
+        execution.stage = reportedStatus;
+        execution.preparation_status = reportedStatus;
+        execution.error = taskRecord.result?.error || null;
+        taskRecord.status = reportedStatus;
       } else if (reportedStatus === 'needs_review' || reportedStatus === 'uncertain' || code === 2) {
         execution.status = 'needs_review';
         execution.stage = 'needs_review';
@@ -1964,15 +2097,18 @@ async function executeQueuePreparation(executionId) {
 }
 
 // Trigger a queue execution
-async function executeQueueItem(executionId) {
-  const { targetExec, targetPost, leaseId, lease } = claimQueueExecution(executionId);
+async function executeQueueItem(executionId, schedulerKind = 'publisher') {
+  const { targetExec, targetPost, leaseId, lease } = claimQueueExecution(executionId, schedulerKind);
   const profileId = targetExec.profile_id;
 
   const pythonBin = path.join(ROOT_DIR, 'automation', 'venv', 'bin', 'python');
   const runnerScript = path.join(ROOT_DIR, 'automation', 'runner.py');
-  const taskType = targetPost.type === 'reel' ? 'reel' : 'post';
+  const taskType = targetPost.type === 'warming' ? 'warming' : (targetPost.type === 'reel' ? 'reel' : 'post');
 
   const args = ['-u', runnerScript, '--profile', profileId, '--task', taskType];
+  if (taskType === 'warming') {
+    args.push('--scrolls', String(targetPost.scrolls || 4));
+  }
   if (targetExec.spun_caption) {
     args.push('--caption', targetExec.spun_caption);
   }
@@ -2028,7 +2164,7 @@ async function executeQueueItem(executionId) {
 
   const proc = spawn(pythonBin, args, {
     cwd: ROOT_DIR,
-    env: { ...process.env, PYTHONUNBUFFERED: '1' },
+    env: automationWorkerEnv(),
   });
 
   taskRecord.process = proc;
@@ -2084,9 +2220,11 @@ async function executeQueueItem(executionId) {
       const stage = taskRecord.result?.current_stage || taskRecord.current_stage;
       const reachedPublish = stage === 'publish_clicked' || stage === 'verifying';
 
-      taskRecord.status = (reportedStatus === 'needs_review' || reportedStatus === 'uncertain' || reachedPublish)
-        ? (reportedStatus === 'needs_review' ? 'needs_review' : 'uncertain')
-        : (code === 0 ? 'completed' : 'failed');
+      taskRecord.status = reportedStatus?.startsWith('skipped_')
+        ? reportedStatus
+        : (reportedStatus === 'needs_review' || reportedStatus === 'uncertain' || reachedPublish)
+          ? (reportedStatus === 'needs_review' ? 'needs_review' : 'uncertain')
+          : (code === 0 ? 'completed' : 'failed');
       taskRecord.process = null;
 
       const updatedQueue = loadPostingQueue();
@@ -2114,7 +2252,15 @@ async function executeQueueItem(executionId) {
           execInDb.stage_history = taskRecord.result.stage_history;
         }
 
-        if (reportedStatus === 'published') {
+        if (taskType === 'warming' && code === 0 && reportedStatus === 'completed') {
+          execInDb.status = 'completed';
+          execInDb.stage = 'completed';
+          execInDb.error = null;
+        } else if (reportedStatus?.startsWith('skipped_')) {
+          execInDb.status = reportedStatus;
+          execInDb.stage = reportedStatus;
+          execInDb.error = taskRecord.result?.error || null;
+        } else if (reportedStatus === 'published') {
           execInDb.status = 'published';
           execInDb.published_at = new Date().toISOString();
           execInDb.error = null;
@@ -2127,6 +2273,7 @@ async function executeQueueItem(executionId) {
           }
           if (taskRecord.result?.first_comment) {
             execInDb.first_comment_status = taskRecord.result.first_comment;
+            execInDb.first_comment_method = taskRecord.result.first_comment_method || null;
             if (taskRecord.result.first_comment === 'submitted_verified') {
               execInDb.first_comment_verified_at = new Date().toISOString();
             }
@@ -2169,7 +2316,7 @@ async function executeQueueItem(executionId) {
         }
         setTimeout(() => dispatchPendingQueue().catch((error) => console.error('Post-publish dispatch error:', error)), 100);
       }
-      resolve({ success: execInDb?.status === 'published', status: execInDb?.status, code });
+      resolve({ success: ['published', 'completed'].includes(execInDb?.status), status: execInDb?.status, code });
     });
 
     proc.on('error', async (err) => {
@@ -2198,12 +2345,14 @@ app.post('/api/queue/run-now/:execution_id', async (req, res) => {
     const { execution_id } = req.params;
     const queue = loadPostingQueue();
     let targetExec = null;
+    let targetPost = null;
 
     for (const batch of queue.daily_batches || []) {
       for (const post of batch.posts || []) {
         const match = (post.executions || []).find((e) => e.execution_id === execution_id);
         if (match) {
           targetExec = match;
+          targetPost = post;
           break;
         }
       }
@@ -2220,7 +2369,29 @@ app.post('/api/queue/run-now/:execution_id', async (req, res) => {
       });
     }
 
+    // A skipped authentication preflight is safe to retry manually after the
+    // operator logs the profile back in. It must not retry automatically.
+    if (targetExec.status?.startsWith('skipped_')) {
+      const now = new Date().toISOString();
+      targetExec.status = 'pending';
+      targetExec.stage = 'pending';
+      targetExec.error = null;
+      if ((targetExec.preparation_mode || 'off') !== 'off') {
+        targetExec.preparation_status = 'pending';
+      }
+      targetExec.stage_history = Array.isArray(targetExec.stage_history) ? targetExec.stage_history : [];
+      targetExec.stage_history.push({
+        stage: 'pending',
+        timestamp: now,
+        reason: 'manual_retry_after_safe_skip',
+      });
+      savePostingQueue(queue);
+    }
+
+    const standaloneWarming = targetPost?.type === 'warming';
     const needsPreparation = (
+      !standaloneWarming
+      &&
       targetExec.status === 'pending'
       && (targetExec.preparation_mode || 'off') !== 'off'
       && targetExec.preparation_status === 'pending'
@@ -2243,15 +2414,18 @@ app.post('/api/queue/run-now/:execution_id', async (req, res) => {
         return res.status(409).json({ error: `Container start delayed: ${admission.reason}.` });
       }
     }
+    const slotKind = (needsPreparation || standaloneWarming) ? 'preparer' : 'publisher';
     const executionPromise = needsPreparation
       ? executeQueuePreparation(execution_id)
-      : executeQueueItem(execution_id);
+      : executeQueueItem(execution_id, slotKind);
     executionPromise.catch((err) => console.error('Run-now error:', err));
     res.json({
       success: true,
       message: needsPreparation
         ? `Started passive preparation for execution ${execution_id}`
-        : `Dispatched execution ${execution_id} immediately`,
+        : standaloneWarming
+          ? `Dispatched feed warming ${execution_id} immediately`
+          : `Dispatched execution ${execution_id} immediately`,
     });
   } catch (err) {
     if (err.schedulerReason) {
@@ -2430,7 +2604,10 @@ async function dispatchPendingQueue() {
       if (!match || !['pending', 'ready'].includes(match.execution.status)) continue;
       const pid = match.execution.profile_id;
 
+      const standaloneWarming = match.post.type === 'warming';
       const needsPreparation = (
+        !standaloneWarming
+        &&
         match.execution.status === 'pending'
         && (match.execution.preparation_mode || 'off') !== 'off'
         && match.execution.preparation_status === 'pending'
@@ -2443,7 +2620,7 @@ async function dispatchPendingQueue() {
         getContainerStatus(pid) !== 'running'
         && countRunningProfileContainers() >= SCHEDULER_CONFIG.max_active_profile_containers
       ) continue;
-      const slotKind = needsPreparation ? 'preparer' : 'publisher';
+      const slotKind = (needsPreparation || standaloneWarming) ? 'preparer' : 'publisher';
       const availability = canAcquireSchedulerSlot(
         currentQueue, activeInMemorySchedulerLeases(), slotKind, pid, SCHEDULER_CONFIG,
       );
@@ -2463,7 +2640,7 @@ async function dispatchPendingQueue() {
       try {
         const executionPromise = needsPreparation
           ? executeQueuePreparation(executionId)
-          : executeQueueItem(executionId);
+          : executeQueueItem(executionId, slotKind);
         executionPromise.catch((e) => console.error('Dispatch error:', e));
       } catch (error) {
         if (!['publisher_capacity_reached', 'preparer_capacity_reached', 'profile_busy'].includes(error.schedulerReason)) {

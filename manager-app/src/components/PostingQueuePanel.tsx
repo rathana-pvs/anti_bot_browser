@@ -1,7 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { QueueDataResponse, QueueExecutionItem, ResourceMode, ResourceModeSettings } from '../types/automation';
+import { QueueDataResponse, QueueExecutionItem } from '../types/automation';
 import { Profile } from '../types/profile';
-import { backfillExecutionPermalink, fetchQueue, fetchResourceMode, updateResourceMode, deleteBatch, deleteExecution, runExecutionNow, resolveUncertainExecution } from '../services/api';
+import {
+  backfillExecutionPermalink,
+  fetchQueue,
+  deleteBatch,
+  deleteExecution,
+  runExecutionNow,
+  resolveUncertainExecution,
+} from '../services/api';
 import {
   Clock,
   Play,
@@ -10,7 +17,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   Loader2,
-  Layers,
+  Flame,
   Film,
   Image as ImageIcon,
   Calendar,
@@ -21,6 +28,7 @@ import {
   ExternalLink,
   Check,
   Eye,
+  Search,
 } from 'lucide-react';
 
 interface PostingQueuePanelProps {
@@ -40,12 +48,12 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
   const [loading, setLoading] = useState(false);
   const [filterProfile, setFilterProfile] = useState<string>('all');
   const [filterStatus, setFilterStatus] = useState<string>('all');
+  const [filterBatch, setFilterBatch] = useState<string>('all');
+  const [searchQuery, setSearchQuery] = useState<string>('');
   const [actionError, setActionError] = useState<string | null>(null);
   const [lightboxMedia, setLightboxMedia] = useState<LightboxMedia | null>(null);
-  const [resourceSettings, setResourceSettings] = useState<ResourceModeSettings | null>(null);
-  const [savingResourceMode, setSavingResourceMode] = useState(false);
 
-  // Phase 0 & Phase 1: Review & Resolve Uncertain State
+  // Phase 0 Safety Gate: Review & Resolve Uncertain State
   const [resolvingItem, setResolvingItem] = useState<QueueExecutionItem | null>(null);
   const [resolveNote, setResolveNote] = useState('');
   const [resolvePostUrl, setResolvePostUrl] = useState('');
@@ -63,26 +71,6 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
     }
   };
 
-  const loadResourceSettings = async () => {
-    try {
-      setResourceSettings(await fetchResourceMode());
-    } catch (err) {
-      console.error('Failed to load resource mode:', err);
-    }
-  };
-
-  const handleResourceModeChange = async (mode: ResourceMode) => {
-    setSavingResourceMode(true);
-    setActionError(null);
-    try {
-      setResourceSettings(await updateResourceMode(mode));
-      await loadQueue();
-    } catch (err: any) {
-      setActionError(err.message || 'Failed to update resource mode');
-    } finally {
-      setSavingResourceMode(false);
-    }
-  };
 
   const handleResolveUncertain = async (resolution: 'published' | 'not_published') => {
     if (!resolvingItem) return;
@@ -93,7 +81,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
         resolvingItem.execution_id,
         resolution,
         resolveNote.trim() || undefined,
-        resolution === 'published' ? (resolvePostUrl.trim() || undefined) : undefined
+        resolution === 'published' ? resolvePostUrl.trim() || undefined : undefined
       );
       setResolvingItem(null);
       setResolveNote('');
@@ -108,11 +96,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
 
   useEffect(() => {
     loadQueue();
-    loadResourceSettings();
-    const interval = setInterval(() => {
-      loadQueue();
-      loadResourceSettings();
-    }, 5000);
+    const interval = setInterval(loadQueue, 5000);
     return () => clearInterval(interval);
   }, []);
 
@@ -155,7 +139,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
         postUrl.trim(),
         1.0,
         'Operator-supplied verified permalink',
-        'dashboard_manual_backfill',
+        'dashboard_manual_backfill'
       );
       await loadQueue();
     } catch (err: any) {
@@ -177,22 +161,18 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
     }
   };
 
-  const formatDuration = (durationMs: number | null | undefined) => {
-    if (durationMs === null || durationMs === undefined) return '—';
-    if (durationMs >= 60_000) return `${(durationMs / 60_000).toFixed(1)}m`;
-    if (durationMs >= 1_000) return `${(durationMs / 1_000).toFixed(1)}s`;
-    return `${Math.round(durationMs)}ms`;
-  };
-
-  const formatPercent = (value: number | null | undefined) =>
-    value === null || value === undefined ? '—' : `${value.toFixed(1)}%`;
-
   const getStatusBadge = (status: string, executionId?: string) => {
     switch (status) {
       case 'published':
         return (
           <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-950 text-emerald-300 border border-emerald-800/80 flex items-center gap-1">
             <CheckCircle2 className="w-3 h-3 text-emerald-400" /> Published
+          </span>
+        );
+      case 'completed':
+        return (
+          <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-orange-950 text-orange-300 border border-orange-800/80 flex items-center gap-1">
+            <CheckCircle2 className="w-3 h-3 text-orange-400" /> Completed
           </span>
         );
       case 'running':
@@ -210,7 +190,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
       case 'ready':
         return (
           <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-cyan-950 text-cyan-300 border border-cyan-800/80 flex items-center gap-1">
-            <CheckCircle2 className="w-3 h-3 text-cyan-400" /> Ready for Publisher
+            <CheckCircle2 className="w-3 h-3 text-cyan-400" /> Ready
           </span>
         );
       case 'failed':
@@ -223,7 +203,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
             title="Pre-publish failure. Safe to retry."
           >
             <AlertTriangle className="w-3 h-3 text-red-400 group-hover:scale-110 transition-transform" />
-            <span>Failed (Pre-publish)</span>
+            <span>Failed</span>
             <RotateCcw className="w-2.5 h-2.5 text-red-400/80 group-hover:rotate-180 transition-transform ml-0.5" />
           </button>
         ) : (
@@ -236,16 +216,16 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
         return (
           <span
             className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-950 text-amber-300 border border-amber-800/80 flex items-center gap-1 shadow-sm"
-            title="State ambiguous or semantic fallback gated. Rerun locked until operator review."
+            title="Outcome uncertain. Rerun locked until operator review."
           >
-            <ShieldAlert className="w-3 h-3 text-amber-400" /> {status === 'needs_review' ? 'Needs Review' : 'Uncertain (Check FB)'}
+            <ShieldAlert className="w-3 h-3 text-amber-400" /> {status === 'needs_review' ? 'Needs Review' : 'Uncertain'}
           </span>
         );
       default:
         if (status.startsWith('skipped')) {
           return (
             <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-zinc-900 text-zinc-500 border border-zinc-800 flex items-center gap-1">
-              <Lock className="w-3 h-3" /> Skipped (Stopped)
+              <Lock className="w-3 h-3" /> Skipped
             </span>
           );
         }
@@ -258,8 +238,22 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
   };
 
   const executions = queueData?.executions || [];
+  const batches = queueData?.batches || [];
+  const stats = queueData?.stats || {
+    total: 0,
+    pending: 0,
+    running: 0,
+    published: 0,
+    completed: 0,
+    failed: 0,
+    uncertain: 0,
+    skipped: 0,
+  };
+
+  // Filter executions
   const filteredExecutions = executions.filter((execItem) => {
     if (filterProfile !== 'all' && execItem.profile_id !== filterProfile) return false;
+    if (filterBatch !== 'all' && execItem.batch_id !== filterBatch) return false;
     if (filterStatus !== 'all') {
       if (filterStatus === 'failed') {
         if (execItem.status !== 'failed' && execItem.status !== 'failed_before_publish') return false;
@@ -273,332 +267,344 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
         return false;
       }
     }
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      const profileName = getProfileName(execItem.profile_id).toLowerCase();
+      const caption = (execItem.spun_caption || execItem.base_caption || '').toLowerCase();
+      const media = (execItem.media_file || '').toLowerCase();
+      if (!profileName.includes(q) && !caption.includes(q) && !media.includes(q)) {
+        return false;
+      }
+    }
     return true;
   });
 
+  const uncertainCount = stats.uncertain || 0;
+  const failedCount = stats.failed || 0;
+  const hasAttentionItems = uncertainCount > 0 || failedCount > 0;
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 max-w-7xl mx-auto">
+      {/* Top Action Error Alert */}
       {actionError && (
-        <div className="p-3 bg-red-950/70 border border-red-800 text-red-200 text-xs rounded-lg flex items-center gap-2">
-          <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
-          <span>{actionError}</span>
+        <div className="p-3 bg-red-950/70 border border-red-800 text-red-200 text-xs rounded-xl flex items-center justify-between gap-2 shadow-sm animate-in fade-in duration-150">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+            <span>{actionError}</span>
+          </div>
+          <button onClick={() => setActionError(null)} className="text-red-400 hover:text-white font-bold ml-2">
+            <X className="w-4 h-4" />
+          </button>
         </div>
       )}
 
-      <div className="p-4 rounded-xl bg-zinc-900/60 border border-zinc-800 space-y-3">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h4 className="text-xs font-semibold text-zinc-200 uppercase tracking-wider flex items-center gap-2">
-              <Layers className="w-4 h-4 text-violet-400" /> Resource Mode
-            </h4>
-            <p className="text-[11px] text-zinc-500 mt-1">
-              Changes apply to new scheduler claims; active posts are never interrupted.
-            </p>
-          </div>
-          {resourceSettings && (
-            <div className="text-right text-[10px] text-zinc-500 font-mono">
-              <div>{resourceSettings.hardware.total_memory_gb} GB RAM · {resourceSettings.hardware.cpu_threads} threads</div>
-              <div>Recommended: <span className="text-violet-300 uppercase">{resourceSettings.recommended_mode}</span></div>
-            </div>
+      {/* ============================================================
+          ZONE 1: COMPACT STATUS BAR (Clickable Filters)
+          ============================================================ */}
+      <div className="p-2.5 rounded-2xl bg-zinc-900/60 border border-zinc-800/80 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-1.5 text-xs">
+          {/* Total */}
+          <button
+            type="button"
+            onClick={() => setFilterStatus('all')}
+            className={`px-3 py-1.5 rounded-xl font-medium transition-all flex items-center gap-1.5 ${
+              filterStatus === 'all'
+                ? 'bg-zinc-800 text-white border border-zinc-700 font-semibold shadow-sm'
+                : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/60'
+            }`}
+          >
+            <span>All Posts</span>
+            <span className="font-mono text-[11px] px-1.5 py-0.2 rounded bg-zinc-950/80 text-zinc-300">
+              {stats.total}
+            </span>
+          </button>
+
+          {/* Running */}
+          <button
+            type="button"
+            onClick={() => setFilterStatus(filterStatus === 'running' ? 'all' : 'running')}
+            className={`px-3 py-1.5 rounded-xl font-medium transition-all flex items-center gap-1.5 ${
+              filterStatus === 'running'
+                ? 'bg-blue-950/80 text-blue-300 border border-blue-700 font-semibold shadow-sm'
+                : 'text-blue-400 hover:bg-blue-950/40'
+            }`}
+          >
+            <span className="w-2 h-2 rounded-full bg-blue-500 animate-ping" />
+            <span>Running</span>
+            <span className="font-mono text-[11px] px-1.5 py-0.2 rounded bg-blue-950/90 text-blue-300">
+              {stats.running}
+            </span>
+          </button>
+
+          {/* Pending */}
+          <button
+            type="button"
+            onClick={() => setFilterStatus(filterStatus === 'pending' ? 'all' : 'pending')}
+            className={`px-3 py-1.5 rounded-xl font-medium transition-all flex items-center gap-1.5 ${
+              filterStatus === 'pending'
+                ? 'bg-zinc-800 text-zinc-200 border border-zinc-600 font-semibold shadow-sm'
+                : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/60'
+            }`}
+          >
+            <Clock className="w-3.5 h-3.5 text-zinc-500" />
+            <span>Pending</span>
+            <span className="font-mono text-[11px] px-1.5 py-0.2 rounded bg-zinc-950/80 text-zinc-400">
+              {stats.pending}
+            </span>
+          </button>
+
+          {/* Published */}
+          <button
+            type="button"
+            onClick={() => setFilterStatus(filterStatus === 'published' ? 'all' : 'published')}
+            className={`px-3 py-1.5 rounded-xl font-medium transition-all flex items-center gap-1.5 ${
+              filterStatus === 'published'
+                ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-700 font-semibold shadow-sm'
+                : 'text-emerald-400 hover:bg-emerald-950/40'
+            }`}
+          >
+            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Published</span>
+            <span className="font-mono text-[11px] px-1.5 py-0.2 rounded bg-emerald-950/90 text-emerald-300">
+              {stats.published}
+            </span>
+          </button>
+
+          {/* Completed warming sessions */}
+          {(stats.completed || 0) > 0 && (
+            <button
+              type="button"
+              onClick={() => setFilterStatus(filterStatus === 'completed' ? 'all' : 'completed')}
+              className={`px-3 py-1.5 rounded-xl font-medium transition-all flex items-center gap-1.5 ${
+                filterStatus === 'completed'
+                  ? 'bg-orange-950/80 text-orange-300 border border-orange-700 font-semibold shadow-sm'
+                  : 'text-orange-400 hover:bg-orange-950/40'
+              }`}
+            >
+              <Flame className="w-3.5 h-3.5 text-orange-400" />
+              <span>Warmed</span>
+              <span className="font-mono text-[11px] px-1.5 py-0.2 rounded bg-orange-950/90 text-orange-300">
+                {stats.completed || 0}
+              </span>
+            </button>
+          )}
+
+          {/* Failed */}
+          {failedCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setFilterStatus(filterStatus === 'failed' ? 'all' : 'failed')}
+              className={`px-3 py-1.5 rounded-xl font-medium transition-all flex items-center gap-1.5 ${
+                filterStatus === 'failed'
+                  ? 'bg-red-950 text-red-200 border border-red-700 font-semibold shadow-sm'
+                  : 'text-red-400 hover:bg-red-950/40'
+              }`}
+            >
+              <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
+              <span>Failed</span>
+              <span className="font-mono text-[11px] px-1.5 py-0.2 rounded bg-red-950/90 text-red-300 font-bold">
+                {failedCount}
+              </span>
+            </button>
+          )}
+
+          {/* Uncertain */}
+          {uncertainCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setFilterStatus(filterStatus === 'uncertain' ? 'all' : 'uncertain')}
+              className={`px-3 py-1.5 rounded-xl font-medium transition-all flex items-center gap-1.5 animate-pulse ${
+                filterStatus === 'uncertain'
+                  ? 'bg-amber-950 text-amber-200 border border-amber-600 font-semibold shadow-sm'
+                  : 'text-amber-400 hover:bg-amber-950/40'
+              }`}
+            >
+              <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
+              <span>Needs Review</span>
+              <span className="font-mono text-[11px] px-1.5 py-0.2 rounded bg-amber-900/80 text-amber-200 font-bold">
+                {uncertainCount}
+              </span>
+            </button>
           )}
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          {(['auto', 'low', 'medium', 'high'] as ResourceMode[]).map((mode) => {
-            const supported = Boolean(resourceSettings) && (
-              mode === 'auto' || resourceSettings!.supported_modes[mode as 'low' | 'medium' | 'high']
-            );
-            const selected = resourceSettings?.selected_mode === mode;
-            return (
+        {/* Right side controls: Refresh */}
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={loadQueue}
+            disabled={loading}
+            className="px-3 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-zinc-300 text-xs font-medium flex items-center gap-1.5 transition-colors shadow-sm"
+            title="Refresh queue status"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-blue-400' : 'text-zinc-400'}`} />
+            <span>Refresh</span>
+          </button>
+        </div>
+      </div>
+
+      {/* ============================================================
+          ZONE 2: ATTENTION REQUIRED BANNER (Conditional)
+          ============================================================ */}
+      {hasAttentionItems && (
+        <div className="p-3.5 rounded-2xl bg-amber-950/30 border border-amber-700/60 flex flex-wrap items-center justify-between gap-3 shadow-md animate-in fade-in duration-150">
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-xl bg-amber-500/20 text-amber-400 shrink-0">
+              <ShieldAlert className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="text-xs font-bold text-amber-200 flex items-center gap-2">
+                <span>Attention Required</span>
+                <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-amber-900/60 text-amber-300">
+                  {uncertainCount + failedCount} items
+                </span>
+              </div>
+              <div className="text-[11px] text-amber-300/80 mt-0.5 leading-snug">
+                {uncertainCount > 0 && `${uncertainCount} post(s) held for Phase 0 review to prevent duplicates. `}
+                {failedCount > 0 && `${failedCount} post(s) failed pre-publish and can be retried safely.`}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 text-xs">
+            {uncertainCount > 0 && (
               <button
-                key={mode}
                 type="button"
-                disabled={!supported || savingResourceMode}
-                onClick={() => handleResourceModeChange(mode)}
-                className={`rounded-lg border px-3 py-2 text-xs font-semibold uppercase transition-all ${
-                  selected
-                    ? 'bg-violet-600/20 border-violet-500 text-violet-200'
-                    : supported
-                      ? 'bg-zinc-950/70 border-zinc-800 text-zinc-400 hover:border-zinc-600 hover:text-zinc-200'
-                      : 'bg-zinc-950/30 border-zinc-900 text-zinc-700 cursor-not-allowed'
-                }`}
+                onClick={() => setFilterStatus('uncertain')}
+                className="px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-semibold transition-colors shadow-sm"
               >
-                {mode}{mode === 'auto' && resourceSettings ? ` (${resourceSettings.effective_mode})` : ''}
+                Review Uncertain ({uncertainCount})
               </button>
-            );
-          })}
-        </div>
-
-        {resourceSettings && (
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-[10px] font-mono">
-            <div className="rounded bg-zinc-950/70 border border-zinc-800 p-2 text-zinc-400">Publishers <span className="text-white">{resourceSettings.limits.max_publishers}</span></div>
-            <div className="rounded bg-zinc-950/70 border border-zinc-800 p-2 text-zinc-400">Preparers <span className="text-white">{resourceSettings.limits.max_preparers}</span></div>
-            <div className="rounded bg-zinc-950/70 border border-zinc-800 p-2 text-zinc-400">Containers <span className="text-white">{resourceSettings.runtime.active_profile_containers}/{resourceSettings.limits.max_active_profile_containers}</span></div>
-            <div className="rounded bg-zinc-950/70 border border-zinc-800 p-2 text-zinc-400">RAM <span className="text-white">{resourceSettings.runtime.memory_used_percent}%</span></div>
-            <div className="rounded bg-zinc-950/70 border border-zinc-800 p-2 text-zinc-400">CPU <span className="text-white">{resourceSettings.runtime.sustained_cpu_percent}%</span></div>
-          </div>
-        )}
-      </div>
-
-      {/* Top Telemetry Stats Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
-        <div className="p-3 rounded-xl bg-zinc-900/60 border border-zinc-800 text-center">
-          <div className="text-[11px] text-zinc-500 uppercase font-medium tracking-wider">Total</div>
-          <div className="text-xl font-bold text-white mt-0.5 font-mono">{queueData?.stats?.total || 0}</div>
-        </div>
-        <div className="p-3 rounded-xl bg-zinc-900/60 border border-zinc-800 text-center">
-          <div className="text-[11px] text-zinc-400 uppercase font-medium tracking-wider">Pending</div>
-          <div className="text-xl font-bold text-zinc-300 mt-0.5 font-mono">{queueData?.stats?.pending || 0}</div>
-        </div>
-        <div className="p-3 rounded-xl bg-blue-950/20 border border-blue-900/40 text-center">
-          <div className="text-[11px] text-blue-400 uppercase font-medium tracking-wider">Running</div>
-          <div className="text-xl font-bold text-blue-300 mt-0.5 font-mono">{queueData?.stats?.running || 0}</div>
-        </div>
-        <div className="p-3 rounded-xl bg-emerald-950/20 border border-emerald-900/40 text-center">
-          <div className="text-[11px] text-emerald-400 uppercase font-medium tracking-wider">Published</div>
-          <div className="text-xl font-bold text-emerald-400 mt-0.5 font-mono">{queueData?.stats?.published || 0}</div>
-        </div>
-        <div className="p-3 rounded-xl bg-red-950/20 border border-red-900/40 text-center">
-          <div className="text-[11px] text-red-400 uppercase font-medium tracking-wider">Failed</div>
-          <div className="text-xl font-bold text-red-400 mt-0.5 font-mono">{queueData?.stats?.failed || 0}</div>
-        </div>
-        <div
-          className={`p-3 rounded-xl border text-center transition-all ${
-            (queueData?.stats?.uncertain || 0) > 0
-              ? 'bg-amber-950/40 border-amber-600/70 shadow-lg shadow-amber-950/30'
-              : 'bg-zinc-900/60 border-zinc-800'
-          }`}
-        >
-          <div className="text-[11px] text-amber-400 uppercase font-medium tracking-wider flex items-center justify-center gap-1">
-            <ShieldAlert className="w-3 h-3" /> Uncertain
-          </div>
-          <div className="text-xl font-bold text-amber-300 mt-0.5 font-mono">{queueData?.stats?.uncertain || 0}</div>
-        </div>
-        <div className="p-3 rounded-xl bg-zinc-900/60 border border-zinc-800 text-center">
-          <div className="text-[11px] text-zinc-500 uppercase font-medium tracking-wider">Skipped</div>
-          <div className="text-xl font-bold text-zinc-500 mt-0.5 font-mono">{queueData?.stats?.skipped || 0}</div>
-        </div>
-        <div
-          className="p-3 rounded-xl bg-violet-950/20 border border-violet-900/40 text-center"
-          title={`Publishers ${queueData?.scheduler?.active.publishers || 0}/${queueData?.scheduler?.config.max_publishers || 1}; preparers ${queueData?.scheduler?.active.preparers || 0}/${queueData?.scheduler?.config.max_preparers || 1}`}
-        >
-          <div className="text-[11px] text-violet-400 uppercase font-medium tracking-wider">Worker slots</div>
-          <div className="text-xl font-bold text-violet-300 mt-0.5 font-mono">
-            {queueData?.scheduler?.active.total || 0}/{queueData?.scheduler?.config.max_total_automation_tasks || 2}
+            )}
+            {failedCount > 0 && (
+              <button
+                type="button"
+                onClick={() => setFilterStatus('failed')}
+                className="px-3 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-red-300 border border-red-800/60 font-medium transition-colors"
+              >
+                View Failed ({failedCount})
+              </button>
+            )}
           </div>
         </div>
-      </div>
+      )}
 
-      {/* Evidence-backed baseline telemetry. Empty until measured executions exist. */}
-      <div className="p-4 rounded-xl bg-zinc-900/60 border border-zinc-800 space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h4 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider flex items-center gap-2">
-            <Clock className="w-3.5 h-3.5 text-cyan-400" /> Measured Reliability Baseline
-          </h4>
-          <span className="text-[10px] text-zinc-500 font-mono">
-            {queueData?.telemetry_summary?.measured_executions || 0} measured / {queueData?.telemetry_summary?.terminal_executions || 0} terminal
-          </span>
-        </div>
-
-        {(queueData?.telemetry_summary?.measured_executions || 0) === 0 ? (
-          <div className="text-[11px] text-zinc-500 border border-dashed border-zinc-800 rounded-lg p-3">
-            No measured executions yet. New runs will populate duration, OCR, locator, and review metrics automatically.
-          </div>
-        ) : (
-          <>
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
-              {[
-                ['Confirmed', formatPercent(queueData?.telemetry_summary?.confirmed_publication_rate_pct)],
-                ['Uncertain', formatPercent(queueData?.telemetry_summary?.uncertain_rate_pct)],
-                ['Human review', formatPercent(queueData?.telemetry_summary?.human_review_rate_pct)],
-                ['Median run', formatDuration(queueData?.telemetry_summary?.median_execution_duration_ms)],
-                ['P95 run', formatDuration(queueData?.telemetry_summary?.p95_execution_duration_ms)],
-                ['P95 OCR', formatDuration(queueData?.telemetry_summary?.p95_ocr_duration_ms)],
-              ].map(([label, value]) => (
-                <div key={label} className="rounded-lg bg-zinc-950/70 border border-zinc-800 p-2.5">
-                  <div className="text-[9px] uppercase tracking-wider text-zinc-500">{label}</div>
-                  <div className="text-sm font-semibold text-zinc-200 font-mono mt-0.5">{value}</div>
-                </div>
-              ))}
-            </div>
-
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-              <div className="rounded-lg bg-zinc-950/50 border border-zinc-800 p-3">
-                <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-2">
-                  OCR inference latency ({queueData?.telemetry_summary?.ocr_inference_calls ?? queueData?.telemetry_summary?.ocr_calls ?? 0} runs,
-                  {' '}{queueData?.telemetry_summary?.ocr_cache_hits || 0} cache hits,
-                  {' '}{formatPercent(queueData?.telemetry_summary?.ocr_cache_hit_rate_pct)})
-                </div>
-                <div className="space-y-1.5">
-                  {Object.entries(queueData?.telemetry_summary?.ocr_by_region || {})
-                    .sort(([, a], [, b]) => b.calls - a.calls)
-                    .slice(0, 5)
-                    .map(([region, stats]) => (
-                      <div key={region} className="grid grid-cols-[1fr_auto_auto] gap-3 text-[10px] font-mono">
-                        <span className="text-zinc-400 truncate" title={region}>{region}</span>
-                        <span className="text-zinc-500">n={stats.calls}</span>
-                        <span className="text-cyan-300">p95 {formatDuration(stats.p95_duration_ms)}</span>
-                      </div>
-                    ))}
-                </div>
-              </div>
-
-              <div className="rounded-lg bg-zinc-950/50 border border-zinc-800 p-3">
-                <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-2 flex justify-between">
-                  <span>Locator tiers</span>
-                  <span>fallback {formatPercent(queueData?.telemetry_summary?.locator_fallback_rate_pct)}</span>
-                </div>
-                <div className="space-y-1.5">
-                  {Object.entries(queueData?.telemetry_summary?.locator_tier_counts || {})
-                    .sort(([, a], [, b]) => b - a)
-                    .slice(0, 5)
-                    .map(([tier, count]) => (
-                      <div key={tier} className="flex items-center justify-between gap-3 text-[10px] font-mono">
-                        <span className="text-zinc-400 truncate" title={tier}>{tier.replace(/_/g, ' ')}</span>
-                        <span className="text-violet-300">{count}</span>
-                      </div>
-                    ))}
-                </div>
-              </div>
-
-              <div className="rounded-lg bg-zinc-950/50 border border-zinc-800 p-3">
-                <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-2 flex justify-between">
-                  <span>Semantic shadow</span>
-                  <span>{queueData?.telemetry_summary?.semantic_shadow_blocked || 0} clicks blocked</span>
-                </div>
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between gap-3 text-[10px] font-mono">
-                    <span className="text-zinc-400">validated proposals</span>
-                    <span className="text-amber-300">
-                      {queueData?.telemetry_summary?.semantic_validated || 0}/
-                      {queueData?.telemetry_summary?.semantic_proposals || 0}
-                      {' '}({formatPercent(queueData?.telemetry_summary?.semantic_validation_rate_pct)})
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between gap-3 text-[10px] font-mono">
-                    <span className="text-zinc-400">fresh label confirmations</span>
-                    <span className="text-emerald-300">{queueData?.telemetry_summary?.semantic_fresh_confirmed || 0}</span>
-                  </div>
-                  <div className="flex items-center justify-between gap-3 text-[10px] font-mono">
-                    <span className="text-zinc-400">p95 provider latency</span>
-                    <span className="text-cyan-300">{formatDuration(queueData?.telemetry_summary?.p95_semantic_latency_ms)}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* Filter and Control Bar */}
-      <div className="p-3.5 rounded-xl bg-zinc-900/60 border border-zinc-800 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2.5">
-          <span className="text-xs text-zinc-400 font-medium">Filter Profile:</span>
+      {/* ============================================================
+          ZONE 3: SINGLE-ROW FILTER BAR
+          ============================================================ */}
+      <div className="px-3.5 py-2.5 rounded-2xl bg-zinc-900/60 border border-zinc-800/80 flex flex-wrap items-center gap-3">
+        {/* Account filter */}
+        <div className="flex items-center gap-1.5 text-xs">
+          <span className="text-zinc-500 font-medium">Account:</span>
           <select
             value={filterProfile}
             onChange={(e) => setFilterProfile(e.target.value)}
-            className="px-2.5 py-1 text-xs rounded bg-zinc-950 border border-zinc-700 text-zinc-200 focus:outline-none focus:border-blue-500"
+            className="px-2.5 py-1.5 text-xs rounded-xl bg-zinc-950 border border-zinc-800 text-zinc-200 focus:outline-none focus:border-blue-500"
           >
-            <option value="all">All Accounts</option>
+            <option value="all">All Accounts ({profiles.length})</option>
             {profiles.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}
               </option>
             ))}
           </select>
-
-          <span className="text-xs text-zinc-400 font-medium ml-2">Status:</span>
-          <select
-            value={filterStatus}
-            onChange={(e) => setFilterStatus(e.target.value)}
-            className="px-2.5 py-1 text-xs rounded bg-zinc-950 border border-zinc-700 text-zinc-200 focus:outline-none focus:border-blue-500"
-          >
-            <option value="all">All Statuses</option>
-            <option value="pending">Pending</option>
-            <option value="running">Running</option>
-            <option value="published">Published</option>
-            <option value="failed">Failed (Safe Retry)</option>
-            <option value="uncertain">Uncertain (Review)</option>
-          </select>
         </div>
 
-        <button
-          type="button"
-          onClick={loadQueue}
-          disabled={loading}
-          className="px-3 py-1 text-xs rounded bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-zinc-300 flex items-center gap-1.5 transition-colors"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-          Refresh
-        </button>
+        {/* Batch filter with inline delete */}
+        {batches.length > 0 && (
+          <div className="flex items-center gap-1.5 text-xs">
+            <span className="text-zinc-500 font-medium">Batch:</span>
+            <select
+              value={filterBatch}
+              onChange={(e) => setFilterBatch(e.target.value)}
+              className="px-2.5 py-1.5 text-xs rounded-xl bg-zinc-950 border border-zinc-800 text-zinc-200 focus:outline-none focus:border-blue-500 max-w-[200px]"
+            >
+              <option value="all">All Batches ({batches.length})</option>
+              {batches.map((b) => (
+                <option key={b.batch_id} value={b.batch_id}>
+                  {b.name}
+                </option>
+              ))}
+            </select>
+            {filterBatch !== 'all' && (
+              <button
+                type="button"
+                onClick={() => handleDeleteBatch(filterBatch)}
+                className="p-1.5 rounded-lg text-zinc-500 hover:text-red-400 hover:bg-zinc-800 transition-colors"
+                title="Remove this batch and cancel remaining executions"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Search box — pushed to the right */}
+        <div className="relative ml-auto min-w-[200px]">
+          <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search captions or accounts..."
+            className="w-full pl-8 pr-3 py-1.5 text-xs rounded-xl bg-zinc-950 border border-zinc-800 text-white placeholder-zinc-500 focus:outline-none focus:border-blue-500"
+          />
+        </div>
       </div>
 
-      {/* Active Batches Section */}
-      {(queueData?.batches || []).length > 0 && (
-        <div className="space-y-3">
-          <h4 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider flex items-center gap-2">
-            <Layers className="w-3.5 h-3.5 text-blue-400" />
-            Active Batches ({queueData?.batches?.length})
+      {/* ============================================================
+          ZONE 4: SCHEDULED EXECUTIONS TIMELINE TABLE (Main Content)
+          ============================================================ */}
+      <div className="p-4 rounded-2xl bg-zinc-900/60 border border-zinc-800/80 space-y-3">
+        <div className="flex items-center justify-between">
+          <h4 className="text-xs font-semibold text-zinc-200 uppercase tracking-wider flex items-center gap-2">
+            <Calendar className="w-4 h-4 text-emerald-400" />
+            Posting Timeline ({filteredExecutions.length} of {executions.length})
           </h4>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {queueData?.batches?.map((batch) => (
-              <div
-                key={batch.batch_id}
-                className="p-3.5 rounded-xl bg-zinc-950/80 border border-zinc-800 flex items-center justify-between gap-3"
-              >
-                <div>
-                  <div className="text-xs font-semibold text-white">{batch.name}</div>
-                  <div className="text-[11px] text-zinc-500 font-mono mt-0.5">
-                    {batch.target_profiles.length} Profiles · Window: {batch.schedule_window.start_time} - {batch.schedule_window.end_time} · {batch.schedule_window.profile_stagger_minutes}m stagger
-                  </div>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => handleDeleteBatch(batch.batch_id)}
-                  className="p-1.5 rounded text-zinc-500 hover:text-red-400 hover:bg-zinc-800 transition-colors"
-                  title="Delete batch"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              </div>
-            ))}
-          </div>
+          {filterStatus !== 'all' || filterProfile !== 'all' || filterBatch !== 'all' || searchQuery ? (
+            <button
+              type="button"
+              onClick={() => {
+                setFilterStatus('all');
+                setFilterProfile('all');
+                setFilterBatch('all');
+                setSearchQuery('');
+              }}
+              className="text-xs text-blue-400 hover:text-blue-300 font-medium"
+            >
+              Reset Filters
+            </button>
+          ) : null}
         </div>
-      )}
-
-      {/* Executions Timeline Table */}
-      <div className="p-4 rounded-xl bg-zinc-900/60 border border-zinc-800 space-y-3">
-        <h4 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider flex items-center gap-2">
-          <Calendar className="w-3.5 h-3.5 text-emerald-400" />
-          Scheduled Executions Timeline ({filteredExecutions.length})
-        </h4>
 
         {filteredExecutions.length === 0 ? (
-          <div className="p-8 text-center text-xs text-zinc-500">
-            No scheduled executions found. Use the Batch Post Creator tab to prepare and schedule posts.
+          <div className="p-12 text-center text-xs text-zinc-500 border border-dashed border-zinc-800/80 rounded-xl">
+            No executions match the selected filters. Use the Daily Batch Creator tab to schedule posts.
           </div>
         ) : (
-          <div className="space-y-2.5 max-h-[600px] overflow-y-auto pr-1">
+          <div className="space-y-2.5 max-h-[620px] overflow-y-auto pr-1">
             {filteredExecutions.map((item) => (
               <div
                 key={item.execution_id}
-                className="p-3 rounded-lg bg-zinc-950/80 border border-zinc-800/80 hover:border-zinc-700 transition-all flex flex-wrap items-center justify-between gap-3"
+                className="p-3 rounded-xl bg-zinc-950/70 border border-zinc-800/80 hover:border-zinc-700 transition-all flex flex-wrap items-center justify-between gap-3 group"
               >
-                <div className="flex items-center gap-3 min-w-[200px]">
-                  <div className="text-center font-mono shrink-0">
+                {/* Left group: Time, Media Thumbnail, Details */}
+                <div className="flex items-center gap-3 min-w-[240px]">
+                  {/* Scheduled Time Stamp */}
+                  <div className="text-center font-mono shrink-0 w-14">
                     <div className="text-xs font-bold text-white">
                       {formatScheduledTime(item.scheduled_at)}
                     </div>
-                    <div className="text-[9px] text-zinc-500">
+                    <div className="text-[10px] text-zinc-500">
                       {new Date(item.scheduled_at).toLocaleDateString([], { month: 'numeric', day: 'numeric' })}
                     </div>
                   </div>
 
-                  <div className="w-px h-8 bg-zinc-800" />
+                  <div className="w-px h-8 bg-zinc-800 shrink-0" />
 
-                  {item.media_file && (
+                  {/* Media Thumbnail */}
+                  {item.media_file ? (
                     <div
                       onClick={() =>
                         setLightboxMedia({
@@ -609,8 +615,8 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                           comment: item.first_comment || undefined,
                         })
                       }
-                      className="shrink-0 w-11 h-11 rounded-lg overflow-hidden border border-zinc-700 hover:border-blue-400 cursor-pointer shadow relative group bg-black flex items-center justify-center transition-all"
-                      title="Click to view big size"
+                      className="shrink-0 w-12 h-12 rounded-xl overflow-hidden border border-zinc-750 hover:border-blue-500 cursor-pointer shadow relative group/thumb bg-black flex items-center justify-center transition-all"
+                      title="Click for full size preview"
                     >
                       {item.post_type === 'reel' ? (
                         <>
@@ -619,8 +625,8 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                             className="w-full h-full object-cover opacity-80"
                             preload="metadata"
                           />
-                          <div className="absolute inset-0 flex items-center justify-center bg-black/40 group-hover:bg-black/20">
-                            <Play className="w-3.5 h-3.5 text-white fill-white" />
+                          <div className="absolute inset-0 flex items-center justify-center bg-black/40 group-hover/thumb:bg-black/20">
+                            <Play className="w-4 h-4 text-white fill-white drop-shadow" />
                           </div>
                         </>
                       ) : (
@@ -631,112 +637,96 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                         />
                       )}
                     </div>
+                  ) : item.post_type === 'warming' ? (
+                    <div className="w-12 h-12 rounded-xl border border-orange-900/70 bg-orange-950/30 flex items-center justify-center text-orange-400 shrink-0">
+                      <Flame className="w-5 h-5" />
+                    </div>
+                  ) : (
+                    <div className="w-12 h-12 rounded-xl border border-dashed border-zinc-800 bg-zinc-900/40 flex items-center justify-center text-zinc-600 text-[10px] shrink-0 font-medium">
+                      Text
+                    </div>
                   )}
 
-                  <div>
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-xs font-semibold text-zinc-200">
+                  {/* Text Details: Profile, Type, Caption, 1st Comment */}
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-semibold text-zinc-200 truncate">
                         {getProfileName(item.profile_id)}
                       </span>
-                      {item.post_type === 'reel' ? (
-                        <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-purple-950 text-purple-300 border border-purple-800/60 flex items-center gap-0.5">
+                      {item.post_type === 'warming' ? (
+                        <span className="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-orange-950/80 text-orange-300 border border-orange-800/60 flex items-center gap-0.5 shrink-0">
+                          <Flame className="w-2.5 h-2.5" /> Warming
+                        </span>
+                      ) : item.post_type === 'reel' ? (
+                        <span className="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-purple-950/80 text-purple-300 border border-purple-800/60 flex items-center gap-0.5 shrink-0">
                           <Film className="w-2.5 h-2.5" /> Reel
                         </span>
                       ) : (
-                        <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-blue-950 text-blue-300 border border-blue-800/60 flex items-center gap-0.5">
+                        <span className="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-blue-950/80 text-blue-300 border border-blue-800/60 flex items-center gap-0.5 shrink-0">
                           <ImageIcon className="w-2.5 h-2.5" /> Photo
                         </span>
                       )}
                     </div>
 
-                    <div className="text-[11px] text-zinc-400 line-clamp-1 max-w-[360px] mt-0.5">
-                      {item.spun_caption || item.base_caption || 'No caption'}
+                    <div className="text-[11px] text-zinc-400 line-clamp-1 max-w-[380px] mt-0.5">
+                      {item.post_type === 'warming'
+                        ? `${item.scrolls || 4} feed scrolls`
+                        : (item.spun_caption || item.base_caption || 'No caption')}
                     </div>
 
                     {item.first_comment && (
-                      <div className="text-[10px] text-zinc-500 truncate max-w-[320px]">
-                        💬 1st comment: {item.first_comment}
-                      </div>
-                    )}
-
-                    {item.first_comment_status && item.first_comment_status !== 'not_requested' && (
-                      <div
-                        className={`text-[10px] font-medium ${
-                          item.first_comment_status === 'submitted_verified'
-                            ? 'text-emerald-400'
-                            : item.first_comment_status === 'submission_pending'
-                              ? 'text-amber-400'
-                              : 'text-zinc-400'
-                        }`}
-                        title={item.first_comment_verified_at
-                          ? `Verified at ${new Date(item.first_comment_verified_at).toLocaleString()}`
-                          : 'Comment submission was not visually verified'}
-                      >
-                        {item.first_comment_status === 'submitted_verified'
-                          ? '✓ Comment verified'
-                          : item.first_comment_status === 'submission_pending'
-                            ? '⚠ Comment pending review'
-                            : '◌ Comment submitted, unverified'}
-                      </div>
-                    )}
-
-                    {item.stage && (
-                      <div className="text-[10px] text-zinc-500 font-mono mt-0.5">
-                        Stage: <span className="text-zinc-400">{item.stage}</span>
+                      <div className="text-[10px] text-zinc-500 truncate max-w-[340px]">
+                        💬 {item.first_comment}
                       </div>
                     )}
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2 sm:gap-3">
+                {/* Right group: Badges & Action Buttons */}
+                <div className="flex items-center gap-2 sm:gap-2.5">
                   {getStatusBadge(item.status, item.execution_id)}
 
-                  {item.review_status && (
-                    <span
-                      className="text-[10px] text-zinc-400 font-mono px-1.5 py-0.5 bg-zinc-900 border border-zinc-800 rounded hidden sm:inline-block"
-                      title={`Review note: ${item.review_note || 'None'}`}
-                    >
-                      {item.review_status === 'resolved_published' ? '✅ Confirmed Pub' : '🔄 Unlocked Retry'}
-                    </span>
-                  )}
-
+                  {/* View on Facebook link */}
                   {item.post_url && (
                     <a
                       href={item.post_url}
                       target="_blank"
                       rel="noreferrer"
-                      className="px-2.5 py-1 rounded text-[11px] font-semibold bg-blue-950/80 hover:bg-blue-900 text-blue-300 hover:text-blue-100 border border-blue-800/80 hover:border-blue-600 flex items-center gap-1.5 transition-all shadow-sm group"
-                      title={`Verified Facebook Permalink (Match Confidence: ${Math.round((item.post_match_confidence ?? 1.0) * 100)}%)`}
+                      className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-blue-950/80 hover:bg-blue-900 text-blue-300 hover:text-blue-100 border border-blue-800/80 flex items-center gap-1.5 transition-all shadow-sm group"
+                      title="View published post on Facebook"
                     >
                       <ExternalLink className="w-3 h-3 text-blue-400 group-hover:scale-110 transition-transform" />
                       <span>View on FB</span>
                     </a>
                   )}
 
+                  {/* Add verified link button (if published but url missing) */}
                   {item.status === 'published' && !item.post_url && (
                     <button
                       type="button"
                       onClick={() => handlePermalinkBackfill(item)}
-                      className="px-2.5 py-1 rounded text-[11px] font-semibold bg-amber-950/80 hover:bg-amber-900 text-amber-300 border border-amber-800/80 hover:border-amber-600 flex items-center gap-1.5 transition-all"
-                      title="Publication is confirmed, but the permalink is unresolved. Attach a validated Facebook URL."
+                      className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-950/80 hover:bg-amber-900 text-amber-300 border border-amber-800/80 flex items-center gap-1.5 transition-all"
+                      title="Attach verified Facebook permalink"
                     >
                       <ExternalLink className="w-3 h-3" />
-                      Add verified link
+                      <span>Add link</span>
                     </button>
                   )}
 
+                  {/* Run Now button for pending items */}
                   {item.status === 'pending' && (
                     <button
                       type="button"
                       onClick={() => handleRunNow(item.execution_id)}
-                      className="px-2.5 py-1 rounded bg-blue-600 hover:bg-blue-500 text-[11px] font-semibold text-white flex items-center gap-1 transition-colors cursor-pointer shadow-sm"
-                      title="Run immediately"
+                      className="px-3 py-1 rounded-lg bg-blue-600 hover:bg-blue-500 text-xs font-semibold text-white flex items-center gap-1 transition-colors shadow-sm"
+                      title="Execute immediately without waiting for scheduled time"
                     >
                       <Play className="w-3 h-3 fill-current" />
-                      Run Now
+                      <span>Run Now</span>
                     </button>
                   )}
 
+                  {/* Review & Resolve button for Phase 0 safety gated items */}
                   {(item.status === 'uncertain' || item.status === 'needs_review') && (
                     <button
                       type="button"
@@ -745,39 +735,41 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                         setResolveNote('');
                         setResolvePostUrl(item.post_url || '');
                       }}
-                      className="px-2.5 py-1 rounded bg-amber-600 hover:bg-amber-500 text-[11px] font-semibold text-white flex items-center gap-1.5 transition-colors cursor-pointer shadow-sm animate-pulse hover:animate-none"
-                      title="Review state on Facebook and resolve outcome"
+                      className="px-3 py-1 rounded-lg bg-amber-600 hover:bg-amber-500 text-xs font-semibold text-white flex items-center gap-1.5 transition-colors shadow-sm animate-pulse hover:animate-none"
+                      title="Review state on Facebook and confirm publication outcome"
                     >
                       <ShieldAlert className="w-3.5 h-3.5" />
-                      Review & Resolve
+                      <span>Review & Resolve</span>
                     </button>
                   )}
 
+                  {/* Re-run button for failed or skipped items */}
                   {(item.status === 'failed' || item.status === 'failed_before_publish' || item.status.startsWith('skipped')) && (
                     <button
                       type="button"
                       onClick={() => handleRunNow(item.execution_id)}
-                      className="px-2.5 py-1 rounded bg-rose-600/90 hover:bg-rose-500 text-[11px] font-semibold text-white flex items-center gap-1 transition-colors cursor-pointer shadow-sm"
+                      className="px-3 py-1 rounded-lg bg-rose-600/90 hover:bg-rose-500 text-xs font-semibold text-white flex items-center gap-1.5 transition-colors shadow-sm"
                       title="Re-run this post now"
                     >
                       <RotateCcw className="w-3 h-3" />
-                      Re-run
+                      <span>Re-run</span>
                     </button>
                   )}
 
+                  {/* Delete button (locked while active or uncertain) */}
                   {!['running', 'uncertain', 'needs_review'].includes(item.status) ? (
                     <button
                       type="button"
                       onClick={() => handleDeleteExecution(item.execution_id)}
-                      className="p-1 rounded text-zinc-500 hover:text-red-400 transition-colors cursor-pointer"
+                      className="p-1.5 rounded-lg text-zinc-500 hover:text-red-400 hover:bg-zinc-800 transition-colors"
                       title="Remove from queue"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
                   ) : (
                     <span
-                      className="p-1 text-amber-500/70"
-                      title="Deletion is locked while execution is active or its publication outcome is unresolved"
+                      className="p-1.5 text-zinc-600 cursor-not-allowed"
+                      title="Cannot delete while execution is running or held at safety gate"
                     >
                       <Lock className="w-3.5 h-3.5" />
                     </span>
@@ -789,7 +781,9 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
         )}
       </div>
 
-      {/* Big Size Media Lightbox Modal */}
+      {/* ============================================================
+          MEDIA LIGHTBOX MODAL
+          ============================================================ */}
       {lightboxMedia && (
         <div
           className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 sm:p-6"
@@ -865,10 +859,14 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
         </div>
       )}
 
-      {/* Review & Resolve Uncertain Modal (Phase 0 P0 Guard) */}
+      {/* ============================================================
+          REVIEW & RESOLVE UNCERTAIN MODAL (Phase 0 Safety Gate)
+          ============================================================ */}
       {resolvingItem && (() => {
         const targetProfile = profiles.find((p) => p.id === resolvingItem.profile_id);
-        const wsPort = targetProfile?.container?.ws_port || (targetProfile?.container?.vnc_port ? targetProfile.container.vnc_port + 180 : null);
+        const wsPort =
+          targetProfile?.container?.ws_port ||
+          (targetProfile?.container?.vnc_port ? targetProfile.container.vnc_port + 180 : null);
         const novncUrl = wsPort ? `http://${window.location.hostname}:${wsPort}/vnc.html` : null;
 
         return (
@@ -911,11 +909,11 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
 
               {/* Modal Body */}
               <div className="p-4 space-y-4 max-h-[75vh] overflow-y-auto">
-                {/* Duplicate publication prevention banner */}
+                {/* Duplicate prevention notice */}
                 <div className="p-3 bg-amber-950/30 border border-amber-800/50 rounded-xl text-xs text-amber-200/90 leading-relaxed flex items-start gap-2.5">
                   <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
                   <div>
-                    <strong className="text-amber-300">Duplicate Prevention Policy:</strong> Direct or automatic rerun is locked to prevent publishing duplicate posts on Facebook. Inspect the browser via noVNC before deciding.
+                    <strong className="text-amber-300">Duplicate Prevention Policy:</strong> Direct rerun is locked to prevent duplicate posts on Facebook. Inspect the browser via noVNC before deciding.
                   </div>
                 </div>
 
@@ -931,11 +929,13 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                   </div>
                   <div className="flex justify-between items-center py-1 border-b border-zinc-800/60">
                     <span className="text-zinc-400">Last Recorded Stage:</span>
-                    <span className="font-mono text-[11px] text-amber-300 font-semibold">{resolvingItem.stage || 'publish_clicked'}</span>
+                    <span className="font-mono text-[11px] text-amber-300 font-semibold">
+                      {resolvingItem.stage || 'publish_clicked'}
+                    </span>
                   </div>
                   {resolvingItem.error && (
                     <div className="py-1">
-                      <span className="text-zinc-400 block mb-1">Error / Timeout Details:</span>
+                      <span className="text-zinc-400 block mb-1">Error / Timeout:</span>
                       <div className="p-2 rounded bg-black/60 border border-red-900/40 text-red-300 font-mono text-[11px] break-words">
                         {resolvingItem.error}
                       </div>
@@ -944,7 +944,9 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                   {resolvingItem.media_file && (
                     <div className="flex justify-between items-center py-1 border-b border-zinc-800/60">
                       <span className="text-zinc-400">Media File:</span>
-                      <span className="font-mono text-[11px] text-blue-300 truncate max-w-[280px]">{resolvingItem.media_file}</span>
+                      <span className="font-mono text-[11px] text-blue-300 truncate max-w-[280px]">
+                        {resolvingItem.media_file}
+                      </span>
                     </div>
                   )}
                   {(resolvingItem.spun_caption || resolvingItem.base_caption) && (
@@ -957,7 +959,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                   )}
                 </div>
 
-                {/* Step 1: Manual Visual Verification */}
+                {/* Step 1: Live noVNC inspection */}
                 <div className="p-3.5 bg-blue-950/20 border border-blue-800/40 rounded-xl space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-semibold text-blue-300 flex items-center gap-1.5">
@@ -978,11 +980,11 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                     )}
                   </div>
                   <p className="text-[11px] text-zinc-400">
-                    Open the live container display in a new tab. Check whether the {resolvingItem.post_type || 'post'} appeared on the Facebook page/profile.
+                    Open live container display in a new tab. Check whether the {resolvingItem.post_type || 'post'} appeared on the Facebook page/profile.
                   </p>
                 </div>
 
-                {/* Step 2: Operator Resolution Note */}
+                {/* Step 2: Operator Audit Note */}
                 <div className="space-y-1.5">
                   <label className="text-xs font-semibold text-zinc-300 flex items-center justify-between">
                     <span>Step 2: Operator Audit Note (optional)</span>
@@ -997,7 +999,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                   />
                 </div>
 
-                {/* Step 3: Verified Facebook Permalink (optional) */}
+                {/* Step 3: Verified Post Permalink */}
                 <div className="space-y-1.5">
                   <label className="text-xs font-semibold text-zinc-300 flex items-center justify-between">
                     <span>Step 3: Confirmed Post Permalink (optional)</span>
@@ -1025,7 +1027,6 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                 </button>
 
                 <div className="flex items-center gap-2">
-                  {/* Resolution: Confirmed NOT Published */}
                   <button
                     type="button"
                     onClick={() => handleResolveUncertain('not_published')}
@@ -1033,11 +1034,14 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                     className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-red-950 hover:text-red-200 border border-zinc-700 hover:border-red-700 text-xs font-semibold text-zinc-200 flex items-center gap-1.5 transition-colors disabled:opacity-50"
                     title="Mark as not published. Unlocks retry as a safe pre-publish failure."
                   >
-                    {isResolving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5 text-red-400" />}
+                    {isResolving ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <RotateCcw className="w-3.5 h-3.5 text-red-400" />
+                    )}
                     <span>Confirmed NOT Published (Allow Retry)</span>
                   </button>
 
-                  {/* Resolution: Confirmed Published */}
                   <button
                     type="button"
                     onClick={() => handleResolveUncertain('published')}
@@ -1045,7 +1049,11 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                     className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold text-white flex items-center gap-1.5 transition-colors disabled:opacity-50 shadow-sm"
                     title="Mark as successfully published. Locks execution as published."
                   >
-                    {isResolving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                    {isResolving ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Check className="w-3.5 h-3.5" />
+                    )}
                     <span>Mark as Published</span>
                   </button>
                 </div>

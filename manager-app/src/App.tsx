@@ -209,6 +209,7 @@ export const App: React.FC = () => {
             onEdit={() => setIsEditModalOpen(true)}
             isOpen={isInspectorOpen}
             onToggle={toggleInspector}
+            onRefresh={loadData}
           />
         </div>
       </div>

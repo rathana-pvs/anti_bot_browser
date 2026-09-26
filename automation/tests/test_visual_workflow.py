@@ -41,6 +41,13 @@ class VisionPrimitiveTests(unittest.TestCase):
         result = self.vision.find_text("post", screen=self.screen, prefer_lower_half=True)
         self.assertEqual(result["center"], (130, 175))
 
+    def test_ocr_device_prefers_cuda_only_when_available(self):
+        self.assertEqual(VisionEngine.select_ocr_device("auto", True), "cuda")
+        self.assertEqual(VisionEngine.select_ocr_device("cuda", True), "cuda")
+        self.assertEqual(VisionEngine.select_ocr_device("auto", False), "cpu")
+        self.assertEqual(VisionEngine.select_ocr_device("cuda", False), "cpu")
+        self.assertEqual(VisionEngine.select_ocr_device("cpu", True), "cpu")
+
 
 class StateRecognizerTests(unittest.TestCase):
     def make_vision(self, texts, blue=(150, 170), template=None):
@@ -143,9 +150,49 @@ class StateRecognizerTests(unittest.TestCase):
         recognizer = FacebookStateRecognizer(self.make_vision(["What's on your mind", "Post"]))
         self.assertEqual(recognizer.observe().state, ScreenState.FEED_READY)
 
+    def test_generic_photos_and_reels_do_not_prove_facebook_feed(self):
+        vision = self.make_vision(["Photos", "Reels"])
+        vision.find_photo_video_button.return_value = None
+        recognizer = FacebookStateRecognizer(vision)
+        self.assertEqual(recognizer.observe().state, ScreenState.UNKNOWN)
+
     def test_error_has_priority_over_composer(self):
         recognizer = FacebookStateRecognizer(self.make_vision(["Create post", "Something went wrong", "Post"]))
         self.assertEqual(recognizer.observe().state, ScreenState.ERROR_DIALOG)
+
+    def test_restriction_has_priority_over_feed(self):
+        recognizer = FacebookStateRecognizer(self.make_vision(["What's on your mind", "Account restricted"]))
+        self.assertEqual(recognizer.observe().state, ScreenState.ERROR_DIALOG)
+
+    def test_targeted_session_gate_detects_feed_without_full_screen(self):
+        vision = Mock()
+        vision.capture_screen.return_value = np.zeros((200, 300, 3), dtype=np.uint8)
+        vision.read_text.return_value = [
+            {"text": "What's on your mind?", "confidence": 0.95, "center": (150, 90)},
+        ]
+        observation = FacebookStateRecognizer(vision).observe_session_gate()
+        self.assertEqual(observation.state, ScreenState.FEED_READY)
+        self.assertEqual(vision.read_text.call_args.kwargs["region"], "session_gate")
+
+    def test_targeted_session_gate_blocks_checkpoint(self):
+        vision = Mock()
+        vision.capture_screen.return_value = np.zeros((200, 300, 3), dtype=np.uint8)
+        vision.read_text.return_value = [
+            {"text": "Security check: confirm your identity", "confidence": 0.95, "center": (150, 90)},
+        ]
+        observation = FacebookStateRecognizer(vision).observe_session_gate()
+        self.assertEqual(observation.state, ScreenState.ERROR_DIALOG)
+
+    def test_targeted_session_gate_surfaces_leave_site_dialog(self):
+        vision = Mock()
+        vision.capture_screen.return_value = np.zeros((200, 300, 3), dtype=np.uint8)
+        vision.read_text.return_value = [
+            {"text": "Leave site? Changes you made may not be saved", "confidence": 0.95, "center": (150, 90)},
+            {"text": "Leave", "confidence": 0.95, "center": (170, 120)},
+        ]
+        observation = FacebookStateRecognizer(vision).observe_session_gate()
+        self.assertEqual(observation.state, ScreenState.UNKNOWN)
+        self.assertIn("leave_site_dialog", observation.signals)
 
     def test_success_confirmation(self):
         recognizer = FacebookStateRecognizer(self.make_vision(["Your post is now published"]))
@@ -157,16 +204,18 @@ class StateRecognizerTests(unittest.TestCase):
 
 
 class LoginGateTests(unittest.TestCase):
-    def make_task(self, observations):
+    def make_task(self, gate_observations, full_observations=None):
         task = BaseTask.__new__(BaseTask)
         task.client = Mock()
         task.vision = Mock()
         task.vision.detect_theme.return_value = ("dark", 0.91)
         task.client.navigate_to = Mock()
         task.client.exec_cmd.return_value = Mock(returncode=0, stdout="Facebook")
+        task.client.get_current_url.return_value = "https://www.facebook.com/"
         task.client.screenshot.return_value = np.zeros((100, 100, 3), dtype=np.uint8)
         task.recognizer = Mock()
-        task.recognizer.observe.side_effect = observations
+        task.recognizer.observe_session_gate.side_effect = gate_observations
+        task.recognizer.observe.side_effect = full_observations or []
         task.capture_evidence = Mock()
         task.log = Mock()
         return task
@@ -176,17 +225,50 @@ class LoginGateTests(unittest.TestCase):
             [
                 StateObservation(ScreenState.UNKNOWN, 0.0),
                 StateObservation(ScreenState.FEED_READY, 0.9, ["photo/video"]),
-            ]
+            ],
+            [StateObservation(ScreenState.UNKNOWN, 0.0)],
         )
         with unittest.mock.patch("tasks.base_task.time.sleep", return_value=None):
             self.assertTrue(task.verify_logged_in())
-        self.assertEqual(task.recognizer.observe.call_count, 2)
-        task.vision.detect_theme.assert_called_once()
+        self.assertEqual(task.recognizer.observe_session_gate.call_count, 2)
+        self.assertEqual(task.recognizer.observe.call_count, 1)
+        self.assertEqual(task.vision.detect_theme.call_count, 2)
 
     def test_actual_login_screen_is_rejected(self):
         task = self.make_task([StateObservation(ScreenState.LOGIN_REQUIRED, 0.98, ["log in"])])
         with unittest.mock.patch("tasks.base_task.time.sleep", return_value=None):
             self.assertFalse(task.verify_logged_in())
+        self.assertEqual(task.session_check_status, "auth_required")
+
+    def test_restriction_screen_is_rejected(self):
+        task = self.make_task([StateObservation(ScreenState.ERROR_DIALOG, 0.99, ["account restricted"])])
+        with unittest.mock.patch("tasks.base_task.time.sleep", return_value=None):
+            self.assertFalse(task.verify_logged_in())
+        self.assertEqual(task.session_check_status, "safety_blocked")
+
+    def test_weak_visual_is_rejected_then_empty_title_with_strong_visual_is_accepted(self):
+        task = self.make_task([
+            StateObservation(ScreenState.FEED_READY, 0.8, ["false positive"]),
+            StateObservation(ScreenState.FEED_READY, 0.9, ["what's on your mind"]),
+        ])
+        task.client.exec_cmd.return_value = Mock(returncode=0, stdout="")
+        with unittest.mock.patch("tasks.base_task.time.sleep", return_value=None):
+            self.assertTrue(task.verify_logged_in())
+        self.assertEqual(task.recognizer.observe_session_gate.call_count, 2)
+
+    def test_facebook_visual_on_non_facebook_host_is_rejected(self):
+        task = self.make_task([
+            StateObservation(ScreenState.FEED_READY, 0.9, ["what's on your mind"]),
+            StateObservation(ScreenState.FEED_READY, 0.9, ["what's on your mind"]),
+        ])
+        task.client.get_current_url.side_effect = [
+            "https://www.facebook.com/",
+            "https://facebook.com.evil.example/",
+            "https://www.facebook.com/",
+        ]
+        with unittest.mock.patch("tasks.base_task.time.sleep", return_value=None):
+            self.assertTrue(task.verify_logged_in())
+        self.assertEqual(task.recognizer.observe_session_gate.call_count, 2)
 
 
 class PostPublishPromptTests(unittest.TestCase):
@@ -402,6 +484,47 @@ class ReelUploadTargetTests(unittest.TestCase):
         self.assertIsNone(task._find_reel_upload_target())
 
 
+class ReelProfileActionTests(unittest.TestCase):
+    def make_task(self, ocr_items):
+        task = FacebookReelTask.__new__(FacebookReelTask)
+        task.client = Mock()
+        task.vision = Mock()
+        task.telemetry = None
+        task.client.screenshot.return_value = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task.vision.get_pixel_region.return_value = (230, 216, 1460, 864)
+        task.vision.read_text.return_value = ocr_items
+        task.vision.find_stable.side_effect = lambda locator, **_: locator()
+        return task
+
+    def test_selects_composer_reel_instead_of_reels_navigation_tab(self):
+        task = self.make_task([
+            {"text": "Reels", "confidence": 0.99, "center": (703, 263)},
+            {"text": "What's on your mind?", "confidence": 0.91, "center": (1190, 341)},
+            {"text": "Photo/video", "confidence": 0.96, "center": (1180, 401)},
+            {"text": "Reel", "confidence": 0.90, "center": (1401, 401)},
+        ])
+
+        self.assertEqual(task._find_profile_reel_action(), (1401, 401))
+
+    def test_rejects_reels_navigation_tab_without_composer_action(self):
+        task = self.make_task([
+            {"text": "Reels", "confidence": 0.99, "center": (703, 263)},
+            {"text": "What's on your mind?", "confidence": 0.91, "center": (1190, 341)},
+            {"text": "Photo/video", "confidence": 0.96, "center": (1180, 401)},
+        ])
+
+        self.assertIsNone(task._find_profile_reel_action())
+
+    def test_uses_photo_video_as_secondary_composer_anchor(self):
+        task = self.make_task([
+            {"text": "Reels", "confidence": 0.99, "center": (703, 263)},
+            {"text": "Photo/video", "confidence": 0.96, "center": (1180, 401)},
+            {"text": "Reel", "confidence": 0.90, "center": (1401, 401)},
+        ])
+
+        self.assertEqual(task._find_profile_reel_action(), (1401, 401))
+
+
 class PublicationVerificationTests(unittest.TestCase):
     def make_task(self, observations, similarities):
         task = FacebookPostTask.__new__(FacebookPostTask)
@@ -517,6 +640,7 @@ class FirstCommentTargetTests(unittest.TestCase):
         task.vision.read_text.return_value = []
         task.paste_text = Mock()
         task._open_profile_first_comment_input = Mock(return_value=((900, 750), np.zeros((100, 100, 3))))
+        task._open_permalink_comment_input = Mock()
 
         with unittest.mock.patch("time.sleep", return_value=None), \
              unittest.mock.patch("tasks.base_task.random.uniform", return_value=2.5):
@@ -529,6 +653,8 @@ class FirstCommentTargetTests(unittest.TestCase):
         ])
         task.paste_text.assert_called_once_with("https://example.com/link")
         task.human.key_press.assert_called_once_with("Return")
+        task._open_permalink_comment_input.assert_not_called()
+        self.assertEqual(task.last_comment_method, "profile_first_post")
         self.assertEqual(task.current_stage, "warming")
         self.assertEqual(task.stage_history[-1]["seconds"], 2.5)
         task.capture_evidence.assert_any_call(
@@ -587,7 +713,68 @@ class FirstCommentTargetTests(unittest.TestCase):
             task.client.screenshot.return_value,
             comment_status="submitted_verified",
             comment_match_confidence=1.0,
+            comment_method="profile_first_post",
         )
+
+    def test_permalink_is_used_only_when_primary_target_is_missing(self):
+        task = FacebookReelTask.__new__(FacebookReelTask)
+        task.log = Mock()
+        task.log_decision = Mock()
+        task.capture_evidence = Mock()
+        task.human = Mock()
+        task.client = Mock()
+        screen = np.zeros((100, 100, 3), dtype=np.uint8)
+        task.client.screenshot.return_value = screen
+        task.vision = Mock()
+        task.vision.read_text.return_value = []
+        task.paste_text = Mock()
+        task._open_profile_first_comment_input = Mock(return_value=(None, None))
+        task._open_permalink_comment_input = Mock(return_value=((70, 80), screen))
+
+        with unittest.mock.patch("time.sleep", return_value=None), \
+             unittest.mock.patch("tasks.base_task.random.uniform", return_value=1.0):
+            result = task.post_first_comment(
+                "https://example.com/link",
+                post_url="https://www.facebook.com/permalink.php?story_fbid=123&id=456",
+            )
+
+        self.assertEqual(result, "submitted_unverified")
+        self.assertEqual(task.last_comment_method, "verified_permalink_fallback")
+        task._open_profile_first_comment_input.assert_called_once_with()
+        task._open_permalink_comment_input.assert_called_once()
+        task.human.key_press.assert_called_once_with("Return")
+
+    def test_comment_verification_includes_upper_modal_comment_stream(self):
+        task = FacebookReelTask.__new__(FacebookReelTask)
+        task.log = Mock()
+        task.log_decision = Mock()
+        task.capture_evidence = Mock()
+        task.human = Mock()
+        task.client = Mock()
+        task.client.screenshot.return_value = np.zeros((100, 100, 3), dtype=np.uint8)
+        task.vision = Mock()
+        visible_comment = {
+            "text": "Verification comment profile 002",
+            "confidence": 0.95,
+            "center": (50, 42),
+        }
+
+        def regional_ocr(_screen, region=None, **_kwargs):
+            x, y, width, height = region
+            return [visible_comment] if y <= 42 <= y + height else []
+
+        task.vision.read_text.side_effect = regional_ocr
+        task.paste_text = Mock()
+        task._open_profile_first_comment_input = Mock(
+            return_value=((70, 92), np.zeros((100, 100, 3), dtype=np.uint8))
+        )
+
+        with unittest.mock.patch("time.sleep", return_value=None), \
+             unittest.mock.patch("tasks.base_task.random.uniform", return_value=1.0):
+            result = task.post_first_comment("Verification comment — profile 002")
+
+        self.assertEqual(result, "submitted_verified")
+        self.assertLessEqual(task.vision.read_text.call_args.kwargs["region"][1], 42)
 
     def test_vision_find_comment_input_locates_pill(self):
         vision = VisionEngine(Mock(profile_id="test"))
@@ -635,7 +822,10 @@ class FirstCommentTargetTests(unittest.TestCase):
         self.assertTrue(task.run())
         task.post_first_comment.assert_called_once_with("https://example.com", post_url=None)
         task.set_outcome.assert_called_once_with(
-            "completed", None, first_comment="submitted_verified"
+            "completed",
+            None,
+            first_comment="submitted_verified",
+            first_comment_method=None,
         )
 
 

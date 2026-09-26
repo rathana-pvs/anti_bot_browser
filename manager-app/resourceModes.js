@@ -28,6 +28,35 @@ export function recommendedResourceMode(totalMemoryGb, cpuThreads) {
   return RANK_MODE[Math.min(memoryRank, cpuRank)];
 }
 
+export function recommendedOcrThreads(cpuThreads, maxActiveTasks) {
+  const threads = Math.max(1, Number.parseInt(cpuThreads, 10) || 1);
+  const tasks = Math.max(1, Number.parseInt(maxActiveTasks, 10) || 1);
+  return Math.max(2, Math.min(4, Math.floor(threads / tasks)));
+}
+
+export function resolveOcrDevice(nvidiaDetected, cudaRuntimeAvailable, gpuName = null) {
+  if (nvidiaDetected && cudaRuntimeAvailable) {
+    return {
+      device: 'cuda',
+      label: 'NVIDIA GPU',
+      nvidia_detected: true,
+      cuda_runtime_available: true,
+      gpu_name: gpuName,
+      fallback_reason: null,
+    };
+  }
+  return {
+    device: 'cpu',
+    label: 'CPU',
+    nvidia_detected: Boolean(nvidiaDetected),
+    cuda_runtime_available: Boolean(cudaRuntimeAvailable),
+    gpu_name: gpuName,
+    fallback_reason: nvidiaDetected
+      ? 'CUDA-enabled PyTorch is unavailable; using CPU safely.'
+      : 'No compatible NVIDIA GPU detected.',
+  };
+}
+
 export function resolveResourceMode(selectedMode, totalMemoryGb, cpuThreads) {
   const recommended = recommendedResourceMode(totalMemoryGb, cpuThreads);
   const selected = ['auto', 'low', 'medium', 'high'].includes(selectedMode) ? selectedMode : 'auto';

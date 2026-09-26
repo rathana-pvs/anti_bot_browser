@@ -1,0 +1,46 @@
+{
+  "measured_at": "2026-09-26",
+  "host": {
+    "cpu": "11th Gen Intel Core i7-11370H",
+    "logical_threads": 8,
+    "memory_gb": 15.4
+  },
+  "input": {
+    "theme": "dark",
+    "resolution": "1920x1080",
+    "image": "/home/rathana/Desktop/automat_fb/profiles/profile_003/automation_evidence/20260925T141022_018523Z_FacebookPostTask/13_after_comment_modal_close.png",
+    "repeats_per_region": 2,
+    "regions": [
+      "modal_header_alerts",
+      "full_screen"
+    ]
+  },
+  "results": [
+    {
+      "threads": 1,
+      "initialization_ms": 2045.67,
+      "median_inference_ms": 9617.3,
+      "p95_inference_ms": 14098.03,
+      "mean_inference_ms": 9622.18
+    },
+    {
+      "threads": 2,
+      "initialization_ms": 2004.12,
+      "median_inference_ms": 5842.27,
+      "p95_inference_ms": 8697.24,
+      "mean_inference_ms": 5836.15
+    },
+    {
+      "threads": 4,
+      "initialization_ms": 2098.79,
+      "median_inference_ms": 3637.51,
+      "p95_inference_ms": 5666.03,
+      "mean_inference_ms": 3715.26
+    }
+  ],
+  "conclusion": {
+    "recommended_threads": 4,
+    "reason": "Four threads produced the lowest median, mean, and p95 inference latency with identical candidate counts.",
+    "next_optimization": "Reduce avoidable full-screen OCR fallbacks; thread-count tuning is already optimal for this host."
+  }
+}

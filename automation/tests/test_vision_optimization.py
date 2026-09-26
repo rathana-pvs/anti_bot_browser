@@ -190,7 +190,7 @@ class OcrOptimizationTests(unittest.TestCase):
         ]
         self.vision.telemetry = Mock()
 
-        with patch.object(VisionEngine, "_get_ocr_reader", return_value=reader):
+        with patch.object(VisionEngine, "_get_ocr_reader", return_value=(reader, "cpu")):
             first = self.vision.read_text(
                 self.screen,
                 region=(0, 0, 200, 80),

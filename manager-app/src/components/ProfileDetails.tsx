@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Profile } from '../types/profile';
-import { Shield, Trash2, HardDrive, Network, PanelRightClose, Activity } from 'lucide-react';
+import { Shield, Trash2, HardDrive, Network, PanelRightClose, Activity, Loader2, Sparkles } from 'lucide-react';
+import { cleanProfileEvidence } from '../services/api';
 
 interface ProfileDetailsProps {
   profile: Profile | null;
@@ -8,6 +9,7 @@ interface ProfileDetailsProps {
   onEdit?: () => void;
   isOpen?: boolean;
   onToggle?: () => void;
+  onRefresh?: () => void;
 }
 
 export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
@@ -16,7 +18,44 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
   onEdit,
   isOpen = true,
   onToggle,
+  onRefresh,
 }) => {
+  const [isCleaning, setIsCleaning] = useState(false);
+  const [cleanupMessage, setCleanupMessage] = useState<string | null>(null);
+  const [cleanupError, setCleanupError] = useState<string | null>(null);
+  const [localDiskUsage, setLocalDiskUsage] = useState<string | null>(null);
+
+  useEffect(() => {
+    setCleanupMessage(null);
+    setCleanupError(null);
+    setLocalDiskUsage(null);
+  }, [profile?.id]);
+
+  const handleCleanEvidence = async () => {
+    if (!profile) return;
+    setIsCleaning(true);
+    setCleanupMessage(null);
+    setCleanupError(null);
+    try {
+      const res = await cleanProfileEvidence(profile.id, 3);
+      if (res.new_disk_usage) {
+        setLocalDiskUsage(res.new_disk_usage);
+      }
+      if (res.deleted_runs > 0) {
+        setCleanupMessage(`Freed ${res.freed_formatted} (${res.deleted_runs} deleted, ${res.kept_runs} kept)`);
+      } else {
+        setCleanupMessage(`All ${res.kept_runs} runs are within last 3 days`);
+      }
+      if (onRefresh) {
+        onRefresh();
+      }
+    } catch (err: any) {
+      setCleanupError(err.message || 'Failed to clean evidence');
+    } finally {
+      setIsCleaning(false);
+    }
+  };
+
   if (!profile) return null;
 
   return (
@@ -80,7 +119,7 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
                 <div className="flex justify-between items-center">
                   <span className="text-zinc-500">Container Disk</span>
                   <span className="text-amber-400 font-mono text-[11px] font-medium">
-                    {profile.disk_usage || 'Active'}
+                    {localDiskUsage || profile.disk_usage || 'Active'}
                   </span>
                 </div>
                 <div className="flex justify-between items-center">
@@ -157,22 +196,68 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
           </div>
         </div>
 
-        {/* Persistent Storage */}
-        <div className="space-y-1">
+        {/* Persistent Storage & Evidence Cleanup */}
+        <div className="space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-[11px] text-zinc-500 flex items-center gap-1">
               <HardDrive className="w-3 h-3" />
               Storage Mount
             </span>
-            {profile.disk_usage && (
-              <span className="text-[11px] text-zinc-400 font-mono">
-                {profile.disk_usage}
+            {(localDiskUsage || profile.disk_usage) && (
+              <span className="text-[11px] text-amber-400 font-mono font-medium">
+                {localDiskUsage || profile.disk_usage}
               </span>
             )}
           </div>
           <p className="text-[11px] text-zinc-400 font-mono bg-zinc-950 p-2 rounded border border-zinc-800 truncate">
             {profile.container.volume_path}
           </p>
+
+          {/* Clean Evidence Action */}
+          <div className="pt-0.5">
+            <button
+              onClick={handleCleanEvidence}
+              disabled={isCleaning}
+              className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded bg-zinc-900 border border-zinc-700/80 hover:border-amber-500/50 hover:bg-zinc-800/80 text-zinc-300 hover:text-amber-300 text-xs font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Delete evidence older than 3 days while keeping recent evidence"
+            >
+              {isCleaning ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-400" />
+                  <span>Cleaning Evidence...</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Clean Evidence (&gt;3 days)</span>
+                </>
+              )}
+            </button>
+
+            {cleanupMessage && (
+              <div className="mt-1.5 p-2 rounded bg-zinc-950 border border-emerald-900/40 text-[11px] text-emerald-400 flex items-center justify-between">
+                <span>{cleanupMessage}</span>
+                <button
+                  onClick={() => setCleanupMessage(null)}
+                  className="text-zinc-500 hover:text-zinc-300 text-xs ml-1"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
+            {cleanupError && (
+              <div className="mt-1.5 p-2 rounded bg-zinc-950 border border-red-900/40 text-[11px] text-red-400 flex items-center justify-between">
+                <span>{cleanupError}</span>
+                <button
+                  onClick={() => setCleanupError(null)}
+                  className="text-zinc-500 hover:text-zinc-300 text-xs ml-1"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

@@ -44,6 +44,16 @@ class FacebookStateRecognizer:
         "upload failed",
         "try again",
     )
+    BLOCKING_TEXT = (
+        "captcha",
+        "security check",
+        "verify your account",
+        "confirm your identity",
+        "account restricted",
+        "account suspended",
+        "account disabled",
+        "community standards",
+    )
     CONFIRMED_TEXT = (
         "your post is now published",
         "post published",
@@ -66,6 +76,14 @@ class FacebookStateRecognizer:
         ocr = self.vision.read_text(screen, min_confidence=0.35)
         texts = [item["text"] for item in ocr]
         blob = " ".join(texts).casefold()
+
+        leave_matches = self._contains(blob, ("leave site", "changes you made", "may not be saved"))
+        if leave_matches:
+            return StateObservation(ScreenState.UNKNOWN, 0.95, ["leave_site_dialog", *leave_matches], texts)
+
+        matches = self._contains(blob, self.BLOCKING_TEXT)
+        if matches:
+            return StateObservation(ScreenState.ERROR_DIALOG, 0.99, matches, texts)
 
         matches = self._contains(blob, self.ERROR_TEXT)
         if matches:
@@ -259,9 +277,6 @@ class FacebookStateRecognizer:
             "meta business suite",
             "your story",
             "create story",
-            "stories",
-            "reels",
-            "photos",
             "whats on your mind",
             "what s on your mind",
             "what's on your mind",
@@ -276,4 +291,41 @@ class FacebookStateRecognizer:
         if self.vision.find_template(screen, "facebook_logo", threshold=0.45):
             return StateObservation(ScreenState.FEED_READY, 0.68, ["facebook logo"], texts)
 
+        return StateObservation(ScreenState.UNKNOWN, 0.0, [], texts)
+
+    def observe_session_gate(self, screen: np.ndarray | None = None) -> StateObservation:
+        """Classify authentication safety from a targeted crop before full-screen fallback."""
+        screen = self.vision.capture_screen() if screen is None else screen
+        ocr = self.vision.read_text(screen, region="session_gate", min_confidence=0.30)
+        texts = [item["text"] for item in ocr]
+        blob = " ".join(texts).casefold()
+
+        leave_matches = self._contains(blob, ("leave site", "changes you made", "may not be saved"))
+        if leave_matches:
+            return StateObservation(ScreenState.UNKNOWN, 0.95, ["leave_site_dialog", *leave_matches], texts)
+
+        matches = self._contains(blob, self.BLOCKING_TEXT)
+        if matches:
+            return StateObservation(ScreenState.ERROR_DIALOG, 0.99, matches, texts)
+        matches = self._contains(blob, self.ERROR_TEXT)
+        if matches:
+            return StateObservation(ScreenState.ERROR_DIALOG, 0.98, matches, texts)
+        matches = self._contains(blob, self.LOGIN_TEXT)
+        if matches:
+            return StateObservation(ScreenState.LOGIN_REQUIRED, 0.97, matches, texts)
+
+        feed_phrases = (
+            "what's on your mind",
+            "what’s on your mind",
+            "whats on your mind",
+            "what s on your mind",
+            "photo/video",
+            "photo / video",
+            "create story",
+            "your story",
+            "professional dashboard",
+        )
+        matches = self._contains(blob, feed_phrases)
+        if matches:
+            return StateObservation(ScreenState.FEED_READY, 0.84, matches, texts)
         return StateObservation(ScreenState.UNKNOWN, 0.0, [], texts)

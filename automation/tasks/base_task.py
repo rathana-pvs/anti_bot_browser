@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from engine.container_client import ContainerClient
 from engine.evidence import EvidenceRecorder
 from engine.human_input import HumanInput
-from engine.screen_state import FacebookStateRecognizer, ScreenState
+from engine.screen_state import FacebookStateRecognizer, ScreenState, StateObservation
 from engine.vision import VisionEngine
 from engine.semantic_fallback import (
     EXPECTED_ACTION_STATES,
@@ -40,6 +40,7 @@ class BaseTask:
         self.result_status = "running"
         self.result_error: str | None = None
         self.result_extra: dict = {}
+        self.session_check_status = "not_checked"
         self.current_stage: str = "pending"
         self.stage_history: list[dict] = []
         self._load_environment_context()
@@ -358,7 +359,12 @@ class BaseTask:
             self.log("DEBUG", f"Error during post prompt check: {exc}")
         return False
 
-    def navigate_to(self, url: str, wait_seconds: float = 2.0) -> None:
+    def navigate_to(
+        self,
+        url: str,
+        wait_seconds: float = 2.0,
+        check_leave_dialog: bool = True,
+    ) -> None:
         """
         Navigate to URL via container client and automatically handle any blocking
         'Leave site?' beforeunload prompt.
@@ -369,7 +375,8 @@ class BaseTask:
             if hasattr(self, "client") and self.client is not None:
                 self.client.navigate_to(url)
             time.sleep(1.0)
-            self.handle_leave_site_dialog()
+            if check_leave_dialog:
+                self.handle_leave_site_dialog()
             if wait_seconds > 1.0:
                 time.sleep(wait_seconds - 1.0)
         except Exception:
@@ -424,6 +431,72 @@ class BaseTask:
             self.log("WARN", f"Clipboard paste failed, falling back to typing: {e}")
             self.human.type_text(text)
 
+    @staticmethod
+    def _is_facebook_url(url: str | None) -> bool:
+        """Accept Facebook itself, but never lookalike hosts containing its name."""
+        if not url:
+            return False
+        try:
+            parsed = urllib.parse.urlparse(url)
+            hostname = (parsed.hostname or "").casefold().rstrip(".")
+            return parsed.scheme in {"http", "https"} and (
+                hostname == "facebook.com" or hostname.endswith(".facebook.com")
+            )
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _has_strong_facebook_visual(observation: StateObservation) -> bool:
+        """Require a Facebook-specific UI signal in addition to its URL host."""
+        if observation.confidence < 0.75:
+            return False
+
+        signals = {signal.casefold() for signal in observation.signals}
+        if observation.state == ScreenState.FEED_READY:
+            strong_feed_signals = {
+                "what's on your mind",
+                "what’s on your mind",
+                "whats on your mind",
+                "what s on your mind",
+                "photo/video",
+                "photo / video",
+                "create story",
+                "your story",
+                "professional dashboard",
+                "photo/video text",
+                "logged-in dashboard/feed text",
+                "photo/video button visual",
+            }
+            return bool(signals & strong_feed_signals)
+
+        # These states require Facebook-specific modal/action structure in the
+        # recognizer, so their non-empty signals are independent visual proof.
+        workflow_states = {
+            ScreenState.COMPOSER_OPEN,
+            ScreenState.MEDIA_UPLOADING,
+            ScreenState.MEDIA_READY,
+            ScreenState.POST_ENABLED,
+            ScreenState.PUBLISHING,
+            ScreenState.POST_CONFIRMED,
+        }
+        return observation.state in workflow_states and bool(signals - {"facebook logo"})
+
+    def skip_unverified_session(self) -> bool:
+        """Finish safely without treating an expired session as an automation failure."""
+        session_status = getattr(self, "session_check_status", "unverified")
+        if session_status in {"auth_required", "safety_blocked"}:
+            status = "skipped_auth_required"
+            message = "Facebook is logged out, expired, restricted, or requires an account checkpoint."
+        else:
+            status = "skipped_session_unverified"
+            message = "Facebook did not reach a safely verified logged-in screen within 40 seconds."
+        self.log("WARN", f"Skipping profile: {message} No login action will be attempted.")
+        return self.set_outcome(
+            status,
+            error=message,
+            auth_preflight=session_status,
+        )
+
     def verify_logged_in(self) -> bool:
         """
         Verify that the container Chrome session is logged into Facebook.
@@ -431,11 +504,11 @@ class BaseTask:
         than being mistaken for a logged-out session.
         """
         self.log("INFO", "Verifying Facebook session login state...")
-        self.navigate_to("https://www.facebook.com/", wait_seconds=2.0)
-
-        # Facebook theme is only reliable after the page has loaded. Detect it
-        # once here, before login-state OCR and every task-specific locator.
-        self.detect_visual_theme()
+        self.navigate_to(
+            "https://www.facebook.com/",
+            wait_seconds=2.0,
+            check_leave_dialog=False,
+        )
 
         # Check window title first because it is cheap and works without OCR.
         try:
@@ -443,12 +516,28 @@ class BaseTask:
             if res.returncode == 0:
                 title = res.stdout.strip().lower()
                 if any(k in title for k in ("log in", "login", "sign up", "welcome to facebook")):
-                    self.log("ERROR", f"Session expired or logged out (Window title: {title})")
+                    self.session_check_status = "auth_required"
+                    self.log("WARN", f"Session expired or logged out (Window title: {title})")
+                    self.capture_evidence("session_preflight_auth_required")
                     return False
         except Exception:
             pass
 
-        deadline = time.time() + 50.0
+        try:
+            current_url = self.client.get_current_url()
+            blocked_paths = ("/login", "/checkpoint", "/recover", "/two_step_verification")
+            if current_url and any(path in current_url.casefold() for path in blocked_paths):
+                self.session_check_status = "auth_required"
+                self.log("WARN", f"Facebook authentication checkpoint detected at {current_url}")
+                self.capture_evidence("session_preflight_auth_required")
+                return False
+        except Exception:
+            pass
+
+        # This is a safety preflight, not a login workflow. Profiles are assumed
+        # to be authenticated; a short bounded check only prevents blind actions
+        # after an expired session, checkpoint, or unexpected page.
+        deadline = time.time() + 40.0
         observation = None
         screen = None
         valid_logged_in_states = {
@@ -462,11 +551,42 @@ class BaseTask:
         }
         while time.time() < deadline:
             screen = self.client.screenshot()
-            observation = self.recognizer.observe(screen)
+            # Navigation can still show the previous page after the address bar
+            # changes. Refresh theme from each actual screenshot so browser
+            # chrome or a prior light page cannot lock Facebook into light-mode
+            # preprocessing.
+            self.detect_visual_theme(screen)
+            observation = self.recognizer.observe_session_gate(screen)
+            if "leave_site_dialog" in observation.signals:
+                if self.handle_leave_site_dialog(screen):
+                    time.sleep(1.0)
+                    continue
+            if observation.state == ScreenState.UNKNOWN:
+                observation = self.recognizer.observe(screen)
             if observation.state == ScreenState.LOGIN_REQUIRED:
                 break
-            if observation.state in valid_logged_in_states:
+            if observation.state == ScreenState.ERROR_DIALOG:
                 break
+            if observation.state in valid_logged_in_states:
+                try:
+                    current_url = self.client.get_current_url()
+                except Exception:
+                    current_url = None
+                has_facebook_host = self._is_facebook_url(current_url)
+                has_facebook_visual = self._has_strong_facebook_visual(observation)
+                if has_facebook_host and has_facebook_visual:
+                    break
+                self.log(
+                    "INFO",
+                    "Ignoring an unconfirmed/loading browser page "
+                    f"(url={current_url or 'unknown'}, "
+                    f"facebook_visual={has_facebook_visual}, signals={observation.signals}).",
+                )
+                observation = StateObservation(
+                    ScreenState.UNKNOWN,
+                    0.0,
+                    ["facebook_host_or_visual_not_confirmed"],
+                )
             if observation.state == ScreenState.UNKNOWN:
                 if self.handle_leave_site_dialog(screen):
                     time.sleep(1.0)
@@ -475,6 +595,7 @@ class BaseTask:
             time.sleep(2.0)
 
         if observation is None or screen is None:
+            self.session_check_status = "unverified"
             self.log("ERROR", "Facebook session verification produced no visual observation.")
             return False
 
@@ -486,11 +607,18 @@ class BaseTask:
             signals=observation.signals,
         )
         if observation.state == ScreenState.LOGIN_REQUIRED:
-            self.log("ERROR", "Facebook login screen was visually detected.")
+            self.session_check_status = "auth_required"
+            self.log("WARN", "Facebook login screen was detected; this profile will be skipped.")
+            return False
+        if observation.state == ScreenState.ERROR_DIALOG:
+            self.session_check_status = "safety_blocked"
+            self.log("WARN", "Facebook displayed a restriction, checkpoint, CAPTCHA, or error; this profile will be skipped.")
             return False
         if observation.state not in valid_logged_in_states:
-            self.log("ERROR", "Facebook session remained visually unverified after the loading timeout.")
+            self.session_check_status = "unverified"
+            self.log("WARN", "Facebook session remained visually unverified after the 40-second safety timeout.")
             return False
+        self.session_check_status = "authenticated"
         return True
 
     @timed_telemetry_step("media_upload")
@@ -662,34 +790,15 @@ class BaseTask:
         candidates.sort(key=lambda item: item.get("center", (0, height + 1))[1])
         return candidates[0]
 
-    def _open_profile_first_comment_input(self, post_url: str | None = None):
+    def _open_profile_first_comment_input(self):
         """
-        Locate the post card's 'Comment as ...' field:
-        1. Check current screen first (e.g. if permalink modal or post is already open).
-        2. If post_url provided, navigate to post_url directly.
-        3. Otherwise navigate to profile feed and scroll down in the post stream.
+        Primary comment targeting method: navigate to the profile and select the
+        topmost comment field/action belonging to the first visible post.
+
+        Profiles managed by this application do not pin posts, so the first post
+        is the intended newly published item once the profile feed has refreshed.
         """
-        # Step 1: Check current screen immediately (e.g. permalink view already on screen)
-        current_screen = self.client.screenshot()
-        target = self._find_first_comment_input(current_screen)
-        if target:
-            self.log("INFO", f"Found 'Comment as ...' directly on current screen at {target}")
-            return target, current_screen
-
-        # Step 2: Navigate directly to post_url if provided
-        if post_url:
-            self.log("STEP", f"Navigating to post URL to locate comment field: {post_url}")
-            try:
-                self.navigate_to(post_url, wait_seconds=3.0)
-                post_screen = self.client.screenshot()
-                target = self._find_first_comment_input(post_screen)
-                if target:
-                    return target, post_screen
-            except Exception as exc:
-                self.log("WARN", f"Could not navigate to post URL: {exc}")
-
-        # Step 3: Navigate to profile and scroll down the post stream
-        self.log("STEP", "Navigating to profile to locate post's 'Comment as ...' field...")
+        self.log("STEP", "Primary comment method: opening the profile's first post...")
         self.navigate_to("https://www.facebook.com/me", wait_seconds=3.0)
 
         # Move mouse over main post feed column (x ~ 1150, y ~ 500) so mouse wheel / keys scroll feed
@@ -719,10 +828,40 @@ class BaseTask:
                 if target:
                     return target, screen
 
-            # Scroll down the feed using Page_Down
-            self.client.exec_cmd(["xdotool", "key", "Page_Down"], check=False)
+            # Move just enough to reveal the remainder of the first post. Large
+            # page jumps could make a later post become the topmost visible card.
+            self.human.scroll("down", notches=2)
             time.sleep(1.2)
 
+        return None, None
+
+    def _open_permalink_comment_input(self, post_url: str | None):
+        """Fallback comment target used only before any comment submission."""
+        if not post_url:
+            return None, None
+        is_valid, clean_url = self.validate_facebook_permalink(post_url)
+        if not is_valid or not clean_url:
+            self.log("WARN", f"Comment permalink fallback rejected an invalid URL: {post_url}")
+            return None, None
+
+        self.log("STEP", f"Fallback comment method: opening verified permalink {clean_url}")
+        try:
+            self.navigate_to(clean_url, wait_seconds=3.0)
+            for scan in range(1, 4):
+                screen = self.client.screenshot()
+                target = self._find_first_comment_input(screen)
+                self.log_decision(
+                    "Find permalink comment field",
+                    "'Comment as ...' field on the verified permalink",
+                    f"scan={scan}, target={target}",
+                    "use permalink field" if target else "wait and scan again",
+                    level="INFO",
+                )
+                if target:
+                    return target, screen
+                time.sleep(1.2)
+        except Exception as exc:
+            self.log("WARN", f"Could not use the permalink comment fallback: {exc}")
         return None, None
 
     @staticmethod
@@ -759,7 +898,15 @@ class BaseTask:
         self.set_stage("commenting")
         self.log("STEP", "Locating 'Comment as ...' field for first comment...")
         time.sleep(1.5)
-        comment_box_pos, comment_screen = self._open_profile_first_comment_input(post_url=post_url)
+        self.last_comment_method = None
+        comment_box_pos, comment_screen = self._open_profile_first_comment_input()
+        if comment_box_pos:
+            self.last_comment_method = "profile_first_post"
+        elif post_url:
+            self.log("WARN", "Primary first-post comment target was not found; trying the verified permalink before submission.")
+            comment_box_pos, comment_screen = self._open_permalink_comment_input(post_url)
+            if comment_box_pos:
+                self.last_comment_method = "verified_permalink_fallback"
         if not comment_box_pos:
             self.log_decision(
                 "Submit first comment",
@@ -773,11 +920,16 @@ class BaseTask:
         if comment_screen is None:
             comment_screen = self.client.screenshot()
 
-        self.capture_evidence("before_first_comment", comment_screen, target=list(comment_box_pos))
+        self.capture_evidence(
+            "before_first_comment",
+            comment_screen,
+            target=list(comment_box_pos),
+            comment_method=self.last_comment_method,
+        )
         self.log_decision(
             "Submit first comment",
             "'Comment as ...' field under post",
-            f"target={comment_box_pos}",
+            f"method={self.last_comment_method}, target={comment_box_pos}",
             "click 'Comment as ...', paste configured comment, and submit once",
         )
         self.log("STEP", f"Clicking 'Comment as ...' at {comment_box_pos}...")
@@ -796,11 +948,14 @@ class BaseTask:
             time.sleep(2.0)
             after_comment = self.client.screenshot()
             screen_h, screen_w = after_comment.shape[:2]
+            # Facebook's permalink modal places the first visible comment near
+            # the middle of the screen, well above the bottom input row. Cover
+            # the complete comment stream while retaining a bounded OCR crop.
             comment_region = (
                 int(screen_w * 0.28),
-                int(screen_h * 0.52),
+                int(screen_h * 0.28),
                 int(screen_w * 0.45),
-                int(screen_h * 0.46),
+                int(screen_h * 0.69),
             )
             comment_items = self.vision.read_text(
                 after_comment,
@@ -815,7 +970,7 @@ class BaseTask:
             comment_confidence = self._comment_match_confidence(
                 comment_link,
                 comment_items,
-                max_y=int(screen_h * 0.87),
+                max_y=int(screen_h * 0.90),
             )
             best_comment_confidence = max(best_comment_confidence, comment_confidence)
             if comment_confidence >= 0.60:
@@ -841,6 +996,7 @@ class BaseTask:
             after_comment,
             comment_status=comment_status,
             comment_match_confidence=round(best_comment_confidence, 3),
+            comment_method=self.last_comment_method,
         )
 
         if clear_streak < 2:

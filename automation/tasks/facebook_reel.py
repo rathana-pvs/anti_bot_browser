@@ -53,6 +53,84 @@ class FacebookReelTask(BaseTask):
 
         return self.vision.find_stable(locate, attempts=2, tolerance_px=8.0)
 
+    @staticmethod
+    def _normalized_ocr_text(text: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", text.casefold()).strip()
+
+    @classmethod
+    def _is_profile_composer_prompt(cls, text: str) -> bool:
+        """Recognize the profile composer prompt despite common OCR substitutions."""
+        words = set(cls._normalized_ocr_text(text).split())
+        has_what = bool(words & {"what", "whats", "what5", "whal", "whai"})
+        return has_what and {"on", "your", "mind"}.issubset(words)
+
+    def _find_profile_reel_action(self):
+        """Find only the Reel action inside the profile composer card.
+
+        Facebook also shows a ``Reels`` navigation tab above the composer.  Text
+        matching alone can select that tab, so an accepted target must be an
+        exact action label geometrically anchored to the composer prompt or to
+        the adjacent Photo/video action.
+        """
+        def locate():
+            started = time.perf_counter()
+            screen = self.client.screenshot()
+            height, width = screen.shape[:2]
+            region = self.vision.get_pixel_region(screen.shape, "profile_post_stream")
+            candidates = self.vision.read_text(screen, region=region, min_confidence=0.20)
+
+            prompts = [
+                item for item in candidates
+                if self._is_profile_composer_prompt(item["text"])
+            ]
+            photo_actions = [
+                item for item in candidates
+                if self._normalized_ocr_text(item["text"])
+                in {"photo video", "photos videos", "photo lvideo", "photo ivideo"}
+            ]
+            reel_actions = [
+                item for item in candidates
+                if self._normalized_ocr_text(item["text"]) in {"reel", "create reel"}
+            ]
+
+            accepted = []
+            for reel in reel_actions:
+                rx, ry = reel["center"]
+
+                # Normal profile composer layout: the action row is shortly
+                # below the caption prompt and extends to its right.
+                for prompt in prompts:
+                    px, py = prompt["center"]
+                    if (
+                        0.018 * height <= ry - py <= 0.15 * height
+                        and -0.04 * width <= rx - px <= 0.38 * width
+                    ):
+                        accepted.append((abs((ry - py) - 0.055 * height), reel))
+                        break
+                else:
+                    # OCR may miss the grey prompt.  Photo/video is a strong
+                    # secondary anchor because it shares the same action row.
+                    for photo in photo_actions:
+                        phx, phy = photo["center"]
+                        if abs(ry - phy) <= 0.035 * height and 0 < rx - phx <= 0.30 * width:
+                            accepted.append((abs(ry - phy), reel))
+                            break
+
+            accepted.sort(key=lambda value: (value[0], -value[1].get("confidence", 0.0)))
+            match = accepted[0][1] if accepted else None
+            self.record_locator_telemetry(
+                "profile_reel_composer_action",
+                "composer_anchored_ocr",
+                "profile_post_stream",
+                (time.perf_counter() - started) * 1000.0,
+                bool(match),
+                confidence=match.get("confidence") if match else None,
+                fallback_reason=None if match else "no_composer_anchored_reel_action",
+            )
+            return match["center"] if match else None
+
+        return self.vision.find_stable(locate, attempts=2, tolerance_px=8.0)
+
     def _find_reel_upload_target(self):
         """Locate an actionable Reel upload control, never preview instructional text."""
         def locate():
@@ -229,25 +307,19 @@ class FacebookReelTask(BaseTask):
         if not self.client.is_running():
             return self._fail("container_stopped", f"Container {self.client.container_name} is not running.")
         if not self.verify_logged_in():
-            return self._fail("session_unverified", "Facebook session is logged out or could not be verified after loading.")
+            return self.skip_unverified_session()
 
         self.log("STEP", "Navigating to Facebook profile page...")
         self.navigate_to("https://www.facebook.com/me", wait_seconds=3.0)
 
         self.log("STEP", "Locating Reel button on profile page...")
         def locate_reel_button():
-            target = self._find_stable_text((
-                "reel",
-                "create reel",
-            ), region="profile_post_stream")
+            target = self._find_profile_reel_action()
             if target:
                 return target
             self.human.scroll("down", notches=2)
             time.sleep(0.8)
-            return self._find_stable_text((
-                "reel",
-                "create reel",
-            ), region="profile_post_stream")
+            return self._find_profile_reel_action()
 
         reel_btn_status, reel_button, screen = self._wait_for_target(
             locate_reel_button,
@@ -261,7 +333,7 @@ class FacebookReelTask(BaseTask):
 
         self.log_decision(
             "Open Reel Studio",
-            "stable Reel or Create reel button on profile",
+            "stable Reel action anchored inside the profile composer card",
             f"target={reel_button}",
             "click Reel button to open Reel creator dialog",
         )
@@ -408,13 +480,14 @@ class FacebookReelTask(BaseTask):
         if self.comment_link:
             comment_status = self.post_first_comment(
                 self.comment_link,
-                post_url=permalink_info.get("reel_url"),
+                post_url=permalink_info.get("post_url"),
             )
             self.log("SUCCESS", "Facebook Reel publication was visually confirmed.")
             return self.set_outcome(
                 "published",
                 None,
                 first_comment=comment_status,
+                first_comment_method=getattr(self, "last_comment_method", None),
                 **permalink_info,
             )
 

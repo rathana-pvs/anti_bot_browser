@@ -10,6 +10,7 @@ import {
   refreshExecutionLease,
   releaseExecutionLease,
   schedulerSnapshot,
+  workerSilenceTimeoutMs,
 } from '../queueScheduler.js';
 
 const NOW = Date.parse('2026-09-25T14:00:00.000Z');
@@ -145,6 +146,14 @@ test('only expired or missing leases are recovered as stale', () => {
     findStaleRunningExecutions(queueWith(live), new Set(['live-token']), NOW),
     [],
   );
+});
+
+test('live-worker silence limits are stage-specific and longer than scheduler leases', () => {
+  assert.equal(workerSilenceTimeoutMs('preparing'), 6 * 60_000);
+  assert.equal(workerSilenceTimeoutMs('composing'), 12 * 60_000);
+  assert.equal(workerSilenceTimeoutMs('verifying'), 12 * 60_000);
+  assert.equal(workerSilenceTimeoutMs('unknown'), 6 * 60_000);
+  assert.equal(workerSilenceTimeoutMs('composing', 5 * 60_000), 15 * 60_000);
 });
 
 test('published and unresolved executions cannot be claimed', () => {

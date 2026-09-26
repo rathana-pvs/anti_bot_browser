@@ -34,6 +34,8 @@ NORMALIZED_REGIONS = {
     "profile_post_stream": (0.12, 0.20, 0.88, 1.00),
     "composer_modal": (0.20, 0.15, 0.80, 0.85),
     "feed_composer": (0.20, 0.10, 0.80, 0.55),
+    "browser_dialog": (0.20, 0.05, 0.80, 0.48),
+    "session_gate": (0.20, 0.16, 0.80, 0.78),
 }
 
 
@@ -42,7 +44,7 @@ class VisionEngine:
     CACHE_TTL_HOURS = 72
     MAX_CONSECUTIVE_FAILURES = 3
     OCR_CACHE_MAX_ENTRIES = 24
-    _ocr_readers: dict[tuple[str, ...], object] = {}
+    _ocr_readers: dict[tuple[tuple[str, ...], str], object] = {}
 
     def __init__(self, client: ContainerClient):
         self.client = client
@@ -57,6 +59,7 @@ class VisionEngine:
         self.configured_resolution = None
         self.locale = "unknown"
         self.browser_zoom = None
+        self.ocr_device = "uninitialized"
         self._ocr_cache: dict[tuple, list[dict]] = {}
 
     def set_runtime_context(
@@ -175,11 +178,23 @@ class VisionEngine:
         """Capture the current screen through the configured container client."""
         return self.client.screenshot()
 
+    @staticmethod
+    def select_ocr_device(requested_device: str, cuda_available: bool) -> str:
+        """Resolve auto/cuda/cpu preference with a deterministic CPU fallback."""
+        requested = (requested_device or "auto").strip().casefold()
+        if requested == "cpu":
+            return "cpu"
+        if requested in {"auto", "cuda", "gpu"} and cuda_available:
+            return "cuda"
+        return "cpu"
+
     @classmethod
-    def _get_ocr_reader(cls, languages: tuple[str, ...] = ("en",)):
-        """Lazily initialize one pretrained EasyOCR reader per language set with 4-thread CPU tuning and warmup."""
-        if languages in cls._ocr_readers:
-            return cls._ocr_readers[languages]
+    def _get_ocr_reader(
+        cls,
+        languages: tuple[str, ...] = ("en",),
+        requested_device: str | None = None,
+    ):
+        """Initialize EasyOCR on CUDA when usable, otherwise fall back safely to CPU."""
         try:
             import warnings
             warnings.filterwarnings(
@@ -188,8 +203,17 @@ class VisionEngine:
                 message=r".*torch\.quantize_per_tensor.*deprecated.*",
             )
             import torch
-            torch.set_num_threads(4)
             import easyocr
+
+            requested = requested_device or os.environ.get("AUTOMATION_OCR_DEVICE", "auto")
+            device = cls.select_ocr_device(requested, torch.cuda.is_available())
+            cache_key = (languages, device)
+            if cache_key in cls._ocr_readers:
+                return cls._ocr_readers[cache_key], device
+
+            if device == "cpu":
+                configured_threads = int(os.environ.get("AUTOMATION_OCR_THREADS", "4"))
+                torch.set_num_threads(max(1, min(4, configured_threads)))
 
             model_dir = os.path.abspath(
                 os.path.join(os.path.dirname(__file__), "..", "models", "easyocr")
@@ -197,7 +221,7 @@ class VisionEngine:
             os.makedirs(model_dir, exist_ok=True)
             reader = easyocr.Reader(
                 list(languages),
-                gpu=False,
+                gpu=device == "cuda",
                 verbose=False,
                 model_storage_directory=model_dir,
                 download_enabled=False,
@@ -206,10 +230,13 @@ class VisionEngine:
             dummy = np.zeros((64, 128, 3), dtype=np.uint8)
             reader.readtext(dummy)
         except Exception as exc:
+            if (requested_device or os.environ.get("AUTOMATION_OCR_DEVICE", "auto")).casefold() != "cpu":
+                print(f"Warning: CUDA OCR initialization failed; retrying on CPU: {exc}")
+                return cls._get_ocr_reader(languages, requested_device="cpu")
             print(f"Warning: EasyOCR is unavailable: {exc}")
-            reader = None
-        cls._ocr_readers[languages] = reader
-        return reader
+            return None, "unavailable"
+        cls._ocr_readers[cache_key] = reader
+        return reader, device
 
     @staticmethod
     def get_pixel_region(
@@ -313,7 +340,10 @@ class VisionEngine:
             return results
 
         ocr_image, scale = self._prepare_ocr_image(crop, targeted=region is not None)
-        reader = self._get_ocr_reader(languages)
+        reader, ocr_device = self._get_ocr_reader(languages)
+        self.ocr_device = ocr_device
+        if telemetry is not None:
+            telemetry.set_environment(ocr_device=ocr_device)
         if reader is None:
             if telemetry is not None:
                 telemetry.record_ocr((time.perf_counter() - started) * 1000.0, region_name, 0, outcome="reader_unavailable")
@@ -323,10 +353,23 @@ class VisionEngine:
         try:
             raw_results = reader.readtext(ocr_image, detail=1, paragraph=False)
         except Exception as exc:
-            print(f"Warning: OCR failed: {exc}")
-            if telemetry is not None:
-                telemetry.record_ocr((time.perf_counter() - started) * 1000.0, region_name, 0, outcome="error")
-            return []
+            if self.ocr_device == "cuda":
+                print(f"Warning: CUDA OCR inference failed; retrying this scan on CPU: {exc}")
+                reader, self.ocr_device = self._get_ocr_reader(languages, requested_device="cpu")
+                if telemetry is not None:
+                    telemetry.set_environment(ocr_device="cpu", ocr_fallback_reason=str(exc))
+                try:
+                    raw_results = reader.readtext(ocr_image, detail=1, paragraph=False) if reader else []
+                except Exception as cpu_exc:
+                    print(f"Warning: CPU OCR fallback failed: {cpu_exc}")
+                    if telemetry is not None:
+                        telemetry.record_ocr((time.perf_counter() - started) * 1000.0, region_name, 0, outcome="error")
+                    return []
+            else:
+                print(f"Warning: OCR failed: {exc}")
+                if telemetry is not None:
+                    telemetry.record_ocr((time.perf_counter() - started) * 1000.0, region_name, 0, outcome="error")
+                return []
 
         for box, text, confidence in raw_results:
             confidence = float(confidence)
@@ -937,42 +980,37 @@ class VisionEngine:
         if screen is None or screen.size == 0:
             return None
 
-        for search_region in ("modal_header_alerts", None):
-            items = self.read_text(screen, region=search_region, min_confidence=0.30)
-            if not items:
-                continue
+        search_region = "browser_dialog"
+        items = self.read_text(screen, region=search_region, min_confidence=0.30)
+        if not items:
+            return None
 
-            has_leave_prompt = False
-            leave_candidate = None
+        has_leave_prompt = False
+        leave_candidate = None
 
-            for item in items:
-                norm_text = re.sub(r"[^a-z0-9 ]+", " ", item["text"].strip().lower()).strip()
-                if (
-                    "leave site" in norm_text
-                    or "changes you made" in norm_text
-                    or "may not be saved" in norm_text
-                ):
-                    has_leave_prompt = True
-                if norm_text == "leave" or norm_text.endswith(" leave"):
-                    leave_candidate = item
-
-            # If both "Cancel" and "Leave" exist in the alert area, it is the beforeunload prompt
-            has_cancel = any("cancel" in re.sub(r"[^a-z0-9 ]+", " ", item["text"].strip().lower()).split() for item in items)
-            if has_cancel and leave_candidate:
+        for item in items:
+            norm_text = re.sub(r"[^a-z0-9 ]+", " ", item["text"].strip().lower()).strip()
+            if (
+                "leave site" in norm_text
+                or "changes you made" in norm_text
+                or "may not be saved" in norm_text
+            ):
                 has_leave_prompt = True
+            if norm_text == "leave" or norm_text.endswith(" leave"):
+                leave_candidate = item
 
-            if has_leave_prompt and leave_candidate:
-                return leave_candidate["center"]
+        # If both "Cancel" and "Leave" exist in the alert area, it is the beforeunload prompt
+        has_cancel = any("cancel" in re.sub(r"[^a-z0-9 ]+", " ", item["text"].strip().lower()).split() for item in items)
+        if has_cancel and leave_candidate:
+            has_leave_prompt = True
 
-            # If prompt was recognized, check for blue action button within that region
-            if has_leave_prompt:
-                blue = self.find_blue_action_button(screen=screen, region=search_region)
-                if blue:
-                    return blue
-                if leave_candidate:
-                    return leave_candidate["center"]
+        if has_leave_prompt and leave_candidate:
+            return leave_candidate["center"]
 
-            if has_leave_prompt:
-                break
+        # If prompt was recognized, check for blue action button within that region.
+        if has_leave_prompt:
+            blue = self.find_blue_action_button(screen=screen, region=search_region)
+            if blue:
+                return blue
 
         return None

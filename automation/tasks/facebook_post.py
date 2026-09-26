@@ -398,7 +398,7 @@ class FacebookPostTask(BaseTask):
 
         # Step 1: Pre-task login gate
         if not self.verify_logged_in():
-            return self._fail("session_unverified", "Facebook session is logged out or could not be verified after loading.")
+            return self.skip_unverified_session()
 
         # Step 2: Navigate directly to profile page (simplified profile-first flow)
         self.log("STEP", "Navigating to profile page (https://www.facebook.com/me)...")
@@ -626,7 +626,13 @@ class FacebookPostTask(BaseTask):
                 self.comment_link,
                 post_url=permalink_info.get("post_url"),
             )
-            return self.set_outcome("published", None, first_comment=comment_status, **permalink_info)
+            return self.set_outcome(
+                "published",
+                None,
+                first_comment=comment_status,
+                first_comment_method=getattr(self, "last_comment_method", None),
+                **permalink_info,
+            )
 
         self.log("SUCCESS", "Facebook publication was visually confirmed.")
         return self.set_outcome("published", None, **permalink_info)

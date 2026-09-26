@@ -8,6 +8,7 @@ import numpy as np
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from tasks.facebook_preparation import FacebookPreparationTask
+from engine.vision import VisionEngine
 
 
 class FacebookPreparationTaskTests(unittest.TestCase):
@@ -18,10 +19,12 @@ class FacebookPreparationTaskTests(unittest.TestCase):
         task.client.is_running.return_value = True
         task.client.screenshot.return_value = np.zeros((100, 100, 3), dtype=np.uint8)
         task.client.container_name = "isolated_profile_test"
-        task.vision = Mock()
-        task.vision.screen_similarity.return_value = 0.5
+        # A spec catches calls to methods that do not exist on the real engine.
+        task.vision = Mock(spec=VisionEngine)
+        task.vision.similarity.return_value = 0.5
         task.human = Mock()
         task.verify_logged_in = Mock(return_value=logged_in)
+        task.session_check_status = "authenticated" if logged_in else "auth_required"
         task._current_session_is_stable = Mock(return_value=logged_in)
         task.log = Mock()
         task.set_stage = Mock()
@@ -55,7 +58,7 @@ class FacebookPreparationTaskTests(unittest.TestCase):
         task.human.scroll.assert_called_once_with("down", notches=3)
         task.human.key_press.assert_called_once_with("Home")
 
-    def test_unverified_session_stops_for_review(self):
+    def test_logged_out_session_is_safely_skipped(self):
         task = self.make_task(logged_in=False)
 
         result = task.run()
@@ -63,7 +66,7 @@ class FacebookPreparationTaskTests(unittest.TestCase):
         self.assertFalse(result)
         task.verify_logged_in.assert_called_once()
         task.set_outcome.assert_called_once()
-        self.assertEqual(task.set_outcome.call_args.args[0], "needs_review")
+        self.assertEqual(task.set_outcome.call_args.args[0], "skipped_auth_required")
         task.client.screenshot.assert_not_called()
 
 
