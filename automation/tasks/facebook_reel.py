@@ -127,6 +127,8 @@ class FacebookReelTask(BaseTask):
                 confidence=match.get("confidence") if match else None,
                 fallback_reason=None if match else "no_composer_anchored_reel_action",
             )
+            if match:
+                self.remember_reversible_click_bounds(match["center"], match.get("bounds"))
             return match["center"] if match else None
 
         return self.vision.find_stable(locate, attempts=2, tolerance_px=8.0)
@@ -153,6 +155,7 @@ class FacebookReelTask(BaseTask):
                     ):
                         words = set(re.sub(r"[^a-z0-9]+", " ", item["text"].casefold()).split())
                         if "upload" in words:
+                            self.remember_reversible_click_bounds(button["center"], button["bounds"])
                             return button["center"]
 
             # Secondary control: exact Add video label in the left dropzone.
@@ -161,6 +164,7 @@ class FacebookReelTask(BaseTask):
             for item in sorted(candidates, key=lambda candidate: candidate["confidence"], reverse=True):
                 normalized = re.sub(r"[^a-z0-9]+", " ", item["text"].casefold()).strip()
                 if normalized in {"add video", "upload video", "select video"}:
+                    self.remember_reversible_click_bounds(item["center"], item.get("bounds"))
                     return item["center"]
             return None
 
@@ -178,9 +182,11 @@ class FacebookReelTask(BaseTask):
                     screen.shape[1],
                     screen.shape[0] // 2,
                 )
-            blue = self.vision.find_blue_action_button(screen=screen, region=search_region)
-            if not blue:
+            blue_buttons = self.vision.find_blue_action_buttons(screen=screen, region=search_region)
+            if not isinstance(blue_buttons, list) or not blue_buttons:
                 return None
+            button = blue_buttons[0]
+            blue = button["center"]
             # Scan tight region around blue button at full resolution first
             text_match = self.vision.find_text_cascaded(
                 labels,
@@ -197,6 +203,7 @@ class FacebookReelTask(BaseTask):
                 )
             if text_match:
                 if math.hypot(text_match["center"][0] - blue[0], text_match["center"][1] - blue[1]) <= 180:
+                    self.remember_reversible_click_bounds(blue, button["bounds"])
                     return blue
 
             # Semantic fallback when local OCR keywords fail to match
@@ -338,7 +345,7 @@ class FacebookReelTask(BaseTask):
             "click Reel button to open Reel creator dialog",
         )
         self.capture_evidence("before_click_reel_button", target=list(reel_button))
-        self.human.click(*reel_button)
+        self.click_reversible(reel_button, label="profile_reel", max_offset_px=4)
         time.sleep(2.5)
 
         self.set_stage("composing")
@@ -353,7 +360,7 @@ class FacebookReelTask(BaseTask):
         if not dropzone:
             return self._fail("reel_dropzone_not_found", "Reel video dropzone could not be located confidently.")
 
-        self.human.click(*dropzone)
+        self.click_reversible(dropzone, label="reel_upload", max_offset_px=6)
         time.sleep(1.5)
 
         container_path = self.video_path
@@ -374,7 +381,7 @@ class FacebookReelTask(BaseTask):
             return self._fail("reel_processing_timeout", "An enabled Next action did not appear after processing.")
 
         self.log("STEP", f"Clicking Next action at {next_button}...")
-        self.human.click(*next_button)
+        self.click_reversible(next_button, label="reel_next", max_offset_px=5)
         time.sleep(2.0)
 
         # Check if an intermediate "Edit reel" step is presented (with another Next action)
@@ -385,7 +392,7 @@ class FacebookReelTask(BaseTask):
         )
         if edit_next_status != "timeout" and edit_next_button:
             self.log("STEP", f"Clicking intermediate Next action on Edit reel step at {edit_next_button}...")
-            self.human.click(*edit_next_button)
+            self.click_reversible(edit_next_button, label="reel_edit_next", max_offset_px=5)
             time.sleep(2.0)
 
         self.log("STEP", "Locating Reel description input...")

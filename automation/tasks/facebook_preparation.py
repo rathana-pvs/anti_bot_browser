@@ -59,9 +59,21 @@ class FacebookPreparationTask(BaseTask):
         elif not self.verify_logged_in():
             return self.skip_unverified_session()
 
+        requested_surface, warm_surface, fallback_used, surface_screen = (
+            self.select_and_open_warming_surface()
+        )
+        if warm_surface is None:
+            if getattr(self, "session_check_status", "") == "auth_required":
+                return self.skip_unverified_session()
+            return self.set_outcome(
+                "failed_before_publish",
+                "No Facebook warming surface reached a verified ready state.",
+                warming_surface_requested=requested_surface,
+            )
+
         duration_seconds = random.uniform(*self.DURATION_RANGES[self.mode])
         deadline = time.time() + duration_seconds
-        previous = self.client.screenshot()
+        previous = surface_screen if surface_screen is not None else self.client.screenshot()
         stable_observations = 0
         scroll_actions = 0
         while time.time() < deadline:
@@ -88,14 +100,21 @@ class FacebookPreparationTask(BaseTask):
             preparation_mode=self.mode,
             duration_seconds=round(duration_seconds, 2),
             scroll_actions=scroll_actions,
-            navigation_skipped=session_already_stable,
+            warming_surface_requested=requested_surface,
+            warming_surface=warm_surface,
+            warming_surface_fallback=fallback_used,
+            session_preflight_navigation_skipped=session_already_stable,
+            warming_surface_navigation_skipped=False,
             stable_observations=stable_observations,
         )
-        self.set_stage("ready", preparation_mode=self.mode)
+        self.set_stage("ready", preparation_mode=self.mode, warming_surface=warm_surface)
         return self.set_outcome(
             "completed",
             preparation_mode=self.mode,
             duration_seconds=round(duration_seconds, 2),
             scroll_actions=scroll_actions,
             stable_observations=stable_observations,
+            warming_surface_requested=requested_surface,
+            warming_surface=warm_surface,
+            warming_surface_fallback=fallback_used,
         )

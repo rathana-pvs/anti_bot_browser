@@ -128,6 +128,7 @@ class FacebookPostTask(BaseTask):
                         True,
                         confidence=item["confidence"],
                     )
+                    self.remember_reversible_click_bounds(button["center"], button["bounds"])
                     return button["center"]
             self.record_locator_telemetry(
                 "enabled_action:" + "|".join(labels),
@@ -534,7 +535,7 @@ class FacebookPostTask(BaseTask):
             before_next = self.client.screenshot()
             self.capture_evidence("before_next", before_next, target=list(next_btn))
             self.log("STEP", f"Clicking the visually confirmed Next action at {next_btn}...")
-            self.human.click(*next_btn)
+            self.click_reversible(next_btn, label="post_next", max_offset_px=5)
             review_result = self.wait_for_states(
                 {ScreenState.POST_ENABLED, ScreenState.ERROR_DIALOG},
                 timeout=30.0,

@@ -12,6 +12,7 @@ import numpy as np
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from engine.screen_state import FacebookStateRecognizer, ScreenState, StateObservation
+from engine.human_input import HumanInput
 from engine.vision import VisionEngine
 from tasks.base_task import BaseTask
 from tasks.facebook_post import FacebookPostTask
@@ -47,6 +48,46 @@ class VisionPrimitiveTests(unittest.TestCase):
         self.assertEqual(VisionEngine.select_ocr_device("auto", False), "cpu")
         self.assertEqual(VisionEngine.select_ocr_device("cuda", False), "cpu")
         self.assertEqual(VisionEngine.select_ocr_device("cpu", True), "cpu")
+
+
+class SafeClickVariationTests(unittest.TestCase):
+    def test_safe_click_point_is_small_and_inside_inset_bounds(self):
+        with unittest.mock.patch(
+            "engine.human_input.random.randint",
+            side_effect=lambda low, high: high,
+        ):
+            point = HumanInput.safe_click_point((100, 200, 300, 260), max_offset_px=6)
+
+        self.assertEqual(point, (206, 236))
+        self.assertGreaterEqual(point[0], 144)
+        self.assertLessEqual(point[0], 256)
+        self.assertGreaterEqual(point[1], 213)
+        self.assertLessEqual(point[1], 247)
+
+    def test_reversible_click_falls_back_to_exact_target_without_bounds(self):
+        task = BaseTask.__new__(BaseTask)
+        task.human = Mock()
+        task.log = Mock()
+
+        actual = task.click_reversible((500, 400), label="unbounded_control")
+
+        self.assertEqual(actual, (500, 400))
+        task.human.click.assert_called_once_with(500, 400)
+
+    def test_reversible_click_records_and_uses_confirmed_bounds(self):
+        task = BaseTask.__new__(BaseTask)
+        task.human = Mock()
+        task.log = Mock()
+        task.remember_reversible_click_bounds((200, 230), (100, 200, 300, 260))
+
+        with unittest.mock.patch(
+            "engine.human_input.random.randint",
+            side_effect=lambda low, high: low,
+        ):
+            actual = task.click_reversible((200, 230), label="bounded_control")
+
+        self.assertEqual(actual, (194, 224))
+        task.human.click.assert_called_once_with(194, 224)
 
 
 class StateRecognizerTests(unittest.TestCase):

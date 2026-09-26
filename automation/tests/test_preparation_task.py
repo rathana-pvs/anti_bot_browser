@@ -8,6 +8,7 @@ import numpy as np
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from tasks.facebook_preparation import FacebookPreparationTask
+from tasks.base_task import BaseTask
 from engine.vision import VisionEngine
 
 
@@ -26,6 +27,14 @@ class FacebookPreparationTaskTests(unittest.TestCase):
         task.verify_logged_in = Mock(return_value=logged_in)
         task.session_check_status = "authenticated" if logged_in else "auth_required"
         task._current_session_is_stable = Mock(return_value=logged_in)
+        task.select_and_open_warming_surface = Mock(
+            return_value=(
+                "news_feed",
+                "news_feed",
+                False,
+                task.client.screenshot.return_value,
+            )
+        )
         task.log = Mock()
         task.set_stage = Mock()
         task.capture_evidence = Mock()
@@ -40,7 +49,11 @@ class FacebookPreparationTaskTests(unittest.TestCase):
         self.assertTrue(result)
         task.verify_logged_in.assert_not_called()
         task.set_stage.assert_any_call("preparing", preparation_mode="brief")
-        task.set_stage.assert_any_call("ready", preparation_mode="brief")
+        task.set_stage.assert_any_call(
+            "ready",
+            preparation_mode="brief",
+            warming_surface="news_feed",
+        )
         task.capture_evidence.assert_called_once()
         task.human.scroll.assert_not_called()
         task.human.key_press.assert_not_called()
@@ -68,6 +81,39 @@ class FacebookPreparationTaskTests(unittest.TestCase):
         task.set_outcome.assert_called_once()
         self.assertEqual(task.set_outcome.call_args.args[0], "skipped_auth_required")
         task.client.screenshot.assert_not_called()
+
+    def test_surface_choice_allows_profile_and_same_choice_on_future_runs(self):
+        task = self.make_task(logged_in=True)
+        task.select_and_open_warming_surface = BaseTask.select_and_open_warming_surface.__get__(task)
+        task.open_warming_surface = Mock(return_value=(True, task.client.screenshot.return_value))
+
+        with patch("tasks.base_task.random.choice", return_value="profile"):
+            first = task.select_and_open_warming_surface()
+            second = task.select_and_open_warming_surface()
+
+        self.assertEqual(first[:3], ("profile", "profile", False))
+        self.assertEqual(second[:3], ("profile", "profile", False))
+        self.assertEqual(task.open_warming_surface.call_args_list, [
+            unittest.mock.call("profile"),
+            unittest.mock.call("profile"),
+        ])
+
+    def test_surface_choice_uses_other_surface_once_as_fallback(self):
+        task = self.make_task(logged_in=True)
+        task.select_and_open_warming_surface = BaseTask.select_and_open_warming_surface.__get__(task)
+        task.open_warming_surface = Mock(side_effect=[
+            (False, task.client.screenshot.return_value),
+            (True, task.client.screenshot.return_value),
+        ])
+
+        with patch("tasks.base_task.random.choice", return_value="news_feed"):
+            result = task.select_and_open_warming_surface()
+
+        self.assertEqual(result[:3], ("news_feed", "profile", True))
+        self.assertEqual(task.open_warming_surface.call_args_list, [
+            unittest.mock.call("news_feed"),
+            unittest.mock.call("profile"),
+        ])
 
 
 if __name__ == "__main__":

@@ -32,6 +32,18 @@ class FacebookWarmingTask(BaseTask):
         if not self.verify_logged_in():
             return self.skip_unverified_session()
 
+        requested_surface, warm_surface, fallback_used, surface_screen = (
+            self.select_and_open_warming_surface()
+        )
+        if warm_surface is None:
+            if getattr(self, "session_check_status", "") == "auth_required":
+                return self.skip_unverified_session()
+            return self.set_outcome(
+                "failed_before_publish",
+                reason="warming_surface_unavailable",
+                warming_surface_requested=requested_surface,
+            )
+
         # Step 2: Human mouse movement across page
         w, h = self.client.get_screen_dimensions()
         for _ in range(random.randint(2, 4)):
@@ -58,5 +70,17 @@ class FacebookWarmingTask(BaseTask):
         self.human.scroll("up", notches=random.randint(3, 6))
         time.sleep(random.uniform(1.0, 2.5))
 
+        self.capture_evidence(
+            "warming_ready",
+            warming_surface_requested=requested_surface,
+            warming_surface=warm_surface,
+            warming_surface_fallback=fallback_used,
+        )
         self.log("SUCCESS", "Facebook warming session completed successfully.")
-        return self.set_outcome("completed", scroll_count=self.scroll_count)
+        return self.set_outcome(
+            "completed",
+            scroll_count=self.scroll_count,
+            warming_surface_requested=requested_surface,
+            warming_surface=warm_surface,
+            warming_surface_fallback=fallback_used,
+        )

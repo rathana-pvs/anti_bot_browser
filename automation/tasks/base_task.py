@@ -1,6 +1,7 @@
 """Base Task Class for Browser Automation."""
 
 import json
+import math
 import os
 import random
 import re
@@ -22,6 +23,11 @@ from engine.telemetry import TelemetryRecorder, timed_telemetry_step
 
 
 class BaseTask:
+    WARMING_SURFACES = {
+        "news_feed": "https://www.facebook.com/",
+        "profile": "https://www.facebook.com/me",
+    }
+
     def __init__(self, profile_id: str):
         self.profile_id = profile_id
         self.client = ContainerClient(profile_id)
@@ -43,6 +49,7 @@ class BaseTask:
         self.session_check_status = "not_checked"
         self.current_stage: str = "pending"
         self.stage_history: list[dict] = []
+        self._reversible_click_bounds: dict[tuple[int, int], tuple[int, int, int, int]] = {}
         self._load_environment_context()
 
     def _load_environment_context(self) -> None:
@@ -146,6 +153,57 @@ class BaseTask:
         except Exception as exc:
             self.log("WARN", f"Could not capture evidence '{label}': {exc}")
             return None
+
+    def remember_reversible_click_bounds(self, target, bounds) -> None:
+        """Associate a stable target with its visually confirmed control bounds."""
+        if not target or not bounds or len(bounds) != 4:
+            return
+        x1, y1, x2, y2 = (int(value) for value in bounds)
+        if x2 <= x1 or y2 <= y1:
+            return
+        registry = getattr(self, "_reversible_click_bounds", None)
+        if registry is None:
+            registry = {}
+            self._reversible_click_bounds = registry
+        registry[(int(target[0]), int(target[1]))] = (x1, y1, x2, y2)
+
+    def click_reversible(
+        self,
+        target: tuple[int, int],
+        *,
+        label: str,
+        bounds: tuple[int, int, int, int] | None = None,
+        max_offset_px: int = 6,
+    ) -> tuple[int, int]:
+        """Click a reversible control with conservative, bounds-aware variation."""
+        target = (int(target[0]), int(target[1]))
+        if bounds is None:
+            registry = getattr(self, "_reversible_click_bounds", {})
+            bounds = registry.get(target)
+            if bounds is None and registry:
+                nearby = [
+                    (math.hypot(point[0] - target[0], point[1] - target[1]), candidate_bounds)
+                    for point, candidate_bounds in registry.items()
+                ]
+                distance, candidate_bounds = min(nearby, key=lambda item: item[0])
+                if distance <= 10.0:
+                    bounds = candidate_bounds
+
+        actual = target
+        if bounds is not None:
+            actual = HumanInput.safe_click_point(bounds, max_offset_px=max_offset_px)
+            self.log(
+                "DEBUG",
+                f"Safe reversible click '{label}': bounds={tuple(bounds)}, "
+                f"detected_target={target}, final_target={actual}",
+            )
+        else:
+            self.log(
+                "DEBUG",
+                f"Exact reversible click '{label}': no confirmed bounds for target={target}",
+            )
+        self.human.click(*actual)
+        return actual
 
     def set_outcome(self, status: str, error: str | None = None, **extra) -> bool:
         """Persist a final outcome and return whether it represents publication."""
@@ -352,7 +410,12 @@ class BaseTask:
             if match:
                 self.log("INFO", f"Detected post-publish prompt ('Not now'). Clicking at {match['center']}...")
                 self.capture_evidence("dismiss_post_prompt", screen, target=list(match["center"]))
-                self.human.click(*match["center"])
+                self.click_reversible(
+                    match["center"],
+                    label="dismiss_post_prompt",
+                    bounds=match.get("bounds"),
+                    max_offset_px=4,
+                )
                 time.sleep(2.0)
                 return True
         except Exception as exc:
@@ -386,6 +449,60 @@ class BaseTask:
             telemetry = getattr(self, "telemetry", None)
             if telemetry is not None:
                 telemetry.record_navigation(url, (time.perf_counter() - started) * 1000.0, outcome)
+
+    def open_warming_surface(self, surface: str, timeout: float = 15.0):
+        """Navigate to and verify one passive Facebook browsing surface."""
+        url = self.WARMING_SURFACES.get(surface)
+        if url is None:
+            raise ValueError(f"Unknown warming surface: {surface}")
+
+        self.log("INFO", f"Opening warming surface: {surface}")
+        self.navigate_to(url, wait_seconds=2.0, check_leave_dialog=False)
+        deadline = time.time() + timeout
+        last_screen = None
+        valid_states = {
+            ScreenState.FEED_READY,
+            ScreenState.COMPOSER_OPEN,
+            ScreenState.MEDIA_READY,
+            ScreenState.POST_ENABLED,
+        }
+        while time.time() < deadline:
+            last_screen = self.client.screenshot()
+            observation = self.recognizer.observe_session_gate(last_screen)
+            if observation.state == ScreenState.UNKNOWN:
+                observation = self.recognizer.observe(last_screen)
+            if observation.state == ScreenState.LOGIN_REQUIRED:
+                self.session_check_status = "auth_required"
+                return False, last_screen
+            if observation.state == ScreenState.ERROR_DIALOG:
+                return False, last_screen
+            if observation.state in valid_states:
+                try:
+                    current_url = self.client.get_current_url()
+                except Exception:
+                    current_url = None
+                if self._is_facebook_url(current_url) and self._has_strong_facebook_visual(observation):
+                    return True, last_screen
+            time.sleep(0.75)
+        return False, last_screen
+
+    def select_and_open_warming_surface(self):
+        """Choose either feed or profile independently, with one safe fallback."""
+        requested = random.choice(tuple(self.WARMING_SURFACES))
+        fallback = next(surface for surface in self.WARMING_SURFACES if surface != requested)
+        for attempt, surface in enumerate((requested, fallback), start=1):
+            ready, screen = self.open_warming_surface(surface)
+            if ready:
+                used_fallback = attempt == 2
+                self.log(
+                    "INFO",
+                    f"Warming surface ready: {surface}"
+                    + (f" (fallback from {requested})" if used_fallback else ""),
+                )
+                return requested, surface, used_fallback, screen
+            if attempt == 1:
+                self.log("WARN", f"Warming surface '{requested}' was not ready; trying '{fallback}' once.")
+        return requested, None, True, screen
 
     def refresh_page(self, wait_seconds: float = 2.0) -> None:
         """
@@ -821,7 +938,12 @@ class BaseTask:
             action_btn = self._find_first_comment_action(screen)
             if action_btn:
                 self.log("INFO", f"Clicking 'Comment' action at {action_btn['center']} to expand input...")
-                self.human.click(*action_btn["center"])
+                self.click_reversible(
+                    action_btn["center"],
+                    label="expand_first_post_comment",
+                    bounds=action_btn.get("bounds"),
+                    max_offset_px=4,
+                )
                 time.sleep(1.5)
                 screen = self.client.screenshot()
                 target = self._find_first_comment_input(screen)

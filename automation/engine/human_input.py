@@ -32,6 +32,41 @@ class HumanInput:
     def __init__(self, client: ContainerClient):
         self.client = client
 
+    @staticmethod
+    def safe_click_point(
+        bounds: tuple[int, int, int, int],
+        max_offset_px: int = 6,
+        inset_ratio: float = 0.22,
+    ) -> tuple[int, int]:
+        """Choose a small, center-biased point that remains safely inside bounds.
+
+        This is intended for large, reversible controls whose complete bounds were
+        visually confirmed. Small controls naturally collapse back toward their
+        center because the inset margin takes priority over variation.
+        """
+        x1, y1, x2, y2 = (int(value) for value in bounds)
+        left, right = sorted((x1, x2))
+        top, bottom = sorted((y1, y2))
+        center_x = (left + right) // 2
+        center_y = (top + bottom) // 2
+        width = right - left
+        height = bottom - top
+        if width <= 2 or height <= 2 or max_offset_px <= 0:
+            return center_x, center_y
+
+        inset_x = min(max(2, int(round(width * inset_ratio))), max(0, width // 2 - 1))
+        inset_y = min(max(2, int(round(height * inset_ratio))), max(0, height // 2 - 1))
+        safe_left = left + inset_x
+        safe_right = right - inset_x
+        safe_top = top + inset_y
+        safe_bottom = bottom - inset_y
+
+        offset_x = min(max_offset_px, center_x - safe_left, safe_right - center_x)
+        offset_y = min(max_offset_px, center_y - safe_top, safe_bottom - center_y)
+        target_x = center_x + random.randint(-max(0, offset_x), max(0, offset_x))
+        target_y = center_y + random.randint(-max(0, offset_y), max(0, offset_y))
+        return target_x, target_y
+
     def move_to(self, target_x: int, target_y: int, duration_sec: float | None = None) -> None:
         """
         Move the mouse cursor smoothly from current position to (target_x, target_y)

@@ -16,6 +16,9 @@ class FacebookWarmingTaskTests(unittest.TestCase):
         task.human = Mock()
         task.verify_logged_in = Mock(return_value=True)
         task.session_check_status = "authenticated"
+        task.select_and_open_warming_surface = Mock(
+            return_value=("profile", "profile", False, None)
+        )
         task.capture_evidence = Mock()
         task.log = Mock()
         task.set_stage = Mock()
@@ -30,7 +33,13 @@ class FacebookWarmingTaskTests(unittest.TestCase):
             self.assertTrue(task.run())
 
         task.set_stage.assert_called_once_with("warming", scroll_count=2)
-        task.set_outcome.assert_called_once_with("completed", scroll_count=2)
+        task.set_outcome.assert_called_once_with(
+            "completed",
+            scroll_count=2,
+            warming_surface_requested="profile",
+            warming_surface="profile",
+            warming_surface_fallback=False,
+        )
         task.verify_logged_in.assert_called_once_with()
         self.assertEqual(task.human.scroll.call_count, 3)
 
