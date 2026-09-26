@@ -1281,6 +1281,7 @@ class BaseTask:
         caption: str | None = None,
         media_type: str = "post",
         max_scans: int = 4,
+        time_budget_seconds: float | None = None,
     ) -> dict:
         """
         Navigate to profile, locate newly created post card via multi-signal correlation
@@ -1292,6 +1293,11 @@ class BaseTask:
             "post_url_verified_at": None,
             "post_match_confidence": 0.0,
         }
+        deadline = (
+            time.monotonic() + max(0.0, time_budget_seconds)
+            if time_budget_seconds is not None
+            else None
+        )
 
         self.log("STEP", "Navigating to profile to correlate published post and extract permalink...")
         try:
@@ -1308,6 +1314,9 @@ class BaseTask:
             search_tokens = set(all_tokens[:8])
 
         for scan in range(1, max_scans + 1):
+            if deadline is not None and time.monotonic() >= deadline:
+                self.log("INFO", "Permalink correlation stopped at its time budget.")
+                break
             screen = self.client.screenshot()
             ocr_items = self.vision.read_text(screen, min_confidence=0.18)
 
@@ -1427,11 +1436,66 @@ class BaseTask:
 
             # If not confident or timestamp not clickable, scroll down and scan next cards
             self.human.scroll("down", notches=3)
-            time.sleep(1.2)
+            if deadline is None:
+                time.sleep(1.2)
+            else:
+                remaining = max(0.0, deadline - time.monotonic())
+                if remaining <= 0:
+                    break
+                time.sleep(min(1.2, remaining))
 
         self.log("WARN", "Permalink correlation was ambiguous or not found; leaving post_url null.")
         self.capture_evidence("permalink_correlation_ambiguous")
         return empty_res
+
+    def recover_missing_permalink(
+        self,
+        permalink_info: dict | None,
+        *,
+        caption: str | None,
+        media_type: str,
+        time_budget_seconds: float = 12.0,
+    ) -> dict:
+        """Run one short post-comment recovery pass only when the URL is missing."""
+        result = dict(permalink_info or {})
+        result.setdefault("post_url", None)
+        result.setdefault("post_url_verified_at", None)
+        result.setdefault("post_match_confidence", 0.0)
+        if result.get("post_url"):
+            result.update({
+                "permalink_status": "captured",
+                "permalink_missing": False,
+                "permalink_recovery_attempted": False,
+            })
+            return result
+
+        self.log(
+            "INFO",
+            f"Initial permalink was unavailable; starting one bounded recovery pass "
+            f"after comment handling (budget={time_budget_seconds:.0f}s).",
+        )
+        recovered = self.correlate_and_extract_permalink(
+            caption=caption,
+            media_type=media_type,
+            max_scans=2,
+            time_budget_seconds=time_budget_seconds,
+        )
+        if recovered.get("post_url"):
+            result.update(recovered)
+            result.update({
+                "permalink_status": "recovered",
+                "permalink_missing": False,
+                "permalink_recovery_attempted": True,
+            })
+            return result
+
+        result.update({
+            "permalink_status": "missing",
+            "permalink_missing": True,
+            "permalink_recovery_attempted": True,
+        })
+        self.log("WARN", "Permalink recovery ended without a confident URL; publication remains successful.")
+        return result
 
     def run_with_retry(self, max_retries: int = 2) -> bool:
         """Run task with retry logic and exponential backoff."""

@@ -56,6 +56,11 @@ export interface QueueExecutionItem {
   preparation_status?: 'not_requested' | 'pending' | 'ready' | 'failed' | 'needs_review' | string;
   preparation_completed_at?: string | null;
   preparation_evidence_dir?: string | null;
+  warming_surface_requested?: 'news_feed' | 'profile' | null;
+  warming_surface?: 'news_feed' | 'profile' | null;
+  warming_surface_fallback?: boolean;
+  warming_duration_seconds?: number | null;
+  warming_scroll_actions?: number | null;
   scheduler_lease?: {
     lease_id: string;
     owner_id?: string;
@@ -75,7 +80,9 @@ export interface QueueExecutionItem {
   post_url?: string | null;
   post_url_verified_at?: string | null;
   post_match_confidence?: number | null;
-  permalink_status?: 'verified' | 'unresolved' | string | null;
+  permalink_status?: 'verified' | 'captured' | 'recovered' | 'missing_after_recovery' | 'unresolved' | 'rejected_invalid' | string | null;
+  permalink_recovery_attempted?: boolean;
+  permalink_missing?: boolean;
   permalink_source?: string | null;
   permalink_note?: string | null;
   first_comment_status?: 'submitted_verified' | 'submitted_unverified' | 'submission_pending' | 'failed_input_not_found' | 'not_requested' | string | null;
@@ -84,6 +91,10 @@ export interface QueueExecutionItem {
   first_comment_evidence_dir?: string | null;
   first_comment_source?: string | null;
   first_comment_note?: string | null;
+  first_comment_retry_count?: number;
+  comment_retry_status?: 'running' | 'completed_verified' | 'failed_before_submission' | 'needs_review' | 'interrupted' | string | null;
+  comment_retry_started_at?: string | null;
+  comment_retry_ended_at?: string | null;
   evidence_dir?: string | null;
   telemetry?: {
     schema_version: string;

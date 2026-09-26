@@ -18,10 +18,14 @@ import {
   testProxyPing,
 } from './proxyManager.js';
 import {
+  applyAutomationPermalinkResult,
+  applyCommentRetryResult,
   applyCommentEvidenceBackfill,
+  applyWarmingResult,
   applyVerifiedPermalinkBackfill,
   batchContainsUnresolvedExecution,
   classifyInterruptedExecution,
+  canRetryFirstComment,
   isExecutionDeletionLocked,
   validateFacebookPermalink,
 } from './queueSafety.js';
@@ -1414,6 +1418,27 @@ function recoverStaleQueueExecutions(reason = 'expired_scheduler_lease') {
     const queue = loadPostingQueue();
     let modified = false;
     const liveLeaseIds = new Set(activeInMemorySchedulerLeases().map((lease) => lease.lease_id));
+    const liveCommentRetryIds = new Set(
+      [...activeAutomationTasks.values()]
+        .filter((record) => isTaskProcessActive(record) && record.comment_retry === true)
+        .map((record) => record.queue_execution_id),
+    );
+    for (const batch of queue.daily_batches || []) {
+      for (const post of batch.posts || []) {
+        for (const execution of post.executions || []) {
+          if (
+            execution.comment_retry_status === 'running'
+            && !liveCommentRetryIds.has(execution.execution_id)
+          ) {
+            execution.comment_retry_status = 'interrupted';
+            execution.comment_retry_ended_at = new Date().toISOString();
+            execution.first_comment_status = 'submission_pending';
+            execution.first_comment_note = 'Comment-only retry was interrupted; no automatic retry was attempted.';
+            modified = true;
+          }
+        }
+      }
+    }
     for (const execItem of findStaleRunningExecutions(queue, liveLeaseIds)) {
       const staleLease = execItem.scheduler_lease || null;
       applyInterruptedExecutionRecovery(execItem);
@@ -1954,6 +1979,7 @@ async function executeQueuePreparation(executionId) {
     taskRecord.lifecycle_active = false;
     taskRecord.status = 'failed';
     taskRecord.error = error.message;
+    taskRecord.scheduler_lease = null;
     taskRecord.ended_at = new Date().toISOString();
     const queue = loadPostingQueue();
     const match = findQueueExecution(queue, executionId);
@@ -2052,6 +2078,7 @@ async function executeQueuePreparation(executionId) {
       }
       execution.preparation_evidence_dir = taskRecord.result?.evidence_dir || null;
       execution.preparation_telemetry = taskRecord.result?.telemetry || null;
+      applyWarmingResult(execution, taskRecord.result);
       execution.stage_history = Array.isArray(taskRecord.result?.stage_history)
         ? taskRecord.result.stage_history
         : execution.stage_history;
@@ -2256,6 +2283,7 @@ async function executeQueueItem(executionId, schedulerKind = 'publisher') {
           execInDb.status = 'completed';
           execInDb.stage = 'completed';
           execInDb.error = null;
+          applyWarmingResult(execInDb, taskRecord.result);
         } else if (reportedStatus?.startsWith('skipped_')) {
           execInDb.status = reportedStatus;
           execInDb.stage = reportedStatus;
@@ -2264,13 +2292,7 @@ async function executeQueueItem(executionId, schedulerKind = 'publisher') {
           execInDb.status = 'published';
           execInDb.published_at = new Date().toISOString();
           execInDb.error = null;
-          if (taskRecord.result?.post_url) {
-            execInDb.post_url = taskRecord.result.post_url;
-            execInDb.post_url_verified_at = taskRecord.result.post_url_verified_at || new Date().toISOString();
-            execInDb.post_match_confidence = taskRecord.result.post_match_confidence || 1.0;
-            execInDb.permalink_status = 'verified';
-            execInDb.permalink_source = 'automation_correlation';
-          }
+          applyAutomationPermalinkResult(execInDb, taskRecord.result, taskType);
           if (taskRecord.result?.first_comment) {
             execInDb.first_comment_status = taskRecord.result.first_comment;
             execInDb.first_comment_method = taskRecord.result.first_comment_method || null;
@@ -2585,6 +2607,242 @@ app.post('/api/queue/backfill-comment/:execution_id', (req, res) => {
     });
   } catch (err) {
     return res.status(500).json({ error: err.message });
+  }
+});
+
+async function executeQueueCommentRetry(executionId, startAdmissionClaimed = false) {
+  const queue = loadPostingQueue();
+  const match = findQueueExecution(queue, executionId);
+  if (!match) throw new Error('Execution not found');
+
+  const commentText = match.execution.first_comment || match.post?.first_comment || '';
+  if (!canRetryFirstComment(match.execution, commentText)) {
+    throw new Error('Comment retry is allowed only after a definite pre-submission input failure');
+  }
+  const profileId = match.execution.profile_id;
+  const existing = activeAutomationTasks.get(profileId);
+  if (isTaskProcessActive(existing)) {
+    throw new Error(`Automation is already running for profile "${profileId}"`);
+  }
+  const slotCheck = canAcquireSchedulerSlot(
+    queue,
+    activeInMemorySchedulerLeases(),
+    'publisher',
+    profileId,
+    SCHEDULER_CONFIG,
+  );
+  if (!slotCheck.allowed) {
+    const error = new Error(`Scheduler capacity unavailable: ${slotCheck.reason}`);
+    error.statusCode = 409;
+    throw error;
+  }
+  if (
+    getContainerStatus(profileId) !== 'running'
+    && countRunningProfileContainers() >= SCHEDULER_CONFIG.max_active_profile_containers
+  ) {
+    const error = new Error('The active profile-container limit has been reached.');
+    error.statusCode = 409;
+    throw error;
+  }
+  if (getContainerStatus(profileId) !== 'running' && !startAdmissionClaimed) {
+    const admission = claimContainerStartAdmission();
+    if (!admission.allowed) {
+      const error = new Error(`Container start delayed: ${admission.reason}.`);
+      error.statusCode = 409;
+      throw error;
+    }
+  }
+
+  const nowMs = Date.now();
+  const lease = {
+    lease_id: randomUUID(),
+    owner_id: MANAGER_INSTANCE_ID,
+    kind: 'publisher',
+    profile_id: profileId,
+    claimed_at: new Date(nowMs).toISOString(),
+    heartbeat_at: new Date(nowMs).toISOString(),
+    expires_at: new Date(nowMs + SCHEDULER_CONFIG.lease_ttl_ms).toISOString(),
+  };
+  match.execution.comment_retry_status = 'running';
+  match.execution.comment_retry_started_at = lease.claimed_at;
+  match.execution.first_comment_note = null;
+  savePostingQueue(queue);
+
+  const taskRecord = {
+    profile_id: profileId,
+    task: 'comment',
+    comment_retry: true,
+    queue_execution_id: executionId,
+    status: 'running',
+    started_at: lease.claimed_at,
+    ended_at: null,
+    logs: [],
+    result: null,
+    error: null,
+    process: null,
+    scheduler_lease: lease,
+    last_activity_at: lease.claimed_at,
+    lifecycle_active: true,
+  };
+  activeAutomationTasks.set(profileId, taskRecord);
+
+  try {
+    await ensureProfileContainerReady(profileId);
+    taskRecord.lifecycle_active = false;
+  } catch (error) {
+    taskRecord.lifecycle_active = false;
+    taskRecord.status = 'failed';
+    taskRecord.error = error.message;
+    const failedQueue = loadPostingQueue();
+    const failedMatch = findQueueExecution(failedQueue, executionId);
+    if (failedMatch) {
+      failedMatch.execution.comment_retry_status = 'failed_to_start';
+      failedMatch.execution.comment_retry_ended_at = new Date().toISOString();
+      failedMatch.execution.first_comment_note = `Comment retry could not start: ${error.message}`;
+      savePostingQueue(failedQueue);
+    }
+    try { await stopProfileContainerAfterReport(profileId); } catch (_) {}
+    throw error;
+  }
+
+  const pythonBin = path.join(ROOT_DIR, 'automation', 'venv', 'bin', 'python');
+  const runnerScript = path.join(ROOT_DIR, 'automation', 'runner.py');
+  const args = [
+    '-u', runnerScript,
+    '--profile', profileId,
+    '--task', 'comment',
+    '--comment-link', commentText,
+  ];
+  if (match.execution.post_url) args.push('--post-url', match.execution.post_url);
+
+  const proc = spawn(pythonBin, args, { cwd: ROOT_DIR, env: automationWorkerEnv() });
+  taskRecord.process = proc;
+  let stdoutBuffer = '';
+  proc.stdout.on('data', (chunk) => {
+    taskRecord.last_activity_at = new Date().toISOString();
+    stdoutBuffer += chunk.toString();
+    const lines = stdoutBuffer.split('\n');
+    stdoutBuffer = lines.pop();
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+        try {
+          const parsed = JSON.parse(trimmed);
+          if (parsed && typeof parsed === 'object' && 'status' in parsed) {
+            taskRecord.result = parsed;
+            continue;
+          }
+        } catch (_) {}
+      }
+      taskRecord.logs.push(normalizeStoredLog(trimmed, profileId));
+    }
+  });
+  proc.stderr.on('data', (chunk) => {
+    taskRecord.last_activity_at = new Date().toISOString();
+    for (const line of chunk.toString().split('\n')) {
+      if (line.trim()) taskRecord.logs.push(normalizeStoredLog(`[STDERR] ${line.trim()}`, profileId));
+    }
+  });
+
+  return new Promise((resolve) => {
+    proc.on('close', async (code) => {
+      if (stdoutBuffer.trim()) {
+        try {
+          const parsed = JSON.parse(stdoutBuffer.trim());
+          if (parsed && typeof parsed === 'object') taskRecord.result = parsed;
+        } catch (_) {
+          taskRecord.logs.push(normalizeStoredLog(stdoutBuffer.trim(), profileId));
+        }
+      }
+      const endedAt = new Date().toISOString();
+      taskRecord.ended_at = endedAt;
+      taskRecord.process = null;
+      taskRecord.scheduler_lease = null;
+      taskRecord.status = code === 0 ? 'completed' : (taskRecord.result?.status || 'failed');
+
+      const updatedQueue = loadPostingQueue();
+      const updatedMatch = findQueueExecution(updatedQueue, executionId);
+      if (updatedMatch) {
+        applyCommentRetryResult(updatedMatch.execution, taskRecord.result || {}, endedAt);
+        updatedMatch.execution.first_comment_note = code === 0
+          ? null
+          : (taskRecord.result?.error || `Comment retry exited with code ${code}`);
+        updatedMatch.execution.logs = [
+          ...(updatedMatch.execution.logs || []),
+          ...taskRecord.logs.map((entry) => `[Comment retry] ${entry.message}`),
+        ].slice(-500);
+        savePostingQueue(updatedQueue);
+      }
+      try { await stopProfileContainerAfterReport(profileId); } catch (_) {}
+      resolve({ success: code === 0, status: updatedMatch?.execution?.first_comment_status || 'failed' });
+    });
+    proc.on('error', async (error) => {
+      taskRecord.status = 'failed';
+      taskRecord.error = error.message;
+      taskRecord.process = null;
+      taskRecord.scheduler_lease = null;
+      const failedQueue = loadPostingQueue();
+      const failedMatch = findQueueExecution(failedQueue, executionId);
+      if (failedMatch) {
+        failedMatch.execution.comment_retry_status = 'failed_to_start';
+        failedMatch.execution.comment_retry_ended_at = new Date().toISOString();
+        failedMatch.execution.first_comment_note = error.message;
+        savePostingQueue(failedQueue);
+      }
+      try { await stopProfileContainerAfterReport(profileId); } catch (_) {}
+      resolve({ success: false, status: 'failed_to_start', error: error.message });
+    });
+  });
+}
+
+// POST /api/queue/retry-comment/:execution_id
+app.post('/api/queue/retry-comment/:execution_id', (req, res) => {
+  try {
+    const { execution_id } = req.params;
+    const queue = loadPostingQueue();
+    const match = findQueueExecution(queue, execution_id);
+    if (!match) return res.status(404).json({ error: 'Execution not found' });
+    const commentText = match.execution.first_comment || match.post?.first_comment || '';
+    if (!canRetryFirstComment(match.execution, commentText)) {
+      return res.status(400).json({
+        error: 'Comment retry is allowed only after a definite pre-submission input failure.',
+      });
+    }
+    const profileId = match.execution.profile_id;
+    if (isTaskProcessActive(activeAutomationTasks.get(profileId))) {
+      return res.status(409).json({ error: `Automation is already running for profile "${profileId}"` });
+    }
+    const slotCheck = canAcquireSchedulerSlot(
+      queue,
+      activeInMemorySchedulerLeases(),
+      'publisher',
+      profileId,
+      SCHEDULER_CONFIG,
+    );
+    if (!slotCheck.allowed) {
+      return res.status(409).json({ error: `Scheduler capacity unavailable: ${slotCheck.reason}` });
+    }
+    if (
+      getContainerStatus(profileId) !== 'running'
+      && countRunningProfileContainers() >= SCHEDULER_CONFIG.max_active_profile_containers
+    ) {
+      return res.status(409).json({ error: 'The active profile-container limit has been reached.' });
+    }
+    let startAdmissionClaimed = false;
+    if (getContainerStatus(profileId) !== 'running') {
+      const admission = claimContainerStartAdmission();
+      if (!admission.allowed) {
+        return res.status(409).json({ error: `Container start delayed: ${admission.reason}.` });
+      }
+      startAdmissionClaimed = true;
+    }
+    executeQueueCommentRetry(execution_id, startAdmissionClaimed).catch((error) => {
+      console.error(`Comment retry failed for ${execution_id}:`, error);
+    });
+    return res.json({ success: true, message: 'Comment-only retry started' });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
   }
 });
 

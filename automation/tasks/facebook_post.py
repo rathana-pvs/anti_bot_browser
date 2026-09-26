@@ -627,6 +627,11 @@ class FacebookPostTask(BaseTask):
                 self.comment_link,
                 post_url=permalink_info.get("post_url"),
             )
+            permalink_info = self.recover_missing_permalink(
+                permalink_info,
+                caption=self.caption,
+                media_type="photo" if self.media_path else "post",
+            )
             return self.set_outcome(
                 "published",
                 None,
@@ -635,5 +640,10 @@ class FacebookPostTask(BaseTask):
                 **permalink_info,
             )
 
+        permalink_info = self.recover_missing_permalink(
+            permalink_info,
+            caption=self.caption,
+            media_type="photo" if self.media_path else "post",
+        )
         self.log("SUCCESS", "Facebook publication was visually confirmed.")
         return self.set_outcome("published", None, **permalink_info)

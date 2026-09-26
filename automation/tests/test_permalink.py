@@ -158,6 +158,78 @@ class PermalinkCorrelationTests(unittest.TestCase):
         self.assertIsNone(result["post_url"])
         self.task.human.click.assert_not_called()
 
+    def test_recovery_is_skipped_when_initial_permalink_exists(self):
+        initial = {
+            "post_url": "https://www.facebook.com/user/posts/pfbid123",
+            "post_url_verified_at": "2026-09-26T00:00:00+00:00",
+            "post_match_confidence": 0.9,
+        }
+        self.task.correlate_and_extract_permalink = Mock()
+
+        result = self.task.recover_missing_permalink(
+            initial,
+            caption="caption",
+            media_type="post",
+        )
+
+        self.assertEqual(result["permalink_status"], "captured")
+        self.assertFalse(result["permalink_recovery_attempted"])
+        self.task.correlate_and_extract_permalink.assert_not_called()
+
+    def test_missing_permalink_runs_one_bounded_recovery_pass(self):
+        self.task.correlate_and_extract_permalink = Mock(return_value={
+            "post_url": "https://www.facebook.com/user/posts/pfbidRecovered",
+            "post_url_verified_at": "2026-09-26T00:01:00+00:00",
+            "post_match_confidence": 0.8,
+        })
+
+        result = self.task.recover_missing_permalink(
+            {"post_url": None, "post_url_verified_at": None, "post_match_confidence": 0.0},
+            caption="caption",
+            media_type="post",
+        )
+
+        self.assertEqual(result["permalink_status"], "recovered")
+        self.assertFalse(result["permalink_missing"])
+        self.task.correlate_and_extract_permalink.assert_called_once_with(
+            caption="caption",
+            media_type="post",
+            max_scans=2,
+            time_budget_seconds=12.0,
+        )
+
+    def test_failed_recovery_keeps_publication_success_metadata(self):
+        self.task.correlate_and_extract_permalink = Mock(return_value={
+            "post_url": None,
+            "post_url_verified_at": None,
+            "post_match_confidence": 0.0,
+        })
+
+        result = self.task.recover_missing_permalink(
+            None,
+            caption="caption",
+            media_type="reel",
+        )
+
+        self.assertEqual(result["permalink_status"], "missing")
+        self.assertTrue(result["permalink_missing"])
+        self.assertTrue(result["permalink_recovery_attempted"])
+
+    @patch("tasks.base_task.time.sleep", return_value=None)
+    def test_correlation_time_budget_stops_before_an_extra_scan(self, _):
+        self.task.navigate_to = Mock()
+        with patch("tasks.base_task.time.monotonic", side_effect=[0.0, 13.0]):
+            result = self.task.correlate_and_extract_permalink(
+                caption="caption",
+                media_type="post",
+                max_scans=2,
+                time_budget_seconds=12.0,
+            )
+
+        self.assertIsNone(result["post_url"])
+        self.task.vision.read_text.assert_not_called()
+        self.task.human.scroll.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

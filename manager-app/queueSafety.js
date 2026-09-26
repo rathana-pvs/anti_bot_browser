@@ -133,6 +133,54 @@ export function applyVerifiedPermalinkBackfill(execution, rawUrl, postType = 'po
   return execution;
 }
 
+export function applyAutomationPermalinkResult(
+  execution,
+  result,
+  postType = 'post',
+  recordedAt = new Date().toISOString(),
+) {
+  if (!execution || !result || typeof result !== 'object') return execution;
+
+  const recoveryAttempted = result.permalink_recovery_attempted === true;
+  execution.permalink_recovery_attempted = recoveryAttempted;
+
+  if (result.post_url) {
+    const validatedUrl = validateFacebookPermalink(result.post_url, postType);
+    if (!validatedUrl) {
+      execution.permalink_status = 'rejected_invalid';
+      execution.permalink_missing = true;
+      execution.permalink_source = recoveryAttempted ? 'automation_recovery' : 'automation_correlation';
+      execution.permalink_note = 'Automation returned a URL that failed manager-side Facebook permalink validation.';
+      return execution;
+    }
+
+    const numericConfidence = Number(result.post_match_confidence);
+    execution.post_url = validatedUrl;
+    execution.post_url_verified_at = result.post_url_verified_at || recordedAt;
+    execution.post_match_confidence = Number.isFinite(numericConfidence)
+      ? Math.max(0, Math.min(1, numericConfidence))
+      : null;
+    execution.permalink_status = result.permalink_status === 'recovered' ? 'recovered' : 'captured';
+    execution.permalink_missing = false;
+    execution.permalink_source = execution.permalink_status === 'recovered'
+      ? 'automation_recovery'
+      : 'automation_correlation';
+    execution.permalink_note = null;
+    return execution;
+  }
+
+  // Never erase a URL that was already validated and attached to this execution.
+  if (execution.post_url) return execution;
+
+  execution.permalink_missing = true;
+  execution.permalink_status = recoveryAttempted ? 'missing_after_recovery' : 'unresolved';
+  execution.permalink_source = recoveryAttempted ? 'automation_recovery' : 'automation_correlation';
+  execution.permalink_note = recoveryAttempted
+    ? 'No confident permalink was found within the bounded recovery pass.'
+    : 'No confident permalink was returned by automation.';
+  return execution;
+}
+
 export function applyCommentEvidenceBackfill(execution, status, metadata = {}) {
   const allowedStatuses = new Set(['submitted_verified', 'submitted_unverified', 'submission_pending']);
   if (!execution || execution.status !== 'published') {
@@ -159,5 +207,68 @@ export function applyCommentEvidenceBackfill(execution, status, metadata = {}) {
     timestamp: recordedAt,
     reason: `comment_evidence_${status}`,
   });
+  return execution;
+}
+
+export function canRetryFirstComment(execution, commentText) {
+  const safeRetryStates = new Set([null, undefined, 'failed_to_start', 'failed_before_submission']);
+  return Boolean(
+    execution?.status === 'published'
+    && execution?.first_comment_status === 'failed_input_not_found'
+    && typeof commentText === 'string'
+    && commentText.trim()
+    && safeRetryStates.has(execution?.comment_retry_status)
+  );
+}
+
+export function applyCommentRetryResult(execution, result, recordedAt = new Date().toISOString()) {
+  if (!execution || execution.status !== 'published') {
+    throw new Error('Comment retry results can be attached only to published executions');
+  }
+  const reported = result?.first_comment;
+  const allowed = new Set([
+    'submitted_verified',
+    'submitted_unverified',
+    'submission_pending',
+    'failed_input_not_found',
+  ]);
+  const status = allowed.has(reported)
+    ? reported
+    : (result?.error === 'comment_input_not_found' ? 'failed_input_not_found' : 'submission_pending');
+
+  execution.first_comment_status = status;
+  execution.first_comment_method = result?.first_comment_method || null;
+  execution.first_comment_evidence_dir = result?.evidence_dir || null;
+  execution.first_comment_source = 'comment_only_retry';
+  execution.first_comment_retry_count = (execution.first_comment_retry_count || 0) + 1;
+  execution.comment_retry_ended_at = recordedAt;
+  execution.comment_retry_status = status === 'submitted_verified'
+    ? 'completed_verified'
+    : status === 'failed_input_not_found'
+      ? 'failed_before_submission'
+      : 'needs_review';
+  if (status === 'submitted_verified') execution.first_comment_verified_at = recordedAt;
+  return execution;
+}
+
+export function applyWarmingResult(execution, result) {
+  if (!execution || !result || typeof result !== 'object') return execution;
+  const allowedSurfaces = new Set(['news_feed', 'profile']);
+  const requested = allowedSurfaces.has(result.warming_surface_requested)
+    ? result.warming_surface_requested
+    : null;
+  const actual = allowedSurfaces.has(result.warming_surface)
+    ? result.warming_surface
+    : null;
+  const duration = Number(result.duration_seconds);
+  const scrollActions = Number(result.scroll_actions ?? result.scroll_count);
+
+  execution.warming_surface_requested = requested;
+  execution.warming_surface = actual;
+  execution.warming_surface_fallback = result.warming_surface_fallback === true;
+  execution.warming_duration_seconds = Number.isFinite(duration) && duration >= 0 ? duration : null;
+  execution.warming_scroll_actions = Number.isFinite(scrollActions) && scrollActions >= 0
+    ? Math.trunc(scrollActions)
+    : null;
   return execution;
 }

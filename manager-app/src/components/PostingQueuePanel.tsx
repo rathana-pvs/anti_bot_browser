@@ -6,6 +6,7 @@ import {
   fetchQueue,
   deleteBatch,
   deleteExecution,
+  retryExecutionComment,
   runExecutionNow,
   resolveUncertainExecution,
 } from '../services/api';
@@ -29,6 +30,7 @@ import {
   Check,
   Eye,
   Search,
+  MessageCircle,
 } from 'lucide-react';
 
 interface PostingQueuePanelProps {
@@ -52,6 +54,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [actionError, setActionError] = useState<string | null>(null);
   const [lightboxMedia, setLightboxMedia] = useState<LightboxMedia | null>(null);
+  const [retryingCommentId, setRetryingCommentId] = useState<string | null>(null);
 
   // Phase 0 Safety Gate: Review & Resolve Uncertain State
   const [resolvingItem, setResolvingItem] = useState<QueueExecutionItem | null>(null);
@@ -144,6 +147,20 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
       await loadQueue();
     } catch (err: any) {
       setActionError(err.message || 'Failed to attach verified permalink');
+    }
+  };
+
+  const handleCommentRetry = async (item: QueueExecutionItem) => {
+    if (!confirm('Retry only the first comment? The published post will not be recreated.')) return;
+    setRetryingCommentId(item.execution_id);
+    setActionError(null);
+    try {
+      await retryExecutionComment(item.execution_id);
+      await loadQueue();
+    } catch (err: any) {
+      setActionError(err.message || 'Failed to start comment-only retry');
+    } finally {
+      setRetryingCommentId(null);
     }
   };
 
@@ -670,7 +687,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
 
                     <div className="text-[11px] text-zinc-400 line-clamp-1 max-w-[380px] mt-0.5">
                       {item.post_type === 'warming'
-                        ? `${item.scrolls || 4} feed scrolls`
+                        ? `${item.warming_surface === 'profile' ? 'Profile' : 'News Feed'} · ${item.warming_scroll_actions ?? item.scrolls ?? 4} scrolls`
                         : (item.spun_caption || item.base_caption || 'No caption')}
                     </div>
 
@@ -685,6 +702,83 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                 {/* Right group: Badges & Action Buttons */}
                 <div className="flex items-center gap-2 sm:gap-2.5">
                   {getStatusBadge(item.status, item.execution_id)}
+
+                  {item.warming_surface && (
+                    <span
+                      className={`px-2 py-0.5 rounded text-[10px] font-semibold border flex items-center gap-1 ${
+                        item.warming_surface_fallback
+                          ? 'bg-amber-950 text-amber-300 border-amber-800/80'
+                          : 'bg-violet-950 text-violet-300 border-violet-800/80'
+                      }`}
+                      title={[
+                        `Requested: ${item.warming_surface_requested === 'profile' ? 'Profile' : 'News Feed'}`,
+                        `Used: ${item.warming_surface === 'profile' ? 'Profile' : 'News Feed'}`,
+                        item.warming_surface_fallback ? 'Fallback was required' : 'Primary selection loaded successfully',
+                        item.warming_duration_seconds != null ? `Duration: ${item.warming_duration_seconds.toFixed(1)} seconds` : null,
+                        item.warming_scroll_actions != null ? `Scroll actions: ${item.warming_scroll_actions}` : null,
+                      ].filter(Boolean).join(' · ')}
+                    >
+                      <Flame className="w-3 h-3" />
+                      {item.warming_surface === 'profile' ? 'Profile warm-up' : 'Feed warm-up'}
+                      {item.warming_surface_fallback ? ' · fallback' : ''}
+                    </span>
+                  )}
+
+                  {item.first_comment_status === 'submitted_verified' && (
+                    <span
+                      className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-950 text-emerald-300 border border-emerald-800/80 flex items-center gap-1"
+                      title="The first comment was visibly verified after submission."
+                    >
+                      <MessageCircle className="w-3 h-3 text-emerald-400" /> Comment verified
+                    </span>
+                  )}
+
+                  {['submitted_unverified', 'submission_pending'].includes(item.first_comment_status || '') && (
+                    <span
+                      className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-950 text-amber-300 border border-amber-800/80 flex items-center gap-1"
+                      title="A comment submission may have occurred. Review it before taking any further action."
+                    >
+                      <AlertTriangle className="w-3 h-3 text-amber-400" />
+                      {item.first_comment_status === 'submission_pending' ? 'Comment pending' : 'Review comment'}
+                    </span>
+                  )}
+
+                  {item.first_comment_status === 'failed_input_not_found'
+                    && [null, undefined, 'failed_to_start', 'failed_before_submission', 'running'].includes(item.comment_retry_status)
+                    && (
+                    <button
+                      type="button"
+                      onClick={() => handleCommentRetry(item)}
+                      disabled={item.comment_retry_status === 'running' || retryingCommentId === item.execution_id}
+                      className="px-2 py-0.5 rounded text-[10px] font-semibold bg-red-950 hover:bg-red-900 disabled:opacity-60 disabled:cursor-not-allowed text-red-300 border border-red-800/80 flex items-center gap-1 transition-all"
+                      title="No comment was submitted because the input was not found. Retry the comment only."
+                    >
+                      {item.comment_retry_status === 'running' || retryingCommentId === item.execution_id
+                        ? <Loader2 className="w-3 h-3 animate-spin" />
+                        : <MessageCircle className="w-3 h-3" />}
+                      {item.comment_retry_status === 'running' ? 'Retrying comment' : 'Retry comment'}
+                    </button>
+                  )}
+
+                  {item.post_url && item.permalink_status === 'recovered' && (
+                    <span
+                      className="px-2 py-0.5 rounded text-[10px] font-semibold bg-cyan-950 text-cyan-300 border border-cyan-800/80 flex items-center gap-1"
+                      title="The initial permalink check missed this URL; it was captured by the bounded recovery pass."
+                    >
+                      <Search className="w-3 h-3 text-cyan-400" /> Recovered link
+                    </span>
+                  )}
+
+                  {!item.post_url && ['missing_after_recovery', 'rejected_invalid'].includes(item.permalink_status || '') && (
+                    <span
+                      className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-950 text-amber-300 border border-amber-800/80 flex items-center gap-1"
+                      title={item.permalink_status === 'rejected_invalid'
+                        ? 'Automation returned a URL that failed manager validation.'
+                        : 'The bounded permalink recovery pass completed without a confident URL.'}
+                    >
+                      <AlertTriangle className="w-3 h-3 text-amber-400" /> Link unavailable
+                    </span>
+                  )}
 
                   {/* View on Facebook link */}
                   {item.post_url && (

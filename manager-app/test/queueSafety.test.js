@@ -2,10 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  applyAutomationPermalinkResult,
+  applyCommentRetryResult,
   applyCommentEvidenceBackfill,
+  applyWarmingResult,
   applyVerifiedPermalinkBackfill,
   batchContainsUnresolvedExecution,
   classifyInterruptedExecution,
+  canRetryFirstComment,
   isExecutionDeletionLocked,
   validateFacebookPermalink,
 } from '../queueSafety.js';
@@ -46,6 +50,120 @@ test('verified comment evidence requires a published execution and evidence dire
     () => applyCommentEvidenceBackfill({ status: 'uncertain' }, 'submitted_unverified'),
     /only to published/,
   );
+});
+
+test('automation permalink result preserves recovered status after manager validation', () => {
+  const execution = { status: 'published' };
+  applyAutomationPermalinkResult(execution, {
+    post_url: 'https://www.facebook.com/example/posts/pfbidRecovered?ref=tracking',
+    post_url_verified_at: '2026-09-26T01:00:00.000Z',
+    post_match_confidence: 0.82,
+    permalink_status: 'recovered',
+    permalink_recovery_attempted: true,
+  });
+
+  assert.equal(execution.post_url, 'https://www.facebook.com/example/posts/pfbidRecovered');
+  assert.equal(execution.permalink_status, 'recovered');
+  assert.equal(execution.permalink_source, 'automation_recovery');
+  assert.equal(execution.permalink_recovery_attempted, true);
+  assert.equal(execution.permalink_missing, false);
+  assert.equal(execution.post_match_confidence, 0.82);
+});
+
+test('automation permalink result records bounded recovery exhaustion without failing publication', () => {
+  const execution = { status: 'published' };
+  applyAutomationPermalinkResult(execution, {
+    post_url: null,
+    permalink_status: 'missing',
+    permalink_recovery_attempted: true,
+    permalink_missing: true,
+  });
+
+  assert.equal(execution.status, 'published');
+  assert.equal(execution.post_url, undefined);
+  assert.equal(execution.permalink_status, 'missing_after_recovery');
+  assert.equal(execution.permalink_missing, true);
+});
+
+test('automation permalink result rejects an invalid URL without attaching it', () => {
+  const execution = { status: 'published' };
+  applyAutomationPermalinkResult(execution, {
+    post_url: 'https://example.com/user/posts/123',
+    permalink_status: 'recovered',
+    permalink_recovery_attempted: true,
+  }, 'post');
+
+  assert.equal(execution.post_url, undefined);
+  assert.equal(execution.permalink_status, 'rejected_invalid');
+  assert.equal(execution.permalink_missing, true);
+});
+
+test('comment-only retry is allowed only after a definite pre-submission failure', () => {
+  assert.equal(canRetryFirstComment({
+    status: 'published',
+    first_comment_status: 'failed_input_not_found',
+  }, 'https://example.com'), true);
+  assert.equal(canRetryFirstComment({
+    status: 'published',
+    first_comment_status: 'submitted_unverified',
+  }, 'https://example.com'), false);
+  assert.equal(canRetryFirstComment({
+    status: 'published',
+    first_comment_status: 'submission_pending',
+  }, 'https://example.com'), false);
+  assert.equal(canRetryFirstComment({
+    status: 'published',
+    first_comment_status: 'failed_input_not_found',
+    comment_retry_status: 'interrupted',
+  }, 'https://example.com'), false);
+});
+
+test('comment-only retry result preserves publication and records verification', () => {
+  const execution = {
+    status: 'published',
+    first_comment_status: 'failed_input_not_found',
+  };
+  applyCommentRetryResult(execution, {
+    first_comment: 'submitted_verified',
+    first_comment_method: 'profile_first_post',
+    evidence_dir: '/evidence/comment-retry',
+  }, '2026-09-26T02:00:00.000Z');
+
+  assert.equal(execution.status, 'published');
+  assert.equal(execution.first_comment_status, 'submitted_verified');
+  assert.equal(execution.comment_retry_status, 'completed_verified');
+  assert.equal(execution.first_comment_retry_count, 1);
+  assert.equal(execution.first_comment_source, 'comment_only_retry');
+});
+
+test('warming result preserves requested and actual surfaces with bounded metrics', () => {
+  const execution = { status: 'ready' };
+  applyWarmingResult(execution, {
+    warming_surface_requested: 'news_feed',
+    warming_surface: 'profile',
+    warming_surface_fallback: true,
+    duration_seconds: 51.25,
+    scroll_actions: 9,
+  });
+
+  assert.equal(execution.warming_surface_requested, 'news_feed');
+  assert.equal(execution.warming_surface, 'profile');
+  assert.equal(execution.warming_surface_fallback, true);
+  assert.equal(execution.warming_duration_seconds, 51.25);
+  assert.equal(execution.warming_scroll_actions, 9);
+});
+
+test('warming result rejects unknown surface labels instead of displaying them', () => {
+  const execution = {};
+  applyWarmingResult(execution, {
+    warming_surface_requested: 'marketplace',
+    warming_surface: 'groups',
+    scroll_count: 4,
+  });
+
+  assert.equal(execution.warming_surface_requested, null);
+  assert.equal(execution.warming_surface, null);
+  assert.equal(execution.warming_scroll_actions, 4);
 });
 
 test('batch deletion is locked when any execution outcome is unresolved', () => {

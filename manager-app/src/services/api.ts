@@ -236,6 +236,17 @@ export async function runExecutionNow(executionId: string): Promise<{ success: b
   return res.json();
 }
 
+export async function retryExecutionComment(executionId: string): Promise<{ success: boolean; message: string }> {
+  const res = await fetch(`${API_BASE}/queue/retry-comment/${executionId}`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to start comment-only retry');
+  }
+  return res.json();
+}
+
 export async function resolveUncertainExecution(
   executionId: string,
   resolution: 'published' | 'not_published',

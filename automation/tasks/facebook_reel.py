@@ -489,6 +489,11 @@ class FacebookReelTask(BaseTask):
                 self.comment_link,
                 post_url=permalink_info.get("post_url"),
             )
+            permalink_info = self.recover_missing_permalink(
+                permalink_info,
+                caption=self.caption,
+                media_type="reel",
+            )
             self.log("SUCCESS", "Facebook Reel publication was visually confirmed.")
             return self.set_outcome(
                 "published",
@@ -498,6 +503,11 @@ class FacebookReelTask(BaseTask):
                 **permalink_info,
             )
 
+        permalink_info = self.recover_missing_permalink(
+            permalink_info,
+            caption=self.caption,
+            media_type="reel",
+        )
         self.log("SUCCESS", "Facebook Reel publication was visually confirmed.")
         return self.set_outcome(
             "published",
