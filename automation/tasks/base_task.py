@@ -944,44 +944,61 @@ class BaseTask:
         clear_streak = 0
         visible_streak = 0
         best_comment_confidence = 0.0
+        settled_observations = 0
         for _ in range(30):
             time.sleep(2.0)
             after_comment = self.client.screenshot()
             screen_h, screen_w = after_comment.shape[:2]
-            # Facebook's permalink modal places the first visible comment near
-            # the middle of the screen, well above the bottom input row. Cover
-            # the complete comment stream while retaining a bounded OCR crop.
+            # Page/profile layouts place the comment card in the right-hand
+            # feed column.  Keep the left sidebar out of OCR, but include the
+            # full card width; the prior 73%-of-screen right edge truncated URL
+            # comments and link-preview titles, producing false unverified
+            # results even when the submitted comment was visibly present.
             comment_region = (
                 int(screen_w * 0.28),
-                int(screen_h * 0.28),
-                int(screen_w * 0.45),
-                int(screen_h * 0.69),
+                int(screen_h * 0.22),
+                int(screen_w * 0.67),
+                int(screen_h * 0.73),
             )
             comment_items = self.vision.read_text(
                 after_comment,
                 region=comment_region,
                 min_confidence=0.15,
             )
-            comment_text = " ".join(item["text"].casefold() for item in comment_items)
-            submission_pending = any(
-                marker in comment_text
-                for marker in ("posting", "sending", "submitting")
-            )
+            normalized_comment_items = {
+                re.sub(r"[^a-z0-9]+", " ", item.get("text", "").casefold()).strip()
+                for item in comment_items
+            }
+            submission_pending = bool(normalized_comment_items.intersection({
+                "posting",
+                "posting comment",
+                "sending",
+                "sending comment",
+                "submitting",
+                "submitting comment",
+            }))
             comment_confidence = self._comment_match_confidence(
                 comment_link,
                 comment_items,
                 max_y=int(screen_h * 0.90),
             )
             best_comment_confidence = max(best_comment_confidence, comment_confidence)
+            if submission_pending:
+                clear_streak = 0
+                settled_observations = 0
+                visible_streak = 0
+                continue
+            clear_streak += 1
+            settled_observations += 1
             if comment_confidence >= 0.60:
                 visible_streak += 1
             else:
                 visible_streak = 0
-            if submission_pending:
-                clear_streak = 0
-                continue
-            clear_streak += 1
-            if clear_streak >= 2:
+            # Two consecutive visible observations confirm the comment. When
+            # OCR cannot match it, allow four settled observations before
+            # returning unverified so a slowly rendered link preview is not
+            # missed. Never resubmit automatically.
+            if (visible_streak >= 2 and clear_streak >= 2) or settled_observations >= 4:
                 break
 
         if after_comment is None:

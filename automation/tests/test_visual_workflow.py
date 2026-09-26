@@ -202,6 +202,19 @@ class StateRecognizerTests(unittest.TestCase):
         recognizer = FacebookStateRecognizer(self.make_vision(["Your reel is being processed"]))
         self.assertEqual(recognizer.observe().state, ScreenState.POST_CONFIRMED)
 
+    def test_caption_word_publishing_does_not_override_ready_post_review(self):
+        recognizer = FacebookStateRecognizer(self.make_vision([
+            "Post settings",
+            "Post preview",
+            "Image publishing reliability validation",
+            "Post",
+        ]))
+        self.assertEqual(recognizer.observe().state, ScreenState.POST_ENABLED)
+
+    def test_standalone_publishing_indicator_is_recognized(self):
+        recognizer = FacebookStateRecognizer(self.make_vision(["Publishing..."]))
+        self.assertEqual(recognizer.observe().state, ScreenState.PUBLISHING)
+
 
 class LoginGateTests(unittest.TestCase):
     def make_task(self, gate_observations, full_observations=None):
@@ -685,6 +698,28 @@ class FirstCommentTargetTests(unittest.TestCase):
         self.assertEqual(result, "submission_pending")
         task.human.click.assert_called_once_with(90, 75)
 
+    def test_comment_text_containing_posting_is_not_a_pending_indicator(self):
+        task = FacebookReelTask.__new__(FacebookReelTask)
+        task.log = Mock()
+        task.log_decision = Mock()
+        task.capture_evidence = Mock()
+        task.human = Mock()
+        task.client = Mock()
+        screen = np.zeros((100, 100, 3), dtype=np.uint8)
+        task.client.screenshot.return_value = screen
+        task.vision = Mock()
+        task.vision.read_text.return_value = [
+            {"text": "A posting guide", "confidence": 0.99, "center": (60, 60)},
+        ]
+        task.paste_text = Mock()
+        task._open_profile_first_comment_input = Mock(return_value=((90, 75), screen))
+
+        with unittest.mock.patch("time.sleep", return_value=None), \
+             unittest.mock.patch("tasks.base_task.random.uniform", return_value=1.0):
+            result = task.post_first_comment("A posting guide")
+
+        self.assertEqual(result, "submitted_verified")
+
     def test_post_first_comment_visibly_verifies_submitted_text(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
         task.log = Mock()
@@ -775,6 +810,36 @@ class FirstCommentTargetTests(unittest.TestCase):
 
         self.assertEqual(result, "submitted_verified")
         self.assertLessEqual(task.vision.read_text.call_args.kwargs["region"][1], 42)
+
+    def test_comment_verification_crop_includes_right_side_link_preview(self):
+        task = FacebookReelTask.__new__(FacebookReelTask)
+        task.log = Mock()
+        task.log_decision = Mock()
+        task.capture_evidence = Mock()
+        task.human = Mock()
+        task.client = Mock()
+        screen = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task.client.screenshot.return_value = screen
+        task.vision = Mock()
+        task.vision.read_text.return_value = [
+            {
+                "text": "Senate Rejects Sanders-Led Effort to Block Arms Sale to Israel",
+                "confidence": 0.95,
+                "center": (1500, 740),
+            }
+        ]
+        task.paste_text = Mock()
+        task._open_profile_first_comment_input = Mock(return_value=((1167, 839), screen))
+
+        with unittest.mock.patch("time.sleep", return_value=None), \
+             unittest.mock.patch("tasks.base_task.random.uniform", return_value=1.0):
+            result = task.post_first_comment(
+                "https://asiandot.com/article/senate-rejects-sanders-led-effort-to-block-arms-sale-to-israel"
+            )
+
+        self.assertEqual(result, "submitted_verified")
+        region = task.vision.read_text.call_args.kwargs["region"]
+        self.assertGreaterEqual(region[0] + region[2], 1800)
 
     def test_vision_find_comment_input_locates_pill(self):
         vision = VisionEngine(Mock(profile_id="test"))

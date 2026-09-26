@@ -97,10 +97,30 @@ class FacebookStateRecognizer:
         if matches:
             return StateObservation(ScreenState.POST_CONFIRMED, 0.98, matches, texts)
 
-        if "publishing" in blob or "posting" in blob:
+        normalized_items = {
+            re.sub(r"[^a-z0-9]+", " ", item["text"].casefold()).strip()
+            for item in ocr
+        }
+        publishing_statuses = {
+            "publishing",
+            "posting",
+            "publishing post",
+            "posting post",
+            "publishing your post",
+            "posting your post",
+        }
+        if normalized_items.intersection(publishing_statuses):
             return StateObservation(ScreenState.PUBLISHING, 0.90, ["publishing text"], texts)
 
-        if "uploading" in blob or "processing" in blob:
+        upload_statuses = {
+            "uploading",
+            "processing",
+            "uploading media",
+            "processing media",
+            "uploading video",
+            "processing video",
+        }
+        if normalized_items.intersection(upload_statuses):
             return StateObservation(ScreenState.MEDIA_UPLOADING, 0.88, ["upload progress text"], texts)
 
         COMPOSER_PHRASES = (
