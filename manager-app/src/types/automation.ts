@@ -26,6 +26,7 @@ export interface RunAutomationParams {
   caption?: string;
   comment_link?: string;
   media?: string;
+  brain_version?: string;
 }
 
 export interface QueueExecutionItem {

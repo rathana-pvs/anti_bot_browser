@@ -1,0 +1,11 @@
+{
+  "catalog_version": 1,
+  "brains": {
+    "facebook_post": {
+      "active_version": "bundled_default",
+      "previous_version": null,
+      "channel": "stable",
+      "updated_at": null
+    }
+  }
+}

@@ -1,5 +1,7 @@
 """Guarded visual state machine for Facebook photo/text publishing."""
 
+import json
+from pathlib import Path
 import random
 import time
 import re
@@ -24,11 +26,28 @@ class FacebookPostTask(BaseTask):
         caption: str,
         comment_link: str | None = None,
         media_path: str | None = None,
+        brain_package=None,
     ):
         super().__init__(profile_id)
         self.caption = caption
         self.comment_link = comment_link
         self.media_path = media_path
+        self.brain_metadata = brain_package.metadata() if brain_package is not None else None
+        self.brain_targets = {}
+        if brain_package is not None:
+            targets_path = Path(brain_package.root) / "config" / "targets.json"
+            try:
+                loaded_targets = json.loads(targets_path.read_text(encoding="utf-8"))
+                if isinstance(loaded_targets, dict):
+                    self.brain_targets = loaded_targets
+            except (OSError, json.JSONDecodeError) as exc:
+                self.log("WARN", f"Brain target configuration could not be loaded: {exc}")
+
+    def _brain_labels(self, name: str, fallback) -> tuple[str, ...]:
+        configured = getattr(self, "brain_targets", {}).get(name)
+        if isinstance(configured, list) and configured and all(isinstance(value, str) for value in configured):
+            return tuple(configured)
+        return tuple(fallback)
 
     def _fail(self, code: str, message: str, screen=None) -> bool:
         self.log("ERROR", message)
@@ -180,7 +199,10 @@ class FacebookPostTask(BaseTask):
 
     @timed_telemetry_step("publish_readiness")
     def _stable_post_target(self, review_confirmed=False):
-        target = self._stable_blue_text_target(("post", "publish"), region="bottom_action_bar")
+        target = self._stable_blue_text_target(
+            self._brain_labels("publish_button", ("post", "publish")),
+            region="bottom_action_bar",
+        )
         if target:
             return target
         if review_confirmed:
@@ -200,7 +222,10 @@ class FacebookPostTask(BaseTask):
         return None
 
     def _stable_next_target(self):
-        target = self._stable_blue_text_target(("next",), region="bottom_action_bar")
+        target = self._stable_blue_text_target(
+            self._brain_labels("next_button", ("next",)),
+            region="bottom_action_bar",
+        )
         if target:
             return target
         # Reversible action: guarded semantic fallback
@@ -416,14 +441,17 @@ class FacebookPostTask(BaseTask):
             if not photo_btn:
                 photo_btn = self.vision.find_photo_video_button(screen=screen)
             if not photo_btn:
-                photo_btn = self._stable_ocr_target((
-                    "photo/video",
-                    "photo / video",
-                    "photo video",
-                    "photolvideo",
-                    "photoivideo",
-                    "photos/videos",
-                ), region="profile_post_stream")
+                photo_btn = self._stable_ocr_target(
+                    self._brain_labels("media_button", (
+                        "photo/video",
+                        "photo / video",
+                        "photo video",
+                        "photolvideo",
+                        "photoivideo",
+                        "photos/videos",
+                    )),
+                    region="profile_post_stream",
+                )
 
             self.log_decision(
                 "Click Photo/video on profile",
@@ -479,13 +507,16 @@ class FacebookPostTask(BaseTask):
             if not composer_pos:
                 composer_pos = self._stable_feed_composer_target()
             if not composer_pos:
-                composer_pos = self._stable_ocr_target((
-                    "what's on your mind",
-                    "what’s on your mind",
-                    "whats on your mind",
-                    "what s on your mind",
-                    "write something",
-                ), region="profile_post_stream")
+                composer_pos = self._stable_ocr_target(
+                    self._brain_labels("composer_entry", (
+                        "what's on your mind",
+                        "what’s on your mind",
+                        "whats on your mind",
+                        "what s on your mind",
+                        "write something",
+                    )),
+                    region="profile_post_stream",
+                )
             if not composer_pos:
                 return self._fail("composer_not_found", "Post composer could not be located confidently.")
             self.human.click(*composer_pos)
@@ -588,8 +619,11 @@ class FacebookPostTask(BaseTask):
         before_publish = self.client.screenshot()
         self.capture_evidence("before_publish", before_publish, target=list(post_btn))
         self.log("STEP", f"Clicking final Post action once at {post_btn}...")
-        self.set_stage("publish_clicked", target=list(post_btn))
-        self.human.click(*post_btn)
+        if not self.execute_publish_gate(post_btn):
+            return self._fail(
+                "publish_gate_rejected",
+                "The engine-owned publish gate rejected the final action; no click was sent.",
+            )
 
         self.set_stage("verifying")
         publication_status, verification = self._verify_publication(before_publish)

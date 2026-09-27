@@ -1,0 +1,7 @@
+{
+  "composer_entry": "profile_post_stream",
+  "composer_modal": "composer_modal",
+  "media_button": "profile_post_stream",
+  "next_button": "bottom_action_bar",
+  "publish_button": "bottom_action_bar"
+}

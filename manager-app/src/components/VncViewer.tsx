@@ -133,7 +133,10 @@ export const VncViewer: React.FC<VncViewerProps> = ({
 
       setConnectionStatus('connecting');
 
-      const wsUrl = `ws://${window.location.hostname}:${wsPort}`;
+      const vncHost = (!window.location.hostname || window.location.hostname === 'tauri.localhost' || window.location.protocol === 'tauri:')
+        ? '127.0.0.1'
+        : window.location.hostname;
+      const wsUrl = `ws://${vncHost}:${wsPort}`;
       console.log(`Connecting noVNC to ${wsUrl} (attempt ${attempt + 1})...`);
 
       try {

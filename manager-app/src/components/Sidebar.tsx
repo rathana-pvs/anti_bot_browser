@@ -1,13 +1,13 @@
 import React, { useState } from 'react';
 import { Profile } from '../types/profile';
 import { ProfileCard } from './ProfileCard';
-import { Plus, Search, Layers, Globe, PanelLeftClose, Sparkles } from 'lucide-react';
+import { Plus, Search, Layers, Globe, PanelLeftClose, Sparkles, BrainCircuit } from 'lucide-react';
 
 interface SidebarProps {
   profiles: Profile[];
   selectedProfileId: string | null;
-  activeTab: 'profiles' | 'proxies' | 'campaigns';
-  onTabChange: (tab: 'profiles' | 'proxies' | 'campaigns') => void;
+  activeTab: 'profiles' | 'proxies' | 'campaigns' | 'brains';
+  onTabChange: (tab: 'profiles' | 'proxies' | 'campaigns' | 'brains') => void;
   proxyCount?: number;
   onSelectProfile: (profile: Profile) => void;
   onOpenCreateModal: () => void;
@@ -78,7 +78,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
 
       {/* Main Mode Navigation (Profiles vs Proxy Pool vs Campaigns) */}
-      <div className="p-2 border-b border-border/80 bg-zinc-950/60 grid grid-cols-3 gap-1 text-[11px]">
+      <div className="p-2 border-b border-border/80 bg-zinc-950/60 grid grid-cols-4 gap-1 text-[10px]">
         <button
           onClick={() => onTabChange('profiles')}
           className={`flex items-center justify-center gap-1 py-1.5 rounded-md font-medium transition-colors ${
@@ -114,6 +114,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
         >
           <Sparkles className="w-3 h-3 text-emerald-400" />
           <span>Campaign</span>
+        </button>
+        <button
+          onClick={() => onTabChange('brains')}
+          className={`flex items-center justify-center gap-1 py-1.5 rounded-md font-medium transition-colors ${
+            activeTab === 'brains'
+              ? 'bg-zinc-800 text-violet-300 border border-violet-500/30 shadow-sm'
+              : 'text-zinc-400 hover:text-zinc-200'
+          }`}
+          title="Workflow Brains"
+        >
+          <BrainCircuit className="w-3 h-3 text-violet-400" />
+          <span>Brains</span>
         </button>
       </div>
 

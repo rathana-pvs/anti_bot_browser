@@ -3,6 +3,7 @@ import { QueueDataResponse, QueueExecutionItem } from '../types/automation';
 import { Profile } from '../types/profile';
 import {
   backfillExecutionPermalink,
+  downloadSupportBundle,
   fetchQueue,
   deleteBatch,
   deleteExecution,
@@ -31,6 +32,8 @@ import {
   Eye,
   Search,
   MessageCircle,
+  Bug,
+  Download,
 } from 'lucide-react';
 
 interface PostingQueuePanelProps {
@@ -55,6 +58,13 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
   const [actionError, setActionError] = useState<string | null>(null);
   const [lightboxMedia, setLightboxMedia] = useState<LightboxMedia | null>(null);
   const [retryingCommentId, setRetryingCommentId] = useState<string | null>(null);
+  const [reportDialogOpen, setReportDialogOpen] = useState(false);
+  const [reportingItem, setReportingItem] = useState<QueueExecutionItem | null>(null);
+  const [reportDescription, setReportDescription] = useState('');
+  const [reportIncludeEvidence, setReportIncludeEvidence] = useState(false);
+  const [reportIncludeContent, setReportIncludeContent] = useState(false);
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false);
+  const [reportSuccess, setReportSuccess] = useState<string | null>(null);
 
   // Phase 0 Safety Gate: Review & Resolve Uncertain State
   const [resolvingItem, setResolvingItem] = useState<QueueExecutionItem | null>(null);
@@ -161,6 +171,34 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
       setActionError(err.message || 'Failed to start comment-only retry');
     } finally {
       setRetryingCommentId(null);
+    }
+  };
+
+  const openReportDialog = (item: QueueExecutionItem | null) => {
+    setReportingItem(item);
+    setReportDescription('');
+    setReportIncludeEvidence(false);
+    setReportIncludeContent(false);
+    setReportSuccess(null);
+    setReportDialogOpen(true);
+  };
+
+  const handleDownloadReport = async () => {
+    setIsGeneratingReport(true);
+    setActionError(null);
+    try {
+      const filename = await downloadSupportBundle({
+        executionId: reportingItem?.execution_id,
+        description: reportDescription.trim(),
+        includeEvidence: Boolean(reportingItem) && reportIncludeEvidence,
+        includeContent: Boolean(reportingItem) && reportIncludeContent,
+      });
+      setReportDialogOpen(false);
+      setReportSuccess(`${filename} downloaded. Review it before sending it to support.`);
+    } catch (err: any) {
+      setActionError(err.message || 'Failed to create support bundle');
+    } finally {
+      setIsGeneratingReport(false);
     }
   };
 
@@ -315,6 +353,18 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
         </div>
       )}
 
+      {reportSuccess && (
+        <div className="p-3 bg-emerald-950/70 border border-emerald-800 text-emerald-200 text-xs rounded-xl flex items-center justify-between gap-2 shadow-sm animate-in fade-in duration-150">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span>{reportSuccess}</span>
+          </div>
+          <button onClick={() => setReportSuccess(null)} className="text-emerald-400 hover:text-white font-bold ml-2">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* ============================================================
           ZONE 1: COMPACT STATUS BAR (Clickable Filters)
           ============================================================ */}
@@ -447,6 +497,15 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
 
         {/* Right side controls: Refresh */}
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => openReportDialog(null)}
+            className="px-3 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium flex items-center gap-1.5 transition-colors shadow-sm"
+            title="Export sanitized diagnostics when the problem is not tied to one execution"
+          >
+            <Download className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Export diagnostics</span>
+          </button>
           <button
             type="button"
             onClick={loadQueue}
@@ -850,6 +909,15 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                     </button>
                   )}
 
+                  <button
+                    type="button"
+                    onClick={() => openReportDialog(item)}
+                    className="p-1.5 rounded-lg text-zinc-500 hover:text-cyan-300 hover:bg-cyan-950/40 transition-colors"
+                    title="Report a problem with this execution"
+                  >
+                    <Bug className="w-3.5 h-3.5" />
+                  </button>
+
                   {/* Delete button (locked while active or uncertain) */}
                   {!['running', 'uncertain', 'needs_review'].includes(item.status) ? (
                     <button
@@ -874,6 +942,136 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
           </div>
         )}
       </div>
+
+      {/* ============================================================
+          SANITIZED SUPPORT REPORT MODAL
+          ============================================================ */}
+      {reportDialogOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 sm:p-6"
+          onClick={() => !isGeneratingReport && setReportDialogOpen(false)}
+        >
+          <div
+            className="relative max-w-lg w-full bg-zinc-950 border border-cyan-900/70 rounded-2xl overflow-hidden shadow-2xl animate-in fade-in zoom-in-95 duration-150"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between p-4 border-b border-zinc-800 bg-cyan-950/20">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-lg bg-cyan-500/10 border border-cyan-500/20 text-cyan-400">
+                  <Bug className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white">
+                    {reportingItem ? 'Report This Execution' : 'Export Diagnostics'}
+                  </h3>
+                  <p className="text-[11px] text-zinc-400">
+                    Creates a local ZIP to send to product support.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => !isGeneratingReport && setReportDialogOpen(false)}
+                disabled={isGeneratingReport}
+                className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 disabled:opacity-50 transition-colors"
+                title="Close dialog"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 space-y-4">
+              {reportingItem && (
+                <div className="p-3 rounded-xl bg-zinc-900/70 border border-zinc-800 text-xs space-y-1.5">
+                  <div className="flex justify-between gap-4">
+                    <span className="text-zinc-500">Execution</span>
+                    <span className="font-mono text-[10px] text-zinc-300 break-all">{reportingItem.execution_id}</span>
+                  </div>
+                  <div className="flex justify-between gap-4">
+                    <span className="text-zinc-500">Profile</span>
+                    <span className="text-zinc-200">{getProfileName(reportingItem.profile_id)}</span>
+                  </div>
+                  <div className="flex justify-between gap-4">
+                    <span className="text-zinc-500">Status</span>
+                    <span className="text-zinc-200">{reportingItem.status} · {reportingItem.stage || 'unknown stage'}</span>
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-medium text-zinc-300 mb-1.5">
+                  What happened? <span className="text-zinc-600 font-normal">(optional)</span>
+                </label>
+                <textarea
+                  value={reportDescription}
+                  onChange={(e) => setReportDescription(e.target.value.slice(0, 4000))}
+                  rows={4}
+                  placeholder="Example: The Reel published, but the first comment did not appear."
+                  className="w-full px-3 py-2.5 rounded-xl bg-black/50 border border-zinc-800 text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-cyan-600 resize-y"
+                />
+                <div className="text-right text-[10px] text-zinc-600 mt-1">{reportDescription.length}/4000</div>
+              </div>
+
+              {reportingItem && (
+                <div className="space-y-2.5">
+                  <label className="flex items-start gap-2.5 p-3 rounded-xl bg-zinc-900/50 border border-zinc-800 cursor-pointer hover:border-zinc-700">
+                    <input
+                      type="checkbox"
+                      checked={reportIncludeEvidence}
+                      onChange={(e) => setReportIncludeEvidence(e.target.checked)}
+                      className="mt-0.5 accent-cyan-500"
+                    />
+                    <span>
+                      <span className="block text-xs font-medium text-zinc-200">Include relevant evidence screenshots</span>
+                      <span className="block text-[10px] text-amber-400/90 mt-0.5">
+                        Optional and off by default. Screenshots may show Facebook page content or account names.
+                      </span>
+                    </span>
+                  </label>
+                  <label className="flex items-start gap-2.5 p-3 rounded-xl bg-zinc-900/50 border border-zinc-800 cursor-pointer hover:border-zinc-700">
+                    <input
+                      type="checkbox"
+                      checked={reportIncludeContent}
+                      onChange={(e) => setReportIncludeContent(e.target.checked)}
+                      className="mt-0.5 accent-cyan-500"
+                    />
+                    <span>
+                      <span className="block text-xs font-medium text-zinc-200">Include caption, comment, media filename, and permalink</span>
+                      <span className="block text-[10px] text-zinc-500 mt-0.5">
+                        Useful for content-matching problems; excluded by default.
+                      </span>
+                    </span>
+                  </label>
+                </div>
+              )}
+
+              <div className="p-3 rounded-xl bg-emerald-950/20 border border-emerald-900/60 text-[11px] text-emerald-200/80 leading-relaxed">
+                Browser data, cookies, passwords, proxy credentials, access tokens, and email addresses are never included. Logs and JSON metadata are sanitized automatically.
+              </div>
+            </div>
+
+            <div className="p-4 border-t border-zinc-800 bg-zinc-900/60 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setReportDialogOpen(false)}
+                disabled={isGeneratingReport}
+                className="px-4 py-2 rounded-xl text-xs font-medium text-zinc-300 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleDownloadReport}
+                disabled={isGeneratingReport}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-white bg-cyan-600 hover:bg-cyan-500 disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-2 transition-colors shadow-sm"
+              >
+                {isGeneratingReport ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                {isGeneratingReport ? 'Creating ZIP…' : 'Download Support ZIP'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ============================================================
           MEDIA LIGHTBOX MODAL

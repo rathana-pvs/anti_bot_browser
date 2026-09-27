@@ -246,7 +246,7 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
                   required
                   value={importText}
                   onChange={(e) => setImportText(e.target.value)}
-                  placeholder="45.58.228.187:5859:username:password&#10;9.142.35.245:6416:username:password"
+                  placeholder="203.0.113.10:5859:username:password&#10;198.51.100.20:6416:username:password"
                   className="w-full bg-zinc-950 border border-zinc-800 rounded-md p-3 text-zinc-200 font-mono text-xs placeholder:text-zinc-600 focus:outline-none focus:border-zinc-700"
                 />
               </div>

@@ -1,7 +1,23 @@
 import { Profile, SystemStats } from '../types/profile';
 import { ProxyItem } from '../types/proxy';
+import { BrainActionResponse, BrainCatalogResponse, BrainUploadResponse } from '../types/brain';
 
-const API_BASE = '/api';
+const isTauriEnv = typeof window !== 'undefined' && (
+  '__TAURI_INTERNALS__' in window ||
+  '__TAURI__' in window ||
+  window.location.protocol === 'tauri:' ||
+  window.location.hostname === 'tauri.localhost'
+);
+
+export const BACKEND_BASE = isTauriEnv ? 'http://127.0.0.1:8000' : '';
+export const API_BASE = `${BACKEND_BASE}/api`;
+
+export function getSharedMediaUrl(filename: string): string {
+  if (!filename) return '';
+  if (filename.startsWith('http://') || filename.startsWith('https://')) return filename;
+  const cleanPath = filename.startsWith('/') ? filename : `/shared_media/${filename}`;
+  return `${BACKEND_BASE}${cleanPath}`;
+}
 
 export async function fetchProfiles(): Promise<Profile[]> {
   const res = await fetch(`${API_BASE}/profiles`);
@@ -88,6 +104,66 @@ export async function fetchSystemStats(): Promise<SystemStats> {
   return res.json();
 }
 
+// Workflow Brain API Functions
+export async function fetchBrains(): Promise<BrainCatalogResponse> {
+  const res = await fetch(`${API_BASE}/brains`);
+  if (!res.ok) throw new Error('Failed to fetch workflow Brains');
+  return res.json();
+}
+
+export async function validateBrain(brainId: string, version?: string): Promise<BrainActionResponse> {
+  const res = await fetch(`${API_BASE}/brains/${encodeURIComponent(brainId)}/validate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ version }),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.error || 'Brain validation failed');
+  }
+  return res.json();
+}
+
+export async function activateBrain(brainId: string, version: string): Promise<BrainActionResponse> {
+  const res = await fetch(`${API_BASE}/brains/${encodeURIComponent(brainId)}/activate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ version }),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.error || 'Brain activation failed');
+  }
+  return res.json();
+}
+
+export async function rollbackBrain(brainId: string): Promise<BrainActionResponse> {
+  const res = await fetch(`${API_BASE}/brains/${encodeURIComponent(brainId)}/rollback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.error || 'Brain rollback failed');
+  }
+  return res.json();
+}
+
+export async function uploadBrainPackage(file: File, activate = false): Promise<BrainUploadResponse> {
+  const body = new FormData();
+  body.append('package', file);
+  body.append('activate', String(activate));
+  const res = await fetch(`${API_BASE}/brains/upload`, {
+    method: 'POST',
+    body,
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.error || 'Brain package upload failed');
+  }
+  return res.json();
+}
+
 // Proxy API Functions
 export async function fetchProxies(): Promise<ProxyItem[]> {
   const res = await fetch(`${API_BASE}/proxies`);
@@ -171,6 +247,46 @@ export async function fetchQueue(): Promise<import('../types/automation').QueueD
   const res = await fetch(`${API_BASE}/queue`);
   if (!res.ok) throw new Error('Failed to fetch queue');
   return res.json();
+}
+
+export interface SupportBundleOptions {
+  executionId?: string;
+  description?: string;
+  includeEvidence?: boolean;
+  includeContent?: boolean;
+}
+
+export async function downloadSupportBundle(options: SupportBundleOptions = {}): Promise<string> {
+  const endpoint = options.executionId
+    ? `${API_BASE}/support/execution/${encodeURIComponent(options.executionId)}`
+    : `${API_BASE}/support/export`;
+  const res = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      description: options.description || '',
+      include_evidence: options.includeEvidence === true,
+      include_content: options.includeContent === true,
+    }),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.error || 'Failed to create support bundle');
+  }
+
+  const disposition = res.headers.get('Content-Disposition') || '';
+  const filenameMatch = disposition.match(/filename="?([^";]+)"?/i);
+  const filename = filenameMatch?.[1] || 'automat_fb_support.zip';
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+  return filename;
 }
 
 export async function fetchResourceMode(): Promise<import('../types/automation').ResourceModeSettings> {

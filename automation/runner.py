@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import warnings
+from pathlib import Path
 
 warnings.filterwarnings("ignore", message=".*pin_memory.*")
 warnings.filterwarnings("ignore", message=".*torch.quantize_per_tensor.*")
@@ -21,6 +22,10 @@ from tasks.facebook_post import FacebookPostTask
 from tasks.facebook_reel import FacebookReelTask
 from tasks.facebook_comment import FacebookCommentTask
 from tasks.facebook_preparation import FacebookPreparationTask
+from engine.brain_runtime import BrainRegistry
+
+
+BRAINS_ROOT = Path(__file__).resolve().parent / "brains"
 
 
 def main():
@@ -33,6 +38,11 @@ def main():
     parser.add_argument("--media", default=None, help="Path to media file")
     parser.add_argument("--scrolls", type=int, default=4, help="Scroll count for warming task")
     parser.add_argument("--preparation-mode", choices=["brief", "extended"], default="brief")
+    parser.add_argument(
+        "--brain-version",
+        default=None,
+        help="Pinned workflow Brain directory version (post tasks only)",
+    )
 
     args = parser.parse_args()
 
@@ -45,6 +55,7 @@ def main():
     }
 
     try:
+        brain_package = None
         if args.task == "preparation":
             task = FacebookPreparationTask(profile_id=args.profile, mode=args.preparation_mode)
             success = task.run()
@@ -59,11 +70,21 @@ def main():
             if not args.caption and not args.media:
                 print(json.dumps({"error": "Missing --caption or --media for post task"}))
                 sys.exit(1)
+            brain_package = BrainRegistry(BRAINS_ROOT).resolve(
+                "facebook_post",
+                requested_version=args.brain_version,
+            )
             task = FacebookPostTask(
                 profile_id=args.profile,
                 caption=args.caption,
                 comment_link=args.comment_link,
                 media_path=args.media,
+                brain_package=brain_package,
+            )
+            task.log(
+                "INFO",
+                f"Pinned Brain {brain_package.brain_id} v{brain_package.version} "
+                f"({brain_package.digest[:12]})",
             )
             success = task.run()
             result["success"] = success
@@ -120,6 +141,8 @@ def main():
         result["post_match_confidence"] = result.get("post_match_confidence", None)
         evidence = getattr(task, "evidence", None)
         result["evidence_dir"] = getattr(evidence, "directory", None)
+        if brain_package is not None:
+            result["brain"] = brain_package.metadata()
 
         print(json.dumps(result), flush=True)
         if result["status"] in ("uncertain", "needs_review"):

@@ -1,0 +1,70 @@
+schema_version: 1
+brain_api_version: 1
+workflow_id: facebook_post
+
+limits:
+  max_steps: 60
+  max_runtime_seconds: 300
+  max_recovery_attempts: 3
+
+initial_state: feed_ready
+
+states:
+  feed_ready:
+    require:
+      any:
+        - text_target: composer_entry
+        - template_target: facebook_home
+    actions:
+      - capability: click_candidate
+        target: composer_entry
+    on_success: composer_open
+    on_timeout: operator_review
+    on_failure: failed_safe
+
+  composer_open:
+    require:
+      all:
+        - text_target: composer_heading
+        - region_visible: composer_modal
+    actions:
+      - capability: select_media
+        input: media_path
+        when: media_present
+      - capability: type_text
+        target: caption_input
+        input: caption
+    on_success: wait_ready
+    on_known_dialog: handle_dialog
+    on_timeout: failed_safe
+    on_failure: failed_safe
+
+  handle_dialog:
+    actions:
+      - capability: dismiss_known_dialog
+    on_success: composer_open
+    on_rejected: operator_review
+    on_failure: operator_review
+
+  wait_ready:
+    require:
+      all:
+        - target_enabled: publish_button
+        - upload_complete: true
+    actions:
+      - capability: request_publish
+        target: publish_button
+    on_success: verify_publication
+    on_rejected: operator_review
+    on_timeout: failed_safe
+    on_uncertain: uncertain
+    on_failure: failed_safe
+
+  verify_publication:
+    actions:
+      - capability: verify_publication
+    on_success: completed
+    on_uncertain: uncertain
+    on_timeout: uncertain
+    on_rejected: uncertain
+    on_failure: uncertain

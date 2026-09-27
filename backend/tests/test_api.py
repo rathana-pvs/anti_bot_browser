@@ -1,0 +1,81 @@
+import pytest
+from fastapi.testclient import TestClient
+from backend.main import app
+
+@pytest.fixture(scope="module")
+def client():
+    with TestClient(app) as c:
+        yield c
+
+def test_settings_resource_mode(client):
+    res = client.get("/api/settings/resource-mode")
+    assert res.status_code == 200
+    data = res.json()
+    assert "selected_mode" in data
+    assert "hardware" in data
+    assert "limits" in data
+
+    # Test PUT
+    put_res = client.put("/api/settings/resource-mode", json={"mode": "low"})
+    assert put_res.status_code == 200
+    put_data = put_res.json()
+    assert put_data["selected_mode"] == "low"
+
+    # Reset to auto
+    client.put("/api/settings/resource-mode", json={"mode": "auto"})
+
+def test_system_stats(client):
+    res = client.get("/api/system/stats")
+    assert res.status_code == 200
+    data = res.json()
+    assert "docker_running" in data
+    assert "cpu_cores" in data
+    assert "total_memory_mb" in data
+
+def test_profiles_list(client):
+    res = client.get("/api/profiles")
+    assert res.status_code == 200
+    assert isinstance(res.json(), list)
+
+def test_proxies_list_and_import(client):
+    res = client.get("/api/proxies")
+    assert res.status_code == 200
+    assert isinstance(res.json(), list)
+
+    # Test import format
+    import_res = client.post("/api/proxies/import", json={"text": "127.0.0.1:9999:user:pass"})
+    assert import_res.status_code == 200
+    data = import_res.json()
+    assert "added" in data
+
+def test_queue_endpoints(client):
+    res = client.get("/api/queue")
+    assert res.status_code == 200
+    data = res.json()
+    assert "queue_version" in data
+    assert "stats" in data
+    assert "batches" in data
+
+def test_ai_spin_caption(client):
+    res = client.post("/api/ai/spin-caption", json={"base_caption": "Testing automation pipeline", "count": 2})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["success"] is True
+    assert len(data["variations"]) == 2
+
+def test_media_list(client):
+    res = client.get("/api/media/list")
+    assert res.status_code == 200
+    assert isinstance(res.json(), list)
+
+def test_brains_list(client):
+    res = client.get("/api/brains")
+    assert res.status_code == 200
+    data = res.json()
+    assert "brains" in data or isinstance(data, dict)
+
+def test_spa_dashboard(client):
+    res = client.get("/")
+    assert res.status_code == 200
+    assert "html" in res.headers.get("content-type", "").lower()
+

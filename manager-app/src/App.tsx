@@ -18,12 +18,13 @@ import { CampaignsPanel } from './components/CampaignsPanel';
 import { CreateProfileModal } from './components/CreateProfileModal';
 import { EditProfileModal } from './components/EditProfileModal';
 import { TelemetryFooter } from './components/TelemetryFooter';
+import { BrainPanel } from './components/BrainPanel';
 
 export const App: React.FC = () => {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [proxies, setProxies] = useState<ProxyItem[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'profiles' | 'proxies' | 'campaigns'>('profiles');
+  const [activeTab, setActiveTab] = useState<'profiles' | 'proxies' | 'campaigns' | 'brains'>('profiles');
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [isInspectorOpen, setIsInspectorOpen] = useState<boolean>(() => {
@@ -186,6 +187,13 @@ export const App: React.FC = () => {
               setSelectedProfileId(profileId);
               setActiveTab('profiles');
             }}
+            isSidebarOpen={isSidebarOpen}
+            onToggleSidebar={toggleSidebar}
+          />
+        </div>
+
+        <div className={`flex-1 flex overflow-hidden ${activeTab === 'brains' ? '' : 'hidden'}`}>
+          <BrainPanel
             isSidebarOpen={isSidebarOpen}
             onToggleSidebar={toggleSidebar}
           />

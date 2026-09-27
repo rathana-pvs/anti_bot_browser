@@ -55,6 +55,11 @@ import {
   workerSilenceTimeoutMs,
 } from './queueScheduler.js';
 import { cleanProfileEvidence, cleanAllProfilesEvidence } from './evidenceCleanup.js';
+import {
+  buildExecutionDiagnostic,
+  buildQueueDiagnosticSummary,
+  sanitizeDiagnosticValue,
+} from './supportBundle.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -66,9 +71,55 @@ const SHARED_MEDIA_DIR = path.join(PROFILES_DIR, 'shared_media');
 const QUEUE_FILE = path.join(DATA_DIR, 'posting_queue.json');
 const QUEUE_CLAIM_LOCK_FILE = path.join(DATA_DIR, 'posting_queue.claim.lock');
 const MANAGER_SETTINGS_FILE = path.join(DATA_DIR, 'manager_settings.json');
+const BRAINS_DIR = path.join(ROOT_DIR, 'automation', 'brains');
+const BRAIN_CLI = path.join(ROOT_DIR, 'automation', 'brain_cli.py');
+const AUTOMATION_PYTHON = path.join(ROOT_DIR, 'automation', 'venv', 'bin', 'python');
+const BRAIN_UPLOAD_DIR = path.join(BRAINS_DIR, 'staging', 'uploads');
+const MANAGER_DIST_DIR = path.join(__dirname, 'dist');
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(SHARED_MEDIA_DIR)) fs.mkdirSync(SHARED_MEDIA_DIR, { recursive: true });
+if (!fs.existsSync(BRAIN_UPLOAD_DIR)) fs.mkdirSync(BRAIN_UPLOAD_DIR, { recursive: true });
+
+function runBrainCli(args) {
+  try {
+    const output = execFileSync(
+      AUTOMATION_PYTHON,
+      [BRAIN_CLI, '--root', BRAINS_DIR, ...args],
+      { cwd: ROOT_DIR, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000 },
+    ).trim();
+    return JSON.parse(output || '{}');
+  } catch (error) {
+    const stdout = error?.stdout ? String(error.stdout).trim() : '';
+    if (stdout) {
+      try {
+        const parsed = JSON.parse(stdout);
+        if (parsed.error) throw new Error(parsed.error);
+      } catch (parsedError) {
+        if (!String(parsedError.message).startsWith('Unexpected')) throw parsedError;
+      }
+    }
+    throw new Error(error?.stderr ? String(error.stderr).trim() : error.message);
+  }
+}
+
+function resolveBrainPin(brainId, requestedVersion = null) {
+  const listing = runBrainCli(['list']);
+  const family = (listing.brains || []).find((item) => item.id === brainId);
+  if (!family) throw new Error(`Brain ${brainId} is not installed`);
+  const directory = requestedVersion || family.active_version || 'bundled_default';
+  const version = (family.versions || []).find((item) => item.directory === directory);
+  if (!version || version.status !== 'valid') {
+    throw new Error(`Brain ${brainId} version ${directory} is not valid`);
+  }
+  return {
+    id: brainId,
+    directory,
+    version: version.version,
+    digest: version.digest,
+    brain_api_version: version.brain_api_version,
+  };
+}
 
 function positiveInteger(value, fallback, minimum = 1) {
   const parsed = Number.parseInt(value, 10);
@@ -168,6 +219,23 @@ const mediaStorage = multer.diskStorage({
   },
 });
 const uploadMedia = multer({ storage: mediaStorage });
+const brainStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, BRAIN_UPLOAD_DIR),
+  filename: (_req, file, cb) => {
+    const lower = file.originalname.toLowerCase();
+    const extension = lower.endsWith('.tar.gz') ? '.tar.gz' : lower.endsWith('.tgz') ? '.tgz' : '.zip';
+    cb(null, `${randomUUID()}${extension}`);
+  },
+});
+const uploadBrainPackage = multer({
+  storage: brainStorage,
+  limits: { fileSize: 20 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    const lower = file.originalname.toLowerCase();
+    const allowed = lower.endsWith('.zip') || lower.endsWith('.tar.gz') || lower.endsWith('.tgz');
+    cb(allowed ? null : new Error('Brain package must be .zip, .tar.gz, or .tgz'), allowed);
+  },
+});
 
 const app = express();
 const PORT = 3001;
@@ -958,6 +1026,73 @@ app.delete('/api/proxies/:id', (req, res) => {
 });
 
 // ==========================================
+// Workflow Brain Management
+// ==========================================
+
+app.get('/api/brains', (_req, res) => {
+  try {
+    res.json(runBrainCli(['list']));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/brains/:id/validate', (req, res) => {
+  try {
+    const args = ['validate', req.params.id];
+    if (req.body?.version) args.push('--version', String(req.body.version));
+    res.json(runBrainCli(args));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/brains/:id/activate', (req, res) => {
+  try {
+    const version = String(req.body?.version || '');
+    if (!version) return res.status(400).json({ error: 'version is required' });
+    res.json(runBrainCli(['activate', req.params.id, version]));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/brains/:id/rollback', (req, res) => {
+  try {
+    const listing = runBrainCli(['list']);
+    const family = (listing.brains || []).find((item) => item.id === req.params.id);
+    if (!family) return res.status(404).json({ error: 'Brain is not installed' });
+    if (!family.previous_version) return res.status(400).json({ error: 'No previous version is available' });
+    res.json(runBrainCli(['activate', req.params.id, family.previous_version]));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/brains/upload', uploadBrainPackage.single('package'), (req, res) => {
+  const uploadedPath = req.file?.path;
+  try {
+    if (!uploadedPath) return res.status(400).json({ error: 'A Brain package archive is required' });
+    const installed = runBrainCli(['install', '--archive', uploadedPath]);
+    let activation = null;
+    if (String(req.body?.activate || '').toLowerCase() === 'true') {
+      activation = runBrainCli([
+        'activate',
+        installed.installed.id,
+        installed.installed.directory,
+      ]);
+    }
+    res.json({ ...installed, activation });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  } finally {
+    if (uploadedPath) {
+      try { fs.unlinkSync(uploadedPath); } catch (_) {}
+    }
+  }
+});
+
+// ==========================================
 // Automation Task Endpoints (Zero-CDP)
 // ==========================================
 
@@ -1044,7 +1179,7 @@ function latestQueueTaskState(profileId) {
 // POST /api/automation/run
 app.post('/api/automation/run', (req, res) => {
   try {
-    const { profile_id, task, scrolls, caption, comment_link, media } = req.body;
+    const { profile_id, task, scrolls, caption, comment_link, media, brain_version } = req.body;
 
     if (!profile_id || !task) {
       return res.status(400).json({ error: 'profile_id and task are required' });
@@ -1097,6 +1232,10 @@ app.post('/api/automation/run', (req, res) => {
     }
 
     const args = ['-u', runnerScript, '--profile', profile_id, '--task', task];
+    const brainPin = task === 'post'
+      ? resolveBrainPin('facebook_post', brain_version || null)
+      : null;
+    if (brainPin) args.push('--brain-version', brainPin.directory);
     if (scrolls !== undefined && scrolls !== null) {
       args.push('--scrolls', String(scrolls));
     }
@@ -1121,6 +1260,7 @@ app.post('/api/automation/run', (req, res) => {
       error: null,
       process: null,
       scheduler_lease: manualLease,
+      brain: brainPin,
       last_activity_at: new Date().toISOString(),
     };
 
@@ -1375,6 +1515,158 @@ function findQueueExecution(queue, executionId) {
     }
   }
   return null;
+}
+
+function supportTimestamp() {
+  return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+}
+
+function supportSystemInfo() {
+  let appVersion = 'unknown';
+  let revision = null;
+  try {
+    appVersion = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf-8')).version || appVersion;
+  } catch (_) {}
+  try {
+    revision = execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
+      cwd: ROOT_DIR,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 2_000,
+    }).trim() || null;
+  } catch (_) {}
+  return {
+    generated_at: new Date().toISOString(),
+    app_version: appVersion,
+    revision,
+    platform: process.platform,
+    architecture: os.arch(),
+    os_release: os.release(),
+    node_version: process.version,
+    cpu_model: os.cpus()[0]?.model || 'unknown',
+    cpu_threads: os.cpus().length,
+    total_memory_mb: Math.round(os.totalmem() / (1024 * 1024)),
+    resource_mode: {
+      selected: managerSettings.resource_mode,
+      effective: resourceModeResolution.effective,
+    },
+    ocr_runtime: {
+      label: OCR_RUNTIME.label,
+      device: OCR_RUNTIME.device,
+      gpu_name: OCR_RUNTIME.gpu_name || null,
+    },
+  };
+}
+
+function safeEvidenceDirectory(evidenceDir) {
+  if (!evidenceDir || typeof evidenceDir !== 'string' || !fs.existsSync(evidenceDir)) return null;
+  try {
+    const realEvidence = fs.realpathSync(evidenceDir);
+    const realProfiles = fs.realpathSync(PROFILES_DIR);
+    if (!realEvidence.startsWith(`${realProfiles}${path.sep}`)) return null;
+    if (!fs.statSync(realEvidence).isDirectory()) return null;
+    return realEvidence;
+  } catch (_) {
+    return null;
+  }
+}
+
+function addSanitizedEvidence(bundleDir, execution, options) {
+  const evidenceDir = safeEvidenceDirectory(execution.evidence_dir);
+  if (!evidenceDir) return { metadata_files: 0, screenshot_files: 0 };
+
+  const entries = fs.readdirSync(evidenceDir, { withFileTypes: true });
+  const metadataDir = path.join(bundleDir, 'evidence_metadata');
+  fs.mkdirSync(metadataDir, { recursive: true });
+  let metadataFiles = 0;
+  for (const entry of entries.filter((item) => item.isFile() && item.name.endsWith('.json')).slice(0, 80)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(path.join(evidenceDir, entry.name), 'utf-8'));
+      const sanitized = sanitizeDiagnosticValue(parsed, options);
+      fs.writeFileSync(path.join(metadataDir, entry.name), JSON.stringify(sanitized, null, 2), 'utf-8');
+      metadataFiles += 1;
+    } catch (_) {}
+  }
+
+  let screenshotFiles = 0;
+  if (options.includeEvidence) {
+    const relevantPattern = /(error|fail|requires_review|publication_verification|permalink_extraction|after_first_comment|login_check)/i;
+    const screenshots = entries
+      .filter((item) => item.isFile() && item.name.endsWith('.png') && relevantPattern.test(item.name))
+      .map((item) => ({
+        name: item.name,
+        mtime: fs.statSync(path.join(evidenceDir, item.name)).mtimeMs,
+      }))
+      .sort((a, b) => b.mtime - a.mtime)
+      .slice(0, 6);
+    if (screenshots.length > 0) {
+      const screenshotDir = path.join(bundleDir, 'evidence_screenshots');
+      fs.mkdirSync(screenshotDir, { recursive: true });
+      for (const screenshot of screenshots) {
+        fs.copyFileSync(path.join(evidenceDir, screenshot.name), path.join(screenshotDir, screenshot.name));
+        screenshotFiles += 1;
+      }
+    }
+  }
+  return { metadata_files: metadataFiles, screenshot_files: screenshotFiles };
+}
+
+function createSupportArchive({ match = null, queue, description = '', includeContent = false, includeEvidence = false }) {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'automat-fb-support-'));
+  const reportId = match?.execution?.execution_id || 'global';
+  const safeReportId = String(reportId).replace(/[^a-zA-Z0-9_-]/g, '_');
+  const timestamp = supportTimestamp();
+  const bundleName = `support_${safeReportId}_${timestamp}`;
+  const bundleDir = path.join(tempRoot, bundleName);
+  fs.mkdirSync(bundleDir, { recursive: true });
+  const options = { includeContent, includeEvidence, rootDir: ROOT_DIR, description };
+
+  const report = match
+    ? buildExecutionDiagnostic(match, options)
+    : buildQueueDiagnosticSummary(queue, options);
+  const evidenceCounts = match
+    ? addSanitizedEvidence(bundleDir, match.execution, options)
+    : { metadata_files: 0, screenshot_files: 0 };
+
+  fs.writeFileSync(path.join(bundleDir, 'report.json'), JSON.stringify(report, null, 2), 'utf-8');
+  fs.writeFileSync(
+    path.join(bundleDir, 'system_info.json'),
+    JSON.stringify(sanitizeDiagnosticValue(supportSystemInfo(), options), null, 2),
+    'utf-8',
+  );
+  fs.writeFileSync(
+    path.join(bundleDir, 'README.txt'),
+    [
+      'AUTOMAT FB SUPPORT BUNDLE',
+      '',
+      `Report type: ${match ? 'single execution' : 'global diagnostics'}`,
+      `Generated: ${new Date().toISOString()}`,
+      `Evidence metadata files: ${evidenceCounts.metadata_files}`,
+      `Evidence screenshots: ${evidenceCounts.screenshot_files}`,
+      '',
+      'Privacy:',
+      '- Browser profiles, cookies, passwords, proxy credentials, and access tokens are never included.',
+      `- Caption/comment content included: ${includeContent ? 'yes (explicitly selected)' : 'no'}.`,
+      `- Screenshots included: ${includeEvidence ? 'yes (explicitly selected; may show Facebook page content)' : 'no'}.`,
+      '- Review the files before sending them to support.',
+    ].join('\n'),
+    'utf-8',
+  );
+
+  const archivePath = path.join(tempRoot, `${bundleName}.zip`);
+  execFileSync('zip', ['-q', '-r', archivePath, bundleName], {
+    cwd: tempRoot,
+    stdio: ['ignore', 'ignore', 'pipe'],
+    timeout: 30_000,
+  });
+  return { archivePath, filename: path.basename(archivePath), tempRoot };
+}
+
+function sendSupportArchive(res, archive) {
+  res.download(archive.archivePath, archive.filename, (error) => {
+    try { fs.rmSync(archive.tempRoot, { recursive: true, force: true }); } catch (_) {}
+    if (error && !res.headersSent) res.status(500).json({ error: 'Could not download support bundle' });
+  });
 }
 
 function persistQueueExecutionStage(executionId, stage, timestamp = new Date().toISOString(), leaseId = null) {
@@ -1653,6 +1945,41 @@ app.get('/api/queue', (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/support/execution/:execution_id
+// Creates a local, sanitized ZIP. Screenshots and post content require explicit opt-in.
+app.post('/api/support/execution/:execution_id', (req, res) => {
+  try {
+    const queue = loadPostingQueue();
+    const match = findQueueExecution(queue, req.params.execution_id);
+    if (!match) return res.status(404).json({ error: 'Execution not found' });
+    const archive = createSupportArchive({
+      match,
+      queue,
+      description: typeof req.body?.description === 'string' ? req.body.description : '',
+      includeContent: req.body?.include_content === true,
+      includeEvidence: req.body?.include_evidence === true,
+    });
+    sendSupportArchive(res, archive);
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Could not create support bundle' });
+  }
+});
+
+// POST /api/support/export
+// Content-free global diagnostics for problems not tied to one execution.
+app.post('/api/support/export', (req, res) => {
+  try {
+    const queue = loadPostingQueue();
+    const archive = createSupportArchive({
+      queue,
+      description: typeof req.body?.description === 'string' ? req.body.description : '',
+    });
+    sendSupportArchive(res, archive);
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Could not create diagnostic bundle' });
   }
 });
 
@@ -2133,6 +2460,17 @@ async function executeQueueItem(executionId, schedulerKind = 'publisher') {
   const taskType = targetPost.type === 'warming' ? 'warming' : (targetPost.type === 'reel' ? 'reel' : 'post');
 
   const args = ['-u', runnerScript, '--profile', profileId, '--task', taskType];
+  const brainPin = taskType === 'post' ? resolveBrainPin('facebook_post') : null;
+  if (brainPin) {
+    args.push('--brain-version', brainPin.directory);
+    targetExec.brain = brainPin;
+    const pinQueue = loadPostingQueue();
+    const pinMatch = findQueueExecution(pinQueue, executionId);
+    if (pinMatch && pinMatch.execution.scheduler_lease?.lease_id === leaseId) {
+      pinMatch.execution.brain = brainPin;
+      savePostingQueue(pinQueue);
+    }
+  }
   if (taskType === 'warming') {
     args.push('--scrolls', String(targetPost.scrolls || 4));
   }
@@ -2157,6 +2495,7 @@ async function executeQueueItem(executionId, schedulerKind = 'publisher') {
     current_stage: targetExec.stage,
     queue_execution_id: executionId,
     scheduler_lease: lease,
+    brain: brainPin,
     last_activity_at: new Date().toISOString(),
     error: null,
     process: null,
@@ -2277,6 +2616,9 @@ async function executeQueueItem(executionId, schedulerKind = 'publisher') {
         execInDb.stage = stage || (reportedStatus === 'published' ? 'published' : 'unknown');
         if (Array.isArray(taskRecord.result?.stage_history)) {
           execInDb.stage_history = taskRecord.result.stage_history;
+        }
+        if (taskRecord.result?.brain || taskRecord.brain) {
+          execInDb.brain = taskRecord.result?.brain || taskRecord.brain;
         }
 
         if (taskType === 'warming' && code === 0 && reportedStatus === 'completed') {
@@ -2967,6 +3309,15 @@ app.get('/api/system/stats', (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// The desktop build loads the same dashboard from the local manager backend.
+// Keep this after every API route so SPA fallback can never shadow /api calls.
+if (fs.existsSync(MANAGER_DIST_DIR)) {
+  app.use(express.static(MANAGER_DIST_DIR));
+  app.get(/^\/(?!api(?:\/|$)|shared_media(?:\/|$)).*/, (_req, res) => {
+    res.sendFile(path.join(MANAGER_DIST_DIR, 'index.html'));
+  });
+}
 
 const httpServer = app.listen(PORT, '127.0.0.1', () => {
   console.log(`Manager backend bridge listening on http://127.0.0.1:${PORT}`);

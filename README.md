@@ -263,7 +263,7 @@ one publisher, one preparer, and two active profile containers by default.
 
 ## 🔒 Security & Anti-Leak Safeguards
 
-The project is pre-configured with a strict [`.gitignore`](file:///home/rathana/Desktop/automat_fb/.gitignore) to ensure sensitive operational data is never committed to source control:
+The project is pre-configured with a strict [`.gitignore`](.gitignore) to ensure sensitive operational data is never committed to source control:
 * **Browser Cookies & Storage:** Excludes all `profiles/*/chrome_data/` directories.
 * **Credentials:** Excludes active `proxy_pool.json` and profile `config.json` files.
 * **Evidence:** Diagnostic screenshots and JSON metadata under `automation_evidence/` remain local.

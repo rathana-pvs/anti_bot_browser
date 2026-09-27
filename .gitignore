@@ -15,6 +15,8 @@ node_modules/
 manager-app/node_modules/
 manager-app/dist/
 manager-app/tsconfig.tsbuildinfo
+manager-app/src-tauri/target/
+target/
 
 # Sensitive Browser Profile Data & Real Credentials (CRITICAL - PUBLIC REPO SAFETY)
 profiles/*/chrome_data/
@@ -31,3 +33,7 @@ proxies/proxy_pool.json
 .env
 .env.*
 .DS_Store
+releases/
+android-standalone/data/
+.pytest_cache/
+build/

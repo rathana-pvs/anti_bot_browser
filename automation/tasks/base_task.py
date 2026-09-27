@@ -110,6 +110,56 @@ class BaseTask:
         except Exception as exc:
             self.log("WARN", f"Could not record stage '{stage}': {exc}")
 
+    def execute_publish_gate(self, target: tuple[int, int]) -> bool:
+        """Execute the irreversible publish click through an engine-owned gate.
+
+        Workflow code can request publication, but only this host method may
+        cross the publish boundary.  It re-observes the screen, rejects stale or
+        out-of-viewport coordinates, and permits at most one click per task.
+        """
+        if self.current_stage != "ready_to_publish":
+            self.log("WARN", f"Publish gate rejected invalid stage: {self.current_stage}")
+            return False
+        if getattr(self, "_publish_gate_consumed", False):
+            self.log("WARN", "Publish gate rejected a duplicate publish request.")
+            return False
+
+        screen = self.client.screenshot()
+        height, width = screen.shape[:2]
+        x, y = int(target[0]), int(target[1])
+        if not (0 <= x < width and 0 <= y < height):
+            self.log("WARN", f"Publish gate rejected out-of-viewport target: {(x, y)}")
+            return False
+
+        observation = self.recognizer.observe(screen)
+        if observation.state != ScreenState.POST_ENABLED:
+            self.log(
+                "WARN",
+                "Publish gate rejected stale or unsafe screen state: "
+                f"{observation.state.value} ({observation.confidence:.2f})",
+            )
+            self.capture_evidence(
+                "publish_gate_rejected",
+                screen,
+                target=[x, y],
+                state=observation.state.value,
+                confidence=observation.confidence,
+            )
+            return False
+
+        self._publish_gate_consumed = True
+        self.set_stage(
+            "publish_authorized",
+            target=[x, y],
+            observation_state=observation.state.value,
+            observation_confidence=observation.confidence,
+        )
+        # Set publish_clicked before the input call. If the actuator raises or
+        # the process dies, outer recovery must classify the result uncertain.
+        self.set_stage("publish_clicked", target=[x, y])
+        self.human.click(x, y)
+        return True
+
     def log(self, level: str, message: str) -> None:
         """Record a structured log entry."""
         entry = {

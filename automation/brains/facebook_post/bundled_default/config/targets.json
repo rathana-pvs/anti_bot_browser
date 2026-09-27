@@ -1,0 +1,25 @@
+{
+  "composer_entry": [
+    "what's on your mind",
+    "what’s on your mind",
+    "whats on your mind",
+    "what s on your mind",
+    "write something"
+  ],
+  "caption_input": [
+    "what's on your mind",
+    "what’s on your mind",
+    "write something",
+    "create a public post"
+  ],
+  "media_button": [
+    "photo/video",
+    "photo / video",
+    "photo video",
+    "photolvideo",
+    "photoivideo",
+    "photos/videos"
+  ],
+  "next_button": ["next"],
+  "publish_button": ["post", "publish", "share now"]
+}

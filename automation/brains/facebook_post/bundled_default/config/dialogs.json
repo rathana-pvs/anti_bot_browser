@@ -1,0 +1,14 @@
+{
+  "leave_site": {
+    "labels": ["leave site", "leave"],
+    "policy": "dismiss"
+  },
+  "post_publish_prompt": {
+    "labels": ["not now", "not n0w"],
+    "policy": "dismiss_after_publish"
+  },
+  "checkpoint": {
+    "labels": ["captcha", "confirm your identity", "two-factor authentication", "account restricted"],
+    "policy": "operator_review"
+  }
+}
