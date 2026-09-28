@@ -332,34 +332,28 @@ async def run_execution_now(execution_id: str):
 
     target_exec = match["execution"]
     target_post = match["post"]
+    current_status = target_exec.get("status", "")
 
-    if target_exec.get("status") in ("uncertain", "needs_review"):
+    if current_status in ("uncertain", "needs_review"):
         raise HTTPException(
             status_code=400,
             detail=f"Cannot rerun an execution in '{target_exec['status']}' state directly. Please review on Facebook and resolve the outcome first to prevent duplicate posts.",
         )
 
-    if target_exec.get("status", "").startswith("skipped_") or target_exec.get("status") in ("failed", "failed_before_publish"):
-        now_iso = datetime.now(timezone.utc).isoformat()
-        target_exec["status"] = "pending"
-        target_exec["stage"] = "pending"
-        target_exec["error"] = None
-        if target_exec.get("preparation_mode") != "off":
-            target_exec["preparation_status"] = "pending"
-        history = target_exec.get("stage_history")
-        if not isinstance(history, list):
-            history = []
-            target_exec["stage_history"] = history
-        history.append({"stage": "pending", "timestamp": now_iso, "reason": "manual_retry"})
-        save_posting_queue(queue)
-
+    is_manual_retry = current_status.startswith("skipped_") or current_status in ("failed", "failed_before_publish")
     standalone_warming = target_post.get("type") == "warming"
     prep_mode = target_exec.get("preparation_mode") or "off"
+    effective_status = "pending" if is_manual_retry else current_status
+    effective_preparation_status = (
+        "pending"
+        if is_manual_retry and prep_mode != "off"
+        else target_exec.get("preparation_status")
+    )
     needs_prep = (
         not standalone_warming
-        and target_exec.get("status") == "pending"
+        and effective_status == "pending"
         and prep_mode != "off"
-        and target_exec.get("preparation_status") == "pending"
+        and effective_preparation_status == "pending"
     )
 
     scheduler_cfg = get_scheduler_config()
@@ -374,6 +368,22 @@ async def run_execution_now(execution_id: str):
         admission = claim_container_start_admission()
         if not admission["allowed"]:
             raise HTTPException(status_code=409, detail=f"Container start delayed: {admission['reason']}.")
+
+    # Persist a retry transition only after every admission check succeeds. This
+    # prevents a rejected run-now request from leaving an execution runnable.
+    if is_manual_retry:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        target_exec["status"] = "pending"
+        target_exec["stage"] = "pending"
+        target_exec["error"] = None
+        if prep_mode != "off":
+            target_exec["preparation_status"] = "pending"
+        history = target_exec.get("stage_history")
+        if not isinstance(history, list):
+            history = []
+            target_exec["stage_history"] = history
+        history.append({"stage": "pending", "timestamp": now_iso, "reason": "manual_retry"})
+        save_posting_queue(queue)
 
     slot_kind = "preparer" if (needs_prep or standalone_warming) else "publisher"
     if needs_prep:

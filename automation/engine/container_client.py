@@ -63,8 +63,8 @@ class ContainerClient:
         if not windows:
             return 0
         # Return the window with the largest geometry (the main browser viewport)
-        best_win = windows[0]
-        max_area = 0
+        best_win = 0
+        max_area = -1
         for w in windows:
             geo = self.exec_cmd(["xdotool", "getwindowgeometry", str(w)], check=False)
             if geo.returncode != 0:
