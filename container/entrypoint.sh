@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -Eeuo pipefail
 
 echo "=== Initializing Isolated Browser Container ==="
 
@@ -27,8 +27,14 @@ fi
 SCREEN_RES="${SCREEN_RESOLUTION:-1920x1080x24}"
 WIN_SIZE="${WINDOW_SIZE:-1920,1080}"
 CHROME_LANG="${LANG:-en-US}"
-CHROME_UA="${USER_AGENT:-Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36}"
 TARGET_URL="${START_URL:-https://www.google.com}"
+RENDERING_MODE="${RENDERING_MODE:-host_gpu}"
+EXTRA_CHROME_FLAGS="${EXTRA_CHROME_FLAGS:-}"
+TUN2SOCKS_PID=""
+RENDER_ARGS=(--ignore-gpu-blocklist --enable-gpu-rasterization --enable-zero-copy)
+if [ "$RENDERING_MODE" = "software" ]; then
+    RENDER_ARGS=(--disable-gpu --use-gl=swiftshader)
+fi
 
 # Clean up any stale X locks
 rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
@@ -66,90 +72,134 @@ if command -v autocutsel &>/dev/null; then
 fi
 
 # 4. Network Proxy Setup & Fail-Closed Killswitch
-if [ -n "$PROXY_HOST" ]; then
+if [ -n "${PROXY_HOST:-}" ]; then
     PROXY_PORT="${PROXY_PORT:-1080}"
     echo "Configuring proxy tunnel via ${PROXY_HOST}:${PROXY_PORT}..."
 
-    # Resolve PROXY_HOST to IP if provided as hostname
-    PROXY_IP=$(getent hosts "$PROXY_HOST" 2>/dev/null | awk '{print $1}' | head -n 1)
-    if [ -z "$PROXY_IP" ]; then
-        PROXY_IP="$PROXY_HOST"
+    network_fail() {
+        echo "NETWORK PREFLIGHT FAILED: $*" >&2
+        printf 'failed: %s\n' "$*" > /run/network-preflight.status
+        exit 78
+    }
+
+    for command_name in ip iptables ip6tables tun2socks getent timeout; do
+        command -v "$command_name" >/dev/null 2>&1 \
+            || network_fail "required command is unavailable: ${command_name}"
+    done
+
+    [ -c /dev/net/tun ] \
+        || network_fail "/dev/net/tun is unavailable; unsafe browser-only proxy fallback is disabled"
+
+    # Resolve exactly one IPv4 endpoint before installing the killswitch. The
+    # tunnel is then pinned to that address so DNS cannot select an unapproved
+    # endpoint after the firewall is active.
+    PROXY_IP=$(getent ahostsv4 "$PROXY_HOST" 2>/dev/null | awk '$2 == "STREAM" {print $1; exit}' || true)
+    [ -n "$PROXY_IP" ] || network_fail "proxy hostname has no IPv4 address"
+    case "$PROXY_IP" in
+        127.*|0.*) network_fail "loopback/unspecified proxy endpoints are not allowed" ;;
+    esac
+
+    timeout 5 bash -c "</dev/tcp/${PROXY_IP}/${PROXY_PORT}" 2>/dev/null \
+        || network_fail "proxy endpoint is not reachable"
+
+    # Preserve the original gateway route only for the approved proxy endpoint.
+    ORIGINAL_GW=$(ip route show default dev eth0 2>/dev/null | awk '{print $3}' | head -n 1)
+    [ -n "$ORIGINAL_GW" ] || network_fail "container has no original IPv4 gateway"
+    ip route replace "$PROXY_IP" via "$ORIGINAL_GW" dev eth0 \
+        || network_fail "could not pin the proxy endpoint route"
+
+    # Create TUN interface.
+    ip tuntap add dev tun0 mode tun user chromeuser \
+        || network_fail "could not create tun0"
+    ip addr add 198.18.0.1/15 dev tun0 \
+        || network_fail "could not address tun0"
+    ip link set dev tun0 up \
+        || network_fail "could not activate tun0"
+
+    # Start tun2socks against the pinned address.
+    if [ -n "${PROXY_USER:-}" ] && [ -n "${PROXY_PASS:-}" ]; then
+        tun2socks -device tun0 -proxy "socks5://${PROXY_USER}:${PROXY_PASS}@${PROXY_IP}:${PROXY_PORT}" &
+    else
+        tun2socks -device tun0 -proxy "socks5://${PROXY_IP}:${PROXY_PORT}" &
     fi
+    TUN2SOCKS_PID=$!
+    sleep 1
+    kill -0 "$TUN2SOCKS_PID" 2>/dev/null \
+        || network_fail "tun2socks stopped during startup"
 
-    if [ -e /dev/net/tun ]; then
-        # Create TUN interface
-        ip tuntap add dev tun0 mode tun user chromeuser 2>/dev/null || true
-        ip addr add 198.18.0.1/15 dev tun0 2>/dev/null || true
-        ip link set dev tun0 up 2>/dev/null || true
+    # Route all application IPv4 traffic through tun0.
+    ip route del default dev eth0 \
+        || network_fail "could not remove the direct IPv4 default route"
+    ip route replace default dev tun0 metric 1 \
+        || network_fail "could not install the tunnel IPv4 default route"
 
-        # Start tun2socks tunnel
-        if [ -n "$PROXY_USER" ] && [ -n "$PROXY_PASS" ]; then
-            tun2socks -device tun0 -proxy "socks5://${PROXY_USER}:${PROXY_PASS}@${PROXY_HOST}:${PROXY_PORT}" &
-        else
-            tun2socks -device tun0 -proxy "socks5://${PROXY_HOST}:${PROXY_PORT}" &
-        fi
-        TUN2SOCKS_PID=$!
-        sleep 0.5
+    # Default-deny both address families. Inbound VNC/noVNC replies remain
+    # available through the established-connection rules; no broad LAN egress
+    # exception is necessary.
+    echo "Enforcing fail-closed IPv4/IPv6 network policy..."
+    iptables -F OUTPUT || network_fail "could not reset IPv4 firewall"
+    iptables -A OUTPUT -o lo -j ACCEPT
+    iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    iptables -A OUTPUT -o tun0 -j ACCEPT
+    iptables -A OUTPUT -o eth0 -d "$PROXY_IP" -p tcp --dport "$PROXY_PORT" -j ACCEPT
+    iptables -P OUTPUT DROP || network_fail "could not default-deny IPv4 output"
 
-        # Route proxy server IP directly via eth0 gateway before changing default route
-        ORIGINAL_GW=$(ip route show default dev eth0 2>/dev/null | awk '{print $3}' | head -n 1)
-        if [ -n "$ORIGINAL_GW" ] && [ -n "$PROXY_IP" ]; then
-            ip route add "$PROXY_IP" via "$ORIGINAL_GW" dev eth0 2>/dev/null || true
-        fi
+    ip6tables -F OUTPUT || network_fail "could not reset IPv6 firewall"
+    ip6tables -A OUTPUT -o lo -j ACCEPT
+    ip6tables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    ip6tables -P OUTPUT DROP || network_fail "could not default-deny IPv6 output"
+    while ip -6 route show default | grep -q '^default'; do
+        ip -6 route del default || network_fail "could not remove the IPv6 default route"
+    done
 
-        # Route all other traffic through tun0
-        ip route del default dev eth0 2>/dev/null || true
-        ip route add default dev tun0 metric 1 2>/dev/null || true
-        echo "tun2socks proxy tunnel active."
-
-        # ENFORCE FAIL-CLOSED KILLSWITCH (iptables)
-        # Blocks any direct internet connection if proxy fails or disconnects
-        echo "Enforcing fail-closed network killswitch (iptables)..."
-        iptables -F OUTPUT 2>/dev/null || true
-
-        # Allow loopback (essential for X11, websockify, VNC)
-        iptables -A OUTPUT -o lo -j ACCEPT
-
-        # Allow tun0 (all proxied application traffic)
-        iptables -A OUTPUT -o tun0 -j ACCEPT
-
-        # Allow direct connection ONLY to proxy IP and port on eth0
-        if [ -n "$PROXY_IP" ]; then
-            iptables -A OUTPUT -o eth0 -d "$PROXY_IP" -p tcp --dport "$PROXY_PORT" -j ACCEPT
-        fi
-
-        # Allow local Docker subnets (for host VNC :5900, noVNC WebSocket :6080)
-        iptables -A OUTPUT -o eth0 -d 172.16.0.0/12 -j ACCEPT
-        iptables -A OUTPUT -o eth0 -d 192.168.0.0/16 -j ACCEPT
-        iptables -A OUTPUT -o eth0 -d 10.0.0.0/8 -j ACCEPT
-
-        # KILLSWITCH: Drop all other outbound internet traffic on eth0
-        iptables -A OUTPUT -o eth0 -j DROP
-        echo "✅ Fail-closed killswitch ACTIVE: direct connections strictly blocked."
-        # Configure DNS over TCP (use-vc) so DNS queries route through the SOCKS5 TCP tunnel
-        echo "Configuring DNS over TCP (1.1.1.1, 8.8.8.8)..."
-        cat <<EOF > /etc/resolv.conf
+    # DNS requests use TCP and follow the tun0 default route.
+    echo "Configuring DNS over TCP through the tunnel..."
+    cat <<EOF > /etc/resolv.conf
 nameserver 1.1.1.1
 nameserver 8.8.8.8
-options use-vc
+options use-vc timeout:3 attempts:2
 EOF
-    else
-        echo "Notice: /dev/net/tun not found, using Chrome-level proxy flags."
-        EXTRA_CHROME_FLAGS="${EXTRA_CHROME_FLAGS} --proxy-server=socks5://${PROXY_HOST}:${PROXY_PORT}"
-    fi
+
+    # Local preflight: do not contact an external IP-check service or expose the
+    # egress address. Chrome starts only after every isolation invariant passes.
+    ip link show dev tun0 >/dev/null 2>&1 || network_fail "tun0 is missing"
+    # Ask iproute2 to filter by interface instead of parsing its variable
+    # human-readable layout (for example, "default dev tun0 metric 1").
+    ip route show default dev tun0 | grep -q '^default' \
+        || network_fail "IPv4 default route does not use tun0"
+    ip route get 1.1.1.1 | grep -Eq ' dev tun0([[:space:]]|$)' \
+        || network_fail "public IPv4 traffic does not resolve to tun0"
+    ! ip -6 route show default | grep -q '^default' \
+        || network_fail "an IPv6 default route is still present"
+    [ "$(iptables -S OUTPUT | head -n 1)" = "-P OUTPUT DROP" ] \
+        || network_fail "IPv4 firewall is not default-deny"
+    [ "$(ip6tables -S OUTPUT | head -n 1)" = "-P OUTPUT DROP" ] \
+        || network_fail "IPv6 firewall is not default-deny"
+    iptables -C OUTPUT -o eth0 -d "$PROXY_IP" -p tcp --dport "$PROXY_PORT" -j ACCEPT \
+        || network_fail "approved proxy endpoint firewall rule is missing"
+    grep -Eq '^options .*use-vc' /etc/resolv.conf \
+        || network_fail "DNS-over-TCP resolver policy is missing"
+    kill -0 "$TUN2SOCKS_PID" 2>/dev/null \
+        || network_fail "tun2socks is not running after network setup"
+    printf 'passed: proxy_tunnel_ipv4_ipv6_fail_closed\n' > /run/network-preflight.status
+    touch /run/network-preflight.ok
+    echo "Network preflight PASSED: proxy tunnel and IPv4/IPv6 fail-closed policy active."
 
     # Anti-leak Chrome network flags (WebRTC non-proxied UDP disabled, loopback bypass, disable QUIC for TCP proxy stability)
     EXTRA_CHROME_FLAGS="${EXTRA_CHROME_FLAGS} --disable-quic --disable-webrtc-hw-encoding --enforce-webrtc-ip-permission-check --webrtc-ip-handling-policy=disable_non_proxied_udp"
+else
+    printf 'passed: direct_mode_no_proxy_isolation_requested\n' > /run/network-preflight.status
+    touch /run/network-preflight.ok
 fi
 
 # Graceful shutdown handler
 cleanup() {
     echo "Received termination signal. Shutting down gracefully..."
-    if [ -n "$CHROME_PID" ]; then
+    if [ -n "${CHROME_PID:-}" ]; then
         kill -TERM "$CHROME_PID" 2>/dev/null || true
         wait "$CHROME_PID" 2>/dev/null || true
     fi
-    if [ -n "$TUN2SOCKS_PID" ]; then
+    if [ -n "${TUN2SOCKS_PID:-}" ]; then
         kill -TERM "$TUN2SOCKS_PID" 2>/dev/null || true
     fi
     kill -TERM "$WEBSOCKIFY_PID" 2>/dev/null || true
@@ -164,7 +214,7 @@ trap cleanup SIGTERM SIGINT
 echo "Clearing stale browser locks..."
 rm -f /data/profile/Singleton* 2>/dev/null || true
 
-echo "Launching Google Chrome with anti-detection flags..."
+echo "Launching Google Chrome with the requested privacy and isolation policy..."
 gosu chromeuser env TZ="${TZ}" google-chrome \
     --display=:99 \
     --user-data-dir=/data/profile \
@@ -173,11 +223,7 @@ gosu chromeuser env TZ="${TZ}" google-chrome \
     --lang="${CHROME_LANG}" \
     --window-size="${WIN_SIZE}" \
     --window-position=0,0 \
-    --ignore-gpu-blocklist \
-    --enable-gpu-rasterization \
-    --enable-zero-copy \
-    --disable-features=UserAgentClientHint \
-    --user-agent="${CHROME_UA}" \
+    "${RENDER_ARGS[@]}" \
     ${EXTRA_CHROME_FLAGS} \
     "${TARGET_URL}" &
 

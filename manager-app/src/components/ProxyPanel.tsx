@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { ProxyItem } from '../types/proxy';
-import { importProxies, testProxyPing, deleteProxy } from '../services/api';
-import { Globe, Plus, Trash2, Activity, X, PanelLeftOpen } from 'lucide-react';
+import { formatProxyGeography, ProxyItem } from '../types/proxy';
+import { checkProxyGeography, importProxies, refreshProxyStatuses, testProxyPing, deleteProxy } from '../services/api';
+import { Globe, Plus, Trash2, Activity, MapPin, X, PanelLeftOpen } from 'lucide-react';
 
 interface ProxyPanelProps {
   proxies: ProxyItem[];
@@ -22,6 +22,8 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
   const [importText, setImportText] = useState('');
   const [isImporting, setIsImporting] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
+  const [geoCheckingId, setGeoCheckingId] = useState<string | null>(null);
+  const [isRefreshingStatus, setIsRefreshingStatus] = useState(false);
 
   const total = proxies.length;
   const assigned = proxies.filter((p) => p.assigned).length;
@@ -34,7 +36,7 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
     setIsImporting(true);
     try {
       const result = await importProxies(importText);
-      alert(`Successfully added ${result.added} new proxies (${result.total} total in pool)`);
+      alert(`Added ${result.added} proxies (${result.total} total). Online: ${result.online}; offline: ${result.offline}; locations found: ${result.geo_checked}.`);
       setImportText('');
       setIsImportOpen(false);
       onRefresh();
@@ -42,6 +44,31 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
       alert(`Import failed: ${err.message}`);
     } finally {
       setIsImporting(false);
+    }
+  };
+
+  const handleGeoCheck = async (proxyId: string) => {
+    setGeoCheckingId(proxyId);
+    try {
+      await checkProxyGeography(proxyId);
+      onRefresh();
+    } catch (err: any) {
+      alert(`Location check failed: ${err.message}`);
+    } finally {
+      setGeoCheckingId(null);
+    }
+  };
+
+  const handleRefreshStatus = async () => {
+    setIsRefreshingStatus(true);
+    try {
+      const result = await refreshProxyStatuses();
+      onRefresh();
+      alert(`Checked ${result.total} proxies. Online: ${result.online}; offline: ${result.offline}; locations found: ${result.geo_checked}.`);
+    } catch (err: any) {
+      alert(`Proxy status refresh failed: ${err.message}`);
+    } finally {
+      setIsRefreshingStatus(false);
     }
   };
 
@@ -93,13 +120,20 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
           </div>
         </div>
 
-        <button
-          onClick={() => setIsImportOpen(true)}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-md bg-white text-zinc-950 font-semibold text-xs hover:bg-zinc-200 transition-colors shadow-sm"
-        >
-          <Plus className="w-4 h-4 stroke-[2.5]" />
-          <span>Import Proxies</span>
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={handleRefreshStatus} disabled={isRefreshingStatus || proxies.length === 0}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-md bg-zinc-900 border border-zinc-700 text-zinc-200 font-semibold text-xs hover:bg-zinc-800 transition-colors disabled:opacity-50">
+            <Activity className={`w-4 h-4 ${isRefreshingStatus ? 'animate-spin' : ''}`} />
+            <span>{isRefreshingStatus ? 'Refreshing...' : 'Refresh Proxy Status'}</span>
+          </button>
+          <button
+            onClick={() => setIsImportOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-md bg-white text-zinc-950 font-semibold text-xs hover:bg-zinc-200 transition-colors shadow-sm"
+          >
+            <Plus className="w-4 h-4 stroke-[2.5]" />
+            <span>Import Proxies</span>
+          </button>
+        </div>
       </div>
 
       {/* Summary KPI Cards */}
@@ -141,9 +175,7 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
                 {/* Host & Port */}
                 <div className="flex items-center gap-3">
                   <span
-                    className={`w-2 h-2 rounded-full ${
-                      proxy.assigned ? 'bg-green-500' : 'bg-zinc-500'
-                    }`}
+                    className={`w-2 h-2 rounded-full ${proxy.reachable === true ? 'bg-green-500' : proxy.reachable === false ? 'bg-red-500' : 'bg-zinc-500'}`}
                   />
                   <div>
                     <span className="font-mono text-zinc-200 font-medium">
@@ -152,6 +184,8 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
                     <span className="text-[11px] text-zinc-500 block">
                       {proxy.username ? `User: ${proxy.username}` : 'No Auth'} · SOCKS5
                     </span>
+                    <span className="text-[11px] text-zinc-500 block">{formatProxyGeography(proxy)}</span>
+                    {proxy.last_checked && <span className="text-[10px] text-zinc-600 block">Checked {new Date(proxy.last_checked).toLocaleString()}</span>}
                   </div>
                 </div>
 
@@ -195,6 +229,14 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
                     title="Test ping"
                   >
                     <Activity className={`w-3.5 h-3.5 ${testingId === proxy.id ? 'animate-spin' : ''}`} />
+                  </button>
+                  <button
+                    onClick={() => handleGeoCheck(proxy.id)}
+                    disabled={geoCheckingId === proxy.id}
+                    className="p-1 rounded text-zinc-400 hover:text-blue-300 hover:bg-zinc-800 transition-colors disabled:opacity-50"
+                    title="Check exit location and timezone"
+                  >
+                    <MapPin className={`w-3.5 h-3.5 ${geoCheckingId === proxy.id ? 'animate-pulse' : ''}`} />
                   </button>
                 </div>
 

@@ -1,11 +1,17 @@
 import pytest
 from fastapi.testclient import TestClient
 from backend.main import app
+from backend.services import proxy_service
 
 @pytest.fixture(scope="module")
-def client():
-    with TestClient(app) as c:
-        yield c
+def client(tmp_path_factory):
+    original_pool = proxy_service.PROXY_POOL_FILE
+    proxy_service.PROXY_POOL_FILE = tmp_path_factory.mktemp("proxy-api") / "proxy_pool.json"
+    try:
+        with TestClient(app) as c:
+            yield c
+    finally:
+        proxy_service.PROXY_POOL_FILE = original_pool
 
 def test_settings_resource_mode(client):
     res = client.get("/api/settings/resource-mode")
@@ -31,6 +37,11 @@ def test_system_stats(client):
     assert "docker_running" in data
     assert "cpu_cores" in data
     assert "total_memory_mb" in data
+    assert "windows_host" in data
+    assert data["runtime_environment"] in {"wsl", "linux"}
+    assert "runtime" in data
+    assert "wsl_runtime" in data
+    assert data["wsl_runtime"]["cpu_threads"] == data["cpu_cores"]
 
 def test_profiles_list(client):
     res = client.get("/api/profiles")

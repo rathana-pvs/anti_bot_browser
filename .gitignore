@@ -23,6 +23,7 @@ profiles/*/chrome_data/
 profiles/*/automation_evidence/
 profiles/*/element_cache.json
 profiles/*/config.json
+profiles/*/config.json.v*.bak
 profiles/shared_media/
 data/shared_media/
 data/posting_queue.json
@@ -34,6 +35,9 @@ proxies/proxy_pool.json
 .env.*
 .DS_Store
 releases/
+release/
+.build-tools/
+manager-app/src-tauri/gen/
 android-standalone/data/
 .pytest_cache/
 build/

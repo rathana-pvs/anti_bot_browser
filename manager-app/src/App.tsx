@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Profile, SystemStats } from './types/profile';
+import { Profile, ProfileCreateRequest, ProfileUpdateRequest, SystemStats } from './types/profile';
 import { ProxyItem } from './types/proxy';
 import {
   fetchProfiles,
@@ -19,6 +19,16 @@ import { CreateProfileModal } from './components/CreateProfileModal';
 import { EditProfileModal } from './components/EditProfileModal';
 import { TelemetryFooter } from './components/TelemetryFooter';
 import { BrainPanel } from './components/BrainPanel';
+import { ProfileActionErrorModal } from './components/ProfileActionErrorModal';
+
+type ProfileAction = 'start' | 'stop' | 'pause' | 'unpause';
+
+interface ProfileActionError {
+  profileId: string;
+  profileName: string;
+  action: ProfileAction;
+  reason: string;
+}
 
 export const App: React.FC = () => {
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -27,6 +37,7 @@ export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'profiles' | 'proxies' | 'campaigns' | 'brains'>('profiles');
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [profileActionError, setProfileActionError] = useState<ProfileActionError | null>(null);
   const [isInspectorOpen, setIsInspectorOpen] = useState<boolean>(() => {
     const saved = localStorage.getItem('inspector_open');
     return saved !== null ? saved === 'true' : true;
@@ -104,16 +115,24 @@ export const App: React.FC = () => {
 
   const selectedProfile = profiles.find((p) => p.id === selectedProfileId) || null;
 
-  const handleAction = async (profileId: string, action: 'start' | 'stop' | 'pause' | 'unpause') => {
+  const handleAction = async (profileId: string, action: ProfileAction) => {
     try {
+      setProfileActionError(null);
       await executeProfileAction(profileId, action);
       await loadData();
     } catch (err: any) {
-      alert(`Action error: ${err.message}`);
+      const profile = profiles.find((item) => item.id === profileId);
+      setProfileActionError({
+        profileId,
+        profileName: profile?.name || profileId,
+        action,
+        reason: err?.message || `Failed to ${action} profile`,
+      });
+      await loadData();
     }
   };
 
-  const handleCreate = async (profileData: Partial<Profile>) => {
+  const handleCreate = async (profileData: ProfileCreateRequest) => {
     try {
       const newProfile = await createProfile(profileData);
       await loadData();
@@ -124,7 +143,7 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleUpdate = async (profileId: string, updates: Partial<Profile>) => {
+  const handleUpdate = async (profileId: string, updates: ProfileUpdateRequest) => {
     try {
       await updateProfile(profileId, updates);
       await loadData();
@@ -242,6 +261,13 @@ export const App: React.FC = () => {
         onSave={handleUpdate}
         proxies={proxies}
       />
+
+      {profileActionError && (
+        <ProfileActionErrorModal
+          {...profileActionError}
+          onClose={() => setProfileActionError(null)}
+        />
+      )}
     </div>
   );
 };

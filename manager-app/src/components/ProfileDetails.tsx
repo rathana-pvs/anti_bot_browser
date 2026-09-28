@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Profile } from '../types/profile';
-import { Shield, Trash2, HardDrive, Network, PanelRightClose, Activity, Loader2, Sparkles } from 'lucide-react';
+import { Shield, Trash2, HardDrive, Network, PanelRightClose, Activity, Loader2, Sparkles, AlertTriangle } from 'lucide-react';
 import { cleanProfileEvidence } from '../services/api';
 
 interface ProfileDetailsProps {
@@ -58,6 +58,20 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
 
   if (!profile) return null;
 
+  const requested = profile.requested_environment || {
+    screen_resolution: profile.fingerprint.screen_resolution,
+    timezone: profile.fingerprint.timezone,
+    language: profile.fingerprint.language,
+    timezone_policy: profile.network.proxy_host ? 'proxy' as const : 'host' as const,
+    user_agent_policy: 'browser_default' as const,
+    user_agent: null,
+    rendering_mode: 'host_gpu' as const,
+  };
+  const effective = profile.effective_environment;
+  const observed = profile.observed_environment;
+  const resources = profile.resources || { cpu_limit: 4, memory_mb: 4096 };
+  const effectiveResources = profile.effective_resources;
+
   return (
     <aside
       className={`h-full bg-surface border-l border-border shrink-0 select-none overflow-hidden transition-all duration-200 ease-in-out ${
@@ -66,6 +80,12 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
     >
       <div className="w-72 h-full p-4 flex flex-col justify-between overflow-y-auto">
         <div className="space-y-5">
+          {profile.restart_required && (
+            <div className="flex gap-2 rounded-lg border border-amber-800/50 bg-amber-950/20 p-2.5 text-[11px] text-amber-300">
+              <AlertTriangle className="h-4 w-4 shrink-0" />
+              <span>Requested runtime settings are not active. {profile.status === 'running' ? 'Stop and start' : 'Start'} this profile to apply them.</span>
+            </div>
+          )}
           {/* Header */}
           <div className="flex items-start justify-between">
             <div>
@@ -105,13 +125,27 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
               </h3>
               <div className="p-2.5 rounded-lg bg-zinc-950 border border-zinc-800 space-y-1.5 text-xs">
                 <div className="flex justify-between items-center">
-                  <span className="text-zinc-500">Container CPU (4 Cores)</span>
-                  <span className="text-emerald-400 font-mono text-[11px] font-medium">
-                    {profile.cpu_usage || '< 0.5%'}
+                  <span className="text-zinc-500">Configured Limit</span>
+                  <span className="text-zinc-300 font-mono text-[11px] font-medium">
+                    {resources.cpu_limit} vCPU · {resources.memory_mb / 1024} GiB
                   </span>
                 </div>
                 <div className="flex justify-between items-center">
-                  <span className="text-zinc-500">Container RAM</span>
+                  <span className="text-zinc-500">Effective Limit</span>
+                  <span className="text-blue-300 font-mono text-[11px] font-medium">
+                    {effectiveResources
+                      ? `${effectiveResources.cpu_limit} vCPU · ${effectiveResources.memory_mb / 1024} GiB`
+                      : 'Not recorded'}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-zinc-500">Current CPU</span>
+                  <span className="text-emerald-400 font-mono text-[11px] font-medium">
+                    {profile.cpu_usage || '0.0%'}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center" title="Real-time Docker container memory usage / cgroup sandbox limit">
+                  <span className="text-zinc-500">Current RAM / Limit</span>
                   <span className="text-blue-400 font-mono text-[11px] font-medium">
                     {profile.ram_usage || 'Active'}
                   </span>
@@ -139,17 +173,17 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
             Network Isolation
           </h3>
           <div className="p-2.5 rounded-lg bg-zinc-950 border border-zinc-800 space-y-1.5 text-xs">
-            <div className="flex justify-between">
-              <span className="text-zinc-500">Proxy Host</span>
+            <div className="flex justify-between items-center">
+              <span className="text-zinc-500">Mode</span>
               <span className="text-zinc-300 font-mono text-[11px]">
-                {profile.network.proxy_host || 'None (Direct)'}
+                {profile.network.mode || (profile.network.proxy_host ? 'custom' : 'direct')}
               </span>
             </div>
-            {profile.network.proxy_port > 0 && (
-              <div className="flex justify-between">
-                <span className="text-zinc-500">Proxy Port</span>
-                <span className="text-zinc-300 font-mono text-[11px]">
-                  {profile.network.proxy_port}
+            {profile.network.proxy_host && (
+              <div className="flex justify-between gap-2">
+                <span className="text-zinc-500">Endpoint</span>
+                <span className="truncate text-zinc-300 font-mono text-[11px]">
+                  {profile.network.proxy_host}:{profile.network.proxy_port}
                 </span>
               </div>
             )}
@@ -162,37 +196,44 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
           </div>
         </div>
 
-        {/* Fingerprint Identity */}
+        {/* Requested, effective and observed environment */}
         <div className="space-y-2">
           <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
             <Shield className="w-3.5 h-3.5" />
-            Fingerprint
+            Browser Environment
           </h3>
           <div className="p-2.5 rounded-lg bg-zinc-950 border border-zinc-800 space-y-2 text-xs">
+            <div className="grid grid-cols-[62px_1fr] gap-x-2 gap-y-1 text-[10px]">
+              <span className="text-zinc-600">Requested</span>
+              <span className="truncate text-zinc-300 font-mono">{requested.screen_resolution} · {requested.timezone}</span>
+              <span className="text-zinc-600">Effective</span>
+              <span className="truncate text-blue-300 font-mono">
+                {effective ? `${effective.screen_resolution} · ${effective.timezone}` : 'Not applied yet'}
+              </span>
+              <span className="text-zinc-600">Observed</span>
+              <span className="truncate text-emerald-300 font-mono">
+                {observed ? `${observed.screen_resolution || 'unknown'} · ${observed.timezone || 'unknown'}` : 'Not measured'}
+              </span>
+            </div>
+            <div className="border-t border-zinc-800/70 pt-2">
+              <span className="block text-[11px] text-zinc-500">Language / rendering</span>
+              <span className="text-[11px] text-zinc-300 font-mono">
+                {requested.language} · {requested.rendering_mode === 'host_gpu' ? 'Host GPU' : 'Software'}
+              </span>
+            </div>
             <div>
-              <span className="text-zinc-500 block text-[11px]">GPU Renderer</span>
-              <span className="text-zinc-300 font-mono text-[11px] leading-tight block truncate">
-                {profile.fingerprint.webgl_renderer}
+              <span className="block text-[11px] text-zinc-500">Observed renderer</span>
+              <span className="block truncate text-[11px] text-zinc-300 font-mono" title={observed?.webgl_renderer || undefined}>
+                {observed?.webgl_renderer || 'Not measured'}
               </span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-zinc-500">Resolution</span>
-              <span className="text-zinc-300 font-mono text-[11px]">
-                {profile.fingerprint.screen_resolution}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-zinc-500">Timezone</span>
-              <span className="text-zinc-300 font-mono text-[11px]">
-                {profile.fingerprint.timezone}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-zinc-500">Cores / RAM</span>
-              <span className="text-zinc-300 font-mono text-[11px]">
-                {profile.fingerprint.hardware_concurrency} Cores · {profile.fingerprint.device_memory} GB
-              </span>
-            </div>
+            {observed?.browser_version && <div className="truncate text-[10px] text-zinc-500">{observed.browser_version}</div>}
+            {effective?.network_preflight && (
+              <div className={`truncate text-[10px] ${effective.network_preflight.startsWith('passed:') ? 'text-emerald-400' : 'text-red-400'}`}>
+                Network: {effective.network_preflight}
+              </div>
+            )}
+            {observed?.observed_at && <div className="text-[10px] text-zinc-600">Observed {new Date(observed.observed_at).toLocaleString()}</div>}
           </div>
         </div>
 

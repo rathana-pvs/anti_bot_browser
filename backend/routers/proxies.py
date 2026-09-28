@@ -5,6 +5,9 @@ from backend.services.proxy_service import (
     save_proxy_pool,
     import_proxies_from_text,
     delete_proxy,
+    refresh_proxy_geographies,
+    refresh_proxy_geography,
+    refresh_proxy_statuses,
     test_proxy_ping,
 )
 
@@ -19,7 +22,25 @@ def import_proxies(payload: dict = Body(...)):
     text = payload.get("text")
     if not text or not isinstance(text, str):
         raise HTTPException(status_code=400, detail="No proxy text provided")
-    return import_proxies_from_text(text)
+    result = import_proxies_from_text(text)
+    added_ids = result.pop("added_ids", [])
+    status = refresh_proxy_statuses(added_ids) if added_ids else {
+        "online": 0, "offline": 0, "geo_checked": 0, "geo_failed": 0,
+    }
+    return {
+        **result,
+        "status_checked": status.get("total", 0),
+        "online": status["online"],
+        "offline": status["offline"],
+        "geo_checked": status["geo_checked"],
+        "geo_failed": status["geo_failed"],
+    }
+
+
+@router.post("/refresh-status")
+def refresh_all_proxy_statuses():
+    proxy_ids = [proxy["id"] for proxy in load_proxy_pool()]
+    return refresh_proxy_statuses(proxy_ids)
 
 @router.post("/{proxy_id}/test")
 def test_proxy(proxy_id: str):
@@ -34,6 +55,23 @@ def test_proxy(proxy_id: str):
     save_proxy_pool(pool)
 
     return {**proxy, "test": test_res}
+
+
+@router.post("/{proxy_id}/geo-check")
+def geo_check_proxy(proxy_id: str):
+    try:
+        return refresh_proxy_geography(proxy_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/geo-check-all")
+def geo_check_all_proxies():
+    proxy_ids = [proxy["id"] for proxy in load_proxy_pool()]
+    result = refresh_proxy_geographies(proxy_ids)
+    return {"checked": result["checked"], "failed": result["failed"]}
 
 @router.delete("/{proxy_id}")
 def remove_proxy(proxy_id: str):

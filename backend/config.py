@@ -16,7 +16,18 @@ QUEUE_CLAIM_LOCK_FILE = DATA_DIR / "posting_queue.claim.lock"
 MANAGER_SETTINGS_FILE = DATA_DIR / "manager_settings.json"
 BRAINS_DIR = ROOT_DIR / "automation" / "brains"
 BRAIN_CLI = ROOT_DIR / "automation" / "brain_cli.py"
-AUTOMATION_PYTHON = ROOT_DIR / "automation" / "venv" / "bin" / "python"
+if sys.platform == "win32":
+    win_py_build = ROOT_DIR / "build" / "venv_win" / "Scripts" / "python.exe"
+    win_py_auto = ROOT_DIR / "automation" / "venv" / "Scripts" / "python.exe"
+    if win_py_build.exists():
+        AUTOMATION_PYTHON = win_py_build
+    elif win_py_auto.exists():
+        AUTOMATION_PYTHON = win_py_auto
+    else:
+        AUTOMATION_PYTHON = Path(sys.executable)
+else:
+    linux_py_auto = ROOT_DIR / "automation" / "venv" / "bin" / "python"
+    AUTOMATION_PYTHON = linux_py_auto if linux_py_auto.exists() else Path(sys.executable)
 BRAIN_UPLOAD_DIR = BRAINS_DIR / "staging" / "uploads"
 MANAGER_DIST_DIR = ROOT_DIR / "manager-app" / "dist"
 
@@ -29,19 +40,49 @@ MANAGER_INSTANCE_ID = f"mgr_{uuid.uuid4().hex[:12]}"
 
 # Hardware Specs
 TOTAL_MEMORY_BYTES = psutil.virtual_memory().total
-TOTAL_MEMORY_GB = round(TOTAL_MEMORY_BYTES / (1024 ** 3))
+_raw_gb = TOTAL_MEMORY_BYTES / (1024 ** 3)
+if _raw_gb <= 6:
+    TOTAL_MEMORY_GB = 4
+elif _raw_gb <= 12:
+    TOTAL_MEMORY_GB = 8
+elif _raw_gb <= 24:
+    TOTAL_MEMORY_GB = 16
+elif _raw_gb <= 48:
+    TOTAL_MEMORY_GB = 32
+else:
+    TOTAL_MEMORY_GB = 64
 CPU_THREADS = os.cpu_count() or 4
 
-# Real host hardware specifications (TigerLake Iris Xe / i7-11370H / 16GB)
-REAL_HOST_SPECS = {
-    "webgl_vendor": "Intel Open Source Technology Center",
-    "webgl_renderer": "Mesa Intel(R) Iris(R) Xe Graphics (TGL GT2)",
-    "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "color_depth": 24,
-    "language": "en-US",
-    "hardware_concurrency": 8,
-    "device_memory": 16,
-}
+def get_host_timezone() -> str:
+    try:
+        tz_path = Path("/etc/timezone")
+        if tz_path.exists():
+            val = tz_path.read_text(encoding="utf-8").strip()
+            if val:
+                return val
+    except Exception:
+        pass
+    try:
+        localtime = Path("/etc/localtime")
+        if localtime.is_symlink():
+            target = os.readlink(str(localtime))
+            if "zoneinfo/" in target:
+                return target.split("zoneinfo/")[-1].strip()
+    except Exception:
+        pass
+    try:
+        import subprocess
+        out = subprocess.check_output(
+            ["timedatectl", "show", "-p", "Timezone", "--value"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        ).strip()
+        if out:
+            return out
+    except Exception:
+        pass
+    return "America/Guatemala" if Path("/etc/timezone").exists() else "UTC"
 
 # OCR Runtime Detection
 def detect_ocr_runtime():

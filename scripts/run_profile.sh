@@ -23,11 +23,16 @@ WS_PORT=$(jq -r '.container.ws_port // empty' "$CONFIG_FILE")
 if [ -z "$WS_PORT" ]; then
     WS_PORT=$(( VNC_PORT + 180 ))
 fi
-SCREEN_RES=$(jq -r '.fingerprint.screen_resolution // "1920x1080"' "$CONFIG_FILE")
+SCREEN_RES=$(jq -r '.requested_environment.screen_resolution // .fingerprint.screen_resolution // "1920x1080"' "$CONFIG_FILE")
 COLOR_DEPTH=$(jq -r '.fingerprint.color_depth // 24' "$CONFIG_FILE")
-USER_AGENT=$(jq -r '.fingerprint.user_agent // ""' "$CONFIG_FILE")
-TIMEZONE=$(jq -r '.fingerprint.timezone // "America/New_York"' "$CONFIG_FILE")
-LANG_VAL=$(jq -r '.fingerprint.language // "en-US"' "$CONFIG_FILE")
+TIMEZONE=$(jq -r '.requested_environment.timezone // .fingerprint.timezone // empty' "$CONFIG_FILE")
+if [ -z "$TIMEZONE" ]; then
+    TIMEZONE=$(cat /etc/timezone 2>/dev/null || timedatectl show -p Timezone --value 2>/dev/null || echo "UTC")
+fi
+LANG_VAL=$(jq -r '.requested_environment.language // .fingerprint.language // "en-US"' "$CONFIG_FILE")
+RENDERING_MODE=$(jq -r '.requested_environment.rendering_mode // "host_gpu"' "$CONFIG_FILE")
+CPU_LIMIT=$(jq -r '.resources.cpu_limit // 4' "$CONFIG_FILE")
+MEMORY_LIMIT_MB=$(jq -r '.resources.memory_mb // 4096' "$CONFIG_FILE")
 
 PROXY_HOST=$(jq -r '.network.proxy_host // ""' "$CONFIG_FILE")
 PROXY_PORT=$(jq -r '.network.proxy_port // ""' "$CONFIG_FILE")
@@ -41,6 +46,8 @@ case "$ACTION" in
         echo "VNC Port:    ${VNC_PORT} -> 5900"
         echo "noVNC Port:  ${WS_PORT} -> 6080"
         echo "Resolution:  ${SCREEN_RES}x${COLOR_DEPTH}"
+        echo "CPU Limit:   ${CPU_LIMIT} vCPU"
+        echo "Memory Limit:${MEMORY_LIMIT_MB} MiB"
         echo "Data Mount:  ${DATA_DIR}"
 
         # Ensure host profile storage directory exists
@@ -60,11 +67,10 @@ case "$ACTION" in
         ENV_ARGS=(
             -e "SCREEN_RESOLUTION=${SCREEN_RES}x${COLOR_DEPTH}"
             -e "WINDOW_SIZE=${SCREEN_RES/x/,}"
-            -e "USER_AGENT=${USER_AGENT}"
+            -e "RENDERING_MODE=${RENDERING_MODE}"
             -e "TZ=${TIMEZONE}"
             -e "LANG=${LANG_VAL}"
         )
-
         CAP_ARGS=(--cap-add=SYS_ADMIN)
         if [ -n "$PROXY_HOST" ]; then
             ENV_ARGS+=(
@@ -89,7 +95,7 @@ case "$ACTION" in
         mkdir -p "$SHARED_MEDIA_DIR"
 
         # Run container with resource limits, display ports, and network capabilities
-        docker run -d \
+        CONTAINER_ID=$(docker run -d \
             --name "$CONTAINER_NAME" \
             -p "${VNC_PORT}:5900" \
             -p "${WS_PORT}:6080" \
@@ -98,11 +104,36 @@ case "$ACTION" in
             -v "${ROOT_DIR}/container/entrypoint.sh:/entrypoint.sh:ro" \
             "${CAP_ARGS[@]}" \
             "${DEVICE_ARGS[@]}" \
-            --memory="2048m" \
-            --cpus="4.0" \
+            --memory="${MEMORY_LIMIT_MB}m" \
+            --memory-swap="${MEMORY_LIMIT_MB}m" \
+            --cpus="${CPU_LIMIT}" \
             --shm-size="1g" \
             "${ENV_ARGS[@]}" \
-            "$IMAGE_NAME"
+            "$IMAGE_NAME")
+
+        # Do not report a profile as running until its in-container network
+        # preflight has completed. A proxy-mode failure exits before Chrome.
+        PREFLIGHT_READY=false
+        for _ in $(seq 1 80); do
+            if ! docker inspect -f '{{.State.Running}}' "$CONTAINER_ID" 2>/dev/null | grep -q '^true$'; then
+                echo "Error: Container stopped before network preflight completed." >&2
+                docker logs "$CONTAINER_ID" >&2 || true
+                jq '.status = "stopped"' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+                exit 1
+            fi
+            if docker exec "$CONTAINER_ID" test -f /run/network-preflight.ok 2>/dev/null; then
+                PREFLIGHT_READY=true
+                break
+            fi
+            sleep 0.25
+        done
+        if [ "$PREFLIGHT_READY" != "true" ]; then
+            echo "Error: Network preflight did not complete within 20 seconds." >&2
+            docker logs "$CONTAINER_ID" >&2 || true
+            docker stop "$CONTAINER_ID" >/dev/null 2>&1 || true
+            jq '.status = "stopped"' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+            exit 1
+        fi
 
         # Update status in config.json
         jq '.status = "running"' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"

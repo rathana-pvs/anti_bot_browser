@@ -1,16 +1,29 @@
 import subprocess
+import os
 import psutil
 from fastapi import APIRouter
 from backend.config import PROFILES_DIR, CPU_THREADS
 from backend.services.proxy_service import load_proxy_pool
 from backend.services.docker_service import (
     count_running_profile_containers,
-    current_cpu_percent,
-    current_gpu_percent,
-    gpu_model,
+    get_current_cpu_percent,
+    get_current_gpu_percent,
+    get_gpu_model,
 )
+from backend.services.host_metrics_service import get_windows_host_stats
 
 router = APIRouter(prefix="/api/system", tags=["system"])
+
+
+def runtime_environment() -> str:
+    if os.environ.get("WSL_INTEROP") or os.environ.get("WSL_DISTRO_NAME"):
+        return "wsl"
+    try:
+        if "microsoft" in open("/proc/version", encoding="utf-8").read().lower():
+            return "wsl"
+    except Exception:
+        pass
+    return "linux"
 
 @router.get("/stats")
 def get_system_stats():
@@ -47,6 +60,16 @@ def get_system_stats():
     except Exception:
         pass
 
+    wsl_runtime = {
+        "cpu_percent": get_current_cpu_percent(),
+        "cpu_threads": CPU_THREADS,
+        "cpu_model": cpu_model_str,
+        "used_memory_mb": used_mem_mb,
+        "total_memory_mb": total_mem_mb,
+        "gpu_percent": get_current_gpu_percent(),
+        "gpu_model": get_gpu_model(),
+    }
+
     return {
         "docker_running": docker_running,
         "active_profiles": active_containers,
@@ -54,9 +77,14 @@ def get_system_stats():
         "used_memory_mb": used_mem_mb,
         "total_memory_mb": total_mem_mb,
         "available_proxies": available_proxies,
-        "cpu_percent": current_cpu_percent,
+        # Legacy fields remain WSL values for compatibility with older clients.
+        "cpu_percent": wsl_runtime["cpu_percent"],
         "cpu_cores": CPU_THREADS,
         "cpu_model": cpu_model_str,
-        "gpu_percent": current_gpu_percent,
-        "gpu_model": gpu_model,
+        "gpu_percent": wsl_runtime["gpu_percent"],
+        "gpu_model": wsl_runtime["gpu_model"],
+        "windows_host": get_windows_host_stats(),
+        "runtime_environment": runtime_environment(),
+        "runtime": wsl_runtime,
+        "wsl_runtime": wsl_runtime,
     }

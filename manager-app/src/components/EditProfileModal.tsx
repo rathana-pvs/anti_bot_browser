@@ -1,413 +1,201 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Profile } from '../types/profile';
-import { ProxyItem } from '../types/proxy';
-import { SCREEN_RESOLUTIONS } from '../services/fingerprintPool';
-import { X, Globe, Calendar, Monitor, FileText, Shield } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { AlertTriangle, Cpu, Globe, Monitor, X } from 'lucide-react';
+import { Profile, ProfileUpdateRequest, RequestedEnvironment, ResourceLimits } from '../types/profile';
+import { formatProxyGeography, ProxyItem } from '../types/proxy';
+import { SCREEN_RESOLUTIONS, getHostTimezone } from '../services/fingerprintPool';
+import { fetchProfileDefaults } from '../services/api';
 
 interface EditProfileModalProps {
   profile: Profile | null;
   isOpen: boolean;
   onClose: () => void;
-  onSave: (profileId: string, updates: Partial<Profile>) => Promise<void>;
+  onSave: (profileId: string, updates: ProfileUpdateRequest) => Promise<void>;
   proxies?: ProxyItem[];
 }
 
+function environmentFor(profile: Profile): RequestedEnvironment {
+  return profile.requested_environment || {
+    screen_resolution: profile.fingerprint.screen_resolution,
+    timezone_policy: profile.network.proxy_host ? 'proxy' : 'host',
+    timezone: profile.fingerprint.timezone,
+    language: profile.fingerprint.language,
+    user_agent_policy: 'browser_default',
+    user_agent: null,
+    rendering_mode: 'host_gpu',
+  };
+}
+
 export const EditProfileModal: React.FC<EditProfileModalProps> = ({
-  profile,
-  isOpen,
-  onClose,
-  onSave,
-  proxies = [],
+  profile, isOpen, onClose, onSave, proxies = [],
 }) => {
   const [name, setName] = useState('');
-  const [resolution, setResolution] = useState('1920x1080');
-  const [timezone, setTimezone] = useState('America/Los_Angeles');
-  const [selectedProxyMode, setSelectedProxyMode] = useState<string>('none');
-  const [proxyHost, setProxyHost] = useState('');
-  const [proxyPort, setProxyPort] = useState('1080');
-  const [proxyUser, setProxyUser] = useState('');
-  const [proxyPass, setProxyPass] = useState('');
-
+  const [environment, setEnvironment] = useState<RequestedEnvironment | null>(null);
+  const [resources, setResources] = useState<ResourceLimits>({ cpu_limit: 4, memory_mb: 4096 });
+  const [cpuOptions, setCpuOptions] = useState([1, 2, 4, 6, 8]);
+  const [memoryOptions, setMemoryOptions] = useState([1024, 2048, 3072, 4096, 6144, 8192]);
+  const [networkChoice, setNetworkChoice] = useState('direct');
+  const [customHost, setCustomHost] = useState('');
+  const [customPort, setCustomPort] = useState('1080');
+  const [customUser, setCustomUser] = useState('');
+  const [customPassword, setCustomPassword] = useState('');
   const [warmingWeek, setWarmingWeek] = useState(1);
   const [warmingComplete, setWarmingComplete] = useState(false);
   const [notes, setNotes] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const lastInitializedIdRef = useRef<string | null>(null);
-
-  // Initialize form ONLY once when modal opens or profile ID changes
   useEffect(() => {
-    if (!isOpen || !profile) {
-      lastInitializedIdRef.current = null;
-      return;
-    }
-
-    if (lastInitializedIdRef.current === profile.id) {
-      return;
-    }
-    lastInitializedIdRef.current = profile.id;
-
+    if (!isOpen || !profile) return;
     setName(profile.name);
-    setResolution(profile.fingerprint.screen_resolution || '1920x1080');
-    setTimezone(profile.fingerprint.timezone || 'America/Los_Angeles');
+    setEnvironment(environmentFor(profile));
+    setResources(profile.resources || { cpu_limit: 4, memory_mb: 4096 });
     setWarmingWeek(profile.account.warming_week || 1);
-    setWarmingComplete(profile.account.warming_complete || false);
+    setWarmingComplete(Boolean(profile.account.warming_complete));
     setNotes(profile.account.notes || '');
-
-    const boundProxy = proxies.find(
-      (p) =>
-        p.profile_id === profile.id ||
-        (p.host === profile.network.proxy_host && Number(p.port) === Number(profile.network.proxy_port))
-    );
-
-    if (boundProxy) {
-      setSelectedProxyMode(boundProxy.id);
-      setProxyHost(boundProxy.host);
-      setProxyPort(String(boundProxy.port));
-      setProxyUser(boundProxy.username || '');
-      setProxyPass(boundProxy.password || '');
-      if (boundProxy.timezone) {
-        setTimezone(boundProxy.timezone);
-      }
+    setError(null);
+    if (profile.network.mode === 'pool' && profile.network.proxy_id) {
+      setNetworkChoice(profile.network.proxy_id);
     } else if (profile.network.proxy_host) {
-      setSelectedProxyMode('custom');
-      setProxyHost(profile.network.proxy_host);
-      setProxyPort(String(profile.network.proxy_port || 1080));
-      setProxyUser(profile.network.proxy_user || '');
-      setProxyPass(profile.network.proxy_pass || '');
+      setNetworkChoice('custom');
     } else {
-      setSelectedProxyMode('none');
-      setProxyHost('');
-      setProxyPort('1080');
-      setProxyUser('');
-      setProxyPass('');
+      setNetworkChoice('direct');
     }
+    setCustomHost(profile.network.proxy_host || '');
+    setCustomPort(String(profile.network.proxy_port || 1080));
+    setCustomUser(profile.network.proxy_user || '');
+    setCustomPassword(profile.network.proxy_pass || '');
+    fetchProfileDefaults().then((defaults) => {
+      setCpuOptions(defaults.resource_options.cpu_limits.filter((value) => value <= defaults.resource_options.host_cpu_threads));
+      setMemoryOptions(defaults.resource_options.memory_mb.filter((value) => value <= defaults.resource_options.host_memory_mb));
+    }).catch(() => undefined);
   }, [isOpen, profile?.id]);
 
-  if (!isOpen || !profile) return null;
+  if (!isOpen || !profile || !environment) return null;
 
-  // Find proxy currently active in pool for this modal
-  const selectedProxyItem = proxies.find((p) => p.id === selectedProxyMode);
-  const currentPoolProxy = proxies.find(
-    (p) =>
-      p.profile_id === profile.id ||
-      (p.host === profile.network.proxy_host && Number(p.port) === Number(profile.network.proxy_port))
+  const poolChoices = proxies.filter(
+    (proxy) => !proxy.assigned || proxy.profile_id === profile.id || proxy.id === profile.network.proxy_id
   );
+  const selectedPoolProxy = poolChoices.find((proxy) => proxy.id === networkChoice);
 
-  const otherAvailableProxies = proxies.filter(
-    (p) => !p.assigned && p.id !== currentPoolProxy?.id && p.id !== selectedProxyItem?.id
-  );
-
-  const handleProxyChange = (mode: string) => {
-    setSelectedProxyMode(mode);
-    if (mode === 'none') {
-      setProxyHost('');
-      setProxyPort('1080');
-      setProxyUser('');
-      setProxyPass('');
-    } else if (mode === 'custom') {
-      // keep current or clear
+  const changeNetwork = (choice: string) => {
+    setNetworkChoice(choice);
+    if (choice === 'direct') {
+      setEnvironment((current) => current && ({ ...current, timezone_policy: 'host', timezone: getHostTimezone() }));
+    } else if (choice === 'custom') {
+      setCustomHost('');
+      setCustomPort('1080');
+      setCustomUser('');
+      setCustomPassword('');
+      setEnvironment((current) => current && ({ ...current, timezone_policy: 'manual', timezone: getHostTimezone() }));
     } else {
-      const selected = proxies.find((p) => p.id === mode);
-      if (selected) {
-        setProxyHost(selected.host);
-        setProxyPort(String(selected.port));
-        setProxyUser(selected.username || '');
-        setProxyPass(selected.password || '');
-        if (selected.timezone) {
-          setTimezone(selected.timezone);
-        }
-      }
+      const proxy = poolChoices.find((item) => item.id === choice);
+      setEnvironment((current) => current && ({ ...current, timezone_policy: 'proxy', timezone: proxy?.timezone || null }));
     }
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
     setIsSaving(true);
-
+    setError(null);
     try {
-      const updates: Partial<Profile> = {
-        name,
-        fingerprint: {
-          ...profile.fingerprint,
-          screen_resolution: resolution,
-          timezone,
-        },
-        network: {
-          ...profile.network,
-          proxy_host: proxyHost.trim(),
-          proxy_port: parseInt(proxyPort, 10) || 1080,
-          proxy_user: proxyUser.trim(),
-          proxy_pass: proxyPass.trim(),
-        },
-        account: {
-          ...profile.account,
-          warming_week: Number(warmingWeek),
-          warming_complete: warmingComplete,
-          notes: notes.trim(),
-        },
-      };
-
-      await onSave(profile.id, updates);
+      const network: ProfileUpdateRequest['network'] = networkChoice === 'direct'
+        ? { mode: 'direct' }
+        : networkChoice === 'custom'
+          ? { mode: 'custom', host: customHost.trim(), port: Number(customPort), username: customUser.trim(), password: customPassword }
+          : { mode: 'pool', proxy_id: networkChoice };
+      await onSave(profile.id, {
+        name: name.trim(), network, requested_environment: environment, resources,
+        account: { warming_week: warmingWeek, warming_complete: warmingComplete, notes: notes.trim() },
+      });
       onClose();
-    } catch (err: any) {
-      alert(`Save error: ${err.message}`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not save profile');
     } finally {
       setIsSaving(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 select-none">
-      <div className="bg-surface border border-border w-full max-w-lg rounded-xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
-        <div className="px-5 py-4 border-b border-border flex items-center justify-between">
-          <div>
-            <h2 className="text-sm font-semibold text-zinc-100">Edit Profile</h2>
-            <p className="text-[11px] text-zinc-500 font-mono mt-0.5">{profile.id}</p>
-          </div>
-          <button
-            onClick={onClose}
-            className="p-1 rounded text-zinc-400 hover:text-zinc-200 transition-colors"
-          >
-            <X className="w-4 h-4" />
-          </button>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+      <div className="max-h-[90vh] w-full max-w-lg overflow-hidden rounded-xl border border-border bg-surface shadow-2xl">
+        <div className="flex items-center justify-between border-b border-border px-5 py-4">
+          <div><h2 className="text-sm font-semibold text-zinc-100">Edit profile</h2><p className="font-mono text-[11px] text-zinc-500">{profile.id}</p></div>
+          <button type="button" onClick={onClose} className="text-zinc-400 hover:text-white"><X className="h-4 w-4" /></button>
         </div>
-
-        <form onSubmit={handleSubmit} className="p-5 space-y-4 text-xs max-h-[80vh] overflow-y-auto">
-          {/* Profile Name */}
-          <div>
-            <label className="block text-zinc-400 font-medium mb-1.5">Profile Name</label>
-            <input
-              type="text"
-              required
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              className="w-full bg-zinc-950 border border-zinc-800 rounded-md px-3 py-2 text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-zinc-700"
-            />
-          </div>
-
-          {/* Screen Resolution */}
-          <div>
-            <label className="block text-zinc-400 font-medium mb-1.5 flex items-center gap-1.5">
-              <Monitor className="w-3.5 h-3.5 text-zinc-500" />
-              Screen Resolution
-            </label>
-            <select
-              value={resolution}
-              onChange={(e) => setResolution(e.target.value)}
-              className="w-full bg-zinc-950 border border-zinc-800 rounded-md px-3 py-2 text-zinc-100 focus:outline-none focus:border-zinc-700 font-mono"
-            >
-              {SCREEN_RESOLUTIONS.map((res) => (
-                <option key={res} value={res}>
-                  {res} {res === '1920x1080' ? '(Recommended Standard)' : ''}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Dedicated Proxy Selection */}
-          <div className="p-3 rounded-lg bg-zinc-950 border border-zinc-800 space-y-2.5">
-            <div className="flex items-center justify-between">
-              <span className="font-medium text-zinc-300 flex items-center gap-1.5">
-                <Globe className="w-3.5 h-3.5 text-zinc-400" />
-                Proxy Assignment
-              </span>
-              <span className="text-[10px] text-zinc-400 font-mono bg-zinc-900 px-2 py-0.5 rounded border border-zinc-800">
-                {otherAvailableProxies.length + (selectedProxyItem ? 1 : 0)} in pool
-              </span>
+        <form onSubmit={submit} className="max-h-[80vh] space-y-4 overflow-y-auto p-5 text-xs">
+          {profile.status === 'running' && (
+            <div className="flex gap-2 rounded border border-amber-800/50 bg-amber-950/20 p-2 text-amber-300">
+              <AlertTriangle className="h-4 w-4 shrink-0" />Runtime changes are saved as requested settings and require a restart before they become effective.
             </div>
-
-            <div>
-              <label className="text-[11px] text-zinc-400 block mb-1">Select Available Proxy</label>
-              <select
-                value={selectedProxyMode}
-                onChange={(e) => handleProxyChange(e.target.value)}
-                className="w-full bg-zinc-900 border border-zinc-800 rounded px-2.5 py-2 text-zinc-100 focus:outline-none focus:border-zinc-700 font-mono text-xs"
-              >
-                {/* Currently Assigned Proxy */}
-                {currentPoolProxy && (
-                  <optgroup label="Currently Assigned">
-                    <option value={currentPoolProxy.id}>
-                      {currentPoolProxy.host}:{currentPoolProxy.port} {currentPoolProxy.latency_ms ? `(${currentPoolProxy.latency_ms}ms)` : ''} — Current Proxy
-                    </option>
-                  </optgroup>
-                )}
-
-                {/* Selected Proxy from pool if different from currently assigned */}
-                {selectedProxyItem && selectedProxyItem.id !== currentPoolProxy?.id && (
-                  <optgroup label="Selected Proxy">
-                    <option value={selectedProxyItem.id}>
-                      {selectedProxyItem.host}:{selectedProxyItem.port} {selectedProxyItem.latency_ms ? `(${selectedProxyItem.latency_ms}ms)` : ''} — Selected
-                    </option>
-                  </optgroup>
-                )}
-
-                {/* Other Available unassigned proxies in pool */}
-                {otherAvailableProxies.length > 0 && (
-                  <optgroup label={`Available in Pool (${otherAvailableProxies.length})`}>
-                    {otherAvailableProxies.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.host}:{p.port} {p.latency_ms ? `(${p.latency_ms}ms)` : ''} — Available
-                      </option>
-                    ))}
-                  </optgroup>
-                )}
-
-                <option value="none">Direct Connection (No Proxy)</option>
-                <option value="custom">Custom / Manual Proxy Entry...</option>
+          )}
+          <label className="block text-zinc-400">Profile name
+            <input required value={name} onChange={(e) => setName(e.target.value)} className="mt-1.5 w-full rounded border border-zinc-800 bg-zinc-950 px-3 py-2 text-zinc-100" />
+          </label>
+          <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
+            <div className="flex items-center gap-1.5 font-medium text-zinc-300"><Globe className="h-3.5 w-3.5" />Network</div>
+            <select value={networkChoice} onChange={(e) => changeNetwork(e.target.value)} className="w-full rounded border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-zinc-100">
+              <option value="direct">Direct connection</option>
+              {poolChoices.map((proxy) => <option key={proxy.id} value={proxy.id}>{proxy.host}:{proxy.port} — {formatProxyGeography(proxy)}</option>)}
+              <option value="custom">Custom proxy</option>
+            </select>
+            {selectedPoolProxy && <p className="text-[11px] text-zinc-400">{formatProxyGeography(selectedPoolProxy)}</p>}
+            {selectedPoolProxy && !selectedPoolProxy.timezone && (
+              <label className="block text-amber-300">Timezone required because this proxy has no location metadata
+                <input required value={environment.timezone || ''} onChange={(e) => setEnvironment({ ...environment, timezone: e.target.value })}
+                  placeholder="IANA timezone, e.g. America/Guatemala"
+                  className="mt-1 w-full rounded border border-amber-800/60 bg-zinc-900 px-2 py-1.5 text-zinc-200" />
+              </label>
+            )}
+            {networkChoice === 'custom' && (
+              <div className="grid grid-cols-3 gap-2">
+                <input required value={customHost} onChange={(e) => setCustomHost(e.target.value)} placeholder="Proxy host" className="col-span-2 rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-200" />
+                <input required type="number" min={1} max={65535} value={customPort} onChange={(e) => setCustomPort(e.target.value)} className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-200" />
+                <input value={customUser} onChange={(e) => setCustomUser(e.target.value)} placeholder="Username" className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-200" />
+                <input type="password" value={customPassword} onChange={(e) => setCustomPassword(e.target.value)} placeholder="Password" className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-200" />
+                <input required value={environment.timezone || ''} onChange={(e) => setEnvironment({ ...environment, timezone: e.target.value })} placeholder="IANA timezone" className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-200" />
+              </div>
+            )}
+          </div>
+          <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
+            <div className="flex items-center gap-1.5 font-medium text-zinc-300"><Cpu className="h-3.5 w-3.5" />Container resource limits</div>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="text-zinc-500">CPU quota
+                <select value={resources.cpu_limit} onChange={(e) => setResources((current) => ({ ...current, cpu_limit: Number(e.target.value) }))}
+                  className="mt-1 w-full rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-200">
+                  {cpuOptions.map((value) => <option key={value} value={value}>{value} vCPU</option>)}
+                </select>
+              </label>
+              <label className="text-zinc-500">Memory ceiling
+                <select value={resources.memory_mb} onChange={(e) => setResources((current) => ({ ...current, memory_mb: Number(e.target.value) }))}
+                  className="mt-1 w-full rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-200">
+                  {memoryOptions.map((value) => <option key={value} value={value}>{value / 1024} GiB</option>)}
+                </select>
+              </label>
+            </div>
+            <p className="text-[10px] text-zinc-500">These are ceilings, not reserved CPU or memory. Changes apply after restart.</p>
+          </div>
+          <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
+            <div className="flex items-center gap-1.5 font-medium text-zinc-300"><Monitor className="h-3.5 w-3.5" />Requested browser environment</div>
+            <div className="grid grid-cols-2 gap-2">
+              <select value={environment.screen_resolution} onChange={(e) => setEnvironment({ ...environment, screen_resolution: e.target.value })} className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-200">
+                {SCREEN_RESOLUTIONS.map((resolution) => <option key={resolution}>{resolution}</option>)}
+              </select>
+              <input value={environment.language} onChange={(e) => setEnvironment({ ...environment, language: e.target.value })} className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-200" />
+              <div className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-300">Browser-managed UA</div>
+              <select value={environment.rendering_mode} onChange={(e) => setEnvironment({ ...environment, rendering_mode: e.target.value as RequestedEnvironment['rendering_mode'] })} className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-200">
+                <option value="host_gpu">Host GPU</option><option value="software">Software renderer</option>
               </select>
             </div>
-
-            {/* Active pool selection info */}
-            {selectedProxyItem && (
-              <div className="p-2.5 rounded bg-zinc-900/60 border border-zinc-800/80 space-y-2">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></span>
-                    <div>
-                      <div className="font-mono text-xs text-zinc-200">
-                        {selectedProxyItem.host}:{selectedProxyItem.port}
-                      </div>
-                      <div className="text-[10px] text-zinc-400">
-                        {selectedProxyItem.city && selectedProxyItem.region
-                          ? `${selectedProxyItem.city}, ${selectedProxyItem.region} (${selectedProxyItem.country_code || 'US'})`
-                          : (selectedProxyItem.username ? `Auth: ${selectedProxyItem.username}` : 'No auth required')}
-                      </div>
-                    </div>
-                  </div>
-                  {selectedProxyItem.latency_ms && (
-                    <div className="text-[11px] font-mono text-zinc-400 bg-zinc-900 px-2 py-0.5 rounded border border-zinc-800">
-                      {selectedProxyItem.latency_ms}ms
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex items-center justify-between pt-1 border-t border-zinc-800/60 text-[10px]">
-                  <span className="text-zinc-400 flex items-center gap-1 font-mono">
-                    <span className="text-zinc-500">TZ:</span> {selectedProxyItem.timezone || timezone}
-                  </span>
-                  <span className="text-emerald-400 font-medium flex items-center gap-1">
-                    <Shield className="w-3 h-3 text-emerald-500" />
-                    Killswitch: Active
-                  </span>
-                </div>
-              </div>
-            )}
-
-            {/* Manual input section (if custom selected) */}
-            {selectedProxyMode === 'custom' && (
-              <div className="space-y-2 pt-1 border-t border-zinc-800/60">
-                <div className="grid grid-cols-3 gap-2">
-                  <div className="col-span-2">
-                    <input
-                      type="text"
-                      required
-                      value={proxyHost}
-                      onChange={(e) => setProxyHost(e.target.value)}
-                      placeholder="Proxy Host / IP"
-                      className="w-full bg-zinc-900 border border-zinc-800 rounded px-2.5 py-1.5 text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-700 font-mono"
-                    />
-                  </div>
-                  <div>
-                    <input
-                      type="number"
-                      required
-                      value={proxyPort}
-                      onChange={(e) => setProxyPort(e.target.value)}
-                      placeholder="Port (1080)"
-                      className="w-full bg-zinc-900 border border-zinc-800 rounded px-2.5 py-1.5 text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-700 font-mono"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <input
-                    type="text"
-                    value={proxyUser}
-                    onChange={(e) => setProxyUser(e.target.value)}
-                    placeholder="Username (optional)"
-                    className="w-full bg-zinc-900 border border-zinc-800 rounded px-2.5 py-1.5 text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-700"
-                  />
-                  <input
-                    type="password"
-                    value={proxyPass}
-                    onChange={(e) => setProxyPass(e.target.value)}
-                    placeholder="Password (optional)"
-                    className="w-full bg-zinc-900 border border-zinc-800 rounded px-2.5 py-1.5 text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-700"
-                  />
-                </div>
-              </div>
-            )}
           </div>
-
-          {/* Account Warming */}
-          <div className="p-3 rounded-lg bg-zinc-950 border border-zinc-800 space-y-2.5">
-            <span className="font-medium text-zinc-300 flex items-center gap-1.5">
-              <Calendar className="w-3.5 h-3.5 text-amber-500" />
-              Warming Schedule
-            </span>
-
-            <div className="grid grid-cols-2 gap-3 items-center">
-              <div>
-                <label className="text-[11px] text-zinc-400 block mb-1">Current Week</label>
-                <select
-                  value={warmingWeek}
-                  onChange={(e) => setWarmingWeek(Number(e.target.value))}
-                  className="w-full bg-zinc-900 border border-zinc-800 rounded px-2.5 py-1.5 text-zinc-200 focus:outline-none focus:border-zinc-700"
-                >
-                  <option value={1}>Week 1 (Manual only)</option>
-                  <option value={2}>Week 2 (Browsing/friends)</option>
-                  <option value={3}>Week 3 (Light engagement)</option>
-                  <option value={4}>Week 4+ (Automation ready)</option>
-                </select>
-              </div>
-
-              <div className="pt-4">
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={warmingComplete}
-                    onChange={(e) => setWarmingComplete(e.target.checked)}
-                    className="rounded bg-zinc-900 border-zinc-800 text-white focus:ring-0 focus:ring-offset-0"
-                  />
-                  <span className="text-zinc-300 text-xs">Warming Completed</span>
-                </label>
-              </div>
-            </div>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="text-zinc-400">Warming week<input type="number" min={1} value={warmingWeek} onChange={(e) => setWarmingWeek(Number(e.target.value))} className="mt-1 w-full rounded border border-zinc-800 bg-zinc-950 px-2 py-1.5 text-zinc-200" /></label>
+            <label className="flex items-end gap-2 pb-2 text-zinc-400"><input type="checkbox" checked={warmingComplete} onChange={(e) => setWarmingComplete(e.target.checked)} />Warming complete</label>
           </div>
-
-          {/* Account Notes */}
-          <div>
-            <label className="block text-zinc-400 font-medium mb-1.5 flex items-center gap-1.5">
-              <FileText className="w-3.5 h-3.5 text-zinc-500" />
-              Notes & Metadata
-            </label>
-            <textarea
-              rows={3}
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              placeholder="e.g. Account credentials, purpose, warming notes..."
-              className="w-full bg-zinc-950 border border-zinc-800 rounded-md px-3 py-2 text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-zinc-700 resize-none font-mono text-[11px]"
-            />
-          </div>
-
-          {/* Footer buttons */}
-          <div className="pt-3 border-t border-border flex items-center justify-end gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={isSaving}
-              className="px-3 py-1.5 rounded-md bg-zinc-900 border border-zinc-800 text-zinc-300 hover:bg-zinc-800 transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={isSaving}
-              className="px-4 py-1.5 rounded-md bg-white text-zinc-950 font-semibold hover:bg-zinc-200 transition-colors shadow-sm disabled:opacity-50"
-            >
-              {isSaving ? 'Saving...' : 'Save Changes'}
-            </button>
+          <label className="block text-zinc-400">Notes<textarea value={notes} onChange={(e) => setNotes(e.target.value)} className="mt-1 w-full rounded border border-zinc-800 bg-zinc-950 px-2 py-1.5 text-zinc-200" /></label>
+          {error && <p className="rounded border border-red-900/50 bg-red-950/30 p-2 text-red-300">{error}</p>}
+          <div className="flex justify-end gap-2 border-t border-border pt-3">
+            <button type="button" onClick={onClose} className="rounded border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-zinc-300">Cancel</button>
+            <button disabled={isSaving} type="submit" className="rounded bg-white px-4 py-1.5 font-semibold text-zinc-950 disabled:opacity-50">{isSaving ? 'Saving…' : 'Save changes'}</button>
           </div>
         </form>
       </div>

@@ -1,20 +1,4 @@
-import { ProfileFingerprint } from '../types/profile';
-
-// Authentic Host Real Device Specifications (Intel TigerLake Iris Xe / i7-11370H / 16GB)
-export const REAL_HOST_SPECS = {
-  webgl_vendor: 'Intel Open Source Technology Center',
-  webgl_renderer: 'Mesa Intel(R) Iris(R) Xe Graphics (TGL GT2)',
-  hardware_concurrency: 8,
-  device_memory: 16,
-  user_agent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  color_depth: 24,
-  language: 'en-US',
-};
-
-export const LINUX_GPU_POOL: [string, string][] = [
-  [REAL_HOST_SPECS.webgl_vendor, REAL_HOST_SPECS.webgl_renderer],
-];
-
+/** Browser-environment choices that the container launcher can actually apply. */
 export interface ResolutionOption {
   value: string;
   label: string;
@@ -31,25 +15,13 @@ export const RESOLUTION_OPTIONS: ResolutionOption[] = [
   { value: '2560x1440', label: '2560 × 1440', category: '16:9 2K QHD' },
 ];
 
-export const SCREEN_RESOLUTIONS: string[] = RESOLUTION_OPTIONS.map((o) => o.value);
+export const SCREEN_RESOLUTIONS = RESOLUTION_OPTIONS.map((option) => option.value);
 
-export const TIMEZONES: string[] = [
-  'America/New_York',
-  'America/Chicago',
-  'America/Los_Angeles',
-  'Europe/London',
-  'Europe/Berlin',
-  'Asia/Tokyo',
-];
-
-export function generateAuthenticLinuxFingerprint(
-  seedIndex: number = 0,
-  resolution: string = '1920x1080',
-  timezone?: string
-): ProfileFingerprint {
-  return {
-    ...REAL_HOST_SPECS,
-    screen_resolution: resolution,
-    timezone: timezone || TIMEZONES[seedIndex % TIMEZONES.length],
-  };
+/** Used only as a temporary UI fallback until backend defaults arrive. */
+export function getHostTimezone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {
+    return 'UTC';
+  }
 }

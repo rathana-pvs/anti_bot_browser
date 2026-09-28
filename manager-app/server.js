@@ -73,7 +73,13 @@ const QUEUE_CLAIM_LOCK_FILE = path.join(DATA_DIR, 'posting_queue.claim.lock');
 const MANAGER_SETTINGS_FILE = path.join(DATA_DIR, 'manager_settings.json');
 const BRAINS_DIR = path.join(ROOT_DIR, 'automation', 'brains');
 const BRAIN_CLI = path.join(ROOT_DIR, 'automation', 'brain_cli.py');
-const AUTOMATION_PYTHON = path.join(ROOT_DIR, 'automation', 'venv', 'bin', 'python');
+const AUTOMATION_PYTHON = process.platform === 'win32'
+  ? (fs.existsSync(path.join(ROOT_DIR, 'build', 'venv_win', 'Scripts', 'python.exe'))
+      ? path.join(ROOT_DIR, 'build', 'venv_win', 'Scripts', 'python.exe')
+      : (fs.existsSync(path.join(ROOT_DIR, 'automation', 'venv', 'Scripts', 'python.exe'))
+          ? path.join(ROOT_DIR, 'automation', 'venv', 'Scripts', 'python.exe')
+          : 'python'))
+  : path.join(ROOT_DIR, 'automation', 'venv', 'bin', 'python');
 const BRAIN_UPLOAD_DIR = path.join(BRAINS_DIR, 'staging', 'uploads');
 const MANAGER_DIST_DIR = path.join(__dirname, 'dist');
 

@@ -30,7 +30,7 @@ Instead of relying on fragile, obfuscated CSS class names (`x1i10hfl xjbqb8w`) o
 ### 3. Containerized Profile Isolation
 * Each profile runs in its own dedicated Docker container with an independent X11 virtual display (`Xvfb`), audio, font stack, and TigerVNC/noVNC server.
 * **100% Proxy Tunneling:** All network traffic routes through dedicated residential SOCKS5 proxies per container.
-* **Fingerprint Decoupling:** Hardware concurrency, WebGL vendor/renderer, screen resolution, and user agents are individualized per profile.
+* **Verified Browser Environment:** Profiles store requested settings separately from the effective container launch and observed runtime values. The UI does not claim that hardware or WebGL values are changed unless they are measured.
 
 ### 4. Evidence-Backed Execution Telemetry
 * Every new execution writes `telemetry.json` beside its screenshots under `profiles/<id>/automation_evidence/<run_id>/`.
@@ -45,7 +45,7 @@ Instead of relying on fragile, obfuscated CSS class names (`x1i10hfl xjbqb8w`) o
 flowchart TD
     subgraph Host["Host Machine"]
         ManagerApp["Manager Dashboard<br/>(React + Vite / Tauri)"]
-        Backend["Express Backend Server<br/>(:3001)"]
+        Backend["FastAPI Backend<br/>(:8000)"]
         QueueWorker["Background Queue Worker & Scheduler"]
     end
 
@@ -109,9 +109,12 @@ flowchart TD
 │   └── fonts.conf              # Font rendering optimizations
 ├── manager-app/                # Management Dashboard
 │   ├── src/                    # React frontend (VNC viewer, queue, profiles)
-│   ├── server.js               # Express API backend & queue runner
-│   ├── proxyManager.js         # SOCKS5 proxy pool manager
-│   └── package.json            # Node.js dependencies
+│   ├── src-tauri/              # Optional desktop shell
+│   └── package.json            # Frontend scripts and dependencies
+├── backend/                    # FastAPI API, scheduler, and profile lifecycle
+│   ├── routers/                # Validated REST endpoints
+│   ├── services/               # Containers, proxies, queues, and profiles
+│   └── main.py                 # FastAPI application entry point
 ├── profiles/                   # Profile definitions & evidence storage
 │   ├── config.example.json     # Sample profile configuration
 │   └── <profile_id>/           # Profile-specific data (ignored by git)
@@ -129,6 +132,13 @@ flowchart TD
 * **Node.js** (v18+) & `npm`
 * **Python** (3.10+ / 3.12 recommended)
 * Host OS: Linux or Windows (WSL2)
+
+On Windows, `install-windows.ps1` detects physical RAM and recommends a WSL2
+memory ceiling. The default choice is 50% for hosts below 24 GB and 75% for
+hosts with 24 GB or more (for example, 24 GB on a 32 GB machine). Existing
+`.wslconfig` memory settings are preserved. Use `-KeepWslDefaults` to retain
+Microsoft's default policy or `-WslMemoryGB <GB>` for an explicit unattended
+choice. Applying a new limit restarts WSL during setup.
 
 ### 2. Container Image Build
 Build the isolated Chrome container base image:
@@ -158,38 +168,54 @@ npm install
 npm run build
 ```
 
-Start the management server:
+Start the backend and development dashboard:
 ```bash
-node server.js
+cd manager-app
+npm start
 ```
-* Backend API: `http://localhost:3001`
-* Frontend Dashboard: `http://localhost:5173` (or run `npm run dev`)
+* Backend API: `http://localhost:8000`
+* Frontend Dashboard: `http://localhost:5173`
 
 ---
 
 ## ⚙️ Configuration
 
-### Configuring a Profile
-Copy `profiles/config.example.json` into a profile directory (e.g. `profiles/profile_001/config.json`):
+### Profile lifecycle
+
+Create profiles through the dashboard or `POST /api/profiles`. The backend owns
+profile IDs, display ports, proxy reservations, and atomic configuration writes.
+Network intent is explicit, so a direct profile can never silently acquire a
+pool proxy:
+
 ```json
 {
-  "id": "profile_001",
   "name": "Primary Account",
-  "status": "stopped",
   "network": {
-    "proxy_type": "socks5",
-    "proxy_host": "192.168.1.100",
-    "proxy_port": 1080,
-    "proxy_user": "username",
-    "proxy_pass": "password"
+    "mode": "direct"
   },
-  "container": {
-    "vnc_port": 5901,
-    "ws_port": 6081,
-    "volume_path": "profiles/profile_001/chrome_data"
+  "requested_environment": {
+    "screen_resolution": "1920x1080",
+    "timezone_policy": "host",
+    "timezone": "America/Guatemala",
+    "language": "en-US",
+    "user_agent_policy": "browser_default",
+    "user_agent": null,
+    "rendering_mode": "host_gpu"
+  },
+  "resources": {
+    "cpu_limit": 4,
+    "memory_mb": 4096
   }
 }
 ```
+
+Resource limits default to 4 vCPU and 4 GiB per profile. They are ceilings, not
+reservations, and can be changed when creating or editing a profile. At startup
+the manager records the Docker-applied limits alongside an
+`effective_environment` snapshot and bounded
+container observations. Runtime-sensitive edits set `restart_required` until
+the profile is stopped and started again. Legacy profiles are migrated to
+the current schema with a versioned `config.json.v*.bak` backup; browser data is untouched.
 
 ### Configuring Proxies
 Copy `proxies/proxy_pool.example.json` to `proxies/proxy_pool.json` to manage rotating SOCKS5 residential proxies.

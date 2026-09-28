@@ -1,4 +1,5 @@
 import base64
+import json
 import os
 import re
 import shutil
@@ -21,6 +22,7 @@ from backend.services.resource_service import (
     resolve_resource_mode,
     resource_admission_decision,
 )
+from backend.services.profile_service import atomic_write_json, environment_differences, utc_now
 
 container_stats_cache: dict[str, dict] = {}
 profile_disk_usage_cache: dict[str, str] = {}
@@ -61,6 +63,20 @@ def sample_cpu():
             recent_cpu_samples.pop(0)
     except Exception:
         pass
+
+def get_current_cpu_percent() -> float:
+    global current_cpu_percent
+    if current_cpu_percent == 0.0:
+        val = psutil.cpu_percent(interval=None)
+        if val > 0.0:
+            current_cpu_percent = val
+    return current_cpu_percent
+
+def get_current_gpu_percent() -> float:
+    return current_gpu_percent
+
+def get_gpu_model() -> str:
+    return gpu_model
 
 def sustained_cpu_percent() -> float:
     if not recent_cpu_samples:
@@ -113,28 +129,33 @@ def sample_container_stats():
             ["docker", "stats", "--no-stream", '--format={{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}'],
             text=True,
             stderr=subprocess.DEVNULL,
-            timeout=3,
+            timeout=10,
         ).strip()
+        stats_map = {}
         if out:
-            stats_map = {}
             for line in out.splitlines():
                 parts = line.split("\t")
                 if len(parts) >= 3:
                     name = parts[0].strip()
-                    cpu_str = parts[1].strip() or "0%"
+                    cpu_str = parts[1].strip() or "0.0%"
                     mem_str = parts[2].strip() or "0B"
-                    # Profile containers have 4 cores allocated. Normalize raw docker stats to 0-100%
-                    if name.startswith("isolated_") and cpu_str.endswith("%"):
+                    if cpu_str.endswith("%"):
                         try:
-                            raw = float(cpu_str.replace("%", ""))
-                            normalized = min(100.0, round((raw / 4) * 10) / 10)
-                            cpu_str = f"{normalized}%"
+                            raw = float(cpu_str.replace("%", "").strip())
+                            cpu_str = f"{raw:.1f}%"
                         except ValueError:
                             pass
                     stats_map[name] = {"cpu": cpu_str, "mem": mem_str}
-            container_stats_cache = stats_map
+        container_stats_cache.clear()
+        container_stats_cache.update(stats_map)
     except Exception:
         pass
+
+def get_container_stats(container_name: str) -> dict:
+    return container_stats_cache.get(container_name, {})
+
+def get_all_container_stats() -> dict:
+    return dict(container_stats_cache)
 
 def sample_profile_disk_usage():
     global profile_disk_usage_cache
@@ -299,15 +320,141 @@ def automation_worker_env() -> dict:
     env["AUTOMATION_OCR_DEVICE"] = OCR_RUNTIME["device"]
     return env
 
+
+def sanitize_profile_action_error(profile_id: str, message: str) -> str:
+    """Keep actionable launch diagnostics while removing stored proxy secrets."""
+    sanitized = re.sub(
+        r"(?i)(socks5h?://)[^@\s]+@",
+        r"\1[REDACTED]@",
+        str(message or ""),
+    )
+    config_path = PROFILES_DIR / profile_id / "config.json"
+    try:
+        profile = json.loads(config_path.read_text(encoding="utf-8"))
+        network = profile.get("network") or {}
+        for key in ("proxy_user", "proxy_pass"):
+            secret = str(network.get(key) or "")
+            if secret:
+                sanitized = sanitized.replace(secret, "[REDACTED]")
+    except Exception:
+        pass
+    sanitized = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", sanitized)
+    sanitized = "\n".join(line.rstrip() for line in sanitized.splitlines()).strip()
+    return sanitized[-12000:] or "The profile action failed without diagnostic output."
+
 async def run_profile_action(profile_id: str, action: str) -> dict:
     if action not in ("start", "stop", "pause", "unpause"):
         raise ValueError("Invalid action")
+    original_status = get_container_status(profile_id)
     script_path = SCRIPTS_DIR / "run_profile.sh"
     cmd = ["bash", str(script_path), profile_id, action]
     proc = await asyncio_subprocess_run(cmd, cwd=str(ROOT_DIR))
     if proc.returncode != 0:
-        raise RuntimeError(proc.stderr.strip() or f"Failed to run {action} on {profile_id}")
+        raw_error = proc.stderr.strip() or f"Failed to run {action} on {profile_id}"
+        raise RuntimeError(sanitize_profile_action_error(profile_id, raw_error))
+    if action == "start" and original_status != "running":
+        record_effective_profile_environment(profile_id)
     return {"success": True, "message": proc.stdout.strip()}
+
+
+def _container_text(container_name: str, command: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["docker", "exec", container_name, "sh", "-lc", command],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        value = result.stdout.strip()
+        return value or None
+    except Exception:
+        return None
+
+
+def observe_container_environment(profile_id: str) -> dict:
+    """Collect only values that can be measured without CDP or page injection."""
+    container_name = f"isolated_{profile_id}"
+    geometry = None
+    for _ in range(20):
+        geometry = _container_text(
+            container_name,
+            "DISPLAY=:99 xdotool getdisplaygeometry 2>/dev/null | tr ' ' 'x'",
+        )
+        if geometry:
+            break
+        time.sleep(0.5)
+    timezone_name = _container_text(
+        container_name,
+        "cat /etc/timezone 2>/dev/null || readlink /etc/localtime | sed 's#^.*/zoneinfo/##'",
+    )
+    language = _container_text(container_name, "printf '%s' \"${LANG:-}\"")
+    browser_version = _container_text(container_name, "google-chrome --version 2>/dev/null")
+    renderer = _container_text(
+        container_name,
+        "DISPLAY=:99 glxinfo -B 2>/dev/null | sed -n 's/^OpenGL renderer string: //p' | head -1",
+    )
+    return {
+        "source": "container_runtime",
+        "observed_at": utc_now(),
+        "screen_resolution": geometry,
+        "timezone": timezone_name,
+        "language": language,
+        "browser_version": browser_version,
+        "webgl_renderer": renderer,
+        "user_agent": None,
+        "hardware_concurrency": None,
+        "device_memory": None,
+        "note": "Navigator-only values are not measured without an explicit browser probe.",
+    }
+
+
+def record_effective_profile_environment(profile_id: str) -> None:
+    config_path = PROFILES_DIR / profile_id / "config.json"
+    try:
+        profile = json.loads(config_path.read_text(encoding="utf-8"))
+        requested = profile.get("requested_environment") or {}
+        network = profile.get("network") or {}
+        container_id = subprocess.check_output(
+            ["docker", "inspect", "-f", "{{.Id}}", f"isolated_{profile_id}"],
+            text=True, stderr=subprocess.DEVNULL, timeout=3,
+        ).strip()
+        limits_raw = subprocess.check_output(
+            [
+                "docker", "inspect", "-f",
+                "{{.HostConfig.NanoCpus}} {{.HostConfig.Memory}}",
+                f"isolated_{profile_id}",
+            ],
+            text=True, stderr=subprocess.DEVNULL, timeout=3,
+        ).strip().split()
+        nano_cpus = int(limits_raw[0]) if limits_raw else 0
+        memory_bytes = int(limits_raw[1]) if len(limits_raw) > 1 else 0
+        profile["effective_environment"] = {
+            **requested,
+            "network_mode": network.get("mode", "direct"),
+            "proxy_endpoint": (
+                f"{network.get('proxy_host')}:{network.get('proxy_port')}"
+                if network.get("proxy_host") else None
+            ),
+            "configuration_revision": profile.get("configuration_revision"),
+            "container_id": container_id,
+            "applied_at": utc_now(),
+            "network_preflight": _container_text(
+                f"isolated_{profile_id}",
+                "cat /run/network-preflight.status 2>/dev/null",
+            ),
+        }
+        profile["effective_resources"] = {
+            "cpu_limit": nano_cpus / 1_000_000_000 if nano_cpus else None,
+            "memory_mb": round(memory_bytes / (1024 * 1024)) if memory_bytes else None,
+            "configuration_revision": profile.get("configuration_revision"),
+            "applied_at": utc_now(),
+        }
+        observed = observe_container_environment(profile_id)
+        observed["comparison"] = environment_differences(requested, observed)
+        profile["observed_environment"] = observed
+        profile["restart_required"] = False
+        profile.setdefault("container", {})["id"] = container_id
+        atomic_write_json(config_path, profile)
+    except Exception as exc:
+        print(f"Could not record effective environment for {profile_id}: {exc}")
 
 async def paste_text_to_container(profile_id: str, text: str, mode: str = "both") -> dict:
     container_name = f"isolated_{profile_id}"

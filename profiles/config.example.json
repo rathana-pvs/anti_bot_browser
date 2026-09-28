@@ -1,30 +1,40 @@
 {
-  "id": "profile_example",
+  "schema_version": 4,
+  "configuration_revision": 1,
+  "id": "profile_001",
   "name": "Example Profile",
   "status": "stopped",
-  "fingerprint": {
-    "webgl_vendor": "Intel Open Source Technology Center",
-    "webgl_renderer": "Mesa Intel(R) Iris(R) Xe Graphics",
-    "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "screen_resolution": "1920x1080",
-    "color_depth": 24,
-    "timezone": "America/Los_Angeles",
-    "language": "en-US",
-    "hardware_concurrency": 8,
-    "device_memory": 16
-  },
   "network": {
+    "mode": "direct",
+    "proxy_id": null,
     "proxy_type": "socks5",
     "proxy_host": "",
     "proxy_port": null,
     "proxy_user": "",
     "proxy_pass": ""
   },
+  "requested_environment": {
+    "screen_resolution": "1920x1080",
+    "timezone_policy": "host",
+    "timezone": "America/Guatemala",
+    "language": "en-US",
+    "user_agent_policy": "browser_default",
+    "user_agent": null,
+    "rendering_mode": "host_gpu"
+  },
+  "effective_environment": null,
+  "observed_environment": null,
+  "restart_required": false,
+  "resources": {
+    "cpu_limit": 4,
+    "memory_mb": 4096
+  },
+  "effective_resources": null,
   "container": {
     "id": null,
-    "vnc_port": 5900,
-    "ws_port": 6080,
-    "volume_path": "profiles/profile_example/chrome_data"
+    "vnc_port": 5901,
+    "ws_port": 6081,
+    "volume_path": "profiles/profile_001/chrome_data"
   },
   "account": {
     "platform": "facebook",
@@ -35,6 +45,5 @@
     "warming_week": 1,
     "posts_today": 0,
     "last_post_date": null
-  },
-  "created_at": "2026-09-24T00:00:00.000Z"
+  }
 }

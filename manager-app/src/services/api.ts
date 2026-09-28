@@ -1,4 +1,6 @@
-import { Profile, SystemStats } from '../types/profile';
+import {
+  Profile, ProfileCreateRequest, ProfileDefaults, ProfileUpdateRequest, SystemStats,
+} from '../types/profile';
 import { ProxyItem } from '../types/proxy';
 import { BrainActionResponse, BrainCatalogResponse, BrainUploadResponse } from '../types/brain';
 
@@ -25,22 +27,37 @@ export async function fetchProfiles(): Promise<Profile[]> {
   return res.json();
 }
 
-export async function createProfile(profileData: Partial<Profile>): Promise<Profile> {
+async function apiError(res: Response, fallback: string): Promise<Error> {
+  try {
+    const payload = await res.json();
+    const detail = typeof payload.detail === 'string' ? payload.detail : payload.message || payload.error;
+    return new Error(detail || fallback);
+  } catch {
+    return new Error(fallback);
+  }
+}
+
+export async function fetchProfileDefaults(): Promise<ProfileDefaults> {
+  const res = await fetch(`${API_BASE}/profiles/defaults`);
+  if (!res.ok) throw await apiError(res, 'Failed to fetch profile defaults');
+  return res.json();
+}
+
+export async function createProfile(profileData: ProfileCreateRequest): Promise<Profile> {
   const res = await fetch(`${API_BASE}/profiles`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(profileData),
   });
   if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.message || 'Failed to create profile');
+    throw await apiError(res, 'Failed to create profile');
   }
   return res.json();
 }
 
 export async function updateProfile(
   profileId: string,
-  updates: Partial<Profile>
+  updates: ProfileUpdateRequest
 ): Promise<Profile> {
   const res = await fetch(`${API_BASE}/profiles/${profileId}`, {
     method: 'PUT',
@@ -48,8 +65,7 @@ export async function updateProfile(
     body: JSON.stringify(updates),
   });
   if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.message || 'Failed to update profile');
+    throw await apiError(res, 'Failed to update profile');
   }
   return res.json();
 }
@@ -64,8 +80,7 @@ export async function executeProfileAction(
     body: JSON.stringify({ action }),
   });
   if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.message || `Failed to ${action} profile`);
+    throw await apiError(res, `Failed to ${action} profile`);
   }
   return res.json();
 }
@@ -171,13 +186,42 @@ export async function fetchProxies(): Promise<ProxyItem[]> {
   return res.json();
 }
 
-export async function importProxies(text: string): Promise<{ added: number; total: number }> {
+export async function importProxies(text: string): Promise<{ added: number; total: number; status_checked: number; online: number; offline: number; geo_checked: number; geo_failed: number }> {
   const res = await fetch(`${API_BASE}/proxies/import`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text }),
   });
   if (!res.ok) throw new Error('Failed to import proxies');
+  return res.json();
+}
+
+export async function checkProxyGeography(proxyId: string): Promise<ProxyItem> {
+  const res = await fetch(`${API_BASE}/proxies/${proxyId}/geo-check`, { method: 'POST' });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.detail || 'Failed to check proxy location');
+  }
+  return res.json();
+}
+
+export async function checkAllProxyGeographies(): Promise<{ checked: number; failed: number }> {
+  const res = await fetch(`${API_BASE}/proxies/geo-check-all`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to check proxy locations');
+  return res.json();
+}
+
+export interface ProxyRefreshResult {
+  total: number;
+  online: number;
+  offline: number;
+  geo_checked: number;
+  geo_failed: number;
+}
+
+export async function refreshProxyStatuses(): Promise<ProxyRefreshResult> {
+  const res = await fetch(`${API_BASE}/proxies/refresh-status`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to refresh proxy status');
   return res.json();
 }
 
