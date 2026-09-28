@@ -144,6 +144,14 @@ export function applyAutomationPermalinkResult(
   const recoveryAttempted = result.permalink_recovery_attempted === true;
   execution.permalink_recovery_attempted = recoveryAttempted;
 
+  if (result.permalink_status === 'not_requested') {
+    execution.permalink_missing = false;
+    execution.permalink_status = 'not_requested';
+    execution.permalink_source = null;
+    execution.permalink_note = null;
+    return execution;
+  }
+
   if (result.post_url) {
     const validatedUrl = validateFacebookPermalink(result.post_url, postType);
     if (!validatedUrl) {

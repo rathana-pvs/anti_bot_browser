@@ -256,6 +256,61 @@ class FacebookReelTask(BaseTask):
         finish("timeout")
         return "timeout", None, None
 
+    def _handle_remix_audio_dialog(self, screen) -> str:
+        """Confirm Facebook's post-click Reel audio policy without changing it.
+
+        Returns ``absent``, ``waiting`` (dialog found but Save not confirmed), or
+        ``saved``. The selected radio option is deliberately left untouched.
+        """
+        items = self.vision.read_text(screen, min_confidence=0.18)
+        normalized = [self._normalized_ocr_text(item.get("text", "")) for item in items]
+        dialog_found = any(
+            "remixing" in text and "original audio" in text and "use" in text
+            for text in normalized
+        ) or (
+            any("remixing" in text and "original audio" in text for text in normalized)
+            and any("allow others" in text and "remix" in text for text in normalized)
+        )
+        if not dialog_found:
+            return "absent"
+
+        blue_buttons = self.vision.find_blue_action_buttons(
+            screen=screen,
+            region="bottom_action_bar",
+        )
+        for button in blue_buttons if isinstance(blue_buttons, list) else []:
+            x1, y1, x2, y2 = button["bounds"]
+            button_items = self.vision.read_text(
+                screen,
+                region=(x1, y1, x2 - x1, y2 - y1),
+                min_confidence=0.15,
+            )
+            if not any(
+                self._normalized_ocr_text(item.get("text", "")) == "save"
+                for item in button_items
+            ):
+                continue
+
+            target = button["center"]
+            self.capture_evidence(
+                "before_reel_audio_policy_save",
+                screen,
+                target=list(target),
+                selection_preserved=True,
+            )
+            self.log(
+                "INFO",
+                "Detected Reel remix/original-audio policy dialog; preserving the selected option and clicking Save once.",
+            )
+            self.human.click(*target)
+            return "saved"
+
+        self.log(
+            "INFO",
+            "Detected Reel remix/original-audio policy dialog; waiting for its enabled Save action.",
+        )
+        return "waiting"
+
     @timed_telemetry_step("publication_verification")
     def _verify_reel_publication(self, before_publish, timeout: float = 300.0):
         deadline = time.time() + timeout
@@ -263,8 +318,22 @@ class FacebookReelTask(BaseTask):
         feed_streak = 0
         prompt_dismissed = False
         confirmation_seen = False
+        audio_policy_saved = False
         while time.time() < deadline:
             screen = self.client.screenshot()
+
+            # Facebook can insert this settings step after the final Post click.
+            # It is part of the same publication attempt, so confirm the current
+            # selection once and continue verification without clicking Post again.
+            if not audio_policy_saved:
+                audio_policy_status = self._handle_remix_audio_dialog(screen)
+                if audio_policy_status == "saved":
+                    audio_policy_saved = True
+                    time.sleep(2.0)
+                    continue
+                if audio_policy_status == "waiting":
+                    time.sleep(2.0)
+                    continue
 
             # Dismiss post-publish prompts first (e.g. "Speak With People Directly" -> "Not now")
             if not prompt_dismissed and self.check_and_dismiss_post_prompt(screen):
@@ -395,42 +464,45 @@ class FacebookReelTask(BaseTask):
             self.click_reversible(edit_next_button, label="reel_edit_next", max_offset_px=5)
             time.sleep(2.0)
 
-        self.log("STEP", "Locating Reel description input...")
-        def locate_description():
-            match = self._find_stable_text((
-                "describe your reel",
-                "describe your reel...",
-                "write a caption",
-                "description",
-                "describe",
-            ), min_confidence=0.20, region="reel_sidebar")
-            if match:
-                return match
-            # Visual fallback: in the Reel settings dialog, the description textarea is located ~170px above the Public control
-            screen = self.client.screenshot()
-            public_label = self.vision.find_text_cascaded(
-                ("public", "tag and collaborate", "add ai label"),
-                region="reel_sidebar",
-                screen=screen,
-                min_confidence=0.35,
-            )
-            if public_label:
-                px, py = public_label["center"]
-                return (px + 100, max(200, py - 170))
-            return None
+        if self.caption:
+            self.log("STEP", "Locating Reel description input...")
 
-        description_status, description, screen = self._wait_for_target(
-            locate_description,
-            timeout=30.0,
-            label="reel_description_ready",
-        )
-        if description_status == "error":
-            return self._fail("reel_description_error", "Facebook displayed an error before caption entry.", screen)
-        if self.caption and not description:
-            return self._fail("reel_description_not_found", "Reel description input could not be located confidently.")
-        if description and self.caption:
+            def locate_description():
+                match = self._find_stable_text((
+                    "describe your reel",
+                    "describe your reel...",
+                    "write a caption",
+                    "description",
+                    "describe",
+                ), min_confidence=0.20, region="reel_sidebar")
+                if match:
+                    return match
+                # Visual fallback: in the Reel settings dialog, the description textarea is located ~170px above the Public control
+                screen = self.client.screenshot()
+                public_label = self.vision.find_text_cascaded(
+                    ("public", "tag and collaborate", "add ai label"),
+                    region="reel_sidebar",
+                    screen=screen,
+                    min_confidence=0.35,
+                )
+                if public_label:
+                    px, py = public_label["center"]
+                    return (px + 100, max(200, py - 170))
+                return None
+
+            description_status, description, screen = self._wait_for_target(
+                locate_description,
+                timeout=30.0,
+                label="reel_description_ready",
+            )
+            if description_status == "error":
+                return self._fail("reel_description_error", "Facebook displayed an error before caption entry.", screen)
+            if not description:
+                return self._fail("reel_description_not_found", "Reel description input could not be located confidently.")
             self.human.click(*description)
             self.paste_text(self.caption)
+        else:
+            self.log("INFO", "No Reel caption requested; skipping the description-field wait.")
 
         self.log("INFO", "Waiting for enabled Post / Publish action (background processing / copyright check)...")
         self._requires_review = False
@@ -477,14 +549,12 @@ class FacebookReelTask(BaseTask):
         if result != "published":
             self.log("INFO", f"Reel publication state '{result}' without error dialog; treating as published per operator rule.")
 
-        # Phase 1: Correlate published Reel and extract permalink
-        permalink_info = self.correlate_and_extract_permalink(
-            caption=self.caption,
-            media_type="reel",
-        )
-
-        # First-comment destination link (if provided)
+        # Correlation is needed only for the requested first-comment fallback.
         if self.comment_link:
+            permalink_info = self.correlate_and_extract_permalink(
+                caption=self.caption,
+                media_type="reel",
+            )
             comment_status = self.post_first_comment(
                 self.comment_link,
                 post_url=permalink_info.get("post_url"),
@@ -503,11 +573,8 @@ class FacebookReelTask(BaseTask):
                 **permalink_info,
             )
 
-        permalink_info = self.recover_missing_permalink(
-            permalink_info,
-            caption=self.caption,
-            media_type="reel",
-        )
+        permalink_info = self.permalink_not_requested()
+        self.log("INFO", "No first comment requested; skipping permalink correlation and recovery.")
         self.log("SUCCESS", "Facebook Reel publication was visually confirmed.")
         return self.set_outcome(
             "published",

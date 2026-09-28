@@ -1547,6 +1547,18 @@ class BaseTask:
         self.log("WARN", "Permalink recovery ended without a confident URL; publication remains successful.")
         return result
 
+    @staticmethod
+    def permalink_not_requested() -> dict:
+        """Return explicit metadata when no downstream action needs a permalink."""
+        return {
+            "post_url": None,
+            "post_url_verified_at": None,
+            "post_match_confidence": None,
+            "permalink_status": "not_requested",
+            "permalink_missing": False,
+            "permalink_recovery_attempted": False,
+        }
+
     def run_with_retry(self, max_retries: int = 2) -> bool:
         """Run task with retry logic and exponential backoff."""
         for attempt in range(1, max_retries + 2):

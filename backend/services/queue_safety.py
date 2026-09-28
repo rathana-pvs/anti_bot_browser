@@ -160,6 +160,13 @@ def apply_automation_permalink_result(
     recovery_attempted = result.get("permalink_recovery_attempted") is True
     execution["permalink_recovery_attempted"] = recovery_attempted
 
+    if result.get("permalink_status") == "not_requested":
+        execution["permalink_missing"] = False
+        execution["permalink_status"] = "not_requested"
+        execution["permalink_source"] = None
+        execution["permalink_note"] = None
+        return execution
+
     post_url = result.get("post_url")
     if post_url:
         validated_url = validate_facebook_permalink(post_url, post_type)

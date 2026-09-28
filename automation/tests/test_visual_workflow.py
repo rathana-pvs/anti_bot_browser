@@ -682,6 +682,55 @@ class FirstCommentTargetTests(unittest.TestCase):
         screen = np.zeros((1080, 1920, 3), dtype=np.uint8)
         self.assertEqual(reel_task._find_first_comment_input(screen), (900, 750))
 
+    def test_reel_audio_policy_dialog_preserves_selection_and_saves_once(self):
+        task = FacebookReelTask.__new__(FacebookReelTask)
+        task.vision = Mock()
+        task.human = Mock()
+        task.log = Mock()
+        task.capture_evidence = Mock()
+        screen = np.zeros((288, 589, 3), dtype=np.uint8)
+        task.vision.read_text.side_effect = [
+            [
+                {
+                    "text": "Remixing and original audio use",
+                    "confidence": 0.99,
+                    "center": (294, 27),
+                },
+                {
+                    "text": "Allow others to use this reel's original audio and remix?",
+                    "confidence": 0.95,
+                    "center": (220, 65),
+                },
+            ],
+            [{"text": "Save", "confidence": 0.99, "center": (294, 254)}],
+        ]
+        task.vision.find_blue_action_buttons.return_value = [{
+            "center": (294, 254),
+            "bounds": (20, 240, 569, 268),
+        }]
+
+        result = task._handle_remix_audio_dialog(screen)
+
+        self.assertEqual(result, "saved")
+        task.human.click.assert_called_once_with(294, 254)
+        task.capture_evidence.assert_called_once()
+
+    def test_reel_audio_policy_handler_ignores_unrelated_save_button(self):
+        task = FacebookReelTask.__new__(FacebookReelTask)
+        task.vision = Mock()
+        task.human = Mock()
+        task.log = Mock()
+        task.capture_evidence = Mock()
+        task.vision.read_text.return_value = [
+            {"text": "Save", "confidence": 0.99, "center": (294, 254)},
+        ]
+
+        result = task._handle_remix_audio_dialog(np.zeros((288, 589, 3), dtype=np.uint8))
+
+        self.assertEqual(result, "absent")
+        task.vision.find_blue_action_buttons.assert_not_called()
+        task.human.click.assert_not_called()
+
     def test_post_first_comment_successful_flow(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
         task.log = Mock()

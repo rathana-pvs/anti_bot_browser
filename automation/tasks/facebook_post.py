@@ -522,36 +522,34 @@ class FacebookPostTask(BaseTask):
             self.human.click(*composer_pos)
             time.sleep(random.uniform(2.0, 3.0))
 
-        # Locate the composer text area after the modal/media preview is ready.
-        caption_target = self._stable_caption_target()
+        if self.caption:
+            # Locate the composer text area only when text actually needs to be entered.
+            caption_target = self._stable_caption_target()
+            self.log_decision(
+                "Enter caption",
+                "What's on your mind text inside the modal caption region",
+                f"target={caption_target}" if caption_target else "no caption input target",
+                "click and enter caption" if caption_target else "stop without typing",
+            )
+            if not caption_target:
+                return self._fail(
+                    "caption_input_not_found",
+                    "Caption input could not be visually confirmed; no fallback coordinate was used.",
+                )
 
-        self.log_decision(
-            "Enter caption",
-            "What's on your mind text inside the modal caption region",
-            f"target={caption_target}" if caption_target else "no caption input target",
-            "click and enter caption" if caption_target else "stop without typing",
-        )
-
-        if caption_target:
             self.human.click(*caption_target)
             time.sleep(0.5)
-        elif self.caption:
-            return self._fail(
-                "caption_input_not_found",
-                "Caption input could not be visually confirmed; no fallback coordinate was used.",
-            )
+            self.log("STEP", f"Entering post caption ({len(self.caption)} chars)...")
+            if any(ord(c) > 127 for c in self.caption) or len(self.caption) > 80:
+                self.paste_text(self.caption)
+            else:
+                self.human.type_text(self.caption, wpm=random.randint(52, 65))
 
-        self.log("STEP", f"Entering post caption ({len(self.caption)} chars)...")
-        # Use clipboard paste for emojis / long copy, otherwise human type
-        if any(ord(c) > 127 for c in self.caption) or len(self.caption) > 80:
-            self.paste_text(self.caption)
+            review_pause = random.uniform(2.0, 3.5)
+            self.log("INFO", f"Human review pause ({review_pause:.1f}s)...")
+            time.sleep(review_pause)
         else:
-            self.human.type_text(self.caption, wpm=random.randint(52, 65))
-
-        # "Reviewing post" hesitation
-        review_pause = random.uniform(2.0, 3.5)
-        self.log("INFO", f"Human review pause ({review_pause:.1f}s)...")
-        time.sleep(review_pause)
+            self.log("INFO", "No caption requested; skipping caption-field detection and text-entry pause.")
 
         # Some Facebook composer variants use a two-step flow: caption/media,
         # then Next, then the final Post confirmation screen.
@@ -649,14 +647,13 @@ class FacebookPostTask(BaseTask):
                 final_screen,
             )
 
-        # Phase 1: Correlate published post and extract permalink
-        permalink_info = self.correlate_and_extract_permalink(
-            caption=self.caption,
-            media_type="photo" if self.media_path else "post",
-        )
-
-        # Step 6: First-comment destination link (if provided)
+        # A permalink is needed only to support the requested first-comment
+        # fallback. Avoid reloading and rescanning the profile otherwise.
         if self.comment_link:
+            permalink_info = self.correlate_and_extract_permalink(
+                caption=self.caption,
+                media_type="photo" if self.media_path else "post",
+            )
             comment_status = self.post_first_comment(
                 self.comment_link,
                 post_url=permalink_info.get("post_url"),
@@ -674,10 +671,12 @@ class FacebookPostTask(BaseTask):
                 **permalink_info,
             )
 
-        permalink_info = self.recover_missing_permalink(
-            permalink_info,
-            caption=self.caption,
-            media_type="photo" if self.media_path else "post",
-        )
+        permalink_info = self.permalink_not_requested()
+        self.log("INFO", "No first comment requested; skipping permalink correlation and recovery.")
         self.log("SUCCESS", "Facebook publication was visually confirmed.")
-        return self.set_outcome("published", None, **permalink_info)
+        return self.set_outcome(
+            "published",
+            None,
+            first_comment="not_requested",
+            **permalink_info,
+        )

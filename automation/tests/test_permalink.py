@@ -176,6 +176,14 @@ class PermalinkCorrelationTests(unittest.TestCase):
         self.assertFalse(result["permalink_recovery_attempted"])
         self.task.correlate_and_extract_permalink.assert_not_called()
 
+    def test_not_requested_permalink_is_explicitly_not_missing(self):
+        result = self.task.permalink_not_requested()
+
+        self.assertEqual(result["permalink_status"], "not_requested")
+        self.assertFalse(result["permalink_missing"])
+        self.assertFalse(result["permalink_recovery_attempted"])
+        self.assertIsNone(result["post_url"])
+
     def test_missing_permalink_runs_one_bounded_recovery_pass(self):
         self.task.correlate_and_extract_permalink = Mock(return_value={
             "post_url": "https://www.facebook.com/user/posts/pfbidRecovered",

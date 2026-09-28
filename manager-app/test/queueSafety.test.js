@@ -70,6 +70,20 @@ test('automation permalink result preserves recovered status after manager valid
   assert.equal(execution.post_match_confidence, 0.82);
 });
 
+test('automation permalink result preserves intentional not-requested state', () => {
+  const execution = { status: 'published' };
+  applyAutomationPermalinkResult(execution, {
+    post_url: null,
+    permalink_status: 'not_requested',
+    permalink_missing: false,
+    permalink_recovery_attempted: false,
+  });
+
+  assert.equal(execution.permalink_status, 'not_requested');
+  assert.equal(execution.permalink_missing, false);
+  assert.equal(execution.permalink_source, null);
+});
+
 test('automation permalink result records bounded recovery exhaustion without failing publication', () => {
   const execution = { status: 'published' };
   applyAutomationPermalinkResult(execution, {
