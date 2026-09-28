@@ -67,6 +67,38 @@ def test_queue_endpoints(client):
     assert "stats" in data
     assert "batches" in data
 
+    # Test creating batch with start_now=True
+    batch_payload = {
+        "name": "Test Instant Batch",
+        "target_profiles": ["profile_001"],
+        "start_now": True,
+        "schedule_window": {
+            "start_time": "00:00",
+            "end_time": "23:59",
+            "profile_stagger_seconds": 0,
+            "session_preparation_mode": "brief",
+            "start_now": True,
+        },
+        "posts": [
+            {
+                "type": "reel",
+                "media_file": "test_video.mp4",
+                "base_caption": "Test caption",
+                "first_comment": "https://example.com",
+                "ai_spin": False,
+            }
+        ],
+    }
+    batch_res = client.post("/api/queue/batch", json=batch_payload)
+    assert batch_res.status_code == 200
+    batch_data = batch_res.json()
+    assert batch_data["success"] is True
+    assert "batch_id" in batch_data
+
+    # Clean up test batch
+    del_res = client.delete(f"/api/queue/batch/{batch_data['batch_id']}")
+    assert del_res.status_code == 200
+
 def test_ai_spin_caption(client):
     res = client.post("/api/ai/spin-caption", json={"base_caption": "Testing automation pipeline", "count": 2})
     assert res.status_code == 200

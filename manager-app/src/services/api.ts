@@ -29,9 +29,17 @@ export async function fetchProfiles(): Promise<Profile[]> {
 
 async function apiError(res: Response, fallback: string): Promise<Error> {
   try {
-    const payload = await res.json();
-    const detail = typeof payload.detail === 'string' ? payload.detail : payload.message || payload.error;
-    return new Error(detail || fallback);
+    const text = await res.text();
+    try {
+      const payload = JSON.parse(text);
+      const detail =
+        typeof payload.detail === 'string'
+          ? payload.detail
+          : payload.detail?.error || payload.message || payload.error;
+      return new Error(detail || fallback);
+    } catch {
+      return new Error(text && text.length < 200 ? text : `${fallback} (${res.status} ${res.statusText || 'Error'})`);
+    }
   } catch {
     return new Error(fallback);
   }
@@ -96,8 +104,7 @@ export async function pasteToProfile(
     body: JSON.stringify({ text, mode }),
   });
   if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.error || 'Failed to send text to profile');
+    throw await apiError(res, 'Failed to send text to profile');
   }
   return res.json();
 }
@@ -251,8 +258,7 @@ export async function runAutomation(
     body: JSON.stringify(params),
   });
   if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.error || 'Failed to start automation');
+    throw await apiError(res, 'Failed to start automation');
   }
   return res.json();
 }
@@ -272,8 +278,7 @@ export async function stopAutomation(
     method: 'POST',
   });
   if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.error || 'Failed to stop automation');
+    throw await apiError(res, 'Failed to stop automation');
   }
   return res.json();
 }
@@ -363,8 +368,7 @@ export async function createBatch(
     body: JSON.stringify(params),
   });
   if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.error || 'Failed to create batch');
+    throw await apiError(res, 'Failed to create batch');
   }
   return res.json();
 }
@@ -477,8 +481,7 @@ export async function uploadMediaFiles(
     body: formData,
   });
   if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.error || 'Failed to upload media files');
+    throw await apiError(res, 'Failed to upload media files');
   }
   return res.json();
 }

@@ -96,7 +96,7 @@ def get_queue():
     }
 
 @router.post("/batch")
-def create_batch(payload: dict = Body(...)):
+async def create_batch(payload: dict = Body(...)):
     name = payload.get("name")
     target_profiles = payload.get("target_profiles")
     schedule_window = payload.get("schedule_window") or {}
@@ -263,7 +263,11 @@ def create_batch(payload: dict = Body(...)):
         async def _start_soon():
             await asyncio.sleep(0.5)
             await dispatch_pending_queue()
-        asyncio.create_task(_start_soon())
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_start_soon())
+        except RuntimeError:
+            pass
 
     return {
         "success": True,
