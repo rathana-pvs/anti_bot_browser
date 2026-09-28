@@ -29,7 +29,8 @@ class FacebookWarmingTaskTests(unittest.TestCase):
         task = self.make_task()
         with patch("tasks.facebook_warming.time.sleep"), \
                 patch("tasks.facebook_warming.random.randint", return_value=3), \
-                patch("tasks.facebook_warming.random.uniform", return_value=1.0):
+                patch("tasks.facebook_warming.random.uniform", return_value=1.0), \
+                patch("tasks.facebook_warming.random.choice", return_value="profile"):
             self.assertTrue(task.run())
 
         task.set_stage.assert_called_once_with("warming", scroll_count=2)
@@ -40,7 +41,13 @@ class FacebookWarmingTaskTests(unittest.TestCase):
             warming_surface="profile",
             warming_surface_fallback=False,
         )
-        task.verify_logged_in.assert_called_once_with()
+        task.verify_logged_in.assert_called_once_with(
+            target_url="https://www.facebook.com/me"
+        )
+        task.select_and_open_warming_surface.assert_called_once_with(
+            requested="profile",
+            already_open="profile",
+        )
         self.assertEqual(task.human.scroll.call_count, 3)
 
     def test_stopped_container_reports_pre_publish_failure(self):

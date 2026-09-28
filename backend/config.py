@@ -45,8 +45,10 @@ if _raw_gb <= 6:
     TOTAL_MEMORY_GB = 4
 elif _raw_gb <= 12:
     TOTAL_MEMORY_GB = 8
-elif _raw_gb <= 24:
+elif _raw_gb <= 20:
     TOTAL_MEMORY_GB = 16
+elif _raw_gb <= 28:
+    TOTAL_MEMORY_GB = 24
 elif _raw_gb <= 48:
     TOTAL_MEMORY_GB = 32
 else:

@@ -219,7 +219,7 @@ export const App: React.FC = () => {
         </div>
 
         <div className={`flex-1 flex overflow-hidden ${activeTab === 'profiles' ? '' : 'hidden'}`}>
-          {/* Center: Interactive KasmVNC Viewer */}
+          {/* Center: Interactive noVNC Viewer */}
           <VncViewer
             profile={selectedProfile}
             onAction={handleAction}

@@ -74,13 +74,33 @@ class FacebookPreparationTaskTests(unittest.TestCase):
     def test_logged_out_session_is_safely_skipped(self):
         task = self.make_task(logged_in=False)
 
-        result = task.run()
+        with patch("tasks.facebook_preparation.random.choice", return_value="news_feed"):
+            result = task.run()
 
         self.assertFalse(result)
-        task.verify_logged_in.assert_called_once()
+        task.verify_logged_in.assert_called_once_with(
+            target_url="https://www.facebook.com/"
+        )
         task.set_outcome.assert_called_once()
         self.assertEqual(task.set_outcome.call_args.args[0], "skipped_auth_required")
         task.client.screenshot.assert_not_called()
+
+    def test_unstable_session_verification_reuses_selected_surface(self):
+        task = self.make_task(logged_in=True)
+        task._current_session_is_stable.return_value = False
+
+        with patch("tasks.facebook_preparation.random.choice", return_value="profile"), \
+             patch.object(FacebookPreparationTask, "DURATION_RANGES", {"brief": (0.0, 0.0), "extended": (0.0, 0.0)}):
+            result = task.run()
+
+        self.assertTrue(result)
+        task.verify_logged_in.assert_called_once_with(
+            target_url="https://www.facebook.com/me"
+        )
+        task.select_and_open_warming_surface.assert_called_once_with(
+            requested="profile",
+            already_open="profile",
+        )
 
     def test_surface_choice_allows_profile_and_same_choice_on_future_runs(self):
         task = self.make_task(logged_in=True)
@@ -114,6 +134,19 @@ class FacebookPreparationTaskTests(unittest.TestCase):
             unittest.mock.call("news_feed"),
             unittest.mock.call("profile"),
         ])
+
+    def test_surface_choice_reuses_already_verified_page(self):
+        task = self.make_task(logged_in=True)
+        task.select_and_open_warming_surface = BaseTask.select_and_open_warming_surface.__get__(task)
+        task.open_warming_surface = Mock(return_value=(True, task.client.screenshot.return_value))
+
+        result = task.select_and_open_warming_surface(
+            requested="profile",
+            already_open="profile",
+        )
+
+        self.assertEqual(result[:3], ("profile", "profile", False))
+        task.open_warming_surface.assert_called_once_with("profile", navigate=False)
 
 
 if __name__ == "__main__":

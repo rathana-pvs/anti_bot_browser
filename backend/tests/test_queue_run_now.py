@@ -27,10 +27,11 @@ def test_rejected_failed_retry_is_not_persisted_as_pending(monkeypatch):
     save_queue = Mock()
 
     monkeypatch.setattr(queue_router, "load_posting_queue", lambda: queue)
+    batch = {"batch_id": "b-1", "posts": [post]}
     monkeypatch.setattr(
         queue_router,
         "find_queue_execution",
-        lambda _queue, _execution_id: {"execution": execution, "post": post},
+        lambda _queue, _execution_id: {"execution": execution, "post": post, "batch": batch},
     )
     monkeypatch.setattr(queue_router, "get_scheduler_config", lambda: {"max_preparers": 1, "max_active_profile_containers": 2})
     monkeypatch.setattr(queue_router, "count_buffered_preparations", lambda *_args: 1)

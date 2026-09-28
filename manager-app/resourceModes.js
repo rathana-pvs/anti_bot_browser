@@ -23,7 +23,7 @@ const MODE_RANK = Object.freeze({ low: 0, medium: 1, high: 2 });
 const RANK_MODE = Object.freeze(['low', 'medium', 'high']);
 
 export function recommendedResourceMode(totalMemoryGb, cpuThreads) {
-  const memoryRank = totalMemoryGb <= 24 ? 0 : totalMemoryGb <= 47 ? 1 : 2;
+  const memoryRank = totalMemoryGb < 24 ? 0 : totalMemoryGb <= 47 ? 1 : 2;
   const cpuRank = cpuThreads < 12 ? 0 : cpuThreads < 16 ? 1 : 2;
   return RANK_MODE[Math.min(memoryRank, cpuRank)];
 }

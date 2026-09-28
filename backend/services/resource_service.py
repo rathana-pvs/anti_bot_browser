@@ -34,7 +34,7 @@ MODE_RANK = {"low": 0, "medium": 1, "high": 2}
 RANK_MODE = ["low", "medium", "high"]
 
 def recommended_resource_mode(total_memory_gb: int, cpu_threads: int) -> str:
-    memory_rank = 0 if total_memory_gb <= 24 else (1 if total_memory_gb <= 47 else 2)
+    memory_rank = 0 if total_memory_gb < 24 else (1 if total_memory_gb <= 47 else 2)
     cpu_rank = 0 if cpu_threads < 12 else (1 if cpu_threads < 16 else 2)
     return RANK_MODE[min(memory_rank, cpu_rank)]
 

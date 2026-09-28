@@ -43,3 +43,5 @@ manager-app/src-tauri/gen/
 android-standalone/data/
 .pytest_cache/
 build/
+*.exe
+current.png

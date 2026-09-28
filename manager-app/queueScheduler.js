@@ -45,25 +45,14 @@ function asTime(value) {
 export function computeExecutionSchedule({
   nowMs,
   isStartNow,
-  slotIndex,
   profileIndex,
   staggerMs,
-  postSlotMs,
   windowStartMs,
-  jitterMs = 0,
 }) {
-  if (isStartNow && slotIndex === 0) {
-    // All profiles are eligible immediately. Publisher capacity still serializes
-    // execution, so a profile is never held back by an artificial start delay.
-    return nowMs;
-  }
   if (isStartNow) {
-    return nowMs + slotIndex * postSlotMs + profileIndex * staggerMs + jitterMs;
+    return nowMs + profileIndex * staggerMs;
   }
-  return Math.max(
-    nowMs + 60_000,
-    windowStartMs + slotIndex * postSlotMs + profileIndex * staggerMs + jitterMs,
-  );
+  return Math.max(nowMs + 60_000, windowStartMs + profileIndex * staggerMs);
 }
 
 export function isLeaseActive(lease, nowMs = Date.now()) {

@@ -1,7 +1,6 @@
 import asyncio
 import json
 import math
-import random
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +12,7 @@ from backend.services.queue_service import (
     save_posting_queue,
     find_queue_execution,
     generate_spun_caption,
+    with_queue_claim_lock,
 )
 from backend.services.queue_safety import (
     is_execution_deletion_locked,
@@ -29,6 +29,9 @@ from backend.services.queue_scheduler import (
 from backend.services.profile_pipeline import (
     shuffled_profile_order,
     count_buffered_preparations,
+    active_batch_id,
+    batch_has_review_hold,
+    batch_iteration_availability,
 )
 from backend.services.telemetry_summary import build_queue_telemetry_summary
 from backend.services.docker_service import (
@@ -86,10 +89,12 @@ def get_queue():
         "skipped": len([e for e in all_executions if e.get("status") and e["status"].startswith("skipped")]),
     }
 
+    scheduler = current_scheduler_snapshot(queue)
+    scheduler["batch_owner_id"] = active_batch_id(queue)
     return {
         "queue_version": queue.get("queue_version", "2.0"),
         "stats": stats,
-        "scheduler": current_scheduler_snapshot(queue),
+        "scheduler": scheduler,
         "telemetry_summary": build_queue_telemetry_summary(all_executions),
         "batches": queue.get("daily_batches", []),
         "executions": all_executions,
@@ -127,6 +132,14 @@ async def create_batch(payload: dict = Body(...)):
     else:
         stagger_seconds = 60
 
+    try:
+        iteration_delay_seconds = max(
+            0,
+            min(3600, int(schedule_window.get("batch_iteration_delay_seconds", 0))),
+        )
+    except (TypeError, ValueError):
+        iteration_delay_seconds = 60
+
     preparation_mode = schedule_window.get("session_preparation_mode") or "off"
     if preparation_mode not in ("off", "brief", "extended"):
         raise HTTPException(status_code=400, detail="session_preparation_mode must be 'off', 'brief', or 'extended'")
@@ -153,6 +166,8 @@ async def create_batch(payload: dict = Body(...)):
             "skipped": skipped_profiles,
         })
 
+    is_start_now = payload.get("start_now") is True or schedule_window.get("start_now") is True
+
     previous_batch = (queue.get("daily_batches") or [None])[0]
     previous_order = (previous_batch.get("profile_execution_order") or previous_batch.get("target_profiles") or []) if previous_batch else []
     previous_last = previous_order[-1] if previous_order else None
@@ -161,10 +176,8 @@ async def create_batch(payload: dict = Body(...)):
     posting_orders = {}
     for pid in accepted_profiles:
         order = list(range(len(posts)))
-        random.shuffle(order)
         posting_orders[pid] = order
 
-    is_start_now = payload.get("start_now") is True or schedule_window.get("start_now") is True
     now = datetime.now()
     try:
         start_h, start_m = map(int, start_time_str.split(":"))
@@ -194,7 +207,7 @@ async def create_batch(payload: dict = Body(...)):
 
         for p_idx, pid in enumerate(profile_execution_order):
             slot_idx = posting_orders[pid].index(post_idx)
-            jitter = 0 if (slot_idx == 0 and is_start_now) else (random.random() * (4 if is_start_now else 6) - (2 if is_start_now else 3)) * 60 * 1000
+            jitter = 0
 
             sched_ms = compute_execution_schedule(
                 now_ms=now.timestamp() * 1000,
@@ -214,6 +227,7 @@ async def create_batch(payload: dict = Body(...)):
                 "execution_id": f"exec_{int(time.time() * 1000)}_{p_idx}_{post_idx}",
                 "profile_id": pid,
                 "scheduled_at": sched_dt.isoformat(),
+                "batch_iteration_index": slot_idx * len(profile_execution_order) + p_idx,
                 "spun_caption": spun_caption,
                 "status": "pending",
                 "stage": "pending",
@@ -247,8 +261,10 @@ async def create_batch(payload: dict = Body(...)):
             "start_time": start_time_str,
             "end_time": end_time_str,
             "profile_stagger_seconds": stagger_seconds,
+            "batch_iteration_delay_seconds": iteration_delay_seconds,
             "session_preparation_mode": preparation_mode,
             "start_now": is_start_now,
+            "execution_flow": "sequential",
         },
         "posting_order_per_profile": posting_orders,
         "posts": formatted_posts,
@@ -277,6 +293,128 @@ async def create_batch(payload: dict = Body(...)):
         "total_executions": len(accepted_profiles) * len(posts),
         "batch": new_batch,
     }
+
+@router.post("/batch/{batch_id}/posts")
+async def append_batch_posts(batch_id: str, payload: dict = Body(...)):
+    posts = payload.get("posts")
+    if not isinstance(posts, list) or not posts:
+        raise HTTPException(status_code=400, detail="Please provide at least one post item.")
+    for post in posts:
+        if not isinstance(post, dict) or (not str(post.get("media_file") or "").strip() and not str(post.get("base_caption") or "").strip()):
+            raise HTTPException(status_code=400, detail="Each appended post needs media or a caption.")
+        if post.get("type", "photo") not in ("photo", "reel"):
+            raise HTTPException(status_code=400, detail="Appended post type must be 'photo' or 'reel'.")
+
+    def _append():
+        queue = load_posting_queue()
+        batch = next((item for item in queue.get("daily_batches", []) if item.get("batch_id") == batch_id), None)
+        if not batch:
+            raise HTTPException(status_code=404, detail="Batch not found")
+        existing_executions = [
+            execution
+            for existing_post in batch.get("posts", [])
+            for execution in existing_post.get("executions", [])
+        ]
+        if any(execution.get("status") in ("uncertain", "needs_review") for execution in existing_executions):
+            raise HTTPException(status_code=409, detail="Resolve the batch's uncertain execution before appending more posts.")
+        if not any(execution.get("status") in ("pending", "ready", "running", "preparing") for execution in existing_executions):
+            raise HTTPException(status_code=409, detail="This batch has already finished. Create a new batch instead.")
+
+        profile_order = batch.get("profile_execution_order") or batch.get("target_profiles") or []
+        if not profile_order:
+            raise HTTPException(status_code=409, detail="The batch has no target profiles.")
+
+        preparation_mode = batch.get("schedule_window", {}).get("session_preparation_mode") or "off"
+        known_iterations = []
+        for execution in existing_executions:
+            try:
+                known_iterations.append(int(execution["batch_iteration_index"]))
+            except (KeyError, TypeError, ValueError):
+                pass
+        max_iteration = max(known_iterations, default=-1)
+        # Normalize batches created by older builds so appended work always
+        # stays behind every existing execution instead of jumping the queue.
+        for execution in existing_executions:
+            if execution.get("batch_iteration_index") is None:
+                max_iteration += 1
+                execution["batch_iteration_index"] = max_iteration
+        next_iteration = max_iteration + 1
+        now = datetime.now(timezone.utc)
+        existing_schedule_times = []
+        for execution in existing_executions:
+            try:
+                existing_schedule_times.append(datetime.fromisoformat(str(execution.get("scheduled_at") or "").replace("Z", "+00:00")))
+            except (TypeError, ValueError):
+                pass
+        batch_start = min(existing_schedule_times, default=now)
+        appended_posts = []
+        existing_post_count = len(batch.get("posts", []))
+
+        for append_idx, post in enumerate(posts):
+            post_index = existing_post_count + append_idx
+            executions = []
+            for profile_idx, profile_id in enumerate(profile_order):
+                caption = str(post.get("base_caption") or "")
+                spun_caption = (
+                    generate_spun_caption(caption, profile_idx, profile_id)
+                    if post.get("ai_spin") is not False
+                    else caption
+                )
+                execution_id = f"exec_{int(time.time() * 1000)}_append_{append_idx}_{profile_idx}"
+                executions.append({
+                    "execution_id": execution_id,
+                    "profile_id": profile_id,
+                    "scheduled_at": batch_start.isoformat(),
+                    "batch_iteration_index": next_iteration,
+                    "spun_caption": spun_caption,
+                    "status": "pending",
+                    "stage": "pending",
+                    "stage_history": [{
+                        "stage": "pending",
+                        "timestamp": now.isoformat(),
+                        "reason": "appended_to_active_batch",
+                    }],
+                    "preparation_mode": preparation_mode,
+                    "preparation_status": "not_requested" if preparation_mode == "off" else "pending",
+                    "retry_count": 0,
+                    "error": None,
+                    "published_at": None,
+                    "logs": [],
+                })
+                next_iteration += 1
+
+            appended_post = {
+                "post_id": f"p_append_{int(time.time() * 1000)}_{append_idx}",
+                "type": post.get("type", "photo"),
+                "media_file": str(post.get("media_file") or ""),
+                "base_caption": str(post.get("base_caption") or ""),
+                "first_comment": post.get("first_comment"),
+                "scrolls": max(1, int(post.get("scrolls", 4))),
+                "ai_spin": post.get("ai_spin") is not False,
+                "executions": executions,
+            }
+            batch.setdefault("posts", []).append(appended_post)
+            appended_posts.append(appended_post)
+
+            for profile_id in profile_order:
+                batch.setdefault("posting_order_per_profile", {}).setdefault(profile_id, []).append(post_index)
+
+        batch["updated_at"] = now.isoformat()
+        if not save_posting_queue(queue):
+            raise HTTPException(status_code=500, detail="Failed to save appended posts.")
+        return {
+            "success": True,
+            "batch_id": batch_id,
+            "posts_added": len(appended_posts),
+            "executions_added": len(appended_posts) * len(profile_order),
+        }
+
+    result = with_queue_claim_lock(_append)
+    try:
+        asyncio.get_running_loop().create_task(dispatch_pending_queue())
+    except RuntimeError:
+        pass
+    return result
 
 @router.delete("/batch/{batch_id}")
 def delete_batch(batch_id: str):
@@ -355,6 +493,24 @@ async def run_execution_now(execution_id: str):
         and prep_mode != "off"
         and effective_preparation_status == "pending"
     )
+
+    owner_batch_id = active_batch_id(queue)
+    target_batch = match.get("batch") or {}
+    target_batch_id = target_batch.get("batch_id")
+    if owner_batch_id and target_batch_id and owner_batch_id != target_batch_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Another batch is already running. This batch will start after the active batch finishes.",
+        )
+    if target_batch and batch_has_review_hold(target_batch):
+        raise HTTPException(status_code=409, detail="This batch is paused until its uncertain execution is resolved.")
+    if not needs_prep and target_batch:
+        iteration_check = batch_iteration_availability(target_batch)
+        if not iteration_check["allowed"]:
+            raise HTTPException(
+                status_code=409,
+                detail="The previous batch iteration is still running or its delay has not finished.",
+            )
 
     scheduler_cfg = get_scheduler_config()
     if needs_prep and count_buffered_preparations(queue, execution_id) >= scheduler_cfg["max_preparers"]:

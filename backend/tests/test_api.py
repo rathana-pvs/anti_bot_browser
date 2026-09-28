@@ -76,6 +76,7 @@ def test_queue_endpoints(client):
             "start_time": "00:00",
             "end_time": "23:59",
             "profile_stagger_seconds": 0,
+            "batch_iteration_delay_seconds": 45,
             "session_preparation_mode": "brief",
             "start_now": True,
         },
@@ -94,6 +95,36 @@ def test_queue_endpoints(client):
     batch_data = batch_res.json()
     assert batch_data["success"] is True
     assert "batch_id" in batch_data
+    assert batch_data["batch"]["schedule_window"]["batch_iteration_delay_seconds"] == 45
+
+    append_res = client.post(
+        f"/api/queue/batch/{batch_data['batch_id']}/posts",
+        json={"posts": [{
+            "type": "photo",
+            "media_file": "",
+            "base_caption": "Appended while running",
+            "ai_spin": False,
+        }]},
+    )
+    assert append_res.status_code == 200
+    assert append_res.json()["posts_added"] == 1
+    assert append_res.json()["executions_added"] == 1
+
+    updated_queue = client.get("/api/queue").json()
+    updated_batch = next(batch for batch in updated_queue["batches"] if batch["batch_id"] == batch_data["batch_id"])
+    assert len(updated_batch["posts"]) == 2
+    assert updated_batch["posts"][-1]["executions"][0]["stage_history"][0]["reason"] == "appended_to_active_batch"
+
+    # Reset status to stopped so test cleanup delete succeeds
+    from backend.services.queue_service import save_posting_queue, load_posting_queue
+    q = load_posting_queue()
+    for b in q.get("daily_batches", []):
+        if b.get("batch_id") == batch_data["batch_id"]:
+            for post in b.get("posts", []):
+                for ex in post.get("executions", []):
+                    ex["status"] = "stopped"
+                    ex["stage"] = "stopped"
+    save_posting_queue(q)
 
     # Clean up test batch
     del_res = client.delete(f"/api/queue/batch/{batch_data['batch_id']}")

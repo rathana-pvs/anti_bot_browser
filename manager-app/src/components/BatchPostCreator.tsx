@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Profile } from '../types/profile';
 import { CreateBatchParams } from '../types/automation';
-import { createBatch, uploadMediaFiles } from '../services/api';
+import { createBatch, uploadMediaFiles, getSharedMediaUrl } from '../services/api';
 import {
   UploadCloud,
   Film,
@@ -81,12 +81,21 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
     return localStorage.getItem('batch_creator_start_time') || '09:00';
   });
 
-  const [endTime, setEndTime] = useState(() => {
+  const [endTime] = useState(() => {
     return localStorage.getItem('batch_creator_end_time') || '21:00';
   });
 
   const [staggerSeconds, setStaggerSeconds] = useState(() => {
     const saved = localStorage.getItem('batch_creator_stagger_seconds');
+    if (saved !== null) {
+      const parsed = parseInt(saved, 10);
+      return Number.isNaN(parsed) ? 60 : Math.max(0, parsed);
+    }
+    return 60;
+  });
+
+  const [iterationDelaySeconds, setIterationDelaySeconds] = useState(() => {
+    const saved = localStorage.getItem('batch_creator_iteration_delay_seconds');
     if (saved !== null) {
       const parsed = parseInt(saved, 10);
       return Number.isNaN(parsed) ? 60 : Math.max(0, parsed);
@@ -143,10 +152,11 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
     localStorage.setItem('batch_creator_start_time', startTime);
     localStorage.setItem('batch_creator_end_time', endTime);
     localStorage.setItem('batch_creator_stagger_seconds', String(staggerSeconds));
+    localStorage.setItem('batch_creator_iteration_delay_seconds', String(iterationDelaySeconds));
     localStorage.setItem('batch_creator_ai_spin', String(aiSpinAll));
     localStorage.setItem('batch_creator_start_now', String(executionMode === 'now'));
     localStorage.setItem('batch_creator_preparation_mode', preparationMode);
-  }, [startTime, endTime, staggerSeconds, aiSpinAll, executionMode, preparationMode]);
+  }, [startTime, endTime, staggerSeconds, iterationDelaySeconds, aiSpinAll, executionMode, preparationMode]);
 
   // Profile Selection Helpers
   const toggleProfile = (id: string) => {
@@ -185,7 +195,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
         type: file.type,
         media_file: file.filename,
         media_name: file.original_name || file.filename,
-        preview_url: `/shared_media/${file.filename}`,
+        preview_url: getSharedMediaUrl(file.filename),
         caption: '',
         first_comment: '',
       }));
@@ -217,7 +227,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                   ...row,
                   media_file: uploaded.filename,
                   media_name: uploaded.original_name || uploaded.filename,
-                  preview_url: `/shared_media/${uploaded.filename}`,
+                  preview_url: getSharedMediaUrl(uploaded.filename),
                   type: uploaded.type,
                 }
               : row
@@ -269,7 +279,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
             type,
             media_file: mediaFile,
             media_name: mediaFile || '',
-            preview_url: mediaFile ? `/shared_media/${mediaFile}` : undefined,
+            preview_url: mediaFile ? getSharedMediaUrl(mediaFile) : undefined,
             caption,
             first_comment: comment,
           };
@@ -350,6 +360,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
           start_time: startTime,
           end_time: endTime,
           profile_stagger_seconds: staggerSeconds,
+          batch_iteration_delay_seconds: iterationDelaySeconds,
           session_preparation_mode: preparationMode,
           start_now: startNow,
         },
@@ -559,7 +570,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                             <div
                               onClick={() =>
                                 setLightboxMedia({
-                                  url: post.preview_url || `/shared_media/${post.media_file}`,
+                                  url: post.preview_url || getSharedMediaUrl(post.media_file),
                                   type: 'reel',
                                   name: post.media_name || post.media_file,
                                   caption: post.caption,
@@ -570,7 +581,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                               title="Click for full preview"
                             >
                               <video
-                                src={post.preview_url || `/shared_media/${post.media_file}`}
+                                src={post.preview_url || getSharedMediaUrl(post.media_file)}
                                 className="w-full h-full object-cover opacity-75"
                                 preload="metadata"
                               />
@@ -582,7 +593,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                             <div
                               onClick={() =>
                                 setLightboxMedia({
-                                  url: post.preview_url || `/shared_media/${post.media_file}`,
+                                  url: post.preview_url || getSharedMediaUrl(post.media_file),
                                   type: 'photo',
                                   name: post.media_name || post.media_file,
                                   caption: post.caption,
@@ -593,9 +604,12 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                               title="Click for full preview"
                             >
                               <img
-                                src={post.preview_url || `/shared_media/${post.media_file}`}
+                                src={post.preview_url || getSharedMediaUrl(post.media_file)}
                                 alt={post.media_name || 'preview'}
                                 className="w-full h-full object-cover"
+                                onError={(e) => {
+                                  (e.target as HTMLElement).style.display = 'none';
+                                }}
                               />
                             </div>
                           )}
@@ -784,8 +798,8 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
 
               <p className="text-[11px] text-zinc-500 mt-2 leading-relaxed">
                 {executionMode === 'now'
-                  ? 'The first profile is eligible immediately. Other profiles follow the stagger delay.'
-                  : `Posts will be evenly distributed today between ${startTime} and ${endTime}.`}
+                  ? 'Posts run in order: one finishes, then the batch iteration delay begins before the next starts.'
+                  : `The batch starts at ${startTime}, then every post runs sequentially with the iteration delay.`}
               </p>
             </div>
 
@@ -826,32 +840,24 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
 
               {showAdvanced && (
                 <div className="space-y-3 pt-3 animate-in fade-in duration-150 text-xs">
-                  <div className="grid grid-cols-2 gap-2">
+                  {executionMode === 'scheduled' ? (
                     <div>
-                      <label className="block text-zinc-400 mb-1">
-                        Start Time {executionMode === 'now' && <span className="text-[10px] text-zinc-500">(Now)</span>}
-                      </label>
+                      <label className="block text-zinc-400 mb-1">Batch Start Time</label>
                       <input
                         type="time"
-                        disabled={executionMode === 'now'}
                         value={startTime}
                         onChange={(e) => setStartTime(e.target.value)}
-                        className="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-white focus:outline-none focus:border-zinc-600 disabled:opacity-40 disabled:cursor-not-allowed"
+                        className="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-white focus:outline-none focus:border-zinc-600"
                       />
+                      <p className="text-[10px] text-zinc-500 mt-1">
+                        This gates the first iteration only. Remaining posts follow sequentially.
+                      </p>
                     </div>
-                    <div>
-                      <label className="block text-zinc-400 mb-1">
-                        End Time {executionMode === 'now' && <span className="text-[10px] text-zinc-500">(Auto)</span>}
-                      </label>
-                      <input
-                        type="time"
-                        disabled={executionMode === 'now'}
-                        value={endTime}
-                        onChange={(e) => setEndTime(e.target.value)}
-                        className="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-white focus:outline-none focus:border-zinc-600 disabled:opacity-40 disabled:cursor-not-allowed"
-                      />
+                  ) : (
+                    <div className="px-2.5 py-2 rounded-lg bg-zinc-950 border border-zinc-800 text-[11px] text-zinc-500">
+                      The first iteration is eligible immediately.
                     </div>
-                  </div>
+                  )}
 
                   <div>
                     <label className="block text-zinc-400 mb-1">
@@ -869,6 +875,27 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                       }}
                       className="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-white focus:outline-none focus:border-blue-500"
                     />
+                  </div>
+
+                  <div>
+                    <label className="block text-zinc-400 mb-1">
+                      Batch Iteration Delay (Seconds)
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={3600}
+                      step={10}
+                      value={iterationDelaySeconds}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value, 10);
+                        setIterationDelaySeconds(Number.isNaN(val) ? 60 : Math.max(0, val));
+                      }}
+                      className="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-white focus:outline-none focus:border-blue-500"
+                    />
+                    <p className="text-[10px] text-zinc-500 mt-1">
+                      Minimum pause after one publishing execution finishes before the next starts in this batch.
+                    </p>
                   </div>
 
                   <div>

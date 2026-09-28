@@ -187,8 +187,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       </div>
 
+      {/* Profiles Subheader: Count */}
+      <div className="px-3 py-1.5 border-b border-border/40 flex items-center justify-between text-[11px] text-zinc-400 bg-zinc-950/40">
+        <span className="font-medium text-zinc-400">
+          {filteredProfiles.length} {filteredProfiles.length === 1 ? 'profile' : 'profiles'}
+        </span>
+      </div>
+
       {/* Profiles Scroll Area */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-2">
+      <div className="flex-1 overflow-y-auto p-2 space-y-1">
         {filteredProfiles.length === 0 ? (
           <div className="text-center py-10 px-4">
             <p className="text-xs text-zinc-500">No profiles found</p>

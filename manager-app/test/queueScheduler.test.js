@@ -37,7 +37,7 @@ test('medium mode permits two publisher lanes but fences a third', () => {
   assert.equal(canAcquireSchedulerSlot(queue, [], 'publisher', third.profile_id, medium, NOW).reason, 'publisher_capacity_reached');
 });
 
-test('start-now makes every profile first slot immediately eligible', () => {
+test('start-now ignores post-window slots but retains profile staggering', () => {
   const base = {
     nowMs: NOW,
     isStartNow: true,
@@ -47,11 +47,12 @@ test('start-now makes every profile first slot immediately eligible', () => {
     windowStartMs: NOW,
   };
   assert.equal(computeExecutionSchedule({ ...base, profileIndex: 0 }), NOW);
-  assert.equal(computeExecutionSchedule({ ...base, profileIndex: 4 }), NOW);
+  assert.equal(computeExecutionSchedule({ ...base, profileIndex: 4 }), NOW + 60 * 60_000);
+  assert.equal(computeExecutionSchedule({ ...base, profileIndex: 0, slotIndex: 3 }), NOW);
 });
 
 test('scheduled batches retain profile staggering', () => {
-  assert.equal(computeExecutionSchedule({
+  const base = {
     nowMs: NOW,
     isStartNow: false,
     slotIndex: 0,
@@ -59,7 +60,9 @@ test('scheduled batches retain profile staggering', () => {
     staggerMs: 15 * 60_000,
     postSlotMs: 60 * 60_000,
     windowStartMs: NOW + 60 * 60_000,
-  }), NOW + 90 * 60_000);
+  };
+  assert.equal(computeExecutionSchedule(base), NOW + 90 * 60_000);
+  assert.equal(computeExecutionSchedule({ ...base, slotIndex: 8 }), NOW + 90 * 60_000);
 });
 
 test('publisher capacity is global and profile locks are exclusive', () => {

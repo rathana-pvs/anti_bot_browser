@@ -11,6 +11,7 @@ import {
 
 test('auto selects the lower tier supported by RAM and CPU', () => {
   assert.equal(recommendedResourceMode(16, 20), 'low');
+  assert.equal(recommendedResourceMode(24, 16), 'medium');
   assert.equal(recommendedResourceMode(32, 16), 'medium');
   assert.equal(recommendedResourceMode(64, 20), 'high');
   assert.equal(recommendedResourceMode(64, 8), 'low');

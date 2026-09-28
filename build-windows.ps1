@@ -67,14 +67,17 @@ if (Get-Command node -ErrorAction SilentlyContinue) {
 
 # Check Python
 $PythonCmd = $null
+$PythonArgs = @()
 if (Get-Command python -ErrorAction SilentlyContinue) {
     $PythonCmd = "python"
+    $PythonArgs = @()
 } elseif (Get-Command py -ErrorAction SilentlyContinue) {
-    $PythonCmd = "py -3"
+    $PythonCmd = "py"
+    $PythonArgs = @("-3")
 }
 
 if ($PythonCmd) {
-    $pyVer = (& $PythonCmd.Split()[0] ($PythonCmd.Split()[1..($PythonCmd.Split().Length-1)] + @("--version")) 2>&1).Trim()
+    $pyVer = (& $PythonCmd @($PythonArgs + @("--version")) 2>&1).Trim()
     Write-Success "Python detected: $pyVer"
 } else {
     Write-Failure "Python is missing! Install via: winget install Python.Python.3.12"
@@ -111,7 +114,7 @@ $VenvDir = Join-Path $RootDir "build\venv_win"
 if (-not (Test-Path $VenvDir)) {
     Write-Host "Creating Python virtualenv at $VenvDir..." -ForegroundColor Gray
     New-Item -ItemType Directory -Force -Path (Split-Path $VenvDir) | Out-Null
-    & $PythonCmd.Split()[0] ($PythonCmd.Split()[1..($PythonCmd.Split().Length-1)] + @("-m", "venv", $VenvDir))
+    & $PythonCmd @($PythonArgs + @("-m", "venv", $VenvDir))
 }
 
 $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
@@ -146,8 +149,8 @@ Write-Host "Compiling backend\main.py into $BinariesDir\backend_server.exe..." -
     --distpath $BinariesDir `
     --workpath $WorkPath `
     --specpath $SpecPath `
-    --add-data "automation\brains;automation\brains" `
-    --add-data "automation\templates;automation\templates" `
+    --add-data "$RootDir\automation\brains;automation\brains" `
+    --add-data "$RootDir\automation\templates;automation\templates" `
     (Join-Path $RootDir "backend\main.py")
 
 $BackendExe = Join-Path $BinariesDir "backend_server.exe"
@@ -192,11 +195,24 @@ if (Test-Path $MsiDir) {
     $FoundInstallers += Get-ChildItem -Path $MsiDir -Filter "*.msi" -File
 }
 
+$ReleaseDir = Join-Path $RootDir "release\windows"
+if (-not (Test-Path $ReleaseDir)) {
+    New-Item -ItemType Directory -Force -Path $ReleaseDir | Out-Null
+}
+
+$BuiltExe = Join-Path $ExeDir "IsolatedBrowserManager.exe"
+if (Test-Path $BuiltExe) {
+    Copy-Item -Path $BuiltExe -Destination $ReleaseDir -Force
+    Write-Success "Copied application to: $ReleaseDir\IsolatedBrowserManager.exe"
+}
+
 if ($FoundInstallers.Count -gt 0) {
     Write-Host "`nGenerated Windows Installers:" -ForegroundColor Green
     foreach ($item in $FoundInstallers) {
         $sizeMB = [math]::Round($item.Length / 1MB, 2)
+        Copy-Item -Path $item.FullName -Destination $ReleaseDir -Force
         Write-Host "  -> $($item.FullName) ($sizeMB MB)" -ForegroundColor White
+        Write-Success "Copied installer to: $ReleaseDir\$($item.Name)"
     }
     Write-Host "`nYou can run the installer .exe above to install Isolated Browser Manager on Windows!`n" -ForegroundColor Green
 } else {

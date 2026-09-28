@@ -500,14 +500,23 @@ class BaseTask:
             if telemetry is not None:
                 telemetry.record_navigation(url, (time.perf_counter() - started) * 1000.0, outcome)
 
-    def open_warming_surface(self, surface: str, timeout: float = 15.0):
+    def open_warming_surface(
+        self,
+        surface: str,
+        timeout: float = 15.0,
+        *,
+        navigate: bool = True,
+    ):
         """Navigate to and verify one passive Facebook browsing surface."""
         url = self.WARMING_SURFACES.get(surface)
         if url is None:
             raise ValueError(f"Unknown warming surface: {surface}")
 
         self.log("INFO", f"Opening warming surface: {surface}")
-        self.navigate_to(url, wait_seconds=2.0, check_leave_dialog=False)
+        if navigate:
+            self.navigate_to(url, wait_seconds=2.0, check_leave_dialog=False)
+        else:
+            self.log("INFO", f"Reusing already verified warming surface: {surface}")
         deadline = time.time() + timeout
         last_screen = None
         valid_states = {
@@ -536,12 +545,21 @@ class BaseTask:
             time.sleep(0.75)
         return False, last_screen
 
-    def select_and_open_warming_surface(self):
+    def select_and_open_warming_surface(
+        self,
+        requested: str | None = None,
+        already_open: str | None = None,
+    ):
         """Choose either feed or profile independently, with one safe fallback."""
-        requested = random.choice(tuple(self.WARMING_SURFACES))
+        requested = requested or random.choice(tuple(self.WARMING_SURFACES))
+        if requested not in self.WARMING_SURFACES:
+            raise ValueError(f"Unknown warming surface: {requested}")
         fallback = next(surface for surface in self.WARMING_SURFACES if surface != requested)
         for attempt, surface in enumerate((requested, fallback), start=1):
-            ready, screen = self.open_warming_surface(surface)
+            if attempt == 1 and surface == already_open:
+                ready, screen = self.open_warming_surface(surface, navigate=False)
+            else:
+                ready, screen = self.open_warming_surface(surface)
             if ready:
                 used_fallback = attempt == 2
                 self.log(
@@ -664,7 +682,7 @@ class BaseTask:
             auth_preflight=session_status,
         )
 
-    def verify_logged_in(self) -> bool:
+    def verify_logged_in(self, target_url: str = "https://www.facebook.com/") -> bool:
         """
         Verify that the container Chrome session is logged into Facebook.
         Loading and transitional screens remain UNKNOWN and are polled rather
@@ -672,7 +690,7 @@ class BaseTask:
         """
         self.log("INFO", "Verifying Facebook session login state...")
         self.navigate_to(
-            "https://www.facebook.com/",
+            target_url,
             wait_seconds=2.0,
             check_leave_dialog=False,
         )
@@ -957,7 +975,7 @@ class BaseTask:
         candidates.sort(key=lambda item: item.get("center", (0, height + 1))[1])
         return candidates[0]
 
-    def _open_profile_first_comment_input(self):
+    def _open_profile_first_comment_input(self, *, navigate: bool = True):
         """
         Primary comment targeting method: navigate to the profile and select the
         topmost comment field/action belonging to the first visible post.
@@ -966,7 +984,10 @@ class BaseTask:
         is the intended newly published item once the profile feed has refreshed.
         """
         self.log("STEP", "Primary comment method: opening the profile's first post...")
-        self.navigate_to("https://www.facebook.com/me", wait_seconds=3.0)
+        if navigate:
+            self.navigate_to("https://www.facebook.com/me", wait_seconds=3.0)
+        else:
+            self.log("INFO", "Reusing the verified post-publication profile feed for comment targeting.")
 
         # Move mouse over main post feed column (x ~ 1150, y ~ 500) so mouse wheel / keys scroll feed
         self.client.exec_cmd(["xdotool", "mousemove", "1150", "500"], check=False)
@@ -1062,7 +1083,14 @@ class BaseTask:
         matched = sum(1 for token in target_tokens if token in visible_tokens)
         return matched / len(target_tokens)
 
-    def post_first_comment(self, comment_link: str, post_url: str | None = None) -> str:
+    def post_first_comment(
+        self,
+        comment_link: str,
+        post_url: str | None = None,
+        *,
+        reuse_profile_page: bool = False,
+        prefer_permalink: bool = False,
+    ) -> str:
         """
         Locate the post's 'Comment as ...' field, click it, paste comment_link, and submit once with Return.
         Returns: 'submitted_unverified' on submission, or 'failed_input_not_found'.
@@ -1071,10 +1099,18 @@ class BaseTask:
         self.log("STEP", "Locating 'Comment as ...' field for first comment...")
         time.sleep(1.5)
         self.last_comment_method = None
-        comment_box_pos, comment_screen = self._open_profile_first_comment_input()
-        if comment_box_pos:
-            self.last_comment_method = "profile_first_post"
-        elif post_url:
+        comment_box_pos = None
+        comment_screen = None
+        if not prefer_permalink:
+            if reuse_profile_page:
+                comment_box_pos, comment_screen = self._open_profile_first_comment_input(
+                    navigate=False
+                )
+            else:
+                comment_box_pos, comment_screen = self._open_profile_first_comment_input()
+            if comment_box_pos:
+                self.last_comment_method = "profile_first_post"
+        if not comment_box_pos and post_url:
             self.log("WARN", "Primary first-post comment target was not found; trying the verified permalink before submission.")
             comment_box_pos, comment_screen = self._open_permalink_comment_input(post_url)
             if comment_box_pos:
@@ -1220,6 +1256,49 @@ class BaseTask:
         time.sleep(warm_seconds)
         self.capture_evidence("after_comment_modal_close", self.client.screenshot())
         return comment_status
+
+    def post_first_comment_with_page_reuse(
+        self,
+        comment_link: str,
+        *,
+        caption: str | None,
+        media_type: str,
+    ) -> tuple[str, dict]:
+        """Try the current profile feed before paying for navigation/correlation."""
+        comment_status = self.post_first_comment(
+            comment_link,
+            reuse_profile_page=True,
+        )
+        if comment_status != "failed_input_not_found":
+            return comment_status, self.permalink_not_requested()
+
+        self.log(
+            "INFO",
+            "Current profile feed did not expose the comment input; refreshing once to correlate the published post.",
+        )
+        permalink_info = self.correlate_and_extract_permalink(
+            caption=caption,
+            media_type=media_type,
+        )
+        if not permalink_info.get("post_url"):
+            permalink_info.update({
+                "permalink_status": "missing",
+                "permalink_missing": True,
+                "permalink_recovery_attempted": False,
+            })
+            return comment_status, permalink_info
+
+        permalink_info = self.recover_missing_permalink(
+            permalink_info,
+            caption=caption,
+            media_type=media_type,
+        )
+        comment_status = self.post_first_comment(
+            comment_link,
+            post_url=permalink_info["post_url"],
+            prefer_permalink=True,
+        )
+        return comment_status, permalink_info
 
     @staticmethod
     def validate_facebook_permalink(url: str, post_type: str = "post") -> tuple[bool, str | None]:

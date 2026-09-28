@@ -382,11 +382,10 @@ class FacebookReelTask(BaseTask):
 
         if not self.client.is_running():
             return self._fail("container_stopped", f"Container {self.client.container_name} is not running.")
-        if not self.verify_logged_in():
+        if not self.verify_logged_in(target_url="https://www.facebook.com/me"):
             return self.skip_unverified_session()
 
-        self.log("STEP", "Navigating to Facebook profile page...")
-        self.navigate_to("https://www.facebook.com/me", wait_seconds=3.0)
+        self.log("INFO", "Reusing the verified profile page for Reel creation.")
 
         self.log("STEP", "Locating Reel button on profile page...")
         def locate_reel_button():
@@ -549,18 +548,9 @@ class FacebookReelTask(BaseTask):
         if result != "published":
             self.log("INFO", f"Reel publication state '{result}' without error dialog; treating as published per operator rule.")
 
-        # Correlation is needed only for the requested first-comment fallback.
         if self.comment_link:
-            permalink_info = self.correlate_and_extract_permalink(
-                caption=self.caption,
-                media_type="reel",
-            )
-            comment_status = self.post_first_comment(
+            comment_status, permalink_info = self.post_first_comment_with_page_reuse(
                 self.comment_link,
-                post_url=permalink_info.get("post_url"),
-            )
-            permalink_info = self.recover_missing_permalink(
-                permalink_info,
                 caption=self.caption,
                 media_type="reel",
             )

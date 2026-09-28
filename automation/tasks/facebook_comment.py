@@ -25,10 +25,14 @@ class FacebookCommentTask(FacebookPostTask):
                 "container_stopped",
                 f"Container {self.client.container_name} is not running.",
             )
-        if not self.verify_logged_in():
+        if not self.verify_logged_in(target_url="https://www.facebook.com/me"):
             return self.skip_unverified_session()
 
-        comment_status = self.post_first_comment(self.comment_text, post_url=self.post_url)
+        comment_status = self.post_first_comment(
+            self.comment_text,
+            post_url=self.post_url,
+            reuse_profile_page=True,
+        )
         if comment_status in {"submitted_verified", "submitted_unverified"}:
             self.log("SUCCESS", f"Standalone comment result: {comment_status}; no retry attempted.")
             return self.set_outcome(

@@ -26,7 +26,6 @@ fi
 
 SCREEN_RES="${SCREEN_RESOLUTION:-1920x1080x24}"
 SCREEN_GEOMETRY="${SCREEN_RES%x*}"
-SCREEN_DEPTH="${SCREEN_RES##*x}"
 WIN_SIZE="${WINDOW_SIZE:-1920,1080}"
 CHROME_LANG="${LANG:-en-US}"
 TARGET_URL="${START_URL:-https://www.google.com}"
@@ -41,26 +40,10 @@ fi
 # Clean up only the private embedded display.
 rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 
-# Start KasmVNC's X server and built-in web client. Video codec negotiation
-# prefers hardware H.264 when available and falls back to software H.264.
-echo "Starting KasmVNC on :99 with resolution ${SCREEN_RES}..."
-Xkasmvnc :99 \
-    -geometry "${SCREEN_GEOMETRY}" \
-    -depth "${SCREEN_DEPTH}" \
-    -ac \
-    -SecurityTypes None \
-    -disableBasicAuth \
-    -interface 0.0.0.0 \
-    -websocketPort 6080 \
-    -StunServer none \
-    -PublicIP 127.0.0.1 \
-    -sslOnly 0 \
-    -httpd /usr/share/kasmvnc/www \
-    -VideoCodec auto \
-    -VideoQualityCRFCQP 23 \
-    -GroupOfPicture 24 \
-    -FrameRate 30 \
-    -Log '*:stderr:30' &
+# Start a fixed-resolution virtual X11 display. Keeping the remote geometry
+# stable preserves the profile fingerprint while noVNC scales locally.
+echo "Starting Xvfb on :99 with resolution ${SCREEN_RES}..."
+Xvfb :99 -screen 0 "${SCREEN_RES}" -ac +extension GLX +render -noreset &
 DISPLAY_PID=$!
 export DISPLAY=:99
 
@@ -73,6 +56,15 @@ for i in {1..30}; do
     fi
     sleep 0.2
 done
+
+# Keep the RFB server private to the container and expose it only through the
+# loopback-published WebSocket bridge on port 6080.
+echo "Starting x11vnc on internal port 5900..."
+x11vnc -display "${DISPLAY}" -forever -shared -nopw -rfbport 5900 -listen 127.0.0.1 -bg -quiet
+
+echo "Starting noVNC WebSocket bridge on port 6080..."
+websockify --web /usr/share/novnc 0.0.0.0:6080 localhost:5900 &>/dev/null &
+WEBSOCKIFY_PID=$!
 
 # Start X11 clipboard synchronization daemons
 if command -v autocutsel &>/dev/null; then
@@ -143,7 +135,7 @@ if [ -n "${PROXY_HOST:-}" ]; then
     ip route replace default dev tun0 metric 1 \
         || network_fail "could not install the tunnel IPv4 default route"
 
-    # Default-deny both address families. Inbound KasmVNC replies remain
+    # Default-deny both address families. Inbound noVNC replies remain
     # available through the established-connection rules; no broad LAN egress
     # exception is necessary.
     echo "Enforcing fail-closed IPv4/IPv6 network policy..."
@@ -212,6 +204,7 @@ cleanup() {
     if [ -n "${TUN2SOCKS_PID:-}" ]; then
         kill -TERM "$TUN2SOCKS_PID" 2>/dev/null || true
     fi
+    kill -TERM "$WEBSOCKIFY_PID" 2>/dev/null || true
     kill -TERM "$DISPLAY_PID" 2>/dev/null || true
     echo "Container cleanup finished."
     exit 0
@@ -229,6 +222,7 @@ gosu chromeuser env TZ="${TZ}" google-chrome \
     --user-data-dir=/data/profile \
     --no-first-run \
     --no-default-browser-check \
+    --start-maximized \
     --lang="${CHROME_LANG}" \
     --window-size="${WIN_SIZE}" \
     --window-position=0,0 \
@@ -238,7 +232,16 @@ gosu chromeuser env TZ="${TZ}" google-chrome \
 
 CHROME_PID=$!
 echo "Google Chrome running (PID: $CHROME_PID)."
-echo "=== Container initialization complete. KasmVNC ready on port 6080 ==="
+
+# Ensure Chrome window occupies the full display geometry without black letterboxing
+(
+    sleep 2
+    SCREEN_W="${SCREEN_GEOMETRY%x*}"
+    SCREEN_H="${SCREEN_GEOMETRY#*x}"
+    xdotool search --onlyvisible --class "google-chrome" windowsize "$SCREEN_W" "$SCREEN_H" 2>/dev/null || true
+    xdotool search --onlyvisible --class "google-chrome" windowmove 0 0 2>/dev/null || true
+) &
+echo "=== Container initialization complete. noVNC ready on port 6080 ==="
 
 # Wait on Chrome process
 wait "$CHROME_PID"

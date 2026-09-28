@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Profile } from '../types/profile';
+import RFB from '@novnc/novnc';
 import { pasteToProfile } from '../services/api';
 import {
   Play,
@@ -18,6 +19,7 @@ import {
   Check,
   X,
   Loader2,
+  ExternalLink,
 } from 'lucide-react';
 
 interface VncViewerProps {
@@ -38,11 +40,10 @@ export const VncViewer: React.FC<VncViewerProps> = ({
   onToggleSidebar,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
-  const viewerFrameRef = useRef<HTMLIFrameElement>(null);
+  const rfbRef = useRef<RFB | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('disconnected');
   const [reconnectTrigger, setReconnectTrigger] = useState(0);
   const [retryCount, setRetryCount] = useState(0);
-  const [viewerSrc, setViewerSrc] = useState<string | null>(null);
 
   // Clipboard synchronization state
   const [isClipboardOpen, setIsClipboardOpen] = useState(false);
@@ -71,6 +72,7 @@ export const VncViewer: React.FC<VncViewerProps> = ({
           // Read host system clipboard directly
           const text = await navigator.clipboard.readText();
           if (text) {
+            rfbRef.current?.clipboardPasteFrom(text);
             await pasteToProfile(profile.id, text, 'paste');
             const preview = text.length > 24 ? text.slice(0, 24) + '...' : text;
             setClipboardToast(`Pasted from host: "${preview}"`);
@@ -99,41 +101,81 @@ export const VncViewer: React.FC<VncViewerProps> = ({
     let attempt = 0;
     const MAX_RETRIES = 20;
 
-    if (!profile || profile.status !== 'running') {
-      setViewerSrc(null);
+    if (!profile || profile.status !== 'running' || !containerRef.current) {
+      if (rfbRef.current) {
+        try {
+          rfbRef.current.disconnect();
+        } catch (_) {}
+        rfbRef.current = null;
+      }
+      if (containerRef.current) containerRef.current.innerHTML = '';
       setConnectionStatus('disconnected');
       setRetryCount(0);
       return;
     }
 
-    const vncHost = (!window.location.hostname || window.location.hostname === 'tauri.localhost' || window.location.protocol === 'tauri:')
-      ? '127.0.0.1'
-      : window.location.hostname;
-    const baseUrl = `http://${vncHost}:${wsPort}`;
-    setViewerSrc(null);
+    const connect = () => {
+      if (isCancelled || !containerRef.current) return;
 
-    const connect = async () => {
-      if (isCancelled) return;
+      if (rfbRef.current) {
+        try {
+          rfbRef.current.disconnect();
+        } catch (_) {}
+        rfbRef.current = null;
+      }
+      containerRef.current.innerHTML = '';
       setConnectionStatus('connecting');
+
+      const vncHost = (!window.location.hostname || window.location.hostname === 'tauri.localhost' || window.location.protocol === 'tauri:')
+        ? '127.0.0.1'
+        : window.location.hostname;
+      const wsUrl = `ws://${vncHost}:${wsPort}`;
+
       try {
-        // An opaque no-CORS response is sufficient to prove that KasmVNC's
-        // built-in HTTP server is accepting connections.
-        await fetch(`${baseUrl}/`, { mode: 'no-cors', cache: 'no-store' });
-        if (isCancelled) return;
-        setViewerSrc(`${baseUrl}/vnc.html?autoconnect=1&resize=scale&reconnect=1&_=${Date.now()}`);
+        const rfb = new RFB(containerRef.current, wsUrl, { wsProtocols: ['binary'] });
+        rfb.scaleViewport = true;
+        rfb.resizeSession = false;
+
+        rfb.addEventListener('connect', () => {
+          if (isCancelled) return;
+          attempt = 0;
+          setRetryCount(0);
+          setConnectionStatus('connected');
+        });
+
+        rfb.addEventListener('disconnect', () => {
+          if (isCancelled) return;
+          rfbRef.current = null;
+          if (profile.status === 'running' && attempt < MAX_RETRIES) {
+            attempt++;
+            setRetryCount(attempt);
+            setConnectionStatus('connecting');
+            const delay = Math.min(1500, 600 + attempt * 150);
+            retryTimer = setTimeout(connect, delay);
+          } else {
+            setConnectionStatus('disconnected');
+          }
+        });
+
+        rfb.addEventListener('securityfailure', () => {
+          if (isCancelled) return;
+          setConnectionStatus('disconnected');
+        });
+
+        rfbRef.current = rfb;
       } catch (err) {
         if (attempt < MAX_RETRIES) {
           attempt++;
           setRetryCount(attempt);
           const delay = Math.min(1500, 600 + attempt * 150);
-          retryTimer = setTimeout(() => void connect(), delay);
+          retryTimer = setTimeout(connect, delay);
         } else {
           setConnectionStatus('disconnected');
         }
       }
     };
 
-    void connect();
+    connect();
 
     const handleContextMenu = (e: MouseEvent) => {
       e.preventDefault();
@@ -150,11 +192,22 @@ export const VncViewer: React.FC<VncViewerProps> = ({
       if (containerEl) {
         containerEl.removeEventListener('contextmenu', handleContextMenu);
       }
+      if (rfbRef.current) {
+        try {
+          rfbRef.current.disconnect();
+        } catch (_) {}
+        rfbRef.current = null;
+      }
     };
   }, [profile?.id, profile?.status, wsPort, reconnectTrigger]);
 
   const handleReconnect = () => {
-    setViewerSrc(null);
+    if (rfbRef.current) {
+      try {
+        rfbRef.current.disconnect();
+      } catch (_) {}
+      rfbRef.current = null;
+    }
     setRetryCount(0);
     setReconnectTrigger((prev) => prev + 1);
   };
@@ -169,13 +222,63 @@ export const VncViewer: React.FC<VncViewerProps> = ({
     }
   };
 
-  // Notify the embedded viewer layout when panels expand or collapse.
+  // noVNC is mounted directly in this container, so we can force its local
+  // scale calculation after native-window, fullscreen, or panel size changes.
+  // Toggling scaleViewport avoids reconnecting and preserves the fixed remote
+  // resolution used by the profile fingerprint.
   useEffect(() => {
-    const timer = setTimeout(() => {
-      window.dispatchEvent(new Event('resize'));
-    }, 220);
-    return () => clearTimeout(timer);
-  }, [isInspectorOpen, isSidebarOpen]);
+    const container = containerRef.current;
+    if (!container || profile?.status !== 'running' || connectionStatus !== 'connected') {
+      return;
+    }
+
+    let settledWidth = Math.round(container.clientWidth);
+    let settledHeight = Math.round(container.clientHeight);
+    let scaleTimer: ReturnType<typeof setTimeout> | null = null;
+    let scaleFrame: number | null = null;
+    const MIN_RESIZE_PX = 2;
+    const RESIZE_SETTLE_MS = 180;
+
+    const rescale = () => {
+      const rfb = rfbRef.current;
+      if (!rfb) return;
+      rfb.scaleViewport = false;
+      scaleFrame = window.requestAnimationFrame(() => {
+        if (rfbRef.current === rfb) rfb.scaleViewport = true;
+      });
+    };
+
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[entries.length - 1];
+      const width = Math.round(entry.contentRect.width);
+      const height = Math.round(entry.contentRect.height);
+      const changedMeaningfully =
+        Math.abs(width - settledWidth) >= MIN_RESIZE_PX ||
+        Math.abs(height - settledHeight) >= MIN_RESIZE_PX;
+
+      if (!changedMeaningfully) {
+        if (scaleTimer) {
+          clearTimeout(scaleTimer);
+          scaleTimer = null;
+        }
+        return;
+      }
+
+      if (scaleTimer) clearTimeout(scaleTimer);
+      scaleTimer = setTimeout(() => {
+        settledWidth = width;
+        settledHeight = height;
+        rescale();
+      }, RESIZE_SETTLE_MS);
+    });
+
+    observer.observe(container);
+    return () => {
+      observer.disconnect();
+      if (scaleTimer) clearTimeout(scaleTimer);
+      if (scaleFrame !== null) window.cancelAnimationFrame(scaleFrame);
+    };
+  }, [profile?.id, profile?.status, connectionStatus]);
 
   if (!profile) {
     return (
@@ -295,6 +398,20 @@ export const VncViewer: React.FC<VncViewerProps> = ({
                 <Maximize2 className="w-3.5 h-3.5" />
               </button>
 
+              <button
+                onClick={() => {
+                  const vncHost = (!window.location.hostname || window.location.hostname === 'tauri.localhost' || window.location.protocol === 'tauri:')
+                    ? '127.0.0.1'
+                    : window.location.hostname;
+                  window.open(`http://${vncHost}:${wsPort}/vnc.html?autoconnect=1&resize=scale&reconnect=1`, '_blank');
+                }}
+                className="flex items-center gap-1.5 px-2 py-1 rounded bg-zinc-800 border border-zinc-700 text-zinc-300 hover:text-white text-xs transition-colors"
+                title="Open browser session in a full standalone browser tab"
+              >
+                <ExternalLink className="w-3.5 h-3.5 text-zinc-400" />
+                <span className="text-[11px] font-medium hidden sm:inline">Browser Tab</span>
+              </button>
+
               {/* Clipboard Sync Button & Dropdown */}
               <div className="relative">
                 <button
@@ -340,6 +457,7 @@ export const VncViewer: React.FC<VncViewerProps> = ({
                             alert('Host clipboard is empty.');
                             return;
                           }
+                          rfbRef.current?.clipboardPasteFrom(text);
                           await pasteToProfile(profile.id, text, 'paste');
                           setClipboardToast(`Pasted "${text.slice(0, 20)}..." to browser!`);
                           setTimeout(() => setClipboardToast(null), 3000);
@@ -368,6 +486,7 @@ export const VncViewer: React.FC<VncViewerProps> = ({
                           if (text && profile) {
                             setClipboardInput(text);
                             try {
+                              rfbRef.current?.clipboardPasteFrom(text);
                               await pasteToProfile(profile.id, text, 'paste');
                               setClipboardToast(`Pasted "${text.slice(0, 20)}..." to browser!`);
                               setTimeout(() => setClipboardToast(null), 3000);
@@ -414,6 +533,7 @@ export const VncViewer: React.FC<VncViewerProps> = ({
                           if (!clipboardInput || !profile) return;
                           setIsInjecting(true);
                           try {
+                            rfbRef.current?.clipboardPasteFrom(clipboardInput);
                             await pasteToProfile(profile.id, clipboardInput, 'paste');
                             setClipboardToast('Pasted to container browser!');
                             setTimeout(() => setClipboardToast(null), 3000);
@@ -479,27 +599,12 @@ export const VncViewer: React.FC<VncViewerProps> = ({
 
       {/* Main Display Stage */}
       <div className="flex-1 relative bg-black flex items-center justify-center overflow-hidden">
-        {/* KasmVNC web client */}
+        {/* Direct noVNC RFB canvas container */}
         <div
           ref={containerRef}
           onContextMenu={(e) => e.preventDefault()}
           className="w-full h-full flex items-center justify-center select-none"
-        >
-          {viewerSrc && (
-            <iframe
-              ref={viewerFrameRef}
-              src={viewerSrc}
-              title={`${profile.name} KasmVNC session`}
-              className="w-full h-full border-0 bg-black"
-              allow="clipboard-read; clipboard-write; fullscreen; autoplay"
-              onLoad={() => {
-                setRetryCount(0);
-                setConnectionStatus('connected');
-              }}
-              onError={() => setConnectionStatus('disconnected')}
-            />
-          )}
-        </div>
+        />
 
         {/* State Overlays */}
         {profile.status === 'stopped' && (
@@ -545,7 +650,7 @@ export const VncViewer: React.FC<VncViewerProps> = ({
             <RotateCcw className="w-6 h-6 text-emerald-400 animate-spin mb-2" />
             <p className="text-xs text-zinc-300 font-medium">Connecting to browser display...</p>
             <p className="text-[11px] text-zinc-500 mt-1 font-mono">
-              Port {wsPort} {retryCount > 0 ? `· Initializing KasmVNC (attempt ${retryCount + 1})...` : '· Loading video-capable viewer...'}
+              Port {wsPort} {retryCount > 0 ? `· Initializing noVNC (attempt ${retryCount + 1})...` : '· Connecting WebSocket...'}
             </p>
           </div>
         )}
@@ -557,7 +662,7 @@ export const VncViewer: React.FC<VncViewerProps> = ({
             </div>
             <h3 className="text-sm font-medium text-zinc-200">Display Disconnected</h3>
             <p className="text-xs text-zinc-400 max-w-sm mt-1 mb-4">
-              KasmVNC on port {wsPort} was closed or not ready yet.
+              noVNC on port {wsPort} was closed or not ready yet.
             </p>
             <button
               onClick={handleReconnect}

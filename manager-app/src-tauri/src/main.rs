@@ -12,7 +12,7 @@ use tauri::{AppHandle, Manager};
 struct BackendProcess(Mutex<Option<Child>>);
 
 fn backend_is_running() -> bool {
-    let address: SocketAddr = "127.0.0.1:8000".parse().expect("valid backend address");
+    let address: SocketAddr = "127.0.0.1:3001".parse().expect("valid backend address");
     TcpStream::connect_timeout(&address, Duration::from_millis(250)).is_ok()
 }
 
@@ -50,7 +50,7 @@ fn spawn_wsl_backend() -> Option<Child> {
     const CREATE_NO_WINDOW: u32 = 0x08000000;
 
     if backend_is_running() {
-        println!("[Tauri] Reusing backend already listening on 127.0.0.1:8000");
+        println!("[Tauri] Reusing backend already listening on 127.0.0.1:3001");
         return None;
     }
 
@@ -58,7 +58,7 @@ fn spawn_wsl_backend() -> Option<Child> {
     let launch = concat!(
         "cd \"$HOME/automat_fb-beta\" && ",
         "PYTHONPATH=. exec automation/venv/bin/uvicorn backend.main:app ",
-        "--host 127.0.0.1 --port 8000"
+        "--host 127.0.0.1 --port 3001"
     );
     let mut command = Command::new("wsl.exe");
     command

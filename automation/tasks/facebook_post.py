@@ -423,12 +423,11 @@ class FacebookPostTask(BaseTask):
             return self._fail("container_stopped", f"Container {self.client.container_name} is not running.")
 
         # Step 1: Pre-task login gate
-        if not self.verify_logged_in():
+        if not self.verify_logged_in(target_url="https://www.facebook.com/me"):
             return self.skip_unverified_session()
 
-        # Step 2: Navigate directly to profile page (simplified profile-first flow)
-        self.log("STEP", "Navigating to profile page (https://www.facebook.com/me)...")
-        self.navigate_to("https://www.facebook.com/me", wait_seconds=3.0)
+        # Login verification already opened and validated the profile page.
+        self.log("INFO", "Reusing the verified profile page for post composition.")
 
         self.set_stage("composing")
         # Step 3: Handle media attachment (Photo/Video) or text composer
@@ -647,19 +646,9 @@ class FacebookPostTask(BaseTask):
                 final_screen,
             )
 
-        # A permalink is needed only to support the requested first-comment
-        # fallback. Avoid reloading and rescanning the profile otherwise.
         if self.comment_link:
-            permalink_info = self.correlate_and_extract_permalink(
-                caption=self.caption,
-                media_type="photo" if self.media_path else "post",
-            )
-            comment_status = self.post_first_comment(
+            comment_status, permalink_info = self.post_first_comment_with_page_reuse(
                 self.comment_link,
-                post_url=permalink_info.get("post_url"),
-            )
-            permalink_info = self.recover_missing_permalink(
-                permalink_info,
                 caption=self.caption,
                 media_type="photo" if self.media_path else "post",
             )

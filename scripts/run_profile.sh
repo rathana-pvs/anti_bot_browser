@@ -43,8 +43,8 @@ case "$ACTION" in
     start)
         echo "=== Launching Profile: ${PROFILE_ID} ==="
         echo "Container:   ${CONTAINER_NAME}"
-        echo "Legacy port: ${VNC_PORT} (reserved, unused by KasmVNC)"
-        echo "KasmVNC:     ${WS_PORT} -> 6080"
+        echo "Legacy port: ${VNC_PORT} (raw VNC remains container-internal)"
+        echo "noVNC:       ${WS_PORT} -> 6080"
         echo "Resolution:  ${SCREEN_RES}x${COLOR_DEPTH}"
         echo "CPU Limit:   ${CPU_LIMIT} vCPU"
         echo "Memory Limit:${MEMORY_LIMIT_MB} MiB"
@@ -140,7 +140,7 @@ case "$ACTION" in
         jq '.status = "running"' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
 
         echo "✅ Profile ${PROFILE_ID} launched successfully!"
-        echo "👉 Open KasmVNC: http://127.0.0.1:${WS_PORT}/vnc.html"
+        echo "👉 Open noVNC: http://127.0.0.1:${WS_PORT}/vnc.html"
         ;;
 
     stop)

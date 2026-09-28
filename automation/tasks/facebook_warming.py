@@ -27,13 +27,20 @@ class FacebookWarmingTask(BaseTask):
                 reason="profile_container_not_running",
             )
 
-        # Step 1: Verify the authenticated session and stop on any checkpoint.
+        # Step 1: Pick the browsing surface first so authentication and warming
+        # share one page load.
+        requested_surface = random.choice(tuple(self.WARMING_SURFACES))
         self.log("STEP", "Verifying the Facebook session before passive browsing...")
-        if not self.verify_logged_in():
+        if not self.verify_logged_in(
+            target_url=self.WARMING_SURFACES[requested_surface]
+        ):
             return self.skip_unverified_session()
 
         requested_surface, warm_surface, fallback_used, surface_screen = (
-            self.select_and_open_warming_surface()
+            self.select_and_open_warming_surface(
+                requested=requested_surface,
+                already_open=requested_surface,
+            )
         )
         if warm_surface is None:
             if getattr(self, "session_check_status", "") == "auth_required":

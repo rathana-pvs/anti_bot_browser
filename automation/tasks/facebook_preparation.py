@@ -54,13 +54,23 @@ class FacebookPreparationTask(BaseTask):
                 f"Container {self.client.container_name} is not running.",
             )
         session_already_stable = self._current_session_is_stable()
+        requested_surface = None
+        already_open_surface = None
         if session_already_stable:
             self.log("INFO", "Authenticated Facebook session is already stable; skipping navigation.")
-        elif not self.verify_logged_in():
-            return self.skip_unverified_session()
+        else:
+            requested_surface = random.choice(tuple(self.WARMING_SURFACES))
+            if not self.verify_logged_in(
+                target_url=self.WARMING_SURFACES[requested_surface]
+            ):
+                return self.skip_unverified_session()
+            already_open_surface = requested_surface
 
         requested_surface, warm_surface, fallback_used, surface_screen = (
-            self.select_and_open_warming_surface()
+            self.select_and_open_warming_surface(
+                requested=requested_surface,
+                already_open=already_open_surface,
+            )
         )
         if warm_surface is None:
             if getattr(self, "session_check_status", "") == "auth_required":

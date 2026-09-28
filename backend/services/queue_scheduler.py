@@ -52,14 +52,11 @@ def compute_execution_schedule(
     window_start_ms: float,
     jitter_ms: float = 0.0,
 ) -> float:
-    if is_start_now and slot_index == 0:
-        return now_ms
     if is_start_now:
-        return now_ms + slot_index * post_slot_ms + profile_index * stagger_ms + jitter_ms
-    return max(
-        now_ms + 60000,
-        window_start_ms + slot_index * post_slot_ms + profile_index * stagger_ms + jitter_ms,
-    )
+        return now_ms + profile_index * stagger_ms
+    # Scheduled time gates the batch itself. Once that gate opens, the
+    # completion-based iteration delay serializes every post in order.
+    return max(now_ms + 60000, window_start_ms + profile_index * stagger_ms)
 
 def is_lease_active(lease: dict | None, now_ms: float | None = None) -> bool:
     if not lease or not isinstance(lease, dict):

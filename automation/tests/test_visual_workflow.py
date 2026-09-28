@@ -288,6 +288,19 @@ class LoginGateTests(unittest.TestCase):
         self.assertEqual(task.recognizer.observe.call_count, 1)
         self.assertEqual(task.vision.detect_theme.call_count, 2)
 
+    def test_login_gate_can_verify_the_profile_page_directly(self):
+        task = self.make_task([
+            StateObservation(ScreenState.FEED_READY, 0.9, ["photo/video"]),
+        ])
+        task.client.get_current_url.return_value = "https://www.facebook.com/me"
+
+        with unittest.mock.patch("tasks.base_task.time.sleep", return_value=None):
+            self.assertTrue(
+                task.verify_logged_in(target_url="https://www.facebook.com/me")
+            )
+
+        task.client.navigate_to.assert_called_once_with("https://www.facebook.com/me")
+
     def test_actual_login_screen_is_rejected(self):
         task = self.make_task([StateObservation(ScreenState.LOGIN_REQUIRED, 0.98, ["log in"])])
         with unittest.mock.patch("tasks.base_task.time.sleep", return_value=None):
@@ -869,6 +882,69 @@ class FirstCommentTargetTests(unittest.TestCase):
         task._open_permalink_comment_input.assert_called_once()
         task.human.key_press.assert_called_once_with("Return")
 
+    def test_comment_page_reuse_avoids_permalink_correlation_when_profile_input_exists(self):
+        task = FacebookReelTask.__new__(FacebookReelTask)
+        task.post_first_comment = Mock(return_value="submitted_verified")
+        task.correlate_and_extract_permalink = Mock()
+
+        status, permalink = task.post_first_comment_with_page_reuse(
+            "https://example.com/link",
+            caption="caption",
+            media_type="reel",
+        )
+
+        self.assertEqual(status, "submitted_verified")
+        self.assertEqual(permalink["permalink_status"], "not_requested")
+        task.post_first_comment.assert_called_once_with(
+            "https://example.com/link",
+            reuse_profile_page=True,
+        )
+        task.correlate_and_extract_permalink.assert_not_called()
+
+    def test_comment_page_reuse_correlates_once_only_after_profile_input_is_missing(self):
+        task = FacebookReelTask.__new__(FacebookReelTask)
+        task.log = Mock()
+        task.post_first_comment = Mock(side_effect=[
+            "failed_input_not_found",
+            "submitted_verified",
+        ])
+        captured = {
+            "post_url": "https://www.facebook.com/reel/123",
+            "post_url_verified_at": "2026-09-28T00:00:00+00:00",
+            "post_match_confidence": 0.9,
+        }
+        task.correlate_and_extract_permalink = Mock(return_value=captured)
+        task.recover_missing_permalink = Mock(return_value={
+            **captured,
+            "permalink_status": "captured",
+            "permalink_missing": False,
+            "permalink_recovery_attempted": False,
+        })
+
+        status, permalink = task.post_first_comment_with_page_reuse(
+            "https://example.com/link",
+            caption="caption",
+            media_type="reel",
+        )
+
+        self.assertEqual(status, "submitted_verified")
+        self.assertEqual(permalink["permalink_status"], "captured")
+        task.correlate_and_extract_permalink.assert_called_once_with(
+            caption="caption",
+            media_type="reel",
+        )
+        self.assertEqual(task.post_first_comment.call_args_list, [
+            unittest.mock.call(
+                "https://example.com/link",
+                reuse_profile_page=True,
+            ),
+            unittest.mock.call(
+                "https://example.com/link",
+                post_url="https://www.facebook.com/reel/123",
+                prefer_permalink=True,
+            ),
+        ])
+
     def test_comment_verification_includes_upper_modal_comment_stream(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
         task.log = Mock()
@@ -975,7 +1051,14 @@ class FirstCommentTargetTests(unittest.TestCase):
         task.log = Mock()
 
         self.assertTrue(task.run())
-        task.post_first_comment.assert_called_once_with("https://example.com", post_url=None)
+        task.verify_logged_in.assert_called_once_with(
+            target_url="https://www.facebook.com/me"
+        )
+        task.post_first_comment.assert_called_once_with(
+            "https://example.com",
+            post_url=None,
+            reuse_profile_page=True,
+        )
         task.set_outcome.assert_called_once_with(
             "completed",
             None,

@@ -8,17 +8,20 @@ const isTauriEnv = typeof window !== 'undefined' && (
   '__TAURI_INTERNALS__' in window ||
   '__TAURI__' in window ||
   window.location.protocol === 'tauri:' ||
-  window.location.hostname === 'tauri.localhost'
+  window.location.hostname === 'tauri.localhost' ||
+  (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') ||
+  (window.location.port !== '5173' && window.location.port !== '3001')
 );
 
 export const BACKEND_BASE = isTauriEnv ? 'http://127.0.0.1:3001' : '';
 export const API_BASE = `${BACKEND_BASE}/api`;
 
-export function getSharedMediaUrl(filename: string): string {
+export function getSharedMediaUrl(filename?: string | null): string {
   if (!filename) return '';
   if (filename.startsWith('http://') || filename.startsWith('https://')) return filename;
   const cleanPath = filename.startsWith('/') ? filename : `/shared_media/${filename}`;
-  return `${BACKEND_BASE}${cleanPath}`;
+  const base = BACKEND_BASE || (typeof window !== 'undefined' && window.location.port === '5173' ? '' : 'http://127.0.0.1:3001');
+  return `${base}${cleanPath}`;
 }
 
 export async function fetchProfiles(): Promise<Profile[]> {
@@ -369,6 +372,21 @@ export async function createBatch(
   });
   if (!res.ok) {
     throw await apiError(res, 'Failed to create batch');
+  }
+  return res.json();
+}
+
+export async function appendPostsToBatch(
+  batchId: string,
+  posts: import('../types/automation').AppendBatchPostInput[]
+): Promise<{ success: boolean; batch_id: string; posts_added: number; executions_added: number }> {
+  const res = await fetch(`${API_BASE}/queue/batch/${encodeURIComponent(batchId)}/posts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ posts }),
+  });
+  if (!res.ok) {
+    throw await apiError(res, 'Failed to append posts to batch');
   }
   return res.json();
 }

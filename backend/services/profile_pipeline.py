@@ -23,6 +23,83 @@ def parse_iso_time(value: str | None) -> float:
     except Exception:
         return 0.0
 
+def batch_iteration_availability(batch: dict | None, now_ms: float | None = None) -> dict:
+    """Gate publisher starts so iterations in one batch observe a completion cooldown."""
+    if now_ms is None:
+        now_ms = time.time() * 1000
+    batch = batch or {}
+    schedule_window = batch.get("schedule_window") or {}
+    try:
+        delay_seconds = max(0, min(3600, int(schedule_window.get("batch_iteration_delay_seconds", 0))))
+    except (TypeError, ValueError):
+        delay_seconds = 0
+
+    latest_publisher_end_ms = 0.0
+    for post in batch.get("posts", []):
+        for execution in post.get("executions", []):
+            lease = execution.get("scheduler_lease") or {}
+            if execution.get("status") == "running" and lease.get("kind") == "publisher":
+                return {
+                    "allowed": False,
+                    "reason": "batch_publisher_active",
+                    "retry_after_ms": None,
+                }
+
+            last_lease = execution.get("last_scheduler_lease") or {}
+            if last_lease.get("kind") != "publisher":
+                continue
+            latest_publisher_end_ms = max(
+                latest_publisher_end_ms,
+                parse_iso_time(execution.get("ended_at")),
+            )
+
+    ready_at_ms = latest_publisher_end_ms + delay_seconds * 1000
+    if latest_publisher_end_ms and now_ms < ready_at_ms:
+        return {
+            "allowed": False,
+            "reason": "batch_iteration_delay",
+            "retry_after_ms": max(1, int(ready_at_ms - now_ms)),
+            "ready_at_ms": ready_at_ms,
+        }
+    return {"allowed": True, "reason": "batch_iteration_ready", "retry_after_ms": 0}
+
+def active_batch_id(queue: dict | None) -> str | None:
+    """Return the oldest started batch that still owns unfinished work."""
+    candidates = []
+    unfinished_statuses = {"pending", "ready", "running", "preparing", "uncertain", "needs_review"}
+    for batch_index, batch in enumerate((queue or {}).get("daily_batches", [])):
+        executions = [
+            execution
+            for post in batch.get("posts", [])
+            for execution in post.get("executions", [])
+        ]
+        if not executions or not any(execution.get("status") in unfinished_statuses for execution in executions):
+            continue
+        started_times = [
+            parse_iso_time(execution.get("started_at"))
+            for execution in executions
+            if parse_iso_time(execution.get("started_at")) > 0
+        ]
+        if not started_times:
+            continue
+        candidates.append((
+            min(started_times),
+            parse_iso_time(batch.get("created_at")),
+            -batch_index,
+            batch.get("batch_id"),
+        ))
+    if not candidates:
+        return None
+    candidates.sort()
+    return candidates[0][3]
+
+def batch_has_review_hold(batch: dict | None) -> bool:
+    return any(
+        execution.get("status") in ("uncertain", "needs_review")
+        for post in (batch or {}).get("posts", [])
+        for execution in post.get("executions", [])
+    )
+
 def ordered_due_executions(queue: dict | None, now_ms: float | None = None) -> list:
     if now_ms is None:
         now_ms = time.time() * 1000
@@ -31,25 +108,45 @@ def ordered_due_executions(queue: dict | None, now_ms: float | None = None) -> l
     for batch_idx, batch in enumerate((queue or {}).get("daily_batches", [])):
         profile_order = batch.get("profile_execution_order") or batch.get("target_profiles") or []
         profile_ranks = {pid: idx for idx, pid in enumerate(profile_order)}
+        all_batch_executions = [
+            execution
+            for post in batch.get("posts", [])
+            for execution in post.get("executions", [])
+        ]
+        batch_start_ms = min(
+            (value for value in (parse_iso_time(item.get("scheduled_at")) for item in all_batch_executions) if value > 0),
+            default=0.0,
+        )
+        try:
+            profile_stagger_ms = max(0, int(batch.get("schedule_window", {}).get("profile_stagger_seconds", 0))) * 1000
+        except (TypeError, ValueError):
+            profile_stagger_ms = 0
 
         for post_idx, post in enumerate(batch.get("posts", [])):
             for execution in post.get("executions", []):
                 if execution.get("status") not in ("pending", "ready"):
                     continue
-                sched_time = parse_iso_time(execution.get("scheduled_at"))
+                profile_rank = profile_ranks.get(execution.get("profile_id"), 0)
+                sched_time = batch_start_ms + profile_rank * profile_stagger_ms
                 if sched_time > now_ms:
                     continue
 
                 due.append({
                     "execution": execution,
                     "batchIndex": batch_idx,
+                    "batchCreatedAtMs": parse_iso_time(batch.get("created_at")),
+                    "batchStartMs": batch_start_ms,
                     "postIndex": post_idx,
                     "profileRank": profile_ranks.get(execution.get("profile_id"), float("inf")),
+                    "iterationRank": execution.get("batch_iteration_index", float("inf")),
                     "scheduledAtMs": sched_time,
                 })
 
     due.sort(key=lambda item: (
-        item["batchIndex"],
+        item["batchStartMs"],
+        item["batchCreatedAtMs"],
+        -item["batchIndex"],
+        item["iterationRank"],
         item["postIndex"],
         item["profileRank"],
         item["scheduledAtMs"],

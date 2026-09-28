@@ -167,6 +167,7 @@ export interface DailyBatch {
     end_time: string;
     profile_stagger_seconds?: number;
     profile_stagger_minutes?: number;
+    batch_iteration_delay_seconds?: number;
     session_preparation_mode?: 'off' | 'brief' | 'extended';
     start_now?: boolean;
   };
@@ -188,6 +189,7 @@ export interface QueueDataResponse {
     skipped: number;
   };
   scheduler?: {
+    batch_owner_id?: string | null;
     config: {
       max_publishers: number;
       max_preparers: number;
@@ -298,6 +300,7 @@ export interface CreateBatchParams {
     end_time: string;
     profile_stagger_seconds: number;
     profile_stagger_minutes?: number;
+    batch_iteration_delay_seconds?: number;
     session_preparation_mode?: 'off' | 'brief' | 'extended';
     start_now?: boolean;
   };
@@ -309,6 +312,14 @@ export interface CreateBatchParams {
     first_comment?: string;
     ai_spin?: boolean;
   }[];
+}
+
+export interface AppendBatchPostInput {
+  type: 'photo' | 'reel';
+  media_file: string;
+  base_caption: string;
+  first_comment?: string;
+  ai_spin?: boolean;
 }
 
 export interface MediaItem {

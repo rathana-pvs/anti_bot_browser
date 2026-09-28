@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Profile } from '../types/profile';
 import { AutomationTaskState, CreateBatchParams } from '../types/automation';
-import { createBatch, fetchAutomationTasks, stopAutomation, uploadMediaFiles } from '../services/api';
+import { createBatch, fetchAutomationTasks, stopAutomation, uploadMediaFiles, getSharedMediaUrl } from '../services/api';
 import { BatchPostCreator } from './BatchPostCreator';
 import { PostingQueuePanel } from './PostingQueuePanel';
 import { ResourceModeControl } from './ResourceModeControl';
@@ -102,7 +102,7 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
           filename: up.filename,
           original_name: up.original_name || up.filename,
           type: up.type,
-          url: `/shared_media/${up.filename}`,
+          url: getSharedMediaUrl(up.filename),
         });
       }
     } catch (err: any) {
@@ -749,7 +749,7 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
                   onClick={() => onSelectProfile(inspectedTask.profile_id)}
                   className="text-xs text-zinc-400 hover:text-white underline"
                 >
-                  Open in KasmVNC Viewer
+                  Open in noVNC Viewer
                 </button>
               )}
             </div>

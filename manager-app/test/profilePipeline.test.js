@@ -34,6 +34,40 @@ test('due work follows persisted profile order rather than profile id order', ()
   );
 });
 
+test('start-now work follows its persisted batch iteration order', () => {
+  const execution = (id, iterationRank) => ({
+    execution_id: id,
+    profile_id: 'p1',
+    status: 'pending',
+    scheduled_at: '2026-09-25T10:00:00.000Z',
+    batch_iteration_index: iterationRank,
+  });
+  const queue = { daily_batches: [{ posts: [
+    { executions: [execution('second', 1)] },
+    { executions: [execution('first', 0)] },
+  ] }] };
+
+  assert.deepEqual(
+    orderedDueExecutions(queue, Date.parse('2026-09-25T11:00:00.000Z')).map((item) => item.execution_id),
+    ['first', 'second'],
+  );
+});
+
+test('a scheduled batch releases every iteration at its batch start gate', () => {
+  const queue = { daily_batches: [{
+    schedule_window: { profile_stagger_seconds: 0 },
+    posts: [
+      { executions: [{ execution_id: 'first', profile_id: 'p1', status: 'pending', scheduled_at: '2026-09-25T10:00:00.000Z', batch_iteration_index: 0 }] },
+      { executions: [{ execution_id: 'second', profile_id: 'p1', status: 'pending', scheduled_at: '2026-09-25T20:00:00.000Z', batch_iteration_index: 1 }] },
+    ],
+  }] };
+
+  assert.deepEqual(
+    orderedDueExecutions(queue, Date.parse('2026-09-25T10:01:00.000Z')).map((item) => item.execution_id),
+    ['first', 'second'],
+  );
+});
+
 test('ready profiles are counted toward configurable preparation buffers', () => {
   const queue = { daily_batches: [{ posts: [{ executions: [
     { execution_id: 'ready', status: 'ready' },
