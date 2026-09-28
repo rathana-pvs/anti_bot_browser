@@ -43,8 +43,8 @@ case "$ACTION" in
     start)
         echo "=== Launching Profile: ${PROFILE_ID} ==="
         echo "Container:   ${CONTAINER_NAME}"
-        echo "VNC Port:    ${VNC_PORT} -> 5900"
-        echo "noVNC Port:  ${WS_PORT} -> 6080"
+        echo "Legacy port: ${VNC_PORT} (reserved, unused by KasmVNC)"
+        echo "KasmVNC:     ${WS_PORT} -> 6080"
         echo "Resolution:  ${SCREEN_RES}x${COLOR_DEPTH}"
         echo "CPU Limit:   ${CPU_LIMIT} vCPU"
         echo "Memory Limit:${MEMORY_LIMIT_MB} MiB"
@@ -65,6 +65,8 @@ case "$ACTION" in
         fi
 
         ENV_ARGS=(
+            -e "PROFILE_ID=${PROFILE_ID}"
+            -e "DISPLAY=:99"
             -e "SCREEN_RESOLUTION=${SCREEN_RES}x${COLOR_DEPTH}"
             -e "WINDOW_SIZE=${SCREEN_RES/x/,}"
             -e "RENDERING_MODE=${RENDERING_MODE}"
@@ -97,8 +99,7 @@ case "$ACTION" in
         # Run container with resource limits, display ports, and network capabilities
         CONTAINER_ID=$(docker run -d \
             --name "$CONTAINER_NAME" \
-            -p "${VNC_PORT}:5900" \
-            -p "${WS_PORT}:6080" \
+            -p "127.0.0.1:${WS_PORT}:6080" \
             -v "${DATA_DIR}:/data/profile" \
             -v "${SHARED_MEDIA_DIR}:/data/shared_media:ro" \
             -v "${ROOT_DIR}/container/entrypoint.sh:/entrypoint.sh:ro" \
@@ -139,7 +140,7 @@ case "$ACTION" in
         jq '.status = "running"' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
 
         echo "✅ Profile ${PROFILE_ID} launched successfully!"
-        echo "👉 Connect via VNC: 127.0.0.1:${VNC_PORT} | noVNC WebSocket: ws://127.0.0.1:${WS_PORT}"
+        echo "👉 Open KasmVNC: http://127.0.0.1:${WS_PORT}/vnc.html"
         ;;
 
     stop)

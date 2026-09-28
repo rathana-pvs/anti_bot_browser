@@ -25,6 +25,8 @@ if [ -d "/dev/dri" ]; then
 fi
 
 SCREEN_RES="${SCREEN_RESOLUTION:-1920x1080x24}"
+SCREEN_GEOMETRY="${SCREEN_RES%x*}"
+SCREEN_DEPTH="${SCREEN_RES##*x}"
 WIN_SIZE="${WINDOW_SIZE:-1920,1080}"
 CHROME_LANG="${LANG:-en-US}"
 TARGET_URL="${START_URL:-https://www.google.com}"
@@ -36,39 +38,47 @@ if [ "$RENDERING_MODE" = "software" ]; then
     RENDER_ARGS=(--disable-gpu --use-gl=swiftshader)
 fi
 
-# Clean up any stale X locks
+# Clean up only the private embedded display.
 rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 
-# 2. Start Xvfb Virtual Framebuffer
-echo "Starting Xvfb on :99 with resolution ${SCREEN_RES}..."
-Xvfb :99 -screen 0 "${SCREEN_RES}" -ac +extension GLX +render -noreset &
-XVFB_PID=$!
+# Start KasmVNC's X server and built-in web client. Video codec negotiation
+# prefers hardware H.264 when available and falls back to software H.264.
+echo "Starting KasmVNC on :99 with resolution ${SCREEN_RES}..."
+Xkasmvnc :99 \
+    -geometry "${SCREEN_GEOMETRY}" \
+    -depth "${SCREEN_DEPTH}" \
+    -ac \
+    -SecurityTypes None \
+    -disableBasicAuth \
+    -interface 0.0.0.0 \
+    -websocketPort 6080 \
+    -StunServer none \
+    -PublicIP 127.0.0.1 \
+    -sslOnly 0 \
+    -httpd /usr/share/kasmvnc/www \
+    -VideoCodec auto \
+    -VideoQualityCRFCQP 23 \
+    -GroupOfPicture 24 \
+    -FrameRate 30 \
+    -Log '*:stderr:30' &
+DISPLAY_PID=$!
 export DISPLAY=:99
 
 # Wait for X display to become ready
 echo "Waiting for X display to initialize..."
 for i in {1..30}; do
     if xset q &>/dev/null; then
-        echo "X display :99 is ready."
+        echo "X display ${DISPLAY} is ready."
         break
     fi
     sleep 0.2
 done
 
-# 3. Start VNC Server (x11vnc bound to 0.0.0.0 on port 5900)
-echo "Starting VNC server on port 5900..."
-x11vnc -display :99 -forever -shared -nopw -rfbport 5900 -listen 0.0.0.0 -bg -quiet
-
-# Start WebSocket bridge for web/Tauri noVNC embedding
-echo "Starting noVNC WebSocket bridge on port 6080..."
-websockify --web /usr/share/novnc 0.0.0.0:6080 localhost:5900 &>/dev/null &
-WEBSOCKIFY_PID=$!
-
 # Start X11 clipboard synchronization daemons
 if command -v autocutsel &>/dev/null; then
     echo "Starting X11 clipboard synchronization daemon (autocutsel)..."
-    autocutsel -fork -display :99 &>/dev/null &
-    autocutsel -selection CLIPBOARD -fork -display :99 &>/dev/null &
+    autocutsel -fork -display "${DISPLAY}" &>/dev/null &
+    autocutsel -selection CLIPBOARD -fork -display "${DISPLAY}" &>/dev/null &
 fi
 
 # 4. Network Proxy Setup & Fail-Closed Killswitch
@@ -133,7 +143,7 @@ if [ -n "${PROXY_HOST:-}" ]; then
     ip route replace default dev tun0 metric 1 \
         || network_fail "could not install the tunnel IPv4 default route"
 
-    # Default-deny both address families. Inbound VNC/noVNC replies remain
+    # Default-deny both address families. Inbound KasmVNC replies remain
     # available through the established-connection rules; no broad LAN egress
     # exception is necessary.
     echo "Enforcing fail-closed IPv4/IPv6 network policy..."
@@ -202,8 +212,7 @@ cleanup() {
     if [ -n "${TUN2SOCKS_PID:-}" ]; then
         kill -TERM "$TUN2SOCKS_PID" 2>/dev/null || true
     fi
-    kill -TERM "$WEBSOCKIFY_PID" 2>/dev/null || true
-    kill -TERM "$XVFB_PID" 2>/dev/null || true
+    kill -TERM "$DISPLAY_PID" 2>/dev/null || true
     echo "Container cleanup finished."
     exit 0
 }
@@ -216,7 +225,8 @@ rm -f /data/profile/Singleton* 2>/dev/null || true
 
 echo "Launching Google Chrome with the requested privacy and isolation policy..."
 gosu chromeuser env TZ="${TZ}" google-chrome \
-    --display=:99 \
+    --display="${DISPLAY}" \
+    --class="isolated-${PROFILE_ID:-profile}" \
     --user-data-dir=/data/profile \
     --no-first-run \
     --no-default-browser-check \
@@ -229,7 +239,7 @@ gosu chromeuser env TZ="${TZ}" google-chrome \
 
 CHROME_PID=$!
 echo "Google Chrome running (PID: $CHROME_PID)."
-echo "=== Container initialization complete. VNC ready on port 5900 ==="
+echo "=== Container initialization complete. KasmVNC ready on port 6080 ==="
 
 # Wait on Chrome process
 wait "$CHROME_PID"

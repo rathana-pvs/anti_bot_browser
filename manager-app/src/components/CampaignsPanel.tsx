@@ -749,7 +749,7 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
                   onClick={() => onSelectProfile(inspectedTask.profile_id)}
                   className="text-xs text-zinc-400 hover:text-white underline"
                 >
-                  Open in VNC Viewer
+                  Open in KasmVNC Viewer
                 </button>
               )}
             </div>

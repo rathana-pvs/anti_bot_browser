@@ -376,7 +376,7 @@ def observe_container_environment(profile_id: str) -> dict:
     for _ in range(20):
         geometry = _container_text(
             container_name,
-            "DISPLAY=:99 xdotool getdisplaygeometry 2>/dev/null | tr ' ' 'x'",
+            "xdotool getdisplaygeometry 2>/dev/null | tr ' ' 'x'",
         )
         if geometry:
             break
@@ -389,7 +389,7 @@ def observe_container_environment(profile_id: str) -> dict:
     browser_version = _container_text(container_name, "google-chrome --version 2>/dev/null")
     renderer = _container_text(
         container_name,
-        "DISPLAY=:99 glxinfo -B 2>/dev/null | sed -n 's/^OpenGL renderer string: //p' | head -1",
+        "glxinfo -B 2>/dev/null | sed -n 's/^OpenGL renderer string: //p' | head -1",
     )
     return {
         "source": "container_runtime",
@@ -498,7 +498,7 @@ elif mode in ("paste", "both"):
         pass
 """
     cmd = [
-        "docker", "exec", "-i", "-u", "chromeuser", "-e", "DISPLAY=:99",
+        "docker", "exec", "-i", "-u", "chromeuser",
         container_name, "python3", "-c", py_script
     ]
     proc = await asyncio_subprocess_run(cmd, timeout=15)

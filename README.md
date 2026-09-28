@@ -28,7 +28,8 @@ Instead of relying on fragile, obfuscated CSS class names (`x1i10hfl xjbqb8w`) o
 * **Strict "Uncertain" Contract:** If a publish button was clicked once but confirmation is ambiguous, the task exits with code `2` (`uncertain`) and **never auto-retries blindly**, preventing accidental duplicate posts.
 
 ### 3. Containerized Profile Isolation
-* Each profile runs in its own dedicated Docker container with an independent X11 virtual display (`Xvfb`), audio, font stack, and TigerVNC/noVNC server.
+* Each profile runs in its own dedicated Docker container with an independent KasmVNC X11 display, audio, font stack, and video-capable web viewer.
+* Viewer ports are published on host loopback only; they are not exposed to the LAN.
 * **100% Proxy Tunneling:** All network traffic routes through dedicated residential SOCKS5 proxies per container.
 * **Verified Browser Environment:** Profiles store requested settings separately from the effective container launch and observed runtime values. The UI does not claim that hardware or WebGL values are changed unless they are measured.
 
@@ -58,9 +59,9 @@ flowchart TD
     end
 
     subgraph Containers["Isolated Profile Containers (Docker)"]
-        Profile1["Profile 001 Container<br/>(Xvfb + Chrome + noVNC :6081)"]
-        Profile2["Profile 002 Container<br/>(Xvfb + Chrome + noVNC :6082)"]
-        ProfileN["Profile N Container<br/>(Xvfb + Chrome + noVNC :608N)"]
+        Profile1["Profile 001 Container<br/>(KasmVNC + Chrome :6081)"]
+        Profile2["Profile 002 Container<br/>(KasmVNC + Chrome :6082)"]
+        ProfileN["Profile N Container<br/>(KasmVNC + Chrome :608N)"]
     end
 
     ManagerApp <--> Backend
