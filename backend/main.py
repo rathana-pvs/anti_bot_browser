@@ -32,7 +32,7 @@ async def lifespan(app: FastAPI):
     # Startup
     recover_stale_queue_executions("manager_startup_stale_lease")
     setup_background_tasks()
-    print("FastAPI Backend started successfully on port 8000.")
+    print("FastAPI Backend started successfully.")
     yield
     # Shutdown
     shutdown_background_tasks()
@@ -92,4 +92,5 @@ if MANAGER_DIST_DIR.exists():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("backend.main:app", host="127.0.0.1", port=8000, reload=True)
+    port = int(os.environ.get("PORT", "3001"))
+    uvicorn.run("backend.main:app", host="127.0.0.1", port=port, reload=True)

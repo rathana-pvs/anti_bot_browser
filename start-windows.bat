@@ -16,6 +16,7 @@ REM 2. Synchronize workspace files to WSL
 echo [*] Synchronizing latest workspace changes to WSL...
 wsl.exe -d Ubuntu -- bash -c "mkdir -p /root/automat_fb-beta && rsync -au --exclude 'node_modules' --exclude 'build' --exclude '.venv' --exclude 'venv' --exclude '.git' --exclude '__pycache__' --exclude '*.pyc' /mnt/c/Users/admin/Desktop/anti_bot_browser/. /root/automat_fb-beta/"
 
+
 REM 3. Stop any previous instances to prevent port collisions
 wsl.exe -d Ubuntu -u root -- bash -c "pkill -f 'uvicorn backend.main' || true; pkill -f 'vite' || true; pkill -f 'concurrently' || true" >nul 2>&1
 

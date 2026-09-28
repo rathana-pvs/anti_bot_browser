@@ -11,7 +11,7 @@ const isTauriEnv = typeof window !== 'undefined' && (
   window.location.hostname === 'tauri.localhost'
 );
 
-export const BACKEND_BASE = isTauriEnv ? 'http://127.0.0.1:8000' : '';
+export const BACKEND_BASE = isTauriEnv ? 'http://127.0.0.1:3001' : '';
 export const API_BASE = `${BACKEND_BASE}/api`;
 
 export function getSharedMediaUrl(filename: string): string {
