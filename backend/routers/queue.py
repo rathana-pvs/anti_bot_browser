@@ -339,7 +339,7 @@ async def run_execution_now(execution_id: str):
             detail=f"Cannot rerun an execution in '{target_exec['status']}' state directly. Please review on Facebook and resolve the outcome first to prevent duplicate posts.",
         )
 
-    if target_exec.get("status", "").startswith("skipped_"):
+    if target_exec.get("status", "").startswith("skipped_") or target_exec.get("status") in ("failed", "failed_before_publish"):
         now_iso = datetime.now(timezone.utc).isoformat()
         target_exec["status"] = "pending"
         target_exec["stage"] = "pending"
@@ -350,7 +350,7 @@ async def run_execution_now(execution_id: str):
         if not isinstance(history, list):
             history = []
             target_exec["stage_history"] = history
-        history.append({"stage": "pending", "timestamp": now_iso, "reason": "manual_retry_after_safe_skip"})
+        history.append({"stage": "pending", "timestamp": now_iso, "reason": "manual_retry"})
         save_posting_queue(queue)
 
     standalone_warming = target_post.get("type") == "warming"

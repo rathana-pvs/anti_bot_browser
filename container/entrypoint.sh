@@ -226,7 +226,6 @@ rm -f /data/profile/Singleton* 2>/dev/null || true
 echo "Launching Google Chrome with the requested privacy and isolation policy..."
 gosu chromeuser env TZ="${TZ}" google-chrome \
     --display="${DISPLAY}" \
-    --class="isolated-${PROFILE_ID:-profile}" \
     --user-data-dir=/data/profile \
     --no-first-run \
     --no-default-browser-check \

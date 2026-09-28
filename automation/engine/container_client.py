@@ -47,7 +47,18 @@ class ContainerClient:
 
     def get_chrome_window(self) -> int:
         """Find the active Chrome browser window ID."""
-        res = self.exec_cmd(["xdotool", "search", "--onlyvisible", "--class", "google-chrome"])
+        res = self.exec_cmd(
+            ["xdotool", "search", "--onlyvisible", "--class", "google-chrome|chrome|isolated-.*"],
+            check=False,
+        )
+        if res.returncode != 0 or not res.stdout.strip():
+            # Fallback search without --onlyvisible in case window manager hasn't mapped visibility flags
+            res = self.exec_cmd(
+                ["xdotool", "search", "--class", "google-chrome|chrome|isolated-.*"],
+                check=False,
+            )
+            if res.returncode != 0 or not res.stdout.strip():
+                return 0
         windows = [int(w.strip()) for w in res.stdout.strip().splitlines() if w.strip().isdigit()]
         if not windows:
             return 0
@@ -55,7 +66,9 @@ class ContainerClient:
         best_win = windows[0]
         max_area = 0
         for w in windows:
-            geo = self.exec_cmd(["xdotool", "getwindowgeometry", str(w)])
+            geo = self.exec_cmd(["xdotool", "getwindowgeometry", str(w)], check=False)
+            if geo.returncode != 0:
+                continue
             match = re.search(r"Geometry:\s*(\d+)x(\d+)", geo.stdout)
             if match:
                 area = int(match.group(1)) * int(match.group(2))
