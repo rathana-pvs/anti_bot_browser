@@ -7,15 +7,27 @@ case "${1:-}" in
   --check) MODE="check" ;;
   --repair) MODE="repair" ;;
   -h|--help)
-    echo "Usage: bash install.sh [--check|--install|--repair]"
+    echo "Usage: bash install.sh [--check|--install|--repair] [--non-interactive] [--desktop]"
     exit 0
     ;;
   *)
     echo "Unknown option: $1"
-    echo "Usage: bash install.sh [--check|--install|--repair]"
+    echo "Usage: bash install.sh [--check|--install|--repair] [--non-interactive] [--desktop]"
     exit 2
     ;;
 esac
+if [ "$#" -gt 0 ]; then shift; fi
+NON_INTERACTIVE=false
+DESKTOP_SETUP=false
+SKIP_SYSTEM_SETUP=false
+for option in "$@"; do
+  case "${option}" in
+    --non-interactive) NON_INTERACTIVE=true ;;
+    --desktop) DESKTOP_SETUP=true ;;
+    --skip-system) SKIP_SYSTEM_SETUP=true ;;
+    *) echo "Unknown option: ${option}"; exit 2 ;;
+  esac
+done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="${SCRIPT_DIR}"
@@ -112,7 +124,9 @@ run_checks() {
     failures=$((failures + 1))
   fi
 
-  if command -v node >/dev/null 2>&1; then
+  if [ "${DESKTOP_SETUP}" = true ]; then
+    echo "OK: Desktop interface is bundled"
+  elif command -v node >/dev/null 2>&1; then
     local node_version
     node_version="$(command_version node)"
     if version_at_least "${node_version}" "18.0.0"; then
@@ -126,7 +140,9 @@ run_checks() {
     failures=$((failures + 1))
   fi
 
-  for tool in npm jq zip unzip rsync curl; do
+  local required_tools=(jq zip unzip rsync curl)
+  if [ "${DESKTOP_SETUP}" = false ]; then required_tools+=(npm); fi
+  for tool in "${required_tools[@]}"; do
     if command -v "${tool}" >/dev/null 2>&1; then
       echo "OK: ${tool}"
     else
@@ -200,6 +216,8 @@ run_checks() {
 sudo_run() {
   if [ "$(id -u)" -eq 0 ]; then
     "$@"
+  elif [ "${NON_INTERACTIVE}" = true ] && command -v pkexec >/dev/null 2>&1; then
+    pkexec "$@"
   else
     sudo "$@"
   fi
@@ -207,6 +225,14 @@ sudo_run() {
 
 confirm_system_changes() {
   if [ "$(id -u)" -eq 0 ]; then return 0; fi
+  if [ "${NON_INTERACTIVE}" = true ]; then
+    echo "Administrator approval is required to install system packages."
+    if ! command -v pkexec >/dev/null 2>&1; then
+      echo "ERROR: Graphical administrator approval is unavailable (pkexec is missing)."
+      exit 4
+    fi
+    return 0
+  fi
   echo
   echo "The installer may use sudo to install missing Ubuntu/Debian packages."
   read -r -p "Continue? [y/N] " answer
@@ -235,13 +261,15 @@ install_system_dependencies() {
     ca-certificates curl gnupg jq zip unzip rsync python3 python3-venv python3-pip \
     build-essential iproute2
 
-  local node_ok=false
-  if command -v node >/dev/null 2>&1; then
-    local installed_node
-    installed_node="$(command_version node)"
-    if version_at_least "${installed_node}" "18.0.0"; then node_ok=true; fi
+  if [ "${DESKTOP_SETUP}" = false ]; then
+    local node_ok=false
+    if command -v node >/dev/null 2>&1; then
+      local installed_node
+      installed_node="$(command_version node)"
+      if version_at_least "${installed_node}" "18.0.0"; then node_ok=true; fi
+    fi
+    if [ "${node_ok}" = false ]; then install_node_20; fi
   fi
-  if [ "${node_ok}" = false ]; then install_node_20; fi
 
   if ! command -v docker >/dev/null 2>&1; then
     if [ "${IS_WSL}" = true ]; then
@@ -276,16 +304,26 @@ install_application() {
   echo "Setting up Python automation environment..."
   python3 -m venv "${ROOT_DIR}/automation/venv"
   "${ROOT_DIR}/automation/venv/bin/python" -m pip install --upgrade pip wheel
+  if ! command -v nvidia-smi >/dev/null 2>&1; then
+    echo "No NVIDIA runtime detected; installing the smaller CPU-only Torch runtime..."
+    "${ROOT_DIR}/automation/venv/bin/python" -m pip install \
+      "torch==2.14.0+cpu" "torchvision==0.29.0+cpu" \
+      --index-url https://download.pytorch.org/whl/cpu
+  fi
   "${ROOT_DIR}/automation/venv/bin/python" -m pip install -r "${ROOT_DIR}/automation/requirements.txt"
 
-  echo
-  echo "Installing and building manager application..."
-  (
-    cd "${ROOT_DIR}/manager-app"
-    npm ci
-    npm test
-    npm run build
-  )
+  if [ "${DESKTOP_SETUP}" = false ]; then
+    echo
+    echo "Installing and building manager application..."
+    (
+      cd "${ROOT_DIR}/manager-app"
+      npm ci
+      npm test
+      npm run build
+    )
+  else
+    echo "Desktop interface is bundled; skipping developer UI dependencies."
+  fi
 
   echo
   echo "Running offline automation tests..."
@@ -323,15 +361,21 @@ fi
 
 print_header "Installer"
 load_os_release
-install_system_dependencies
+if [ "${SKIP_SYSTEM_SETUP}" = true ]; then
+  echo "System dependencies were prepared by the host setup assistant."
+else
+  install_system_dependencies
+fi
 install_application
 
 echo
 if run_checks; then
   echo
   echo "READY: Automat FB Beta installation completed successfully."
-  echo "Start the application with: cd manager-app && npm start"
-  echo "Then open: http://localhost:5173"
+  if [ "${DESKTOP_SETUP}" = false ]; then
+    echo "Start the application with: cd manager-app && npm start"
+    echo "Then open: http://localhost:5173"
+  fi
 else
   echo "Installation completed, but preflight still reports a blocker. Review the messages above."
   exit 1

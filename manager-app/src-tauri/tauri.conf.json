@@ -5,7 +5,7 @@
   "identifier": "com.isolatedbrowser.manager",
   "build": {
     "beforeDevCommand": "npm run start",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "node ../scripts/stage_setup_payload.mjs && npm run build",
     "devUrl": "http://localhost:5173",
     "frontendDist": "../dist"
   },
@@ -35,8 +35,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": [
-      "binaries/*"
-    ]
+    "resources": {
+      "binaries/*": "binaries/",
+      "resources/payload/": "payload/"
+    }
   }
 }

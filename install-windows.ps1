@@ -3,7 +3,8 @@ param(
     [string]$Mode = "install",
     [ValidateRange(0, 1024)]
     [int]$WslMemoryGB = 0,
-    [switch]$KeepWslDefaults
+    [switch]$KeepWslDefaults,
+    [switch]$NonInteractive
 )
 
 $ErrorActionPreference = "Stop"
@@ -12,6 +13,21 @@ function Test-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Restart-Elevated {
+    $arguments = @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", "`"$PSCommandPath`"",
+        "-Mode", $Mode,
+        "-NonInteractive"
+    )
+    if ($WslMemoryGB -gt 0) { $arguments += @("-WslMemoryGB", $WslMemoryGB) }
+    if ($KeepWslDefaults) { $arguments += "-KeepWslDefaults" }
+    Write-Host "Requesting administrator approval..." -ForegroundColor Yellow
+    $process = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $arguments
+    exit $process.ExitCode
 }
 
 function Get-HostMemoryGB {
@@ -81,7 +97,7 @@ function Configure-WslResources {
 
     $selectedGB = $WslMemoryGB
     if ($selectedGB -eq 0) {
-        $choice = Read-Host "Set WSL maximum to the recommended ${recommendedGB} GB? [Y]es / [N]o / [C]ustom (default: Y)"
+        $choice = if ($NonInteractive) { "Y" } else { Read-Host "Set WSL maximum to the recommended ${recommendedGB} GB? [Y]es / [N]o / [C]ustom (default: Y)" }
         if ($choice -match '^(n|no)$') {
             Write-Host "Keeping Microsoft's default WSL memory policy." -ForegroundColor Yellow
             return $false
@@ -118,6 +134,7 @@ if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
         Write-Error "WSL is not installed. Run this script as Administrator with -Mode install."
     }
     if (-not (Test-Administrator)) {
+        if ($NonInteractive) { Restart-Elevated }
         Write-Error "Installing WSL requires Administrator permission. Reopen PowerShell as Administrator."
     }
     Write-Host "Enabling Windows Subsystem for Linux and Virtual Machine Platform..." -ForegroundColor Yellow
@@ -134,6 +151,7 @@ if (-not $ubuntu) {
         Write-Error "No Ubuntu WSL distribution was found. Run with -Mode install."
     }
     if (-not (Test-Administrator)) {
+        if ($NonInteractive) { Restart-Elevated }
         Write-Error "Installing Ubuntu requires Administrator permission. Reopen PowerShell as Administrator."
     }
     Write-Host "Installing Ubuntu for WSL2..." -ForegroundColor Yellow
@@ -174,7 +192,7 @@ if ($dockerAvailable) {
         if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
             Write-Error "Docker Desktop is missing and winget is unavailable. Install Docker Desktop manually."
         }
-        $answer = Read-Host "Docker Desktop is missing. Install it with winget now? [y/N]"
+        $answer = if ($NonInteractive) { "y" } else { Read-Host "Docker Desktop is missing. Install it with winget now? [y/N]" }
         if ($answer -notmatch '^(y|yes)$') {
             Write-Error "Docker is required. Installation was cancelled."
         }
@@ -207,26 +225,33 @@ if (-not $wslSource) {
 $wslDestination = (& wsl.exe -d $ubuntu -- bash -lc 'printf "%s" "$HOME/automat_fb-beta"').Trim()
 & wsl.exe -d $ubuntu -- test -f "$wslDestination/install.sh"
 $destinationExists = $LASTEXITCODE -eq 0
-if (-not $destinationExists) {
-    Write-Host "Copying the beta from Windows storage into the WSL filesystem..." -ForegroundColor Cyan
-    & wsl.exe -d $ubuntu -- mkdir -p $wslDestination
-    if ($LASTEXITCODE -ne 0) { Write-Error "Could not create destination directory in WSL." }
-    & wsl.exe -d $ubuntu -- cp -a "$wslSource/." "$wslDestination/"
-    if ($LASTEXITCODE -ne 0) { Write-Error "Could not copy the beta into WSL." }
-    & wsl.exe -d $ubuntu -- rm -rf "$wslDestination/manager-app/node_modules" "$wslDestination/build" "$wslDestination/automation/venv"
-    & wsl.exe -d $ubuntu -- bash -c "find '$wslDestination' -maxdepth 3 -name '*.sh' -exec sed -i 's/\r$//' {} +"
-} else {
-    Write-Host "Using existing WSL installation at $wslDestination" -ForegroundColor Cyan
-}
+Write-Host $(if ($destinationExists) { "Updating the application runtime in WSL..." } else { "Installing the application runtime in WSL..." }) -ForegroundColor Cyan
+& wsl.exe -d $ubuntu -- mkdir -p $wslDestination
+if ($LASTEXITCODE -ne 0) { Write-Error "Could not create destination directory in WSL." }
+& wsl.exe -d $ubuntu -- cp -a "$wslSource/." "$wslDestination/"
+if ($LASTEXITCODE -ne 0) { Write-Error "Could not copy the application payload into WSL." }
+& wsl.exe -d $ubuntu -- rm -rf "$wslDestination/manager-app/node_modules" "$wslDestination/build"
+& wsl.exe -d $ubuntu -- bash -c "find '$wslDestination' -maxdepth 3 -name '*.sh' -exec sed -i 's/\r$//' {} +"
 
 Write-Host "Running Linux installer inside WSL2..." -ForegroundColor Cyan
-& wsl.exe -d $ubuntu -- bash "$wslDestination/install.sh" "--$Mode"
+$linuxInstallerArgs = @("--$Mode")
+if ($NonInteractive) {
+    Write-Host "Preparing Linux system packages..." -ForegroundColor Cyan
+    & wsl.exe -d $ubuntu -u root -- apt-get update
+    if ($LASTEXITCODE -ne 0) { Write-Error "Could not update Linux system packages." }
+    & wsl.exe -d $ubuntu -u root -- apt-get install -y ca-certificates curl gnupg jq zip unzip rsync python3 python3-venv python3-pip build-essential iproute2
+    if ($LASTEXITCODE -ne 0) { Write-Error "Could not install Linux system packages." }
+    $linuxInstallerArgs += @("--non-interactive", "--desktop", "--skip-system")
+}
+& wsl.exe -d $ubuntu -- bash "$wslDestination/install.sh" @linuxInstallerArgs
 $installerExit = $LASTEXITCODE
 if ($installerExit -ne 0) {
     Write-Error "The WSL installer stopped with exit code $installerExit. Follow its repair instruction and rerun this script with -Mode repair."
 }
 
 Write-Host "READY: Installation completed." -ForegroundColor Green
-Write-Host "Run this command to start the product:"
-Write-Host "wsl.exe -d $ubuntu -- bash -lc 'cd ~/automat_fb-beta/manager-app && npm start'" -ForegroundColor White
-Write-Host "Then open http://localhost:5173 in Windows."
+if (-not $NonInteractive) {
+    Write-Host "Run this command to start the product:"
+    Write-Host "wsl.exe -d $ubuntu -- bash -lc 'cd ~/automat_fb-beta/manager-app && npm start'" -ForegroundColor White
+    Write-Host "Then open http://localhost:5173 in Windows."
+}

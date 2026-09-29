@@ -20,6 +20,8 @@ import { EditProfileModal } from './components/EditProfileModal';
 import { TelemetryFooter } from './components/TelemetryFooter';
 import { BrainPanel } from './components/BrainPanel';
 import { ProfileActionErrorModal } from './components/ProfileActionErrorModal';
+import { SetupCenter } from './components/SetupCenter';
+import { fetchSetupStatus, isDesktopApp, SetupSnapshot } from './services/setup';
 
 type ProfileAction = 'start' | 'stop' | 'pause' | 'unpause';
 
@@ -31,6 +33,9 @@ interface ProfileActionError {
 }
 
 export const App: React.FC = () => {
+  const [setupStatus, setSetupStatus] = useState<SetupSnapshot | null | undefined>(
+    () => isDesktopApp() ? undefined : null,
+  );
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [proxies, setProxies] = useState<ProxyItem[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
@@ -104,6 +109,20 @@ export const App: React.FC = () => {
   isModalOpenRef.current = isCreateModalOpen || isEditModalOpen;
 
   useEffect(() => {
+    if (!isDesktopApp()) return;
+    fetchSetupStatus()
+      .then((status) => {
+        const previouslyCompleted = localStorage.getItem('desktop_setup_completed_v1') === 'true';
+        setSetupStatus(status.ready && previouslyCompleted ? null : status);
+      })
+      .catch((error) => {
+        console.error('Failed to inspect desktop setup:', error);
+        setSetupStatus(null);
+      });
+  }, []);
+
+  useEffect(() => {
+    if (setupStatus !== null) return;
     loadData();
     const interval = setInterval(() => {
       if (!isModalOpenRef.current) {
@@ -111,7 +130,7 @@ export const App: React.FC = () => {
       }
     }, 3000);
     return () => clearInterval(interval);
-  }, []);
+  }, [setupStatus]);
 
   const selectedProfile = profiles.find((p) => p.id === selectedProfileId) || null;
 
@@ -163,6 +182,29 @@ export const App: React.FC = () => {
       alert(`Failed to delete profile: ${err.message}`);
     }
   };
+
+  if (setupStatus === undefined) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-[#08090c] text-zinc-400">
+        <div className="flex items-center gap-3 text-sm">
+          <div className="h-4 w-4 animate-spin rounded-full border-2 border-zinc-700 border-t-blue-500" />
+          Checking this computer…
+        </div>
+      </div>
+    );
+  }
+
+  if (setupStatus !== null) {
+    return (
+      <SetupCenter
+        initialStatus={setupStatus}
+        onComplete={() => {
+          localStorage.setItem('desktop_setup_completed_v1', 'true');
+          setSetupStatus(null);
+        }}
+      />
+    );
+  }
 
   return (
     <div
