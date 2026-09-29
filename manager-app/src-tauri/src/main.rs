@@ -13,6 +13,16 @@ use tauri::{AppHandle, Emitter, Manager};
 struct BackendProcess(Mutex<Option<Child>>);
 struct SetupProcess(Mutex<bool>);
 
+#[cfg(target_os = "windows")]
+fn suppress_console_window(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn suppress_console_window(_command: &mut Command) {}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SetupStep {
@@ -42,7 +52,9 @@ struct SetupRunResult {
 }
 
 fn command_succeeds(program: &str, args: &[&str]) -> bool {
-    Command::new(program)
+    let mut command = Command::new(program);
+    suppress_console_window(&mut command);
+    command
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -541,6 +553,7 @@ fn run_setup_process(app: &AppHandle, repair: bool) -> Result<SetupRunResult, St
     let mut command = {
         let script = root.join("install-windows.ps1");
         let mut command = Command::new("powershell.exe");
+        suppress_console_window(&mut command);
         command.args([
             "-NoProfile",
             "-ExecutionPolicy",
