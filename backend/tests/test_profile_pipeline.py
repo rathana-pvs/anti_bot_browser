@@ -103,6 +103,35 @@ def test_scheduled_batch_releases_all_iterations_at_its_start_gate():
     assert [item["execution_id"] for item in due] == ["first", "second"]
 
 
+def test_uncertain_execution_does_not_block_later_pending_work():
+    queue = {"daily_batches": [
+        {
+            "batch_id": "older-review",
+            "created_at": "2026-09-28T12:00:00+00:00",
+            "posts": [{"executions": [{
+                "execution_id": "uncertain-first",
+                "profile_id": "p1",
+                "status": "uncertain",
+                "started_at": "2026-09-28T12:01:00+00:00",
+                "scheduled_at": "2026-09-28T12:00:00+00:00",
+            }]}],
+        },
+        {
+            "batch_id": "next-batch",
+            "created_at": "2026-09-28T12:05:00+00:00",
+            "posts": [{"executions": [{
+                "execution_id": "next-post",
+                "profile_id": "p1",
+                "status": "pending",
+                "scheduled_at": "2026-09-28T12:05:00+00:00",
+            }]}],
+        },
+    ]}
+
+    due = ordered_due_executions(queue, _timestamp_ms("2026-09-28T12:06:00"))
+    assert [item["execution_id"] for item in due] == ["next-post"]
+
+
 def test_started_batch_keeps_queue_ownership_until_its_pending_work_finishes():
     queue = {"daily_batches": [
         {

@@ -673,6 +673,58 @@ class PublicationVerificationTests(unittest.TestCase):
         self.assertEqual(task.recognizer.observe.call_count, 3)
 
 
+class ReelPublicationVerificationTests(unittest.TestCase):
+    def make_task(self, observations, similarities):
+        task = FacebookReelTask.__new__(FacebookReelTask)
+        task.client = Mock()
+        task.client.screenshot.return_value = np.zeros((100, 100, 3), dtype=np.uint8)
+        task.recognizer = Mock()
+        task.recognizer.observe.side_effect = observations
+        task.vision = Mock()
+        task.vision.similarity.side_effect = similarities
+        task._handle_remix_audio_dialog = Mock(return_value="absent")
+        task.check_and_dismiss_post_prompt = Mock(return_value=False)
+        task.log = Mock()
+        return task
+
+    def test_feed_without_reel_confirmation_does_not_confirm_publication(self):
+        task = self.make_task(
+            [
+                StateObservation(ScreenState.FEED_READY, 0.8),
+                StateObservation(ScreenState.FEED_READY, 0.8),
+            ],
+            [0.70, 0.70],
+        )
+        with unittest.mock.patch(
+            "tasks.facebook_reel.time.time",
+            side_effect=[0.0, 0.0, 0.2, 2.0],
+        ), unittest.mock.patch("tasks.facebook_reel.time.sleep", return_value=None):
+            status, _ = task._verify_reel_publication(
+                np.zeros((100, 100, 3), dtype=np.uint8),
+                timeout=1.0,
+            )
+
+        self.assertEqual(status, "uncertain")
+
+    def test_reel_confirmation_completes_popup_verification(self):
+        task = self.make_task(
+            [StateObservation(ScreenState.POST_CONFIRMED, 0.98)],
+            [0.70],
+        )
+        with unittest.mock.patch(
+            "tasks.facebook_reel.time.time",
+            side_effect=[0.0, 0.0],
+        ), unittest.mock.patch("tasks.facebook_reel.time.sleep", return_value=None):
+            status, final = task._verify_reel_publication(
+                np.zeros((100, 100, 3), dtype=np.uint8),
+                timeout=1.0,
+            )
+
+        self.assertEqual(status, "published")
+        self.assertEqual(final[0].state, ScreenState.POST_CONFIRMED)
+        self.assertEqual(task.recognizer.observe.call_count, 1)
+
+
 class FirstCommentTargetTests(unittest.TestCase):
     def test_uses_topmost_comment_as_field(self):
         task = FacebookPostTask.__new__(FacebookPostTask)
@@ -944,6 +996,132 @@ class FirstCommentTargetTests(unittest.TestCase):
                 prefer_permalink=True,
             ),
         ])
+
+    def test_reel_comment_refreshes_and_checks_latest_post_before_commenting(self):
+        task = FacebookReelTask.__new__(FacebookReelTask)
+        task.log = Mock()
+        task.navigate_to = Mock()
+        task.client = Mock()
+        task.client.screenshot.return_value = np.zeros((100, 100, 3), dtype=np.uint8)
+        task.human = Mock()
+        task.capture_evidence = Mock()
+        task._scan_profile_for_latest_reel = Mock(return_value=(True, task.client.screenshot.return_value))
+        task.post_first_comment = Mock(return_value="submitted_verified")
+
+        status, permalink = task.post_reel_first_comment_after_refresh(
+            "https://example.com/link",
+        )
+
+        self.assertEqual(status, "submitted_verified")
+        self.assertIsNone(permalink["post_url"])
+        self.assertEqual(permalink["permalink_status"], "not_requested")
+        task.navigate_to.assert_called_once_with(
+            "https://www.facebook.com/me",
+            wait_seconds=3.0,
+        )
+        task.post_first_comment.assert_called_once_with(
+            "https://example.com/link",
+            reuse_profile_page=True,
+            warm_down_after_submit=False,
+        )
+
+    def test_reel_comment_stops_after_refreshed_feed_has_no_input(self):
+        task = FacebookReelTask.__new__(FacebookReelTask)
+        task.log = Mock()
+        task.navigate_to = Mock()
+        task.client = Mock()
+        task.client.screenshot.return_value = np.zeros((100, 100, 3), dtype=np.uint8)
+        task.human = Mock()
+        task.capture_evidence = Mock()
+        task._scan_profile_for_latest_reel = Mock(return_value=(True, task.client.screenshot.return_value))
+        task.post_first_comment = Mock(return_value="failed_input_not_found")
+
+        status, permalink = task.post_reel_first_comment_after_refresh(
+            "https://example.com/link",
+        )
+
+        self.assertEqual(status, "failed_input_not_found")
+        self.assertEqual(permalink["permalink_status"], "not_requested")
+        task.post_first_comment.assert_called_once_with(
+            "https://example.com/link",
+            reuse_profile_page=True,
+            warm_down_after_submit=False,
+        )
+
+    def test_reel_comment_waits_ten_seconds_and_refreshes_once_more(self):
+        task = FacebookReelTask.__new__(FacebookReelTask)
+        task.log = Mock()
+        task.navigate_to = Mock()
+        task.client = Mock()
+        task.client.screenshot.return_value = np.zeros((100, 100, 3), dtype=np.uint8)
+        task.human = Mock()
+        task.capture_evidence = Mock()
+        task._scan_profile_for_latest_reel = Mock(
+            side_effect=[
+                (False, task.client.screenshot.return_value),
+                (False, task.client.screenshot.return_value),
+            ]
+        )
+        task.post_first_comment = Mock()
+        task.permalink_not_requested = Mock(return_value={"permalink_status": "not_requested"})
+
+        with unittest.mock.patch("tasks.facebook_reel.time.sleep", return_value=None) as sleep:
+            status, _ = task.post_reel_first_comment_after_refresh("https://example.com/link")
+
+        self.assertEqual(status, "skipped_latest_post_not_found")
+        self.assertEqual(task.navigate_to.call_count, 2)
+        sleep.assert_called_once_with(10.0)
+        task.post_first_comment.assert_not_called()
+
+    def test_latest_reel_scan_scrolls_past_profile_header_and_loading_cards(self):
+        task = FacebookReelTask.__new__(FacebookReelTask)
+        screen = np.zeros((100, 100, 3), dtype=np.uint8)
+        task.log = Mock()
+        task.client = Mock()
+        task.client.screenshot.return_value = screen
+        task.human = Mock()
+        task._latest_reel_is_visible = Mock(side_effect=[False, False, True])
+
+        with unittest.mock.patch("tasks.facebook_reel.time.sleep", return_value=None):
+            visible, final_screen = task._scan_profile_for_latest_reel()
+
+        self.assertTrue(visible)
+        self.assertIs(final_screen, screen)
+        self.assertEqual(task.client.screenshot.call_count, 3)
+        self.assertEqual(task.human.scroll.call_count, 2)
+        task.human.scroll.assert_called_with("down", notches=2)
+
+    def test_reel_comment_skips_post_comment_warm_down(self):
+        task = FacebookReelTask.__new__(FacebookReelTask)
+        task.log = Mock()
+        task.log_decision = Mock()
+        task.capture_evidence = Mock()
+        task.set_stage = Mock()
+        task.human = Mock()
+        screen = np.zeros((100, 100, 3), dtype=np.uint8)
+        task.client = Mock()
+        task.client.screenshot.return_value = screen
+        task.vision = Mock()
+        task.vision.read_text.return_value = [
+            {"text": "Direct Reel comment", "confidence": 0.99, "center": (60, 60)},
+        ]
+        task.paste_text = Mock()
+        task._open_profile_first_comment_input = Mock(return_value=((90, 75), screen))
+
+        with unittest.mock.patch("time.sleep", return_value=None):
+            result = task.post_first_comment(
+                "Direct Reel comment",
+                reuse_profile_page=True,
+                warm_down_after_submit=False,
+            )
+
+        self.assertEqual(result, "submitted_verified")
+        task.set_stage.assert_called_once_with("commenting")
+        self.assertNotIn(
+            "after_comment_modal_close",
+            [call.args[0] for call in task.capture_evidence.call_args_list],
+        )
+        task.human.click.assert_called_once_with(90, 75)
 
     def test_comment_verification_includes_upper_modal_comment_stream(self):
         task = FacebookReelTask.__new__(FacebookReelTask)

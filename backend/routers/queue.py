@@ -29,8 +29,6 @@ from backend.services.queue_scheduler import (
 from backend.services.profile_pipeline import (
     shuffled_profile_order,
     count_buffered_preparations,
-    active_batch_id,
-    batch_has_review_hold,
     batch_iteration_availability,
 )
 from backend.services.telemetry_summary import build_queue_telemetry_summary
@@ -90,7 +88,6 @@ def get_queue():
     }
 
     scheduler = current_scheduler_snapshot(queue)
-    scheduler["batch_owner_id"] = active_batch_id(queue)
     return {
         "queue_version": queue.get("queue_version", "2.0"),
         "stats": stats,
@@ -315,8 +312,6 @@ async def append_batch_posts(batch_id: str, payload: dict = Body(...)):
             for existing_post in batch.get("posts", [])
             for execution in existing_post.get("executions", [])
         ]
-        if any(execution.get("status") in ("uncertain", "needs_review") for execution in existing_executions):
-            raise HTTPException(status_code=409, detail="Resolve the batch's uncertain execution before appending more posts.")
         if not any(execution.get("status") in ("pending", "ready", "running", "preparing") for execution in existing_executions):
             raise HTTPException(status_code=409, detail="This batch has already finished. Create a new batch instead.")
 
@@ -494,16 +489,7 @@ async def run_execution_now(execution_id: str):
         and effective_preparation_status == "pending"
     )
 
-    owner_batch_id = active_batch_id(queue)
     target_batch = match.get("batch") or {}
-    target_batch_id = target_batch.get("batch_id")
-    if owner_batch_id and target_batch_id and owner_batch_id != target_batch_id:
-        raise HTTPException(
-            status_code=409,
-            detail="Another batch is already running. This batch will start after the active batch finishes.",
-        )
-    if target_batch and batch_has_review_hold(target_batch):
-        raise HTTPException(status_code=409, detail="This batch is paused until its uncertain execution is resolved.")
     if not needs_prep and target_batch:
         iteration_check = batch_iteration_availability(target_batch)
         if not iteration_check["allowed"]:

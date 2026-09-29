@@ -312,12 +312,11 @@ class FacebookReelTask(BaseTask):
         return "waiting"
 
     @timed_telemetry_step("publication_verification")
-    def _verify_reel_publication(self, before_publish, timeout: float = 300.0):
+    def _verify_reel_publication(self, before_publish, timeout: float = 30.0):
         deadline = time.time() + timeout
         last = None
-        feed_streak = 0
         prompt_dismissed = False
-        confirmation_seen = False
+        unconfirmed_feed_logged = False
         audio_policy_saved = False
         while time.time() < deadline:
             screen = self.client.screenshot()
@@ -348,11 +347,8 @@ class FacebookReelTask(BaseTask):
             if observation.state == ScreenState.ERROR_DIALOG:
                 return "failed", last
             if observation.state == ScreenState.POST_CONFIRMED:
-                confirmation_seen = True
-                feed_streak = 0
-                self.log("INFO", "Facebook showed publication confirmation; waiting for the modal to close.")
-                time.sleep(2.0)
-                continue
+                self.log("INFO", "Facebook showed Reel publication confirmation.")
+                return "published", last
             if observation.state in {
                 ScreenState.PUBLISHING,
                 ScreenState.POST_ENABLED,
@@ -360,21 +356,88 @@ class FacebookReelTask(BaseTask):
                 ScreenState.MEDIA_UPLOADING,
                 ScreenState.MEDIA_READY,
             }:
-                feed_streak = 0
                 time.sleep(2.0)
                 continue
-            if observation.state == ScreenState.FEED_READY and similarity < 0.985:
-                return "published", last
             if observation.state == ScreenState.FEED_READY:
-                feed_streak += 1
-                if feed_streak >= 1:
-                    return "published", last
-            else:
-                feed_streak = 0
+                if not unconfirmed_feed_logged:
+                    self.log(
+                        "INFO",
+                        "Profile feed is visible, but Reel success has not been confirmed yet; continuing to wait without refreshing.",
+                    )
+                    unconfirmed_feed_logged = True
             time.sleep(2.0)
 
-        self.log("WARN", "Publishing modal did not fully close before the maximum verification wait.")
+        self.log("WARN", "Reel success popup was not detected within 30 seconds; checking the refreshed profile instead.")
         return "uncertain", last
+
+    def _latest_reel_is_visible(self, screen) -> bool:
+        """Check the top profile feed for this Reel's caption or a fresh timestamp."""
+        if screen is None:
+            return False
+        height, width = screen.shape[:2]
+        items = self.vision.read_text(
+            screen,
+            region=(int(width * 0.28), int(height * 0.16), int(width * 0.67), int(height * 0.78)),
+            min_confidence=0.18,
+        )
+        if any(self._is_recent_timestamp_text(item.get("text", "")) for item in items):
+            return True
+
+        caption_words = [
+            word for word in re.sub(r"[^a-z0-9]+", " ", (self.caption or "").casefold()).split()
+            if len(word) >= 3
+        ][:8]
+        if not caption_words:
+            return False
+        visible_text = " ".join(item.get("text", "").casefold() for item in items)
+        matched = sum(1 for word in caption_words if word in visible_text)
+        return matched >= min(2, len(caption_words))
+
+    def _refresh_until_latest_reel_visible(self) -> bool:
+        """Refresh twice at most, with one ten-second processing delay."""
+        for attempt in range(1, 3):
+            self.log("INFO", f"Refreshing the profile to check for the latest Reel (attempt {attempt}/2).")
+            self.navigate_to("https://www.facebook.com/me", wait_seconds=3.0)
+            visible, screen = self._scan_profile_for_latest_reel()
+            self.capture_evidence(
+                f"latest_reel_check_{attempt}",
+                screen,
+                latest_reel_visible=visible,
+            )
+            if visible:
+                return True
+            if attempt == 1:
+                self.log("INFO", "Latest Reel is not visible yet; waiting 10 seconds before one final refresh.")
+                time.sleep(10.0)
+        return False
+
+    def _scan_profile_for_latest_reel(self, max_scans: int = 6):
+        """Scroll from the profile header until the first post has rendered."""
+        self.client.exec_cmd(["xdotool", "mousemove", "1150", "500"], check=False)
+        last_screen = None
+        for scan in range(1, max_scans + 1):
+            last_screen = self.client.screenshot()
+            if self._latest_reel_is_visible(last_screen):
+                self.log("INFO", f"Latest Reel found in the profile feed on scan {scan}/{max_scans}.")
+                return True, last_screen
+            if scan < max_scans:
+                self.log("INFO", f"Latest Reel not visible on scan {scan}/{max_scans}; scrolling toward the first post.")
+                self.human.scroll("down", notches=2)
+                time.sleep(1.2)
+        return False, last_screen
+
+    def post_reel_first_comment_after_refresh(self, comment_link: str) -> tuple[str, dict]:
+        """Find the newly published Reel after bounded refreshes, then comment once."""
+        if not self._refresh_until_latest_reel_visible():
+            self.log("WARN", "Latest Reel was not found after two refreshes; skipping its first comment.")
+            return "skipped_latest_post_not_found", self.permalink_not_requested()
+
+        comment_status = self.post_first_comment(
+            comment_link,
+            reuse_profile_page=True,
+            warm_down_after_submit=False,
+        )
+        return comment_status, self.permalink_not_requested()
 
     def run(self) -> bool:
         self.set_stage("preparing")
@@ -529,7 +592,8 @@ class FacebookReelTask(BaseTask):
         self.human.click(*publish_button)
 
         self.set_stage("verifying")
-        result, verification = self._verify_reel_publication(before_publish)
+        self.log("INFO", "Waiting up to 30 seconds for Facebook's Reel success popup before using profile fallback checks.")
+        result, verification = self._verify_reel_publication(before_publish, timeout=30.0)
         if verification:
             observation, final_screen, similarity = verification
             self.capture_evidence(
@@ -545,15 +609,19 @@ class FacebookReelTask(BaseTask):
 
         if result == "failed":
             return self._fail("reel_publish_rejected", "Facebook displayed an error after Reel publication.", final_screen)
-        if result != "published":
-            self.log("INFO", f"Reel publication state '{result}' without error dialog; treating as published per operator rule.")
-
         if self.comment_link:
-            comment_status, permalink_info = self.post_first_comment_with_page_reuse(
+            comment_status, permalink_info = self.post_reel_first_comment_after_refresh(
                 self.comment_link,
-                caption=self.caption,
-                media_type="reel",
             )
+            if result != "published" and comment_status == "skipped_latest_post_not_found":
+                return self.set_outcome(
+                    "uncertain",
+                    "reel_publish_unconfirmed",
+                    message="The success popup was absent and the latest Reel was not found after two profile refreshes.",
+                    first_comment=comment_status,
+                    first_comment_method=None,
+                    **permalink_info,
+                )
             self.log("SUCCESS", "Facebook Reel publication was visually confirmed.")
             return self.set_outcome(
                 "published",
@@ -561,6 +629,13 @@ class FacebookReelTask(BaseTask):
                 first_comment=comment_status,
                 first_comment_method=getattr(self, "last_comment_method", None),
                 **permalink_info,
+            )
+
+        if result != "published" and not self._refresh_until_latest_reel_visible():
+            return self._uncertain(
+                "reel_publish_unconfirmed",
+                "The success popup was absent and the latest Reel was not found after two profile refreshes.",
+                final_screen,
             )
 
         permalink_info = self.permalink_not_requested()

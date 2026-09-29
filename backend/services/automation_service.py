@@ -45,8 +45,6 @@ from backend.services.profile_pipeline import (
     ordered_due_executions,
     count_buffered_preparations,
     batch_iteration_availability,
-    active_batch_id,
-    batch_has_review_hold,
 )
 from backend.services.queue_service import (
     load_posting_queue,
@@ -459,16 +457,6 @@ def claim_queue_execution(execution_id: str, kind: str = "publisher") -> dict:
             raise err
 
         if kind == "publisher":
-            owner_batch_id = active_batch_id(queue)
-            target_batch_id = target_batch.get("batch_id")
-            if owner_batch_id and owner_batch_id != target_batch_id:
-                err = RuntimeError("Another batch owns the automation queue until it finishes")
-                err.schedulerReason = "batch_owner_active"
-                raise err
-            if batch_has_review_hold(target_batch):
-                err = RuntimeError("The active batch is paused for operator review")
-                err.schedulerReason = "batch_review_hold"
-                raise err
             iteration_check = batch_iteration_availability(target_batch)
             if not iteration_check["allowed"]:
                 err = RuntimeError(f"Batch iteration is not ready: {iteration_check['reason']}")
@@ -1148,10 +1136,6 @@ async def dispatch_pending_queue():
         scheduler_cfg = get_scheduler_config()
         queue_snapshot = load_posting_queue()
         due_executions = ordered_due_executions(queue_snapshot, time.time() * 1000)
-        owner_batch_id = active_batch_id(queue_snapshot)
-        if owner_batch_id is None and due_executions:
-            first_due = find_queue_execution(queue_snapshot, due_executions[0]["execution_id"])
-            owner_batch_id = first_due["batch"].get("batch_id") if first_due else None
 
         publisher_batches_claimed = set()
         cooldown_retry_ms = None
@@ -1163,11 +1147,6 @@ async def dispatch_pending_queue():
                 continue
 
             batch_id = match["batch"].get("batch_id")
-            if owner_batch_id and batch_id != owner_batch_id:
-                continue
-            if batch_has_review_hold(match["batch"]):
-                continue
-
             pid = match["execution"]["profile_id"]
             standalone_warming = match["post"].get("type") == "warming"
             prep_mode = match["execution"].get("preparation_mode") or "off"

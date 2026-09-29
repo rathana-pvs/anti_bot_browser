@@ -1090,6 +1090,7 @@ class BaseTask:
         *,
         reuse_profile_page: bool = False,
         prefer_permalink: bool = False,
+        warm_down_after_submit: bool = True,
     ) -> str:
         """
         Locate the post's 'Comment as ...' field, click it, paste comment_link, and submit once with Return.
@@ -1238,6 +1239,10 @@ class BaseTask:
                 "WARN",
                 "First comment submission settled, but its text was not visibly verified; no automatic retry will be attempted.",
             )
+
+        if not warm_down_after_submit:
+            self.log("INFO", "Comment verification complete; returning immediately for container shutdown.")
+            return comment_status
 
         # The permalink/comment view is normally a centered modal. Click a
         # resolution-relative point on the dimmed backdrop to close it without
