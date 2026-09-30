@@ -155,9 +155,29 @@ if (-not $ubuntu) {
         Write-Error "Installing Ubuntu requires Administrator permission. Reopen PowerShell as Administrator."
     }
     Write-Host "Installing Ubuntu for WSL2..." -ForegroundColor Yellow
-    & wsl.exe --install -d Ubuntu
-    Write-Host "Open Ubuntu once to create its user, then rerun this script." -ForegroundColor Yellow
-    exit 10
+    if ($NonInteractive) {
+        & wsl.exe --install -d Ubuntu --no-launch
+    } else {
+        & wsl.exe --install -d Ubuntu
+    }
+    if ($LASTEXITCODE -ne 0) { Write-Error "Ubuntu installation failed." }
+
+    for ($attempt = 1; $attempt -le 30 -and -not $ubuntu; $attempt++) {
+        $distros = @(& wsl.exe --list --quiet | ForEach-Object { ($_ -replace "`0", "").Trim() } | Where-Object { $_ })
+        $ubuntu = $distros | Where-Object { $_ -match "Ubuntu" } | Select-Object -First 1
+        if (-not $ubuntu) { Start-Sleep -Seconds 2 }
+    }
+    if (-not $ubuntu) {
+        Write-Host "Windows must restart before Ubuntu can finish registering." -ForegroundColor Yellow
+        exit 10
+    }
+    if ($NonInteractive) {
+        Write-Host "Initializing Ubuntu non-interactively..." -ForegroundColor Cyan
+        & wsl.exe -d $ubuntu -u root -- sh -lc "printf '[boot]\nsystemd=true\n\n[user]\ndefault=root\n' > /etc/wsl.conf"
+        if ($LASTEXITCODE -ne 0) { Write-Error "Could not initialize Ubuntu." }
+        & wsl.exe --terminate $ubuntu
+        Start-Sleep -Seconds 2
+    }
 }
 Write-Host "OK: WSL distribution detected: $ubuntu" -ForegroundColor Green
 
@@ -173,53 +193,75 @@ for ($attempt = 1; $attempt -le 10 -and -not $dockerAvailable; $attempt++) {
     if (-not $wslResourcesChanged) { break }
 }
 
+if (-not $dockerAvailable -and $Mode -eq "check") {
+    Write-Error "Docker Engine is missing inside $ubuntu. Run installation or repair."
+}
+
 if (-not $dockerAvailable) {
-    & wsl.exe -d $ubuntu -u root -- service docker start *> $null
+    Write-Host "Installing Docker Engine inside WSL2 ($ubuntu)..." -ForegroundColor Cyan
+    $previousErrorActionPreference = $ErrorActionPreference
     try {
-        & wsl.exe -d $ubuntu -- docker info *> $null
-        if ($LASTEXITCODE -eq 0) { $dockerAvailable = $true }
-    } catch {}
-}
-
-if ($dockerAvailable) {
-    Write-Host "OK: Docker is available inside WSL2 ($ubuntu)" -ForegroundColor Green
-} else {
-    $dockerDesktop = Join-Path $Env:ProgramFiles "Docker\Docker\Docker Desktop.exe"
-    if (-not (Test-Path $dockerDesktop)) {
-        if ($Mode -eq "check") {
-            Write-Error "Docker is missing. Install Docker Desktop or install docker.io inside $ubuntu."
-        }
-        if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
-            Write-Error "Docker Desktop is missing and winget is unavailable. Install Docker Desktop manually."
-        }
-        $answer = if ($NonInteractive) { "y" } else { Read-Host "Docker Desktop is missing. Install it with winget now? [y/N]" }
-        if ($answer -notmatch '^(y|yes)$') {
-            Write-Error "Docker is required. Installation was cancelled."
-        }
-        & winget.exe install --exact --id Docker.DockerDesktop --accept-source-agreements --accept-package-agreements
-        Write-Host "Start Docker Desktop, accept its terms, enable WSL integration for $ubuntu, then rerun this script." -ForegroundColor Yellow
-        exit 11
+        $ErrorActionPreference = "Continue"
+        & wsl.exe -d $ubuntu -u root -- bash -lc "export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y docker.io"
+        $dockerInstallExit = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($dockerInstallExit -ne 0) {
+        Write-Error "Could not install Docker Engine inside $ubuntu."
     }
 
+    $linuxUser = (& wsl.exe -d $ubuntu -- sh -lc 'id -un').Trim()
+    if ($linuxUser -and $linuxUser -ne "root") {
+        & wsl.exe -d $ubuntu -u root -- usermod -aG docker $linuxUser
+        if ($LASTEXITCODE -ne 0) { Write-Error "Could not grant Docker access to $linuxUser." }
+    }
+
+    # Docker Engine is managed by systemd entirely inside the WSL distribution.
+    & wsl.exe -d $ubuntu -u root -- sh -lc "if grep -q '^\[boot\]' /etc/wsl.conf; then if grep -q '^systemd=' /etc/wsl.conf; then sed -i 's/^systemd=.*/systemd=true/' /etc/wsl.conf; else sed -i '/^\[boot\]/a systemd=true' /etc/wsl.conf; fi; else printf '\n[boot]\nsystemd=true\n' >> /etc/wsl.conf; fi"
+    if ($LASTEXITCODE -ne 0) { Write-Error "Could not enable systemd inside $ubuntu." }
+
+    # Restart the distribution so systemd and docker group membership take effect.
+    & wsl.exe --terminate $ubuntu
+    Start-Sleep -Seconds 2
+    $previousErrorActionPreference = $ErrorActionPreference
     try {
-        & wsl.exe -d $ubuntu -- docker info *> $null
-        if ($LASTEXITCODE -ne 0) { throw "Docker not ready" }
-        Write-Host "OK: Docker Desktop is available inside WSL2" -ForegroundColor Green
-    } catch {
-        if (Test-Path $dockerDesktop) {
-            Start-Process $dockerDesktop
-        }
-        Write-Host "Docker Desktop was started. Enable Settings > Resources > WSL Integration for $ubuntu." -ForegroundColor Yellow
-        Write-Host "Wait until Docker reports Ready, then rerun this script." -ForegroundColor Yellow
-        exit 12
+        $ErrorActionPreference = "Continue"
+        & wsl.exe -d $ubuntu -u root -- systemctl enable --now docker
+        $dockerStartExit = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($dockerStartExit -ne 0) {
+        Write-Error "Docker Engine was installed but its systemd service did not start."
+    }
+    for ($attempt = 1; $attempt -le 30 -and -not $dockerAvailable; $attempt++) {
+        try {
+            & wsl.exe -d $ubuntu -- docker info *> $null
+            if ($LASTEXITCODE -eq 0) { $dockerAvailable = $true }
+        } catch {}
+        if (-not $dockerAvailable) { Start-Sleep -Seconds 2 }
+    }
+    if (-not $dockerAvailable) {
+        Write-Error "Docker Engine was installed in $ubuntu but did not become ready."
     }
 }
 
-$windowsRoot = (Resolve-Path $PSScriptRoot).Path
+Write-Host "OK: Linux Docker Engine is available inside WSL2 ($ubuntu)" -ForegroundColor Green
+
+$resolvedRoot = Resolve-Path -LiteralPath $PSScriptRoot
+$windowsRoot = if ($resolvedRoot.ProviderPath) { $resolvedRoot.ProviderPath } else { $resolvedRoot.Path }
+if ($windowsRoot.StartsWith('\\?\')) {
+    $windowsRoot = $windowsRoot.Substring(4)
+}
 $escapedRoot = $windowsRoot.Replace('\', '\\')
 $wslSource = (& wsl.exe -d $ubuntu -- wslpath -a $escapedRoot).Trim()
 if (-not $wslSource) {
     Write-Error "Could not translate the release path into WSL."
+}
+& wsl.exe -d $ubuntu -- test -d "$wslSource"
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "The translated setup payload does not exist inside WSL: $wslSource"
 }
 
 $wslDestination = (& wsl.exe -d $ubuntu -- bash -lc 'printf "%s" "$HOME/automat_fb-beta"').Trim()
@@ -228,6 +270,8 @@ $destinationExists = $LASTEXITCODE -eq 0
 Write-Host $(if ($destinationExists) { "Updating the application runtime in WSL..." } else { "Installing the application runtime in WSL..." }) -ForegroundColor Cyan
 & wsl.exe -d $ubuntu -- mkdir -p $wslDestination
 if ($LASTEXITCODE -ne 0) { Write-Error "Could not create destination directory in WSL." }
+& wsl.exe -d $ubuntu -- sh -c "mkdir -p '$wslDestination/data' && printf '%s\n' 'Starting Windows / WSL setup: mode=$Mode' > '$wslDestination/data/install.log'"
+if ($LASTEXITCODE -ne 0) { Write-Error "Could not initialize the current setup log." }
 & wsl.exe -d $ubuntu -- cp -a "$wslSource/." "$wslDestination/"
 if ($LASTEXITCODE -ne 0) { Write-Error "Could not copy the application payload into WSL." }
 & wsl.exe -d $ubuntu -- rm -rf "$wslDestination/manager-app/node_modules" "$wslDestination/build"
@@ -255,3 +299,4 @@ if (-not $NonInteractive) {
     Write-Host "wsl.exe -d $ubuntu -- bash -lc 'cd ~/automat_fb-beta/manager-app && npm start'" -ForegroundColor White
     Write-Host "Then open http://localhost:5173 in Windows."
 }
+exit 0

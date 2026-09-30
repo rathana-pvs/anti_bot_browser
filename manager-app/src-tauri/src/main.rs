@@ -33,12 +33,27 @@ struct SetupStep {
     detail: String,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GpuCompatibility {
+    host_gpu: Option<String>,
+    wsl_gpu_visible: bool,
+    browser_acceleration_available: bool,
+    cuda_runtime_available: bool,
+    runtime_install_required: bool,
+    cuda_device: Option<String>,
+    ocr_device: String,
+    ocr_label: String,
+    fallback_reason: Option<String>,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SetupSnapshot {
     platform: String,
     ready: bool,
     restart_required: bool,
+    gpu: GpuCompatibility,
     steps: Vec<SetupStep>,
 }
 
@@ -64,6 +79,22 @@ fn command_succeeds(program: &str, args: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
+fn command_output(program: &str, args: &[&str]) -> Option<String> {
+    let mut command = Command::new(program);
+    suppress_console_window(&mut command);
+    let output = command
+        .args(args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
 #[cfg(not(target_os = "windows"))]
 fn container_platform_installed() -> bool {
     command_succeeds("which", &["docker"])
@@ -71,15 +102,9 @@ fn container_platform_installed() -> bool {
 
 #[cfg(target_os = "windows")]
 fn container_platform_installed() -> bool {
-    let desktop = std::env::var_os("ProgramFiles")
-        .map(PathBuf::from)
-        .map(|path| path.join("Docker/Docker/Docker Desktop.exe"))
-        .map(|path| path.exists())
-        .unwrap_or(false);
-    desktop
-        || find_ubuntu_distribution()
-            .map(|name| command_succeeds("wsl.exe", &["-d", &name, "--", "docker", "--version"]))
-            .unwrap_or(false)
+    find_ubuntu_distribution()
+        .map(|name| command_succeeds("wsl.exe", &["-d", &name, "--", "docker", "--version"]))
+        .unwrap_or(false)
 }
 
 fn find_install_root(app: &AppHandle) -> Option<PathBuf> {
@@ -204,6 +229,183 @@ fn find_ubuntu_distribution() -> Option<String> {
         .map(str::to_owned)
 }
 
+fn gpu_compatibility(
+    host_gpu: Option<String>,
+    runtime_gpu: Option<String>,
+    browser_acceleration_available: bool,
+    cuda_device: Option<String>,
+    runtime_install_required: bool,
+) -> GpuCompatibility {
+    let wsl_gpu_visible = runtime_gpu.is_some();
+    let cuda_runtime_available = cuda_device.is_some();
+    let fallback_reason = if runtime_install_required {
+        Some("The matching PyTorch runtime package must be installed during setup.".into())
+    } else if cuda_runtime_available {
+        None
+    } else if wsl_gpu_visible {
+        Some("GPU detected, but the installed PyTorch CUDA runtime is unavailable; OCR will use CPU.".into())
+    } else {
+        Some(
+            "No compatible NVIDIA GPU is visible to the automation runtime; OCR will use CPU."
+                .into(),
+        )
+    };
+    GpuCompatibility {
+        host_gpu: host_gpu.or_else(|| runtime_gpu.clone()),
+        wsl_gpu_visible,
+        browser_acceleration_available,
+        cuda_runtime_available,
+        runtime_install_required,
+        cuda_device,
+        ocr_device: if cuda_runtime_available {
+            "cuda"
+        } else {
+            "cpu"
+        }
+        .into(),
+        ocr_label: if cuda_runtime_available {
+            "NVIDIA GPU"
+        } else {
+            "CPU"
+        }
+        .into(),
+        fallback_reason,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn detect_gpu_compatibility(
+    distribution: Option<&String>,
+    runtime_ready: bool,
+) -> GpuCompatibility {
+    let host_gpu = command_output(
+        "powershell.exe",
+        &[
+            "-NoProfile",
+            "-Command",
+            "$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new(); (Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name) -join ' / '",
+        ],
+    );
+    let Some(name) = distribution else {
+        return gpu_compatibility(host_gpu, None, false, None, runtime_ready);
+    };
+    let runtime_gpu = command_output(
+        "wsl.exe",
+        &[
+            "-d",
+            name,
+            "--",
+            "bash",
+            "-lc",
+            "if command -v nvidia-smi >/dev/null 2>&1; then nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1; elif [ -x /usr/lib/wsl/lib/nvidia-smi ]; then /usr/lib/wsl/lib/nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1; fi",
+        ],
+    );
+    let browser_acceleration_available = command_succeeds(
+        "wsl.exe",
+        &[
+            "-d",
+            name,
+            "--",
+            "bash",
+            "-lc",
+            "test -d /dev/dri && find /dev/dri -mindepth 1 -maxdepth 1 -print -quit | grep -q .",
+        ],
+    );
+    let torch_probe = if runtime_ready {
+        command_output(
+            "wsl.exe",
+            &[
+                "-d",
+                name,
+                "--",
+                "bash",
+                "-lc",
+                "timeout 12 ~/automat_fb-beta/automation/venv/bin/python -c 'import torch; print(torch.__version__); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"\")' 2>/dev/null",
+            ],
+        )
+    } else {
+        None
+    };
+    let mut probe_lines = torch_probe.as_deref().unwrap_or("").lines();
+    let torch_version = probe_lines.next().filter(|value| !value.trim().is_empty());
+    let cuda_device = probe_lines
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let cuda_fallback_recorded = command_succeeds(
+        "wsl.exe",
+        &[
+            "-d",
+            name,
+            "--",
+            "bash",
+            "-lc",
+            "test -f ~/automat_fb-beta/data/torch_runtime.json && grep -q '\"cuda_attempted\": true' ~/automat_fb-beta/data/torch_runtime.json",
+        ],
+    );
+    let runtime_install_required = runtime_ready
+        && (torch_version.is_none()
+            || (runtime_gpu.is_some() && cuda_device.is_none() && !cuda_fallback_recorded));
+    gpu_compatibility(
+        host_gpu,
+        runtime_gpu,
+        browser_acceleration_available,
+        cuda_device,
+        runtime_install_required,
+    )
+}
+
+#[cfg(not(target_os = "windows"))]
+fn detect_gpu_compatibility(
+    _distribution: Option<&String>,
+    runtime_ready: bool,
+) -> GpuCompatibility {
+    let runtime_gpu = command_output(
+        "bash",
+        &[
+            "-lc",
+            "nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1",
+        ],
+    );
+    let browser_acceleration_available = command_succeeds(
+        "bash",
+        &[
+            "-lc",
+            "test -d /dev/dri && find /dev/dri -mindepth 1 -maxdepth 1 -print -quit | grep -q .",
+        ],
+    );
+    let torch_probe = if runtime_ready {
+        command_output(
+            "bash",
+            &["-lc", "timeout 12 automation/venv/bin/python -c 'import torch; print(torch.__version__); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"\")' 2>/dev/null"],
+        )
+    } else {
+        None
+    };
+    let mut probe_lines = torch_probe.as_deref().unwrap_or("").lines();
+    let torch_version = probe_lines.next().filter(|value| !value.trim().is_empty());
+    let cuda_device = probe_lines
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let cuda_fallback_recorded = command_succeeds(
+        "bash",
+        &["-lc", "test -f data/torch_runtime.json && grep -q '\"cuda_attempted\": true' data/torch_runtime.json"],
+    );
+    let runtime_install_required = runtime_ready
+        && (torch_version.is_none()
+            || (runtime_gpu.is_some() && cuda_device.is_none() && !cuda_fallback_recorded));
+    gpu_compatibility(
+        runtime_gpu.clone(),
+        runtime_gpu,
+        browser_acceleration_available,
+        cuda_device,
+        runtime_install_required,
+    )
+}
+
 #[cfg(target_os = "windows")]
 fn setup_state(root: Option<&PathBuf>) -> (bool, bool, bool, bool, bool) {
     let _ = root;
@@ -285,11 +487,40 @@ fn setup_state(root: Option<&PathBuf>) -> (bool, bool, bool, bool, bool) {
     )
 }
 
-#[tauri::command]
-fn get_setup_status(app: AppHandle) -> SetupSnapshot {
-    let root = find_install_root(&app);
+fn setup_snapshot(app: &AppHandle) -> SetupSnapshot {
+    let root = find_install_root(app);
     let (system_ready, platform_ready, runtime_ready, image_ready, configuration_ready) =
         setup_state(root.as_ref());
+    #[cfg(target_os = "windows")]
+    let distribution = find_ubuntu_distribution();
+    #[cfg(not(target_os = "windows"))]
+    let distribution: Option<String> = None;
+    let gpu = detect_gpu_compatibility(distribution.as_ref(), runtime_ready);
+    let gpu_ready = system_ready && runtime_ready && !gpu.runtime_install_required;
+    let gpu_detail = if !runtime_ready {
+        "GPU compatibility will be verified after the automation runtime is installed".to_string()
+    } else if gpu.runtime_install_required {
+        "Compatible GPU/OCR packages will be installed and verified during setup".to_string()
+    } else {
+        let host = gpu
+            .host_gpu
+            .as_deref()
+            .unwrap_or("No host GPU name reported");
+        let browser = if gpu.browser_acceleration_available {
+            "browser hardware acceleration available"
+        } else {
+            "browser will use software rendering when hardware acceleration is unavailable"
+        };
+        let ocr = if gpu.cuda_runtime_available {
+            format!(
+                "OCR uses CUDA ({})",
+                gpu.cuda_device.as_deref().unwrap_or("NVIDIA GPU")
+            )
+        } else {
+            "OCR uses the CPU fallback".to_string()
+        };
+        format!("{host} · {browser} · {ocr}")
+    };
     let verification_ready = backend_is_running() && platform_ready && image_ready;
     let platform_installed = container_platform_installed();
     let status = |ready: bool, waiting: bool| {
@@ -345,6 +576,14 @@ fn get_setup_status(app: AppHandle) -> SetupSnapshot {
             .into(),
         },
         SetupStep {
+            id: "gpu".into(),
+            title: "GPU compatibility".into(),
+            description: "Host graphics, WSL device visibility, browser acceleration, and CUDA OCR"
+                .into(),
+            status: status(gpu_ready, !runtime_ready).into(),
+            detail: gpu_detail,
+        },
+        SetupStep {
             id: "browser".into(),
             title: "Browser environment".into(),
             description: "Isolated Chrome image and visual automation tools".into(),
@@ -390,8 +629,16 @@ fn get_setup_status(app: AppHandle) -> SetupSnapshot {
         },
         ready,
         restart_required: false,
+        gpu,
         steps,
     }
+}
+
+#[tauri::command]
+async fn get_setup_status(app: AppHandle) -> Result<SetupSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || setup_snapshot(&app))
+        .await
+        .map_err(|error| format!("Setup status worker failed: {error}"))
 }
 
 fn emit_setup_line(app: &AppHandle, stream: &str, line: &str) {
@@ -401,9 +648,25 @@ fn emit_setup_line(app: &AppHandle, stream: &str, line: &str) {
     );
 }
 
-#[tauri::command]
-fn get_setup_log(app: AppHandle) -> Vec<String> {
-    let Some(root) = find_install_root(&app) else {
+fn setup_log(app: &AppHandle) -> Vec<String> {
+    #[cfg(target_os = "windows")]
+    if let Some(distribution) = find_ubuntu_distribution() {
+        if let Some(contents) = command_output(
+            "wsl.exe",
+            &[
+                "-d",
+                &distribution,
+                "--",
+                "bash",
+                "-lc",
+                "test -f ~/automat_fb-beta/data/install.log && tail -n 500 ~/automat_fb-beta/data/install.log",
+            ],
+        ) {
+            return contents.lines().map(str::to_owned).collect();
+        }
+    }
+
+    let Some(root) = find_install_root(app) else {
         return Vec::new();
     };
     let Ok(contents) = std::fs::read_to_string(root.join("data/install.log")) else {
@@ -417,6 +680,47 @@ fn get_setup_log(app: AppHandle) -> Vec<String> {
         .collect();
     lines.reverse();
     lines
+}
+
+fn reset_setup_log(app: &AppHandle) {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = app;
+        if let Some(distribution) = find_ubuntu_distribution() {
+            let _ = command_succeeds(
+                "wsl.exe",
+                &[
+                    "-d",
+                    &distribution,
+                    "--",
+                    "bash",
+                    "-lc",
+                    "mkdir -p ~/automat_fb-beta/data && : > ~/automat_fb-beta/data/install.log",
+                ],
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    if let Some(root) = find_install_root(app) {
+        let data_dir = root.join("data");
+        let _ = std::fs::create_dir_all(&data_dir);
+        let _ = std::fs::write(data_dir.join("install.log"), "");
+    }
+}
+
+fn setup_log_reports_completion(app: &AppHandle) -> bool {
+    setup_log(app).iter().any(|line| {
+        line.contains("READY: Installation completed.")
+            || line.contains("READY: Automat FB Beta installation completed successfully.")
+    })
+}
+
+#[tauri::command]
+async fn get_setup_log(app: AppHandle) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || setup_log(&app))
+        .await
+        .map_err(|error| format!("Setup log worker failed: {error}"))
 }
 
 #[tauri::command]
@@ -436,12 +740,56 @@ async fn run_setup(
         }
         *running = true;
     }
-    let result = run_setup_process(&app, repair);
+    let setup_app = app.clone();
+    let mut result = match tauri::async_runtime::spawn_blocking(move || {
+        reset_setup_log(&setup_app);
+        run_setup_process(&setup_app, repair)
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => Err(format!("Setup worker failed: {error}")),
+    };
     if result.as_ref().map(|value| value.success).unwrap_or(false) && !backend_is_running() {
         if let Some(child) = spawn_backend(&app) {
             if let Ok(mut backend) = backend_state.0.lock() {
                 *backend = Some(child);
             }
+        }
+        let wait_app = app.clone();
+        let backend_ready = tauri::async_runtime::spawn_blocking(move || {
+            for attempt in 1..=15 {
+                if backend_is_running() {
+                    emit_setup_line(&wait_app, "system", "Application services are ready.");
+                    return true;
+                }
+                if attempt % 5 == 0 {
+                    emit_setup_line(
+                        &wait_app,
+                        "system",
+                        &format!("Waiting for application services… {attempt}/15"),
+                    );
+                }
+                std::thread::sleep(Duration::from_secs(1));
+            }
+            backend_is_running()
+        })
+        .await
+        .unwrap_or(false);
+        if !backend_ready {
+            emit_setup_line(
+                &app,
+                "stderr",
+                "Application service failed to start. Review the backend messages above.",
+            );
+            result = Ok(SetupRunResult {
+                success: false,
+                exit_code: 1,
+                restart_required: false,
+                message:
+                    "Application service failed to start. Review the activity log and run repair."
+                        .into(),
+            });
         }
     }
     if let Ok(mut running) = state.0.lock() {
@@ -472,54 +820,49 @@ fn start_container_platform(app: &AppHandle) -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 fn start_container_platform(app: &AppHandle) -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-    let desktop = std::env::var_os("ProgramFiles")
-        .map(PathBuf::from)
-        .map(|path| path.join("Docker/Docker/Docker Desktop.exe"))
-        .filter(|path| path.exists())
-        .ok_or_else(|| {
-            "Docker Desktop is not installed. Run installation and repair instead.".to_string()
-        })?;
-    emit_setup_line(app, "system", "Starting Docker Desktop…");
-    Command::new(desktop)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .map_err(|error| format!("Could not start Docker Desktop: {error}"))?;
-    Ok(())
+    let distribution = find_ubuntu_distribution()
+        .ok_or_else(|| "Ubuntu WSL is not installed. Run installation and repair.".to_string())?;
+    emit_setup_line(app, "system", "Starting Linux Docker Engine inside WSL…");
+    if command_succeeds(
+        "wsl.exe",
+        &[
+            "-d",
+            &distribution,
+            "-u",
+            "root",
+            "--",
+            "service",
+            "docker",
+            "start",
+        ],
+    ) {
+        Ok(())
+    } else {
+        Err("Linux Docker Engine did not start. Run installation and repair.".into())
+    }
 }
 
-#[tauri::command]
-async fn recover_services(
-    app: AppHandle,
-    backend_state: tauri::State<'_, BackendProcess>,
-) -> Result<SetupRunResult, String> {
-    let (_, platform_ready, _, _, _) = setup_state(find_install_root(&app).as_ref());
+fn recover_services_process(app: &AppHandle) -> Result<(SetupRunResult, Option<Child>), String> {
+    let (_, platform_ready, _, _, _) = setup_state(find_install_root(app).as_ref());
     if !platform_ready {
-        start_container_platform(&app)?;
+        start_container_platform(app)?;
         for attempt in 1..=30 {
-            let (_, ready, _, _, _) = setup_state(find_install_root(&app).as_ref());
+            let (_, ready, _, _, _) = setup_state(find_install_root(app).as_ref());
             if ready {
-                emit_setup_line(&app, "system", "Docker is ready.");
+                emit_setup_line(app, "system", "Docker is ready.");
                 break;
             }
             if attempt % 5 == 0 {
-                emit_setup_line(&app, "system", &format!("Waiting for Docker… {attempt}/30"));
+                emit_setup_line(app, "system", &format!("Waiting for Docker… {attempt}/30"));
             }
             std::thread::sleep(Duration::from_secs(2));
         }
     }
-    let (_, platform_ready, _, _, _) = setup_state(find_install_root(&app).as_ref());
+    let (_, platform_ready, _, _, _) = setup_state(find_install_root(app).as_ref());
+    let mut backend_child = None;
     if platform_ready && !backend_is_running() {
-        emit_setup_line(&app, "system", "Starting application services…");
-        if let Some(child) = spawn_backend(&app) {
-            if let Ok(mut backend) = backend_state.0.lock() {
-                *backend = Some(child);
-            }
-        }
+        emit_setup_line(app, "system", "Starting application services…");
+        backend_child = spawn_backend(app);
         for _ in 0..15 {
             if backend_is_running() {
                 break;
@@ -528,16 +871,38 @@ async fn recover_services(
         }
     }
     let success = platform_ready && backend_is_running();
-    Ok(SetupRunResult {
-        success,
-        exit_code: if success { 0 } else { 1 },
-        restart_required: false,
-        message: if success {
-            "Required services are running".into()
-        } else {
-            "Services are still starting. Wait a moment, then check again.".into()
+    Ok((
+        SetupRunResult {
+            success,
+            exit_code: if success { 0 } else { 1 },
+            restart_required: false,
+            message: if success {
+                "Required services are running".into()
+            } else {
+                "Application service did not start. Review the activity log, then run repair."
+                    .into()
+            },
         },
-    })
+        backend_child,
+    ))
+}
+
+#[tauri::command]
+async fn recover_services(
+    app: AppHandle,
+    backend_state: tauri::State<'_, BackendProcess>,
+) -> Result<SetupRunResult, String> {
+    let recovery_app = app.clone();
+    let (result, backend_child) =
+        tauri::async_runtime::spawn_blocking(move || recover_services_process(&recovery_app))
+            .await
+            .map_err(|error| format!("Service recovery worker failed: {error}"))??;
+    if let Some(child) = backend_child {
+        if let Ok(mut backend) = backend_state.0.lock() {
+            *backend = Some(child);
+        }
+    }
+    Ok(result)
 }
 
 fn run_setup_process(app: &AppHandle, repair: bool) -> Result<SetupRunResult, String> {
@@ -613,11 +978,22 @@ fn run_setup_process(app: &AppHandle, repair: bool) -> Result<SetupRunResult, St
     let _ = stderr_thread.join();
     let code = exit.code().unwrap_or(-1);
     let restart_required = matches!(code, 10 | 11 | 12);
+    let verified_complete = !restart_required && setup_log_reports_completion(app);
+    let success = exit.success() || verified_complete;
+    if !exit.success() && verified_complete {
+        emit_setup_line(
+            app,
+            "system",
+            &format!(
+                "Setup reported exit code {code}, but its completion check passed; treating the run as successful."
+            ),
+        );
+    }
     Ok(SetupRunResult {
-        success: exit.success(),
-        exit_code: code,
+        success,
+        exit_code: if success { 0 } else { code },
         restart_required,
-        message: if exit.success() {
+        message: if success {
             "Setup completed successfully".into()
         } else if restart_required {
             "A restart or external action is required before setup can continue".into()
@@ -640,8 +1016,9 @@ fn spawn_wsl_backend() -> Option<Child> {
     let distribution = find_ubuntu_distribution()?;
     let launch = concat!(
         "cd \"$HOME/automat_fb-beta\" && ",
+        "mkdir -p data && ",
         "PYTHONPATH=. exec automation/venv/bin/uvicorn backend.main:app ",
-        "--host 127.0.0.1 --port 3001"
+        "--host 127.0.0.1 --port 3001 --no-access-log >> data/install.log 2>&1"
     );
     let mut command = Command::new("wsl.exe");
     command

@@ -112,7 +112,7 @@ export const App: React.FC = () => {
     if (!isDesktopApp()) return;
     fetchSetupStatus()
       .then((status) => {
-        const previouslyCompleted = localStorage.getItem('desktop_setup_completed_v1') === 'true';
+        const previouslyCompleted = localStorage.getItem('desktop_setup_completed_v2') === 'true';
         setSetupStatus(status.ready && previouslyCompleted ? null : status);
       })
       .catch((error) => {
@@ -199,7 +199,7 @@ export const App: React.FC = () => {
       <SetupCenter
         initialStatus={setupStatus}
         onComplete={() => {
-          localStorage.setItem('desktop_setup_completed_v1', 'true');
+          localStorage.setItem('desktop_setup_completed_v2', 'true');
           setSetupStatus(null);
         }}
       />

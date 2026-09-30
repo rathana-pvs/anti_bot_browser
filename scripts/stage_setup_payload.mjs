@@ -39,6 +39,7 @@ const entries = [
   'backend',
   'container',
   'scripts/build_container.sh',
+  'scripts/run_profile.sh',
 ];
 
 for (const entry of entries) {

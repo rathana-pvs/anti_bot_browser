@@ -48,12 +48,19 @@ export const SetupCenter: React.FC<SetupCenterProps> = ({ initialStatus, onCompl
   const activeStepIndex = snapshot.steps.findIndex((step) => step.status === 'action_required');
   const runtimeReady = snapshot.steps.find((step) => step.id === 'runtime')?.status === 'ready';
   const configurationReady = snapshot.steps.find((step) => step.id === 'configuration')?.status === 'ready';
+  const gpuReady = snapshot.steps.find((step) => step.id === 'gpu')?.status === 'ready';
   const platformStep = snapshot.steps.find((step) => step.id === 'platform');
   const platformRecoverable = platformStep?.status === 'ready' || platformStep?.detail.includes('installed');
-  const useServiceRecovery = runtimeReady && configurationReady && platformRecoverable;
-  const visibleLogText = persistedLogs.length > 0
-    ? persistedLogs
-    : logs.map((entry) => `[${entry.time}] ${entry.message}`);
+  const useServiceRecovery = runtimeReady && configurationReady && platformRecoverable && gpuReady;
+  const visibleLogText = useMemo(() => {
+    const liveMessages = logs.map((entry) => entry.message.trim()).filter(Boolean);
+    const liveLines = logs.map((entry) => `[${entry.time}] ${entry.message}`);
+    const persistedOnly = persistedLogs.filter((line) => {
+      const normalized = line.trim();
+      return !liveMessages.some((message) => normalized === message || normalized.endsWith(message));
+    });
+    return [...liveLines, ...persistedOnly].slice(-500);
+  }, [logs, persistedLogs]);
 
   useEffect(() => {
     let disposed = false;
@@ -76,15 +83,29 @@ export const SetupCenter: React.FC<SetupCenterProps> = ({ initialStatus, onCompl
 
   useEffect(() => {
     if (!running) return;
-    const loadProgress = () => {
-      fetchSetupLog().then(setPersistedLogs).catch(() => undefined);
+    let disposed = false;
+    let polling = false;
+    const poll = async () => {
+      if (polling) return;
+      polling = true;
+      try {
+        const [statusResult, logResult] = await Promise.allSettled([
+          fetchSetupStatus(),
+          fetchSetupLog(),
+        ]);
+        if (disposed) return;
+        if (statusResult.status === 'fulfilled') setSnapshot(statusResult.value);
+        if (logResult.status === 'fulfilled') setPersistedLogs(logResult.value);
+      } finally {
+        polling = false;
+      }
     };
-    loadProgress();
-    const interval = window.setInterval(() => {
-      fetchSetupStatus().then(setSnapshot).catch(() => undefined);
-      loadProgress();
-    }, 1500);
-    return () => window.clearInterval(interval);
+    void poll();
+    const interval = window.setInterval(() => void poll(), 3000);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+    };
   }, [running]);
 
   const refresh = async () => {
@@ -100,6 +121,7 @@ export const SetupCenter: React.FC<SetupCenterProps> = ({ initialStatus, onCompl
 
   const run = async () => {
     setRunning(true);
+    setPersistedLogs([]);
     setResultMessage(null);
     setRestartRequired(false);
     setLogs((current) => [...current, {
@@ -188,6 +210,41 @@ export const SetupCenter: React.FC<SetupCenterProps> = ({ initialStatus, onCompl
                       </div>
                       <p className="mt-1 text-xs text-zinc-500">{step.description}</p>
                       <p className={`mt-1.5 text-xs ${ready ? 'text-emerald-400/70' : 'text-zinc-400'}`}>{step.detail}</p>
+                      {step.id === 'gpu' && runtimeReady && (
+                        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                          <div className="rounded-lg border border-zinc-800 bg-zinc-950/70 px-3 py-2">
+                            <div className="text-[10px] uppercase tracking-wide text-zinc-600">Host GPU</div>
+                            <div className="mt-0.5 truncate text-xs text-zinc-300" title={snapshot.gpu.hostGpu || undefined}>
+                              {snapshot.gpu.hostGpu || 'Not reported by the host'}
+                            </div>
+                          </div>
+                          <div className="rounded-lg border border-zinc-800 bg-zinc-950/70 px-3 py-2">
+                            <div className="text-[10px] uppercase tracking-wide text-zinc-600">{snapshot.platform === 'windows' ? 'WSL GPU visibility' : 'Runtime GPU visibility'}</div>
+                            <div className={`mt-0.5 text-xs ${snapshot.gpu.wslGpuVisible ? 'text-emerald-300' : 'text-zinc-400'}`}>
+                              {snapshot.gpu.wslGpuVisible ? 'NVIDIA runtime visible' : 'No NVIDIA runtime detected'}
+                            </div>
+                          </div>
+                          <div className="rounded-lg border border-zinc-800 bg-zinc-950/70 px-3 py-2">
+                            <div className="text-[10px] uppercase tracking-wide text-zinc-600">Browser rendering</div>
+                            <div className={`mt-0.5 text-xs ${snapshot.gpu.browserAccelerationAvailable ? 'text-emerald-300' : 'text-amber-300'}`}>
+                              {snapshot.gpu.browserAccelerationAvailable ? 'Hardware device available' : 'Software fallback'}
+                            </div>
+                          </div>
+                          <div className="rounded-lg border border-zinc-800 bg-zinc-950/70 px-3 py-2">
+                            <div className="text-[10px] uppercase tracking-wide text-zinc-600">OCR acceleration</div>
+                            <div className={`mt-0.5 text-xs ${snapshot.gpu.cudaRuntimeAvailable ? 'text-emerald-300' : 'text-amber-300'}`}>
+                              {snapshot.gpu.runtimeInstallRequired
+                                ? 'Package installation required'
+                                : snapshot.gpu.cudaRuntimeAvailable
+                                ? `CUDA · ${snapshot.gpu.cudaDevice || 'NVIDIA GPU'}`
+                                : 'CPU fallback'}
+                            </div>
+                          </div>
+                          {snapshot.gpu.fallbackReason && (
+                            <p className="sm:col-span-2 text-[11px] leading-5 text-amber-300/80">{snapshot.gpu.fallbackReason}</p>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 );

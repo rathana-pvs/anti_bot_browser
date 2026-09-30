@@ -3,7 +3,7 @@ numpy>=1.24.0
 requests>=2.31.0
 beautifulsoup4>=4.12.0
 PyYAML>=6.0.1
-torch==2.14.0
-torchvision==0.29.0
+# PyTorch and torchvision are installed by bootstrap_torch_runtime.py so setup
+# can select the verified CUDA build or the smaller CPU fallback.
 easyocr>=1.7.0
 scikit-image>=0.22.0

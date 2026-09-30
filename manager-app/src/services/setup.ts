@@ -11,10 +11,23 @@ export interface SetupStep {
   detail: string;
 }
 
+export interface GpuCompatibility {
+  hostGpu: string | null;
+  wslGpuVisible: boolean;
+  browserAccelerationAvailable: boolean;
+  cudaRuntimeAvailable: boolean;
+  runtimeInstallRequired: boolean;
+  cudaDevice: string | null;
+  ocrDevice: 'cpu' | 'cuda';
+  ocrLabel: string;
+  fallbackReason: string | null;
+}
+
 export interface SetupSnapshot {
   platform: 'windows' | 'linux';
   ready: boolean;
   restartRequired: boolean;
+  gpu: GpuCompatibility;
   steps: SetupStep[];
 }
 

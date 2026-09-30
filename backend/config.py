@@ -1,4 +1,6 @@
 import os
+import shutil
+import subprocess
 import sys
 import uuid
 import psutil
@@ -40,19 +42,7 @@ MANAGER_INSTANCE_ID = f"mgr_{uuid.uuid4().hex[:12]}"
 
 # Hardware Specs
 TOTAL_MEMORY_BYTES = psutil.virtual_memory().total
-_raw_gb = TOTAL_MEMORY_BYTES / (1024 ** 3)
-if _raw_gb <= 6:
-    TOTAL_MEMORY_GB = 4
-elif _raw_gb <= 12:
-    TOTAL_MEMORY_GB = 8
-elif _raw_gb <= 20:
-    TOTAL_MEMORY_GB = 16
-elif _raw_gb <= 28:
-    TOTAL_MEMORY_GB = 24
-elif _raw_gb <= 48:
-    TOTAL_MEMORY_GB = 32
-else:
-    TOTAL_MEMORY_GB = 64
+TOTAL_MEMORY_GB = round(TOTAL_MEMORY_BYTES / (1024 ** 3), 1)
 CPU_THREADS = os.cpu_count() or 4
 
 def get_host_timezone() -> str:
@@ -87,11 +77,32 @@ def get_host_timezone() -> str:
     return "America/Guatemala" if Path("/etc/timezone").exists() else "UTC"
 
 # OCR Runtime Detection
+def detect_nvidia_gpu() -> tuple[bool, str | None]:
+    executable = shutil.which("nvidia-smi")
+    if not executable:
+        wsl_executable = Path("/usr/lib/wsl/lib/nvidia-smi")
+        executable = str(wsl_executable) if wsl_executable.is_file() else None
+    if not executable:
+        return False, None
+    try:
+        output = subprocess.check_output(
+            [executable, "--query-gpu=name", "--format=csv,noheader"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        ).strip()
+        gpu_name = next((line.strip() for line in output.splitlines() if line.strip()), None)
+        return True, gpu_name
+    except Exception:
+        return False, None
+
+
 def detect_ocr_runtime():
+    nvidia_detected, detected_gpu_name = detect_nvidia_gpu()
     try:
         import torch
         if torch.cuda.is_available():
-            gpu_name = torch.cuda.get_device_name(0)
+            gpu_name = torch.cuda.get_device_name(0) or detected_gpu_name
             return {
                 "device": "cuda",
                 "label": "NVIDIA GPU",
@@ -105,10 +116,14 @@ def detect_ocr_runtime():
     return {
         "device": "cpu",
         "label": "CPU",
-        "nvidia_detected": False,
+        "nvidia_detected": nvidia_detected,
         "cuda_runtime_available": False,
-        "gpu_name": None,
-        "fallback_reason": "No compatible NVIDIA GPU detected.",
+        "gpu_name": detected_gpu_name,
+        "fallback_reason": (
+            "NVIDIA GPU detected, but the installed CUDA runtime is unavailable."
+            if nvidia_detected
+            else "No compatible NVIDIA GPU detected."
+        ),
     }
 
 OCR_RUNTIME = detect_ocr_runtime()

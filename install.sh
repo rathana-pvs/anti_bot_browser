@@ -98,6 +98,16 @@ docker_accessible() {
   command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1
 }
 
+nvidia_smi_path() {
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    command -v nvidia-smi
+  elif [ -x /usr/lib/wsl/lib/nvidia-smi ]; then
+    printf '%s\n' /usr/lib/wsl/lib/nvidia-smi
+  else
+    return 1
+  fi
+}
+
 run_checks() {
   local failures=0
   local warnings=0
@@ -171,8 +181,12 @@ run_checks() {
     warnings=$((warnings + 1))
   fi
 
-  if [ -x "${ROOT_DIR}/automation/venv/bin/python" ]; then
-    echo "OK: Python virtual environment exists"
+  if [ -x "${ROOT_DIR}/automation/venv/bin/python" ] \
+    && "${ROOT_DIR}/automation/venv/bin/python" -c 'import fastapi, uvicorn' >/dev/null 2>&1; then
+    echo "OK: Python application runtime is ready"
+  elif [ -x "${ROOT_DIR}/automation/venv/bin/python" ]; then
+    echo "INFO: Python virtual environment exists, but application packages need installation"
+    warnings=$((warnings + 1))
   else
     echo "INFO: Python virtual environment needs installation"
     warnings=$((warnings + 1))
@@ -192,8 +206,8 @@ run_checks() {
     failures=$((failures + 1))
   fi
 
-  if command -v nvidia-smi >/dev/null 2>&1; then
-    echo "INFO: NVIDIA GPU detected; OCR will use it only when the installed runtime supports CUDA"
+  if nvidia_smi_path >/dev/null 2>&1; then
+    echo "INFO: NVIDIA GPU detected; setup will install and verify the CUDA OCR runtime"
   else
     echo "INFO: No NVIDIA runtime detected; CPU OCR will be used"
   fi
@@ -272,14 +286,12 @@ install_system_dependencies() {
   fi
 
   if ! command -v docker >/dev/null 2>&1; then
-    if [ "${IS_WSL}" = true ]; then
-      echo "ERROR: Docker Desktop is required on Windows. Install/start it and enable WSL integration, then run --repair."
-      exit 3
-    fi
     echo "Installing Docker Engine from the distribution repository..."
     sudo_run apt-get install -y docker.io
     if command -v systemctl >/dev/null 2>&1; then
       sudo_run systemctl enable --now docker
+    else
+      sudo_run service docker start
     fi
   fi
 
@@ -304,13 +316,9 @@ install_application() {
   echo "Setting up Python automation environment..."
   python3 -m venv "${ROOT_DIR}/automation/venv"
   "${ROOT_DIR}/automation/venv/bin/python" -m pip install --upgrade pip wheel
-  if ! command -v nvidia-smi >/dev/null 2>&1; then
-    echo "No NVIDIA runtime detected; installing the smaller CPU-only Torch runtime..."
-    "${ROOT_DIR}/automation/venv/bin/python" -m pip install \
-      "torch==2.14.0+cpu" "torchvision==0.29.0+cpu" \
-      --index-url https://download.pytorch.org/whl/cpu
-  fi
+  "${ROOT_DIR}/automation/venv/bin/python" "${ROOT_DIR}/automation/bootstrap_torch_runtime.py"
   "${ROOT_DIR}/automation/venv/bin/python" -m pip install -r "${ROOT_DIR}/automation/requirements.txt"
+  "${ROOT_DIR}/automation/venv/bin/python" -m pip install -r "${ROOT_DIR}/backend/requirements.txt"
 
   if [ "${DESKTOP_SETUP}" = false ]; then
     echo
