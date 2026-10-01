@@ -141,6 +141,14 @@ hosts with 24 GB or more (for example, 24 GB on a 32 GB machine). Existing
 Microsoft's default policy or `-WslMemoryGB <GB>` for an explicit unattended
 choice. Applying a new limit restarts WSL during setup.
 
+The desktop Install/Repair action also installs the Mesa diagnostics and
+drivers used by browser acceleration. Profile startup supports native Linux
+`/dev/dri` devices and the WSL2 `/dev/dxg` bridge. `host_gpu` is the default;
+if the requested device or libraries are unavailable, the container starts
+with software rendering and records the fallback reason instead of claiming
+hardware acceleration. The Profile Inspector shows the observed renderer and
+effective rendering mode after each start.
+
 ### 2. Container Image Build
 Build the isolated Chrome container base image:
 ```bash

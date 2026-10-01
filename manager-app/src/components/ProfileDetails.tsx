@@ -226,6 +226,13 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
               <span className="block truncate text-[11px] text-zinc-300 font-mono" title={observed?.webgl_renderer || undefined}>
                 {observed?.webgl_renderer || 'Not measured'}
               </span>
+              {observed?.rendering && (
+                <span className={`mt-1 block text-[10px] ${observed.rendering.accelerated ? 'text-emerald-400' : 'text-amber-400'}`}>
+                  {observed.rendering.accelerated
+                    ? `Hardware accelerated · ${observed.rendering.device_backend}`
+                    : `Software fallback${observed.rendering.fallback_reason ? ` · ${observed.rendering.fallback_reason}` : ''}`}
+                </span>
+              )}
             </div>
             {observed?.browser_version && <div className="truncate text-[10px] text-zinc-500">{observed.browser_version}</div>}
             {effective?.network_preflight && (

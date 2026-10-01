@@ -193,6 +193,20 @@ def test_browser_uses_its_native_user_agent_and_client_hints():
     assert "USER_AGENT=" not in launcher
 
 
+def test_browser_launcher_supports_linux_and_wsl_gpu_devices():
+    root = Path(__file__).resolve().parents[2]
+    launcher = (root / "scripts" / "run_profile.sh").read_text(encoding="utf-8")
+    entrypoint = (root / "container" / "entrypoint.sh").read_text(encoding="utf-8")
+
+    assert "--device /dev/dri:/dev/dri" in launcher
+    assert "--device /dev/dxg:/dev/dxg" in launcher
+    assert "/usr/lib/wsl:/usr/lib/wsl:ro" in launcher
+    assert "GPU_DEVICE_BACKEND" in launcher
+    assert "/run/rendering-status.json" in entrypoint
+    assert "GALLIUM_DRIVER=d3d12" in entrypoint
+    assert "--use-gl=angle --use-angle=gl-egl" in entrypoint
+
+
 def test_proxy_pool_removes_fabricated_legacy_location(tmp_path, monkeypatch):
     pool_path = tmp_path / "proxy_pool.json"
     pool_path.write_text(json.dumps([{

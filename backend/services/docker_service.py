@@ -387,9 +387,23 @@ def observe_container_environment(profile_id: str) -> dict:
     )
     language = _container_text(container_name, "printf '%s' \"${LANG:-}\"")
     browser_version = _container_text(container_name, "google-chrome --version 2>/dev/null")
-    renderer = _container_text(
+    rendering_status = None
+    raw_rendering_status = _container_text(
         container_name,
-        "glxinfo -B 2>/dev/null | sed -n 's/^OpenGL renderer string: //p' | head -1",
+        "cat /run/rendering-status.json 2>/dev/null",
+    )
+    if raw_rendering_status:
+        try:
+            rendering_status = json.loads(raw_rendering_status)
+        except json.JSONDecodeError:
+            rendering_status = None
+    renderer = (
+        rendering_status.get("renderer")
+        if rendering_status
+        else _container_text(
+            container_name,
+            "glxinfo -B 2>/dev/null | sed -n 's/^OpenGL renderer string: //p' | head -1",
+        )
     )
     return {
         "source": "container_runtime",
@@ -399,10 +413,11 @@ def observe_container_environment(profile_id: str) -> dict:
         "language": language,
         "browser_version": browser_version,
         "webgl_renderer": renderer,
+        "rendering": rendering_status,
         "user_agent": None,
         "hardware_concurrency": None,
         "device_memory": None,
-        "note": "Navigator-only values are not measured without an explicit browser probe.",
+        "note": "Renderer data is measured from the container display stack; navigator-only values are not measured without an explicit browser probe.",
     }
 
 

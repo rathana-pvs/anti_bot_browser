@@ -48,6 +48,14 @@ export interface ObservedEnvironment {
   language?: string | null;
   browser_version?: string | null;
   webgl_renderer?: string | null;
+  rendering?: {
+    requested_mode: 'host_gpu' | 'software';
+    effective_mode: 'host_gpu' | 'software';
+    device_backend: 'drm' | 'wsl_dxg' | 'none';
+    accelerated: boolean;
+    renderer: string;
+    fallback_reason: string;
+  } | null;
   user_agent?: string | null;
   hardware_concurrency?: number | null;
   device_memory?: number | null;

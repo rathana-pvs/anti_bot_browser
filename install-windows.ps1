@@ -283,7 +283,7 @@ if ($NonInteractive) {
     Write-Host "Preparing Linux system packages..." -ForegroundColor Cyan
     & wsl.exe -d $ubuntu -u root -- apt-get update
     if ($LASTEXITCODE -ne 0) { Write-Error "Could not update Linux system packages." }
-    & wsl.exe -d $ubuntu -u root -- apt-get install -y ca-certificates curl gnupg jq zip unzip rsync python3 python3-venv python3-pip build-essential iproute2
+    & wsl.exe -d $ubuntu -u root -- apt-get install -y ca-certificates curl gnupg jq zip unzip rsync python3 python3-venv python3-pip build-essential iproute2 mesa-utils libgl1-mesa-dri mesa-vulkan-drivers vulkan-tools
     if ($LASTEXITCODE -ne 0) { Write-Error "Could not install Linux system packages." }
     $linuxInstallerArgs += @("--non-interactive", "--desktop", "--skip-system")
 }

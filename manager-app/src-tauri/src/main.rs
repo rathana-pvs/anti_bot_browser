@@ -308,7 +308,7 @@ fn detect_gpu_compatibility(
             "--",
             "bash",
             "-lc",
-            "test -d /dev/dri && find /dev/dri -mindepth 1 -maxdepth 1 -print -quit | grep -q .",
+            "(test -d /dev/dri && find /dev/dri -mindepth 1 -maxdepth 1 -print -quit | grep -q .) || (test -c /dev/dxg && test -f /usr/lib/wsl/lib/libd3d12.so && test -f /usr/lib/wsl/lib/libdxcore.so)",
         ],
     );
     let torch_probe = if runtime_ready {
@@ -372,7 +372,7 @@ fn detect_gpu_compatibility(
         "bash",
         &[
             "-lc",
-            "test -d /dev/dri && find /dev/dri -mindepth 1 -maxdepth 1 -print -quit | grep -q .",
+            "(test -d /dev/dri && find /dev/dri -mindepth 1 -maxdepth 1 -print -quit | grep -q .) || (test -c /dev/dxg && test -f /usr/lib/wsl/lib/libd3d12.so && test -f /usr/lib/wsl/lib/libdxcore.so)",
         ],
     );
     let torch_probe = if runtime_ready {
@@ -408,7 +408,6 @@ fn detect_gpu_compatibility(
 
 #[cfg(target_os = "windows")]
 fn setup_state(root: Option<&PathBuf>) -> (bool, bool, bool, bool, bool) {
-    let _ = root;
     let system_ready = command_succeeds("wsl.exe", &["--status"]);
     let distribution = find_ubuntu_distribution();
     let platform_ready = distribution
@@ -432,7 +431,30 @@ fn setup_state(root: Option<&PathBuf>) -> (bool, bool, bool, bool, bool) {
             )
         })
         .unwrap_or(false);
-    let runtime_ready = distribution
+    let bundled_runtime_version = root.and_then(|path| {
+        std::fs::read_to_string(path.join("VERSION"))
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    });
+    let installed_runtime_version = distribution.as_ref().and_then(|name| {
+        command_output(
+            "wsl.exe",
+            &[
+                "-d",
+                name,
+                "--",
+                "bash",
+                "-lc",
+                "cat \"$HOME/automat_fb-beta/VERSION\" 2>/dev/null",
+            ],
+        )
+    });
+    let runtime_version_current = bundled_runtime_version
+        .as_ref()
+        .map(|version| installed_runtime_version.as_ref() == Some(version))
+        .unwrap_or(true);
+    let runtime_ready = runtime_version_current && distribution
         .as_ref()
         .map(|name| {
             command_succeeds(

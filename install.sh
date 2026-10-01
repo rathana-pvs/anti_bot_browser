@@ -31,6 +31,7 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="${SCRIPT_DIR}"
+BROWSER_IMAGE_VERSION="2"
 LOG_FILE="${ROOT_DIR}/data/install.log"
 IS_WSL=false
 RELOGIN_REQUIRED=false
@@ -161,6 +162,16 @@ run_checks() {
     fi
   done
 
+
+  if [ -c /dev/dxg ]; then
+    echo "OK: WSL DirectX GPU bridge is available"
+  elif [ -d /dev/dri ]; then
+    echo "OK: Linux DRM GPU device is available"
+  else
+    echo "WARN: No browser GPU device is visible; profiles will use software rendering"
+    warnings=$((warnings + 1))
+  fi
+
   if docker_accessible; then
     echo "OK: Docker daemon is available"
   elif [ "${IS_WSL}" = true ]; then
@@ -174,10 +185,11 @@ run_checks() {
     failures=$((failures + 1))
   fi
 
-  if docker_accessible && docker image inspect isolated-chrome:latest >/dev/null 2>&1; then
-    echo "OK: isolated-chrome:latest image exists"
+  if docker_accessible \
+    && [ "$(docker image inspect --format '{{index .Config.Labels "org.automat-fb.browser-image-version"}}' isolated-chrome:latest 2>/dev/null || true)" = "$BROWSER_IMAGE_VERSION" ]; then
+    echo "OK: GPU-capable browser image v${BROWSER_IMAGE_VERSION} is installed"
   else
-    echo "INFO: Browser image needs to be built"
+    echo "INFO: GPU-capable browser image needs to be built or upgraded"
     warnings=$((warnings + 1))
   fi
 
@@ -273,7 +285,7 @@ install_system_dependencies() {
   sudo_run apt-get update
   sudo_run apt-get install -y \
     ca-certificates curl gnupg jq zip unzip rsync python3 python3-venv python3-pip \
-    build-essential iproute2
+    build-essential iproute2 mesa-utils libgl1-mesa-dri mesa-vulkan-drivers vulkan-tools
 
   if [ "${DESKTOP_SETUP}" = false ]; then
     local node_ok=false
@@ -340,12 +352,16 @@ install_application() {
     "${ROOT_DIR}/automation/venv/bin/python" -m unittest discover -s tests
   )
 
-  if ! docker image inspect isolated-chrome:latest >/dev/null 2>&1; then
+  local installed_browser_image_version
+  installed_browser_image_version="$(docker image inspect \
+    --format '{{index .Config.Labels "org.automat-fb.browser-image-version"}}' \
+    isolated-chrome:latest 2>/dev/null || true)"
+  if [ "$installed_browser_image_version" != "$BROWSER_IMAGE_VERSION" ]; then
     echo
-    echo "Building browser container image. This can take several minutes..."
+    echo "Building GPU-capable browser container image. This can take several minutes..."
     bash "${ROOT_DIR}/scripts/build_container.sh"
   else
-    echo "Browser container image already exists; skipping rebuild."
+    echo "Browser container image v${BROWSER_IMAGE_VERSION} is current; skipping rebuild."
   fi
 
   mkdir -p "${ROOT_DIR}/profiles/shared_media" "${ROOT_DIR}/data" "${ROOT_DIR}/proxies"

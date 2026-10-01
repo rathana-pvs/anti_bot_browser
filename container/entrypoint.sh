@@ -30,12 +30,54 @@ WIN_SIZE="${WINDOW_SIZE:-1920,1080}"
 CHROME_LANG="${LANG:-en-US}"
 TARGET_URL="${START_URL:-https://www.google.com}"
 RENDERING_MODE="${RENDERING_MODE:-host_gpu}"
+GPU_DEVICE_BACKEND="${GPU_DEVICE_BACKEND:-none}"
 EXTRA_CHROME_FLAGS="${EXTRA_CHROME_FLAGS:-}"
 TUN2SOCKS_PID=""
-RENDER_ARGS=(--ignore-gpu-blocklist --enable-gpu-rasterization --enable-zero-copy)
+EFFECTIVE_RENDERING_MODE="host_gpu"
+RENDERING_FALLBACK_REASON=""
+
 if [ "$RENDERING_MODE" = "software" ]; then
+    EFFECTIVE_RENDERING_MODE="software"
+    RENDERING_FALLBACK_REASON="software rendering was requested"
+    RENDER_ARGS=(--disable-gpu --use-gl=swiftshader)
+elif [ "$GPU_DEVICE_BACKEND" = "wsl_dxg" ] && [ -c /dev/dxg ] \
+    && [ -f /usr/lib/wsl/lib/libd3d12.so ] && [ -f /usr/lib/wsl/lib/libdxcore.so ]; then
+    export LD_LIBRARY_PATH="/usr/lib/wsl/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+    export GALLIUM_DRIVER=d3d12
+    export LIBGL_ALWAYS_SOFTWARE=0
+    # Current Chrome accepts ANGLE here; plain --use-gl=egl is rejected and
+    # causes the GPU process to restart with GL disabled.
+    RENDER_ARGS=(--ignore-gpu-blocklist --enable-gpu-rasterization --enable-zero-copy --use-gl=angle --use-angle=gl-egl)
+elif [ "$GPU_DEVICE_BACKEND" = "drm" ] && [ -d /dev/dri ]; then
+    export LIBGL_ALWAYS_SOFTWARE=0
+    RENDER_ARGS=(--ignore-gpu-blocklist --enable-gpu-rasterization --enable-zero-copy)
+else
+    EFFECTIVE_RENDERING_MODE="software"
+    RENDERING_FALLBACK_REASON="a compatible host GPU device was not available inside the container"
     RENDER_ARGS=(--disable-gpu --use-gl=swiftshader)
 fi
+
+json_escape() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/[[:cntrl:]]/ /g'
+}
+
+write_rendering_status() {
+    local renderer="${1:-Not measured}"
+    local accelerated="false"
+    if [ "$EFFECTIVE_RENDERING_MODE" = "host_gpu" ] \
+        && [ "$renderer" != "Not measured" ] \
+        && ! printf '%s' "$renderer" | grep -Eqi 'llvmpipe|softpipe|swiftshader|software rasterizer'; then
+        accelerated="true"
+    fi
+    printf '{"requested_mode":"%s","effective_mode":"%s","device_backend":"%s","accelerated":%s,"renderer":"%s","fallback_reason":"%s"}\n' \
+        "$(json_escape "$RENDERING_MODE")" \
+        "$(json_escape "$EFFECTIVE_RENDERING_MODE")" \
+        "$(json_escape "$GPU_DEVICE_BACKEND")" \
+        "$accelerated" \
+        "$(json_escape "$renderer")" \
+        "$(json_escape "$RENDERING_FALLBACK_REASON")" \
+        > /run/rendering-status.json
+}
 
 # Clean up only the private embedded display.
 rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
@@ -56,6 +98,19 @@ for i in {1..30}; do
     fi
     sleep 0.2
 done
+
+OPENGL_RENDERER="$(glxinfo -B 2>/dev/null | sed -n 's/^OpenGL renderer string: //p' | head -1 || true)"
+if [ -z "$OPENGL_RENDERER" ]; then
+    OPENGL_RENDERER="Not measured"
+fi
+if printf '%s' "$OPENGL_RENDERER" | grep -Eqi 'llvmpipe|softpipe|swiftshader|software rasterizer'; then
+    EFFECTIVE_RENDERING_MODE="software"
+    if [ -z "$RENDERING_FALLBACK_REASON" ]; then
+        RENDERING_FALLBACK_REASON="the active display renderer is software-only"
+    fi
+fi
+write_rendering_status "$OPENGL_RENDERER"
+echo "Rendering: requested=${RENDERING_MODE}, effective=${EFFECTIVE_RENDERING_MODE}, backend=${GPU_DEVICE_BACKEND}, renderer=${OPENGL_RENDERER}"
 
 # Keep the RFB server private to the container and expose it only through the
 # loopback-published WebSocket bridge on port 6080.

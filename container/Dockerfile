@@ -1,5 +1,7 @@
 FROM ubuntu:22.04
 
+LABEL org.automat-fb.browser-image-version="2"
+
 # Prevent interactive prompts during build
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=America/New_York
@@ -19,7 +21,8 @@ RUN apt-get update && apt-get install -y \
     software-properties-common \
     dbus-x11 x11-utils x11-xserver-utils scrot xdotool \
     xclip autocutsel \
-    ffmpeg libva2 vainfo mesa-va-drivers intel-media-va-driver \
+    ffmpeg libva2 vainfo mesa-utils libgl1-mesa-dri mesa-va-drivers \
+    mesa-vulkan-drivers vulkan-tools intel-media-va-driver python3-minimal \
     --no-install-recommends && \
     rm -rf /var/lib/apt/lists/*
 
