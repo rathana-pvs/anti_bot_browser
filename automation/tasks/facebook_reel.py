@@ -15,6 +15,7 @@ from .base_task import BaseTask
 class FacebookReelTask(BaseTask):
     RIGHT_REEL_SIDEBAR = "reel_sidebar"
     LEFT_REEL_SIDEBAR = (0.00, 0.08, 0.34, 1.0)
+    LEFT_PUBLICATION_REGION = (0.00, 0.50, 0.40, 1.0)
     REEL_SIDEBAR_REGIONS = (RIGHT_REEL_SIDEBAR, LEFT_REEL_SIDEBAR)
 
     def __init__(
@@ -180,6 +181,7 @@ class FacebookReelTask(BaseTask):
         prefer_lower_half=True,
         region="bottom_action_bar",
         allow_semantic_fallback=True,
+        allow_full_screen_fallback=True,
     ):
         """Match action text with an enabled blue button on the same screen."""
         def locate():
@@ -203,6 +205,7 @@ class FacebookReelTask(BaseTask):
                 screen=screen,
                 region=(max(0, blue[0] - 260), max(0, blue[1] - 50), 520, 100),
                 min_confidence=0.20,
+                allow_full_screen_fallback=allow_full_screen_fallback,
             )
             if not text_match:
                 text_match = self.vision.find_text_cascaded(
@@ -210,13 +213,14 @@ class FacebookReelTask(BaseTask):
                     screen=screen,
                     region=search_region,
                     min_confidence=0.35,
+                    allow_full_screen_fallback=allow_full_screen_fallback,
                 )
             if text_match:
                 if math.hypot(text_match["center"][0] - blue[0], text_match["center"][1] - blue[1]) <= 180:
                     self.remember_reversible_click_bounds(blue, button["bounds"])
                     return blue
 
-            if not allow_semantic_fallback:
+            if not allow_semantic_fallback or not allow_full_screen_fallback:
                 return None
 
             # Semantic fallback when local OCR keywords fail to match
@@ -236,7 +240,22 @@ class FacebookReelTask(BaseTask):
 
         return self.vision.find_stable(locate, attempts=2, tolerance_px=8.0)
 
-    def _wait_for_target(self, locator, timeout: float, label: str):
+    def _reel_safety_observation(self, screen, local_misses: int):
+        """Use cheap dialog OCR normally and retain bounded full-screen safety fallback."""
+        observation = self.recognizer.observe_safety_gate(screen)
+        if observation.state == ScreenState.ERROR_DIALOG:
+            return observation
+        if local_misses >= 3 and local_misses % 3 == 0:
+            return self.recognizer.observe(screen)
+        return observation
+
+    def _wait_for_target(
+        self,
+        locator,
+        timeout: float,
+        label: str,
+        fallback_locator=None,
+    ):
         started = time.perf_counter()
 
         def finish(status: str) -> None:
@@ -254,17 +273,20 @@ class FacebookReelTask(BaseTask):
                 )
 
         deadline = time.time() + timeout
+        local_misses = 0
         while time.time() < deadline:
             screen = self.client.screenshot()
-            observation = self.recognizer.observe(screen)
-            if observation.state == ScreenState.ERROR_DIALOG:
-                finish("error")
-                return "error", None, screen
-            target = locator()
+            use_fallback = fallback_locator is not None and local_misses >= 2
+            target = fallback_locator() if use_fallback else locator()
             if target:
                 self.capture_evidence(label, screen, target=list(target))
                 finish("ready")
                 return "ready", target, screen
+            local_misses += 1
+            observation = self._reel_safety_observation(screen, local_misses)
+            if observation.state == ScreenState.ERROR_DIALOG:
+                finish("error")
+                return "error", None, screen
             time.sleep(2.0)
         finish("timeout")
         return "timeout", None, None
@@ -279,6 +301,7 @@ class FacebookReelTask(BaseTask):
         """
         started = time.perf_counter()
         deadline = time.time() + timeout
+        local_misses = 0
         while time.time() < deadline:
             chooser_window = self.find_visible_file_chooser()
             if chooser_window is not None:
@@ -302,13 +325,9 @@ class FacebookReelTask(BaseTask):
                 return "direct_file_chooser", chooser_window, screen
 
             screen = self.client.screenshot()
-            observation = self.recognizer.observe(screen)
-            if observation.state == ScreenState.ERROR_DIALOG:
-                return "error", None, screen
-
             upload_target = self._find_reel_upload_target()
             if upload_target:
-                self._preferred_reel_sidebar_region = self.RIGHT_REEL_SIDEBAR
+                self._preferred_reel_sidebar_region = self.LEFT_REEL_SIDEBAR
                 self.capture_evidence(
                     "reel_studio_upload_ready",
                     screen,
@@ -324,6 +343,10 @@ class FacebookReelTask(BaseTask):
                         entry_flow="reel_studio",
                     )
                 return "reel_studio", upload_target, screen
+            local_misses += 1
+            observation = self._reel_safety_observation(screen, local_misses)
+            if observation.state == ScreenState.ERROR_DIALOG:
+                return "error", None, screen
             time.sleep(2.0)
 
         telemetry = getattr(self, "telemetry", None)
@@ -335,18 +358,20 @@ class FacebookReelTask(BaseTask):
             )
         return "timeout", None, None
 
-    def _ordered_reel_sidebar_regions(self):
-        """Search the layout selected by the entry flow before its fallback."""
+    def _ordered_reel_sidebar_regions(self, allow_layout_fallback: bool = False):
+        """Lock to the selected layout, adding the alternate only after local misses."""
         preferred = getattr(self, "_preferred_reel_sidebar_region", None)
         if preferred not in self.REEL_SIDEBAR_REGIONS:
             return self.REEL_SIDEBAR_REGIONS
+        if not allow_layout_fallback:
+            return (preferred,)
         return (preferred,) + tuple(
             region for region in self.REEL_SIDEBAR_REGIONS if region != preferred
         )
 
-    def _is_reel_final_composer(self, screen) -> bool:
+    def _is_reel_final_composer(self, screen, allow_layout_fallback: bool = False) -> bool:
         """Recognize the final Create reel surface without relying on its Post button."""
-        for region in self._ordered_reel_sidebar_regions():
+        for region in self._ordered_reel_sidebar_regions(allow_layout_fallback):
             items = self.vision.read_text(
                 screen,
                 region=region,
@@ -375,7 +400,7 @@ class FacebookReelTask(BaseTask):
                 return True
         return False
 
-    def _find_reel_description_target(self):
+    def _find_reel_description_target(self, allow_full_screen_fallback: bool = False):
         """Locate the caption field in either the left- or right-sidebar layout."""
         remembered_target = getattr(self, "_reel_description_target", None)
         if remembered_target:
@@ -391,28 +416,28 @@ class FacebookReelTask(BaseTask):
 
         def locate():
             screen = self.client.screenshot()
-            for region in self._ordered_reel_sidebar_regions():
-                match = self.vision.find_text_cascaded(
-                    labels,
-                    screen=screen,
-                    region=region,
-                    min_confidence=0.20,
-                )
-                if match:
-                    return match["center"]
+            match = self.vision.find_text_cascaded(
+                labels,
+                screen=screen,
+                region=self.LEFT_REEL_SIDEBAR,
+                min_confidence=0.20,
+                allow_full_screen_fallback=allow_full_screen_fallback,
+            )
+            if match:
+                return match["center"]
 
             # Visual fallback: the description textarea is about 170px above
-            # the Public/Post audience settings in both sidebar variants.
-            for region in self._ordered_reel_sidebar_regions():
-                public_label = self.vision.find_text_cascaded(
-                    ("public", "post audience", "tag and collaborate", "add ai label"),
-                    region=region,
-                    screen=screen,
-                    min_confidence=0.35,
-                )
-                if public_label:
-                    px, py = public_label["center"]
-                    return (px + 100, max(200, py - 170))
+            # the Public/Post audience settings in the left Reel sidebar.
+            public_label = self.vision.find_text_cascaded(
+                ("public", "post audience", "tag and collaborate", "add ai label"),
+                region=self.LEFT_REEL_SIDEBAR,
+                screen=screen,
+                min_confidence=0.35,
+                allow_full_screen_fallback=allow_full_screen_fallback,
+            )
+            if public_label:
+                px, py = public_label["center"]
+                return (px + 100, max(200, py - 170))
             return None
 
         return self.vision.find_stable(locate, attempts=2, tolerance_px=8.0)
@@ -463,6 +488,7 @@ class FacebookReelTask(BaseTask):
         reattached = False
         upload_clicked = False
         last_screen = None
+        local_misses = 0
         while time.time() < deadline:
             chooser_window = self.find_visible_file_chooser()
             if chooser_window is not None:
@@ -479,10 +505,6 @@ class FacebookReelTask(BaseTask):
                 continue
 
             last_screen = self.client.screenshot()
-            observation = self.recognizer.observe(last_screen)
-            if observation.state == ScreenState.ERROR_DIALOG:
-                return "error", last_screen
-
             media_state = self._direct_reel_media_state(last_screen)
             if media_state == "attached":
                 self.capture_evidence(
@@ -492,6 +514,8 @@ class FacebookReelTask(BaseTask):
                 )
                 return "ready", last_screen
 
+            local_misses += 1
+
             if media_state == "missing" and not upload_clicked:
                 upload_target = self._find_reel_upload_target()
                 if upload_target:
@@ -500,11 +524,18 @@ class FacebookReelTask(BaseTask):
                     upload_clicked = True
                     time.sleep(1.0)
                     continue
+            observation = self._reel_safety_observation(last_screen, local_misses)
+            if observation.state == ScreenState.ERROR_DIALOG:
+                return "error", last_screen
             time.sleep(1.0)
 
         return "timeout", last_screen
 
-    def _reel_caption_match_confidence(self, screen) -> float:
+    def _reel_caption_match_confidence(
+        self,
+        screen,
+        allow_layout_fallback: bool = False,
+    ) -> float:
         """Measure whether the requested caption is visible in either sidebar."""
         target = self._normalized_ocr_text(self.caption or "")
         target_tokens = [token for token in target.split() if len(token) >= 3]
@@ -513,7 +544,7 @@ class FacebookReelTask(BaseTask):
 
         best_confidence = 0.0
         minimum_matches = min(2, len(target_tokens))
-        for region in self._ordered_reel_sidebar_regions():
+        for region in self._ordered_reel_sidebar_regions(allow_layout_fallback):
             items = self.vision.read_text(screen, region=region, min_confidence=0.15)
             visible_parts = []
             for item in items:
@@ -535,9 +566,13 @@ class FacebookReelTask(BaseTask):
         deadline = time.time() + timeout
         best_confidence = 0.0
         last_screen = None
+        local_misses = 0
         while time.time() < deadline:
             last_screen = self.client.screenshot()
-            confidence = self._reel_caption_match_confidence(last_screen)
+            confidence = self._reel_caption_match_confidence(
+                last_screen,
+                allow_layout_fallback=local_misses >= 2,
+            )
             best_confidence = max(best_confidence, confidence)
             # Two or more meaningful tokens is enough to overcome ordinary OCR
             # truncation while still rejecting an untouched placeholder.
@@ -548,6 +583,7 @@ class FacebookReelTask(BaseTask):
             minimum_confidence = min(1.0, 2 / max(1, len(meaningful_tokens)))
             if confidence >= minimum_confidence:
                 return True, last_screen, confidence
+            local_misses += 1
             time.sleep(1.0)
         return False, last_screen, best_confidence
 
@@ -562,9 +598,10 @@ class FacebookReelTask(BaseTask):
             return "skipped", None
 
         description_status, description, screen = self._wait_for_target(
-            self._find_reel_description_target,
+            lambda: self._find_reel_description_target(False),
             timeout=timeout,
             label="reel_description_ready",
+            fallback_locator=lambda: self._find_reel_description_target(True),
         )
         if description_status == "error":
             return "error", screen
@@ -630,16 +667,16 @@ class FacebookReelTask(BaseTask):
                 )
 
         deadline = time.time() + timeout
+        local_misses = 0
         while time.time() < deadline:
             screen = self.client.screenshot()
-            observation = self.recognizer.observe(screen)
-            if observation.state == ScreenState.ERROR_DIALOG:
-                finish("error")
-                return "error", None, screen
 
             # The direct-upload Facebook variant skips both Next screens and
             # lands here immediately after the chooser closes.
-            if self._is_reel_final_composer(screen):
+            if self._is_reel_final_composer(
+                screen,
+                allow_layout_fallback=local_misses >= 2,
+            ):
                 self.capture_evidence(
                     f"{label}_final_composer",
                     screen,
@@ -652,23 +689,29 @@ class FacebookReelTask(BaseTask):
                 ("next",),
                 region="bottom_action_bar",
                 allow_semantic_fallback=False,
+                allow_full_screen_fallback=local_misses >= 2,
             )
             if next_button:
                 self.capture_evidence(label, screen, target=list(next_button), transition="next")
                 finish("ready", "next")
                 return "next", next_button, screen
+            local_misses += 1
+            observation = self._reel_safety_observation(screen, local_misses)
+            if observation.state == ScreenState.ERROR_DIALOG:
+                finish("error")
+                return "error", None, screen
             time.sleep(2.0)
 
         finish("timeout")
         return "timeout", None, None
 
-    def _handle_remix_audio_dialog(self, screen) -> str:
+    def _handle_remix_audio_dialog(self, screen, region=None) -> str:
         """Confirm Facebook's post-click Reel audio policy without changing it.
 
         Returns ``absent``, ``waiting`` (dialog found but Save not confirmed), or
         ``saved``. The selected radio option is deliberately left untouched.
         """
-        items = self.vision.read_text(screen, min_confidence=0.18)
+        items = self.vision.read_text(screen, region=region, min_confidence=0.18)
         normalized = [self._normalized_ocr_text(item.get("text", "")) for item in items]
         dialog_found = any(
             "remixing" in text and "original audio" in text and "use" in text
@@ -724,14 +767,31 @@ class FacebookReelTask(BaseTask):
         prompt_dismissed = False
         unconfirmed_feed_logged = False
         audio_policy_saved = False
+        local_misses = 0
         while time.time() < deadline:
             screen = self.client.screenshot()
+
+            observation = self.recognizer.observe_publication_gate(
+                screen,
+                region=self.LEFT_PUBLICATION_REGION,
+            )
+            similarity = self.vision.similarity(before_publish, screen)
+            last = (observation, screen, similarity)
+            if observation.state == ScreenState.ERROR_DIALOG:
+                return "failed", last
+            if observation.state == ScreenState.POST_CONFIRMED:
+                self.log("INFO", "Facebook showed Reel publication confirmation.")
+                return "published", last
 
             # Facebook can insert this settings step after the final Post click.
             # It is part of the same publication attempt, so confirm the current
             # selection once and continue verification without clicking Post again.
-            if not audio_policy_saved:
-                audio_policy_status = self._handle_remix_audio_dialog(screen)
+            should_check_audio_policy = local_misses in {1, 4}
+            if not audio_policy_saved and should_check_audio_policy:
+                audio_policy_status = self._handle_remix_audio_dialog(
+                    screen,
+                    region="composer_modal",
+                )
                 if audio_policy_status == "saved":
                     audio_policy_saved = True
                     time.sleep(2.0)
@@ -741,20 +801,18 @@ class FacebookReelTask(BaseTask):
                     continue
 
             # Dismiss post-publish prompts first (e.g. "Speak With People Directly" -> "Not now")
-            if not prompt_dismissed and self.check_and_dismiss_post_prompt(screen):
+            should_check_prompt = local_misses in {2, 5}
+            if (
+                not prompt_dismissed
+                and should_check_prompt
+                and self.check_and_dismiss_post_prompt(screen)
+            ):
                 prompt_dismissed = True
                 self.log("INFO", "Dismissed post-publish prompt ('Not now').")
                 time.sleep(2.0)
                 continue
 
-            observation = self.recognizer.observe(screen)
-            similarity = self.vision.similarity(before_publish, screen)
-            last = (observation, screen, similarity)
-            if observation.state == ScreenState.ERROR_DIALOG:
-                return "failed", last
-            if observation.state == ScreenState.POST_CONFIRMED:
-                self.log("INFO", "Facebook showed Reel publication confirmation.")
-                return "published", last
+            local_misses += 1
             if observation.state in {
                 ScreenState.PUBLISHING,
                 ScreenState.POST_ENABLED,
@@ -1030,9 +1088,18 @@ class FacebookReelTask(BaseTask):
         self.log("INFO", "Waiting for enabled Post / Publish action (background processing / copyright check)...")
         self._requires_review = False
         publish_status, publish_button, screen = self._wait_for_target(
-            lambda: self._find_stable_enabled_action(("post", "publish", "share"), region="bottom_action_bar"),
+            lambda: self._find_stable_enabled_action(
+                ("post", "publish", "share"),
+                region="bottom_action_bar",
+                allow_full_screen_fallback=False,
+            ),
             timeout=90.0,
             label="reel_publish_ready",
+            fallback_locator=lambda: self._find_stable_enabled_action(
+                ("post", "publish", "share"),
+                region="bottom_action_bar",
+                allow_full_screen_fallback=True,
+            ),
         )
         if publish_status == "error":
             return self._fail("reel_publish_error", "Facebook displayed an error before publication.", screen)

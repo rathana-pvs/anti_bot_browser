@@ -60,12 +60,84 @@ class FacebookStateRecognizer:
         "your post was shared",
         "post shared",
         "your reel is being processed",
+        "your reel is published",
+        "your reel is now published",
         "your reel was published",
+        "your reel has been published",
         "reel published",
+        "reel shared",
     )
 
     def __init__(self, vision: VisionEngine):
         self.vision = vision
+
+    def observe_safety_gate(self, screen: np.ndarray | None = None) -> StateObservation:
+        """Check the modal/dialog area for blocking errors without full-screen OCR."""
+        screen = self.vision.capture_screen() if screen is None else screen
+        ocr = self.vision.read_text(
+            screen,
+            region="browser_dialog",
+            min_confidence=0.35,
+        )
+        texts = [item["text"] for item in ocr]
+        blob = " ".join(texts).casefold()
+        leave_matches = self._contains(
+            blob,
+            ("leave site", "changes you made", "may not be saved"),
+        )
+        if leave_matches:
+            return StateObservation(
+                ScreenState.UNKNOWN,
+                0.95,
+                ["leave_site_dialog", *leave_matches],
+                texts,
+            )
+        matches = self._contains(blob, self.BLOCKING_TEXT)
+        if matches:
+            return StateObservation(ScreenState.ERROR_DIALOG, 0.99, matches, texts)
+        matches = self._contains(blob, self.ERROR_TEXT)
+        if matches:
+            return StateObservation(ScreenState.ERROR_DIALOG, 0.98, matches, texts)
+        matches = self._contains(blob, self.LOGIN_TEXT)
+        if matches:
+            return StateObservation(ScreenState.LOGIN_REQUIRED, 0.97, matches, texts)
+        return StateObservation(ScreenState.UNKNOWN, 0.0, text=texts)
+
+    def observe_publication_gate(
+        self,
+        screen: np.ndarray | None = None,
+        region=(0.0, 0.50, 0.40, 1.0),
+    ) -> StateObservation:
+        """Check the likely bottom-left Reel confirmation area before broad OCR."""
+        screen = self.vision.capture_screen() if screen is None else screen
+        ocr = self.vision.read_text(screen, region=region, min_confidence=0.35)
+        texts = [item["text"] for item in ocr]
+        blob = " ".join(texts).casefold()
+
+        matches = self._contains(blob, self.BLOCKING_TEXT)
+        if matches:
+            return StateObservation(ScreenState.ERROR_DIALOG, 0.99, matches, texts)
+        matches = self._contains(blob, self.ERROR_TEXT)
+        if matches:
+            return StateObservation(ScreenState.ERROR_DIALOG, 0.98, matches, texts)
+        matches = self._contains(blob, self.CONFIRMED_TEXT)
+        if matches:
+            return StateObservation(ScreenState.POST_CONFIRMED, 0.98, matches, texts)
+
+        normalized_items = {
+            re.sub(r"[^a-z0-9]+", " ", text.casefold()).strip()
+            for text in texts
+        }
+        if normalized_items.intersection({
+            "publishing",
+            "posting",
+            "publishing post",
+            "posting post",
+            "publishing your post",
+            "posting your post",
+        }):
+            return StateObservation(ScreenState.PUBLISHING, 0.90, ["publishing text"], texts)
+        return StateObservation(ScreenState.UNKNOWN, 0.0, text=texts)
 
     @staticmethod
     def _contains(text_blob: str, phrases: tuple[str, ...]) -> list[str]:

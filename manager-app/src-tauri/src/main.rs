@@ -4,7 +4,7 @@
 use serde::Serialize;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -123,6 +123,14 @@ fn container_platform_installed() -> bool {
 
 fn find_install_root(app: &AppHandle) -> Option<PathBuf> {
     let mut candidates = Vec::new();
+    // Linux desktop setup always runs from the writable payload copied into
+    // the application data directory. Prefer it over paths near a locally
+    // built executable; otherwise a release binary launched from target/
+    // can accidentally read the source checkout's (empty) install log while
+    // the real installer writes to the application-data runtime.
+    if let Ok(app_data_dir) = app.path().app_data_dir() {
+        candidates.push(app_data_dir.join("runtime"));
+    }
     if let Ok(current) = std::env::current_dir() {
         candidates.push(current.clone());
         if current.ends_with("manager-app") {
@@ -139,9 +147,6 @@ fn find_install_root(app: &AppHandle) -> Option<PathBuf> {
                 current = path.parent();
             }
         }
-    }
-    if let Ok(app_data_dir) = app.path().app_data_dir() {
-        candidates.push(app_data_dir.join("runtime"));
     }
     if let Ok(resource_dir) = app.path().resource_dir() {
         candidates.push(resource_dir.clone());
@@ -177,6 +182,132 @@ fn copy_setup_payload(
 }
 
 #[cfg(not(target_os = "windows"))]
+fn root_has_profiles(root: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(root.join("profiles")) else {
+        return false;
+    };
+    entries
+        .filter_map(Result::ok)
+        .any(|entry| entry.path().join("config.json").is_file())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn copy_user_data_tree(source: &Path, destination: &Path) -> Result<(), String> {
+    if !source.exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(destination)
+        .map_err(|error| format!("Could not create {}: {error}", destination.display()))?;
+    for entry in std::fs::read_dir(source)
+        .map_err(|error| format!("Could not read {}: {error}", source.display()))?
+    {
+        let entry = entry.map_err(|error| format!("Could not read migration entry: {error}"))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("Could not inspect {}: {error}", entry.path().display()))?;
+        let name = entry.file_name();
+        // Chromium recreates these process-specific links. Copying them can
+        // make a safely migrated profile look locked by an obsolete process.
+        if file_type.is_symlink() || name.to_string_lossy().starts_with("Singleton") {
+            continue;
+        }
+        let source_path = entry.path();
+        let destination_path = destination.join(&name);
+        if file_type.is_dir() {
+            copy_user_data_tree(&source_path, &destination_path)?;
+        } else if file_type.is_file() {
+            std::fs::copy(&source_path, &destination_path).map_err(|error| {
+                format!(
+                    "Could not migrate {} to {}: {error}",
+                    source_path.display(),
+                    destination_path.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn migrate_legacy_user_data(source: &Path, destination: &Path) -> Result<bool, String> {
+    let marker_dir = destination.join("data");
+    let completed_marker = marker_dir.join("legacy_profile_migration_v1");
+    let in_progress_marker = marker_dir.join("legacy_profile_migration_v1.in_progress");
+    let resuming = in_progress_marker.is_file();
+    if completed_marker.is_file()
+        || (root_has_profiles(destination) && !resuming)
+        || !root_has_profiles(source)
+    {
+        return Ok(false);
+    }
+    std::fs::create_dir_all(&marker_dir).map_err(|error| {
+        format!(
+            "Could not create migration marker directory {}: {error}",
+            marker_dir.display()
+        )
+    })?;
+    // Record intent before the first profile file is copied. If the app or
+    // machine stops mid-copy, the next setup run can safely resume it.
+    std::fs::write(&in_progress_marker, format!("{}\n", source.display()))
+        .map_err(|error| format!("Could not start profile migration: {error}"))?;
+    copy_user_data_tree(&source.join("profiles"), &destination.join("profiles"))?;
+    for relative in [
+        "data/posting_queue.json",
+        "data/manager_settings.json",
+        "proxies/proxy_pool.json",
+    ] {
+        let source_file = source.join(relative);
+        if source_file.is_file() {
+            let destination_file = destination.join(relative);
+            if let Some(parent) = destination_file.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|error| format!("Could not create {}: {error}", parent.display()))?;
+            }
+            std::fs::copy(&source_file, &destination_file)
+                .map_err(|error| format!("Could not migrate {}: {error}", source_file.display()))?;
+        }
+    }
+    copy_user_data_tree(
+        &source.join("automation/brains"),
+        &destination.join("automation/brains"),
+    )?;
+    std::fs::write(&completed_marker, format!("{}\n", source.display()))
+        .map_err(|error| format!("Could not record completed profile migration: {error}"))?;
+    std::fs::remove_file(&in_progress_marker)
+        .map_err(|error| format!("Could not finalize profile migration: {error}"))?;
+    Ok(true)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn find_legacy_data_root(destination: &Path) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = std::env::var_os("AUTOMAT_FB_LEGACY_ROOT") {
+        candidates.push(PathBuf::from(path));
+    }
+    if let Ok(current) = std::env::current_dir() {
+        candidates.extend(current.ancestors().take(7).map(Path::to_path_buf));
+    }
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(parent) = executable.parent() {
+            candidates.extend(parent.ancestors().take(7).map(Path::to_path_buf));
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        for relative in [
+            "automat_fb-beta",
+            "automat_fb",
+            "Desktop/automat_fb-beta",
+            "Desktop/automat_fb",
+        ] {
+            candidates.push(home.join(relative));
+        }
+    }
+    candidates
+        .into_iter()
+        .find(|candidate| candidate != destination && root_has_profiles(candidate))
+}
+
+#[cfg(not(target_os = "windows"))]
 fn prepare_install_root(app: &AppHandle) -> Result<PathBuf, String> {
     let bundled_payload = app
         .path()
@@ -190,6 +321,23 @@ fn prepare_install_root(app: &AppHandle) -> Result<PathBuf, String> {
             .app_data_dir()
             .map_err(|error| format!("Could not locate the application data directory: {error}"))?
             .join("runtime");
+        if let Some(legacy_root) = find_legacy_data_root(&runtime) {
+            emit_setup_line(
+                app,
+                "system",
+                &format!(
+                    "Found existing profiles in {}. Migrating them into persistent app storage…",
+                    legacy_root.display()
+                ),
+            );
+            if migrate_legacy_user_data(&legacy_root, &runtime)? {
+                emit_setup_line(
+                    app,
+                    "system",
+                    "Existing profiles, browser sessions, media, queues, and settings were migrated successfully.",
+                );
+            }
+        }
         copy_setup_payload(&source, &runtime)?;
         Ok(runtime)
     } else {
@@ -277,19 +425,11 @@ fn stop_wsl_backend_on_port(distribution: Option<&str>, port: u16) {
     let Some(distribution) = distribution else {
         return;
     };
-    let stop_command = format!(
-        "pkill -f '[u]vicorn backend.main:app.*--port {port}' >/dev/null 2>&1 || true"
-    );
+    let stop_command =
+        format!("pkill -f '[u]vicorn backend.main:app.*--port {port}' >/dev/null 2>&1 || true");
     let _ = command_succeeds(
         "wsl.exe",
-        &[
-            "-d",
-            distribution,
-            "--",
-            "bash",
-            "-lc",
-            &stop_command,
-        ],
+        &["-d", distribution, "--", "bash", "-lc", &stop_command],
     );
     for _ in 0..20 {
         if !backend_is_running_on_port(port) {
@@ -389,6 +529,7 @@ fn gpu_compatibility(
 #[cfg(target_os = "windows")]
 fn detect_gpu_compatibility(
     distribution: Option<&String>,
+    _root: Option<&PathBuf>,
     runtime_ready: bool,
 ) -> GpuCompatibility {
     let host_gpu = command_output(
@@ -472,6 +613,7 @@ fn detect_gpu_compatibility(
 #[cfg(not(target_os = "windows"))]
 fn detect_gpu_compatibility(
     _distribution: Option<&String>,
+    root: Option<&PathBuf>,
     runtime_ready: bool,
 ) -> GpuCompatibility {
     let runtime_gpu = command_output(
@@ -489,10 +631,19 @@ fn detect_gpu_compatibility(
         ],
     );
     let torch_probe = if runtime_ready {
-        command_output(
-            "bash",
-            &["-lc", "timeout 12 automation/venv/bin/python -c 'import torch; print(torch.__version__); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"\")' 2>/dev/null"],
-        )
+        root.and_then(|path| {
+            let python = path.join("automation/venv/bin/python");
+            let python = python.to_str()?;
+            command_output(
+                "timeout",
+                &[
+                    "12",
+                    python,
+                    "-c",
+                    "import torch; print(torch.__version__); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else '')",
+                ],
+            )
+        })
     } else {
         None
     };
@@ -503,10 +654,15 @@ fn detect_gpu_compatibility(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
-    let cuda_fallback_recorded = command_succeeds(
-        "bash",
-        &["-lc", "test -f data/torch_runtime.json && grep -q '\"cuda_attempted\": true' data/torch_runtime.json"],
-    );
+    let cuda_fallback_recorded = root
+        .and_then(|path| std::fs::read_to_string(path.join("data/torch_runtime.json")).ok())
+        .and_then(|contents| serde_json::from_str::<serde_json::Value>(&contents).ok())
+        .and_then(|value| {
+            value
+                .get("cuda_attempted")
+                .and_then(|entry| entry.as_bool())
+        })
+        .unwrap_or(false);
     let runtime_install_required = runtime_ready
         && (torch_version.is_none()
             || (runtime_gpu.is_some() && cuda_device.is_none() && !cuda_fallback_recorded));
@@ -557,22 +713,23 @@ fn setup_state(root: Option<&PathBuf>) -> (bool, bool, bool, bool, bool) {
         .as_ref()
         .map(|version| installed_runtime_version.as_ref() == Some(version))
         .unwrap_or(true);
-    let runtime_ready = runtime_version_current && distribution
-        .as_ref()
-        .map(|name| {
-            command_succeeds(
-                "wsl.exe",
-                &[
-                    "-d",
-                    name,
-                    "--",
-                    "bash",
-                    "-lc",
-                    "test -x \"$HOME/automat_fb-beta/automation/venv/bin/python\"",
-                ],
-            )
-        })
-        .unwrap_or(false);
+    let runtime_ready = runtime_version_current
+        && distribution
+            .as_ref()
+            .map(|name| {
+                command_succeeds(
+                    "wsl.exe",
+                    &[
+                        "-d",
+                        name,
+                        "--",
+                        "bash",
+                        "-lc",
+                        "test -x \"$HOME/automat_fb-beta/automation/venv/bin/python\"",
+                    ],
+                )
+            })
+            .unwrap_or(false);
     let configuration_ready = distribution
         .as_ref()
         .map(|name| command_succeeds("wsl.exe", &["-d", name, "--", "bash", "-lc", "test -f \"$HOME/automat_fb-beta/data/manager_settings.json\" && test -f \"$HOME/automat_fb-beta/proxies/proxy_pool.json\""]))
@@ -620,7 +777,7 @@ fn setup_snapshot(app: &AppHandle) -> SetupSnapshot {
     let distribution = find_ubuntu_distribution();
     #[cfg(not(target_os = "windows"))]
     let distribution: Option<String> = None;
-    let gpu = detect_gpu_compatibility(distribution.as_ref(), runtime_ready);
+    let gpu = detect_gpu_compatibility(distribution.as_ref(), root.as_ref(), runtime_ready);
     let gpu_ready = system_ready && runtime_ready && !gpu.runtime_install_required;
     let gpu_detail = if !runtime_ready {
         "GPU compatibility will be verified after the automation runtime is installed".to_string()
@@ -1372,4 +1529,94 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(all(test, not(target_os = "windows")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_profile_migration_is_complete_and_idempotent() {
+        let test_root =
+            std::env::temp_dir().join(format!("automat-fb-migration-{}", Uuid::new_v4().simple()));
+        let source = test_root.join("legacy");
+        let destination = test_root.join("runtime");
+        std::fs::create_dir_all(source.join("profiles/profile_002/chrome_data")).unwrap();
+        std::fs::create_dir_all(source.join("profiles/shared_media")).unwrap();
+        std::fs::create_dir_all(source.join("data")).unwrap();
+        std::fs::create_dir_all(source.join("proxies")).unwrap();
+        std::fs::create_dir_all(source.join("automation/brains")).unwrap();
+        std::fs::write(
+            source.join("profiles/profile_002/config.json"),
+            "profile-v1",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("profiles/profile_002/chrome_data/Preferences"),
+            "session",
+        )
+        .unwrap();
+        std::fs::write(source.join("profiles/shared_media/video.mp4"), "media").unwrap();
+        std::fs::write(source.join("data/posting_queue.json"), "queue").unwrap();
+        std::fs::write(source.join("data/manager_settings.json"), "settings").unwrap();
+        std::fs::write(source.join("proxies/proxy_pool.json"), "proxies").unwrap();
+        std::fs::write(source.join("automation/brains/catalog.json"), "brains").unwrap();
+
+        assert!(migrate_legacy_user_data(&source, &destination).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(destination.join("profiles/profile_002/config.json")).unwrap(),
+            "profile-v1"
+        );
+        assert!(destination
+            .join("profiles/profile_002/chrome_data/Preferences")
+            .is_file());
+        assert!(destination
+            .join("profiles/shared_media/video.mp4")
+            .is_file());
+        assert_eq!(
+            std::fs::read_to_string(destination.join("data/posting_queue.json")).unwrap(),
+            "queue"
+        );
+        assert!(destination
+            .join("data/legacy_profile_migration_v1")
+            .is_file());
+        assert!(!destination
+            .join("data/legacy_profile_migration_v1.in_progress")
+            .exists());
+
+        std::fs::write(
+            source.join("profiles/profile_002/config.json"),
+            "profile-v2",
+        )
+        .unwrap();
+        assert!(!migrate_legacy_user_data(&source, &destination).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(destination.join("profiles/profile_002/config.json")).unwrap(),
+            "profile-v1"
+        );
+
+        let resumed = test_root.join("resumed-runtime");
+        std::fs::create_dir_all(resumed.join("profiles/profile_002")).unwrap();
+        std::fs::create_dir_all(resumed.join("data")).unwrap();
+        std::fs::write(
+            resumed.join("profiles/profile_002/config.json"),
+            "partial-profile",
+        )
+        .unwrap();
+        std::fs::write(
+            resumed.join("data/legacy_profile_migration_v1.in_progress"),
+            source.display().to_string(),
+        )
+        .unwrap();
+        assert!(migrate_legacy_user_data(&source, &resumed).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(resumed.join("profiles/profile_002/config.json")).unwrap(),
+            "profile-v2"
+        );
+        assert!(!resumed
+            .join("data/legacy_profile_migration_v1.in_progress")
+            .exists());
+
+        std::fs::remove_dir_all(test_root).unwrap();
+    }
 }

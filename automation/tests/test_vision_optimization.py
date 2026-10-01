@@ -164,6 +164,23 @@ class VisionCascadeTests(unittest.TestCase):
         # Check that the 3rd call passed region=None
         self.assertIsNone(self.vision.find_text.call_args_list[2].kwargs.get("region"))
 
+    def test_find_text_cascaded_can_defer_fullscreen_fallback(self):
+        """Reel polling can exhaust local regions without paying for full-screen OCR."""
+        self.vision.find_text = Mock(return_value=None)
+
+        result = self.vision.find_text_cascaded(
+            "post",
+            region="bottom_action_bar",
+            allow_full_screen_fallback=False,
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(self.vision.find_text.call_count, 2)
+        self.assertTrue(all(
+            call.kwargs.get("region") is not None
+            for call in self.vision.find_text.call_args_list
+        ))
+
     def test_find_text_cascaded_total_miss(self):
         """Total miss across all 3 tiers returns None."""
         self.vision.find_text = Mock(return_value=None)

@@ -249,6 +249,53 @@ sudo_run() {
   fi
 }
 
+apt_locks_busy() {
+  local lock
+  local apt_locks=(
+    /var/lib/apt/lists/lock
+    /var/lib/dpkg/lock-frontend
+    /var/lib/dpkg/lock
+    /var/cache/apt/archives/lock
+  )
+  if command -v lslocks >/dev/null 2>&1; then
+    while IFS= read -r lock; do
+      for candidate in "${apt_locks[@]}"; do
+        if [ "${lock}" = "${candidate}" ]; then return 0; fi
+      done
+    done < <(lslocks --noheadings --notruncate --output PATH 2>/dev/null || true)
+    return 1
+  fi
+  if command -v fuser >/dev/null 2>&1; then
+    for lock in "${apt_locks[@]}"; do
+      if fuser "${lock}" >/dev/null 2>&1; then return 0; fi
+    done
+  fi
+  return 1
+}
+
+wait_for_apt_locks() {
+  local waited=0
+  while apt_locks_busy; do
+    if [ "${waited}" -eq 0 ]; then
+      echo "Ubuntu's package manager is busy. Waiting for it to finish..."
+    fi
+    if [ "${waited}" -ge 300 ]; then
+      echo "ERROR: Ubuntu's package manager remained busy for 5 minutes. Close Software Updater and try repair again."
+      return 1
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
+  if [ "${waited}" -gt 0 ]; then
+    echo "Ubuntu's package manager is available; continuing setup."
+  fi
+}
+
+apt_get() {
+  wait_for_apt_locks
+  sudo_run apt-get -o DPkg::Lock::Timeout=300 "$@"
+}
+
 confirm_system_changes() {
   if [ "$(id -u)" -eq 0 ]; then return 0; fi
   if [ "${NON_INTERACTIVE}" = true ]; then
@@ -276,14 +323,14 @@ install_node_20() {
     | sudo_run gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg
   echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
     | sudo_run tee /etc/apt/sources.list.d/nodesource.list >/dev/null
-  sudo_run apt-get update
-  sudo_run apt-get install -y nodejs
+  apt_get update
+  apt_get install -y nodejs
 }
 
 install_system_dependencies() {
   confirm_system_changes
-  sudo_run apt-get update
-  sudo_run apt-get install -y \
+  apt_get update
+  apt_get install -y \
     ca-certificates curl gnupg jq zip unzip rsync python3 python3-venv python3-pip \
     build-essential iproute2 mesa-utils libgl1-mesa-dri mesa-vulkan-drivers vulkan-tools
 
@@ -299,7 +346,7 @@ install_system_dependencies() {
 
   if ! command -v docker >/dev/null 2>&1; then
     echo "Installing Docker Engine from the distribution repository..."
-    sudo_run apt-get install -y docker.io
+    apt_get install -y docker.io
     if command -v systemctl >/dev/null 2>&1; then
       sudo_run systemctl enable --now docker
     else

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   Check,
@@ -39,6 +39,7 @@ export const SetupCenter: React.FC<SetupCenterProps> = ({ initialStatus, onCompl
   const [persistedLogs, setPersistedLogs] = useState<string[]>([]);
   const [resultMessage, setResultMessage] = useState<string | null>(null);
   const [restartRequired, setRestartRequired] = useState(false);
+  const logContainerRef = useRef<HTMLDivElement>(null);
 
   const completedCount = useMemo(
     () => snapshot.steps.filter((step) => step.status === 'ready').length,
@@ -84,29 +85,48 @@ export const SetupCenter: React.FC<SetupCenterProps> = ({ initialStatus, onCompl
   useEffect(() => {
     if (!running) return;
     let disposed = false;
-    let polling = false;
-    const poll = async () => {
-      if (polling) return;
-      polling = true;
+    let pollingStatus = false;
+    let pollingLog = false;
+    const pollStatus = async () => {
+      if (pollingStatus) return;
+      pollingStatus = true;
       try {
-        const [statusResult, logResult] = await Promise.allSettled([
-          fetchSetupStatus(),
-          fetchSetupLog(),
-        ]);
-        if (disposed) return;
-        if (statusResult.status === 'fulfilled') setSnapshot(statusResult.value);
-        if (logResult.status === 'fulfilled') setPersistedLogs(logResult.value);
+        const latest = await fetchSetupStatus();
+        if (!disposed) setSnapshot(latest);
+      } catch {
+        // Setup output is more useful than a transient readiness-probe error.
       } finally {
-        polling = false;
+        pollingStatus = false;
       }
     };
-    void poll();
-    const interval = window.setInterval(() => void poll(), 3000);
+    const pollLog = async () => {
+      if (pollingLog) return;
+      pollingLog = true;
+      try {
+        const latest = await fetchSetupLog();
+        if (!disposed) setPersistedLogs(latest);
+      } catch {
+        // Live Tauri events remain available if a single file read fails.
+      } finally {
+        pollingLog = false;
+      }
+    };
+    void pollStatus();
+    void pollLog();
+    const statusInterval = window.setInterval(() => void pollStatus(), 5000);
+    const logInterval = window.setInterval(() => void pollLog(), 1000);
     return () => {
       disposed = true;
-      window.clearInterval(interval);
+      window.clearInterval(statusInterval);
+      window.clearInterval(logInterval);
     };
   }, [running]);
+
+  useEffect(() => {
+    const container = logContainerRef.current;
+    if (!container || !showDetails) return;
+    container.scrollTop = container.scrollHeight;
+  }, [visibleLogText, running, showDetails]);
 
   const refresh = async () => {
     setChecking(true);
@@ -290,7 +310,7 @@ export const SetupCenter: React.FC<SetupCenterProps> = ({ initialStatus, onCompl
               </div>
             </div>
             {showDetails && (
-              <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4 font-mono text-[11px] leading-5">
+              <div ref={logContainerRef} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4 font-mono text-[11px] leading-5">
                 {visibleLogText.length === 0 ? (
                   <div className="text-zinc-600">Setup activity will appear here after you begin.</div>
                 ) : visibleLogText.map((line, index) => (
@@ -298,7 +318,12 @@ export const SetupCenter: React.FC<SetupCenterProps> = ({ initialStatus, onCompl
                     {line}
                   </div>
                 ))}
-                {running && <div className="mt-1 flex items-center gap-2 text-blue-300"><Loader2 size={11} className="animate-spin" /> Working…</div>}
+                {running && (
+                  <div className="mt-1 flex items-center gap-2 text-blue-300">
+                    <Loader2 size={11} className="animate-spin" />
+                    {visibleLogText.length > 1 ? 'Installer running · live output' : 'Starting installer · waiting for output'}
+                  </div>
+                )}
               </div>
             )}
           </div>

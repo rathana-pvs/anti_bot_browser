@@ -224,6 +224,33 @@ class StateRecognizerTests(unittest.TestCase):
         observation = FacebookStateRecognizer(vision).observe_session_gate()
         self.assertEqual(observation.state, ScreenState.ERROR_DIALOG)
 
+    def test_targeted_composer_safety_gate_uses_dialog_region(self):
+        vision = Mock()
+        vision.capture_screen.return_value = np.zeros((200, 300, 3), dtype=np.uint8)
+        vision.read_text.return_value = [
+            {"text": "Something went wrong", "confidence": 0.95, "center": (150, 90)},
+        ]
+
+        observation = FacebookStateRecognizer(vision).observe_safety_gate()
+
+        self.assertEqual(observation.state, ScreenState.ERROR_DIALOG)
+        self.assertEqual(vision.read_text.call_args.kwargs["region"], "browser_dialog")
+
+    def test_reel_publication_gate_uses_bottom_left_region(self):
+        vision = Mock()
+        vision.capture_screen.return_value = np.zeros((200, 300, 3), dtype=np.uint8)
+        vision.read_text.return_value = [
+            {"text": "Your reel was published", "confidence": 0.95, "center": (50, 90)},
+        ]
+
+        observation = FacebookStateRecognizer(vision).observe_publication_gate()
+
+        self.assertEqual(observation.state, ScreenState.POST_CONFIRMED)
+        self.assertEqual(
+            vision.read_text.call_args.kwargs["region"],
+            (0.0, 0.50, 0.40, 1.0),
+        )
+
     def test_targeted_session_gate_surfaces_leave_site_dialog(self):
         vision = Mock()
         vision.capture_screen.return_value = np.zeros((200, 300, 3), dtype=np.uint8)
@@ -589,7 +616,7 @@ class ReelEntryFlowTests(unittest.TestCase):
         self.assertEqual(task._preferred_reel_sidebar_region, task.LEFT_REEL_SIDEBAR)
         task._find_reel_upload_target.assert_not_called()
 
-    def test_reel_studio_upload_control_remains_supported(self):
+    def test_reel_studio_upload_control_selects_its_actual_left_sidebar(self):
         task = self.make_task()
         task.find_visible_file_chooser = Mock(return_value=None)
         task._find_reel_upload_target = Mock(return_value=(177, 790))
@@ -598,7 +625,7 @@ class ReelEntryFlowTests(unittest.TestCase):
 
         self.assertEqual(status, "reel_studio")
         self.assertEqual(target, (177, 790))
-        self.assertEqual(task._preferred_reel_sidebar_region, task.RIGHT_REEL_SIDEBAR)
+        self.assertEqual(task._preferred_reel_sidebar_region, task.LEFT_REEL_SIDEBAR)
 
     def test_delayed_direct_file_chooser_is_detected_without_page_click(self):
         task = self.make_task()
@@ -649,6 +676,45 @@ class ReelEntryFlowTests(unittest.TestCase):
             task.vision.read_text.call_args.kwargs["region"],
             task.LEFT_REEL_SIDEBAR,
         )
+
+    def test_detected_left_layout_stays_locked_until_broad_fallback(self):
+        task = self.make_task()
+        task._preferred_reel_sidebar_region = task.LEFT_REEL_SIDEBAR
+        task.vision.read_text.return_value = []
+
+        self.assertFalse(task._is_reel_final_composer(task.client.screenshot()))
+        task.vision.read_text.assert_called_once_with(
+            task.client.screenshot(),
+            region=task.LEFT_REEL_SIDEBAR,
+            min_confidence=0.18,
+        )
+
+        task.vision.read_text.reset_mock()
+        self.assertFalse(
+            task._is_reel_final_composer(
+                task.client.screenshot(),
+                allow_layout_fallback=True,
+            )
+        )
+        self.assertEqual(task.vision.read_text.call_count, 2)
+        self.assertEqual(
+            [call.kwargs["region"] for call in task.vision.read_text.call_args_list],
+            [task.LEFT_REEL_SIDEBAR, task.RIGHT_REEL_SIDEBAR],
+        )
+
+    def test_reel_safety_uses_full_screen_only_on_third_local_miss(self):
+        task = self.make_task()
+        targeted = StateObservation(ScreenState.UNKNOWN, 0.0)
+        full = StateObservation(ScreenState.UNKNOWN, 0.0)
+        task.recognizer.observe_safety_gate.return_value = targeted
+        task.recognizer.observe.return_value = full
+        screen = task.client.screenshot()
+
+        self.assertIs(task._reel_safety_observation(screen, 1), targeted)
+        self.assertIs(task._reel_safety_observation(screen, 2), targeted)
+        task.recognizer.observe.assert_not_called()
+        self.assertIs(task._reel_safety_observation(screen, 3), full)
+        task.recognizer.observe.assert_called_once_with(screen)
 
     def test_final_composer_remains_detectable_after_early_caption_entry(self):
         task = self.make_task()
@@ -755,17 +821,15 @@ class ReelEntryFlowTests(unittest.TestCase):
 
     def test_description_target_falls_back_to_left_sidebar_layout(self):
         task = self.make_task()
-        task.vision.find_text_cascaded.side_effect = [
-            None,
-            {"center": (290, 310), "text": "Describe your reel..."},
-            None,
-            {"center": (290, 310), "text": "Describe your reel..."},
-        ]
+        task.vision.find_text_cascaded.return_value = {
+            "center": (290, 310),
+            "text": "Describe your reel...",
+        }
         task.vision.find_stable.side_effect = lambda locator, **_: locator()
 
         self.assertEqual(task._find_reel_description_target(), (290, 310))
         self.assertEqual(
-            task.vision.find_text_cascaded.call_args_list[1].kwargs["region"],
+            task.vision.find_text_cascaded.call_args.kwargs["region"],
             (0.00, 0.08, 0.34, 1.0),
         )
 
@@ -954,7 +1018,8 @@ class ReelPublicationVerificationTests(unittest.TestCase):
         task.client = Mock()
         task.client.screenshot.return_value = np.zeros((100, 100, 3), dtype=np.uint8)
         task.recognizer = Mock()
-        task.recognizer.observe.side_effect = observations
+        task.recognizer.observe_publication_gate.side_effect = observations
+        task.recognizer.observe.return_value = StateObservation(ScreenState.UNKNOWN, 0.0)
         task.vision = Mock()
         task.vision.similarity.side_effect = similarities
         task._handle_remix_audio_dialog = Mock(return_value="absent")
@@ -997,7 +1062,33 @@ class ReelPublicationVerificationTests(unittest.TestCase):
 
         self.assertEqual(status, "published")
         self.assertEqual(final[0].state, ScreenState.POST_CONFIRMED)
-        self.assertEqual(task.recognizer.observe.call_count, 1)
+        task.recognizer.observe_publication_gate.assert_called_once_with(
+            task.client.screenshot(),
+            region=task.LEFT_PUBLICATION_REGION,
+        )
+        task.recognizer.observe.assert_not_called()
+
+    def test_reel_confirmation_never_uses_full_screen_before_profile_fallback(self):
+        task = self.make_task(
+            [
+                StateObservation(ScreenState.UNKNOWN, 0.0),
+                StateObservation(ScreenState.UNKNOWN, 0.0),
+                StateObservation(ScreenState.UNKNOWN, 0.0),
+            ],
+            [0.70, 0.70, 0.70],
+        )
+        with unittest.mock.patch(
+            "tasks.facebook_reel.time.time",
+            side_effect=[0.0, 0.0, 0.1, 0.2, 2.0],
+        ), unittest.mock.patch("tasks.facebook_reel.time.sleep", return_value=None):
+            status, _ = task._verify_reel_publication(
+                np.zeros((100, 100, 3), dtype=np.uint8),
+                timeout=1.0,
+            )
+
+        self.assertEqual(status, "uncertain")
+        self.assertEqual(task.recognizer.observe_publication_gate.call_count, 3)
+        task.recognizer.observe.assert_not_called()
 
 
 class FirstCommentTargetTests(unittest.TestCase):

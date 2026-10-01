@@ -460,6 +460,7 @@ class VisionEngine:
         min_confidence: float = 0.45,
         prefer_lower_half: bool = False,
         expand_ratio: float = 0.20,
+        allow_full_screen_fallback: bool = True,
     ) -> dict | None:
         """
         Find an OCR label using a 3-tier cascade:
@@ -525,6 +526,17 @@ class VisionEngine:
                         confidence=match.get("confidence"), fallback_reason="target_region_miss",
                     )
                     return match
+
+            if not allow_full_screen_fallback:
+                self._record_locator(
+                    locator=locator_name,
+                    tier="local_regions_exhausted",
+                    region=region_name,
+                    duration_ms=(time.perf_counter() - started) * 1000.0,
+                    found=False,
+                    fallback_reason="full_screen_deferred",
+                )
+                return None
 
         # Tier 3: Measured full-screen fallback
         match = self.find_text(
