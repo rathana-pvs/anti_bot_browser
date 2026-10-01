@@ -15,6 +15,11 @@ from datetime import datetime, timezone
 import cv2
 import numpy as np
 from .container_client import ContainerClient
+from .ocr_worker_client import (
+    SharedOcrUnavailable,
+    read_text_with_shared_worker,
+    shared_worker_configured,
+)
 
 try:
     from skimage.metrics import structural_similarity
@@ -238,6 +243,27 @@ class VisionEngine:
         cls._ocr_readers[cache_key] = reader
         return reader, device
 
+    def _read_with_local_ocr(self, image: np.ndarray, languages: tuple[str, ...]):
+        """Run the legacy in-process reader, including its CUDA-to-CPU fallback."""
+        reader, device = self._get_ocr_reader(languages)
+        if reader is None:
+            return None, device, None
+        try:
+            return reader.readtext(image, detail=1, paragraph=False), device, None
+        except Exception as exc:
+            if device != "cuda":
+                print(f"Warning: OCR failed: {exc}")
+                return None, device, str(exc)
+            print(f"Warning: CUDA OCR inference failed; retrying this scan on CPU: {exc}")
+            reader, device = self._get_ocr_reader(languages, requested_device="cpu")
+            if reader is None:
+                return None, device, str(exc)
+            try:
+                return reader.readtext(image, detail=1, paragraph=False), device, str(exc)
+            except Exception as cpu_exc:
+                print(f"Warning: CPU OCR fallback failed: {cpu_exc}")
+                return None, device, str(cpu_exc)
+
     @staticmethod
     def get_pixel_region(
         screen_shape: tuple[int, ...],
@@ -340,36 +366,38 @@ class VisionEngine:
             return results
 
         ocr_image, scale = self._prepare_ocr_image(crop, targeted=region is not None)
-        reader, ocr_device = self._get_ocr_reader(languages)
-        self.ocr_device = ocr_device
-        if telemetry is not None:
-            telemetry.set_environment(ocr_device=ocr_device)
-        if reader is None:
-            if telemetry is not None:
-                telemetry.record_ocr((time.perf_counter() - started) * 1000.0, region_name, 0, outcome="reader_unavailable")
-            return []
-
         raw_items = []
-        try:
-            raw_results = reader.readtext(ocr_image, detail=1, paragraph=False)
-        except Exception as exc:
-            if self.ocr_device == "cuda":
-                print(f"Warning: CUDA OCR inference failed; retrying this scan on CPU: {exc}")
-                reader, self.ocr_device = self._get_ocr_reader(languages, requested_device="cpu")
+        shared_cache_hit = False
+        if shared_worker_configured():
+            try:
+                shared_result = read_text_with_shared_worker(ocr_image, languages)
+                self.ocr_device = str(shared_result.get("device") or "shared")
+                shared_cache_hit = bool(shared_result.get("cache_hit"))
+                raw_results = [
+                    (item["box"], item["text"], item["confidence"])
+                    for item in shared_result["items"]
+                ]
                 if telemetry is not None:
-                    telemetry.set_environment(ocr_device="cpu", ocr_fallback_reason=str(exc))
-                try:
-                    raw_results = reader.readtext(ocr_image, detail=1, paragraph=False) if reader else []
-                except Exception as cpu_exc:
-                    print(f"Warning: CPU OCR fallback failed: {cpu_exc}")
-                    if telemetry is not None:
-                        telemetry.record_ocr((time.perf_counter() - started) * 1000.0, region_name, 0, outcome="error")
-                    return []
-            else:
-                print(f"Warning: OCR failed: {exc}")
+                    telemetry.set_environment(ocr_device=self.ocr_device, ocr_worker="shared")
+            except (SharedOcrUnavailable, KeyError, TypeError, ValueError) as exc:
+                print(f"Warning: Shared OCR worker unavailable; using local OCR: {exc}")
+                raw_results, self.ocr_device, fallback_reason = self._read_with_local_ocr(ocr_image, languages)
                 if telemetry is not None:
-                    telemetry.record_ocr((time.perf_counter() - started) * 1000.0, region_name, 0, outcome="error")
-                return []
+                    telemetry.set_environment(ocr_device=self.ocr_device, ocr_worker="local_fallback")
+        else:
+            raw_results, self.ocr_device, fallback_reason = self._read_with_local_ocr(ocr_image, languages)
+            if telemetry is not None:
+                telemetry.set_environment(ocr_device=self.ocr_device, ocr_worker="local")
+
+        if raw_results is None:
+            if telemetry is not None:
+                telemetry.record_ocr(
+                    (time.perf_counter() - started) * 1000.0,
+                    region_name,
+                    0,
+                    outcome="reader_unavailable" if self.ocr_device == "unavailable" else "error",
+                )
+            return []
 
         for box, text, confidence in raw_results:
             confidence = float(confidence)
@@ -394,6 +422,7 @@ class VisionEngine:
                 region_name,
                 len(results),
                 [item["confidence"] for item in results],
+                outcome="cache_hit" if shared_cache_hit else "completed",
             )
         return results
 

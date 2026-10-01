@@ -371,6 +371,20 @@ class PostPublishPromptTests(unittest.TestCase):
 
 
 class FileChooserTests(unittest.TestCase):
+    def test_detects_visible_file_chooser_and_returns_matching_title(self):
+        task = BaseTask.__new__(BaseTask)
+        task.client = Mock()
+
+        def exec_cmd(args, check=False):
+            title = args[-1]
+            if title == "File Upload":
+                return Mock(returncode=0, stdout="17\n42\n")
+            return Mock(returncode=1, stdout="")
+
+        task.client.exec_cmd.side_effect = exec_cmd
+
+        self.assertEqual(task.find_visible_file_chooser(), ("42", "File Upload"))
+
     def test_attachment_clicks_visual_open_without_return(self):
         task = BaseTask.__new__(BaseTask)
         task.client = Mock()
@@ -551,6 +565,267 @@ class ReelUploadTargetTests(unittest.TestCase):
         self.assertIsNone(task._find_reel_upload_target())
 
 
+class ReelEntryFlowTests(unittest.TestCase):
+    def make_task(self):
+        task = FacebookReelTask.__new__(FacebookReelTask)
+        task.client = Mock()
+        task.client.screenshot.return_value = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task.recognizer = Mock()
+        task.recognizer.observe.return_value = StateObservation(ScreenState.UNKNOWN, 0.2)
+        task.capture_evidence = Mock()
+        task.telemetry = Mock()
+        task.vision = Mock()
+        return task
+
+    def test_direct_file_chooser_takes_priority_over_page_detection(self):
+        task = self.make_task()
+        task.find_visible_file_chooser = Mock(return_value=("42", "File Upload"))
+        task._find_reel_upload_target = Mock(return_value=(177, 790))
+
+        status, target, _ = task._wait_for_reel_entry(timeout=1.0)
+
+        self.assertEqual(status, "direct_file_chooser")
+        self.assertEqual(target, ("42", "File Upload"))
+        self.assertEqual(task._preferred_reel_sidebar_region, task.LEFT_REEL_SIDEBAR)
+        task._find_reel_upload_target.assert_not_called()
+
+    def test_reel_studio_upload_control_remains_supported(self):
+        task = self.make_task()
+        task.find_visible_file_chooser = Mock(return_value=None)
+        task._find_reel_upload_target = Mock(return_value=(177, 790))
+
+        status, target, _ = task._wait_for_reel_entry(timeout=1.0)
+
+        self.assertEqual(status, "reel_studio")
+        self.assertEqual(target, (177, 790))
+        self.assertEqual(task._preferred_reel_sidebar_region, task.RIGHT_REEL_SIDEBAR)
+
+    def test_delayed_direct_file_chooser_is_detected_without_page_click(self):
+        task = self.make_task()
+        task.find_visible_file_chooser = Mock(side_effect=[None, ("42", "File Upload")])
+        task._find_reel_upload_target = Mock(return_value=None)
+
+        with unittest.mock.patch("tasks.facebook_reel.time.sleep", return_value=None):
+            status, target, _ = task._wait_for_reel_entry(timeout=1.0)
+
+        self.assertEqual(status, "direct_file_chooser")
+        self.assertEqual(target, ("42", "File Upload"))
+        task._find_reel_upload_target.assert_called_once_with()
+
+    def test_final_composer_requires_description_and_reel_context(self):
+        task = self.make_task()
+        screen = task.client.screenshot.return_value
+        final_items = [
+            {"text": "Describe your reel..."},
+            {"text": "Uploaded media"},
+            {"text": "Post audience"},
+        ]
+        task.vision.read_text.side_effect = [[], final_items]
+
+        self.assertTrue(task._is_reel_final_composer(screen))
+        self.assertEqual(
+            task.vision.read_text.call_args_list[-1].kwargs["region"],
+            (0.00, 0.08, 0.34, 1.0),
+        )
+
+        task.vision.read_text.side_effect = [
+            [{"text": "Describe your reel..."}],
+            [{"text": "Describe your reel..."}],
+        ]
+        self.assertFalse(task._is_reel_final_composer(screen))
+
+    def test_direct_flow_searches_left_sidebar_first(self):
+        task = self.make_task()
+        task._preferred_reel_sidebar_region = task.LEFT_REEL_SIDEBAR
+        task.vision.read_text.return_value = [
+            {"text": "Describe your reel...", "center": (290, 310)},
+            {"text": "Uploaded media"},
+        ]
+
+        self.assertTrue(task._is_reel_final_composer(task.client.screenshot()))
+        self.assertEqual(task._reel_description_target, (290, 310))
+        task.vision.read_text.assert_called_once()
+        self.assertEqual(
+            task.vision.read_text.call_args.kwargs["region"],
+            task.LEFT_REEL_SIDEBAR,
+        )
+
+    def test_final_composer_remains_detectable_after_early_caption_entry(self):
+        task = self.make_task()
+        task._preferred_reel_sidebar_region = task.LEFT_REEL_SIDEBAR
+        task._reel_description_target = (290, 310)
+        task._reel_caption_entered = True
+        task.vision.read_text.return_value = [
+            {"text": "Caption already entered"},
+            {"text": "Uploaded media"},
+            {"text": "Post audience"},
+        ]
+
+        self.assertTrue(task._is_reel_final_composer(task.client.screenshot()))
+
+    def test_early_caption_entry_pastes_and_marks_caption_entered(self):
+        task = self.make_task()
+        task.caption = "Caption while the video processes"
+        task._wait_for_target = Mock(return_value=("ready", (290, 310), task.client.screenshot()))
+        task._find_reel_description_target = Mock()
+        task._wait_for_reel_caption = Mock(
+            return_value=(True, task.client.screenshot(), 1.0)
+        )
+        task.human = Mock()
+        task.paste_text = Mock()
+        task.log = Mock()
+
+        status, _ = task._enter_reel_caption(timeout=15.0)
+
+        self.assertEqual(status, "entered")
+        self.assertTrue(task._reel_caption_entered)
+        self.assertEqual(task._reel_description_target, (290, 310))
+        task.human.click.assert_called_once_with(290, 310)
+        task.paste_text.assert_called_once_with(task.caption)
+
+    def test_unavailable_early_caption_does_not_type(self):
+        task = self.make_task()
+        task.caption = "Caption while the video processes"
+        task._wait_for_target = Mock(return_value=("timeout", None, None))
+        task._find_reel_description_target = Mock()
+        task.human = Mock()
+        task.paste_text = Mock()
+
+        status, _ = task._enter_reel_caption(timeout=15.0)
+
+        self.assertEqual(status, "unavailable")
+        task.human.click.assert_not_called()
+        task.paste_text.assert_not_called()
+
+    def test_direct_media_state_rejects_empty_preview(self):
+        task = self.make_task()
+        task.vision.read_text.return_value = [
+            {"text": "Add video"},
+            {"text": "or drag and drop"},
+        ]
+
+        self.assertEqual(
+            task._direct_reel_media_state(task.client.screenshot()),
+            "missing",
+        )
+
+    def test_direct_media_state_accepts_uploaded_media(self):
+        task = self.make_task()
+        task.vision.read_text.return_value = [
+            {"text": "Describe your reel...", "center": (290, 310)},
+            {"text": "Uploaded media"},
+        ]
+
+        self.assertEqual(
+            task._direct_reel_media_state(task.client.screenshot()),
+            "attached",
+        )
+        self.assertEqual(task._reel_description_target, (290, 310))
+
+    def test_direct_layout_reattaches_once_when_second_chooser_appears(self):
+        task = self.make_task()
+        task.log = Mock()
+        task.find_visible_file_chooser = Mock(
+            side_effect=[("99", "Open File"), None]
+        )
+        task.attach_file_gtk = Mock(return_value=True)
+        task._direct_reel_media_state = Mock(return_value="attached")
+
+        status, _ = task._ensure_direct_reel_media_attached(
+            "/data/shared_media/video.mp4",
+            timeout=2.0,
+        )
+
+        self.assertEqual(status, "ready")
+        task.attach_file_gtk.assert_called_once_with(
+            "/data/shared_media/video.mp4",
+            chooser_window=("99", "Open File"),
+        )
+        evidence = task.capture_evidence.call_args
+        self.assertEqual(evidence.args[0], "reel_direct_media_attached")
+        self.assertTrue(evidence.kwargs["second_attachment"])
+
+    def test_description_target_reuses_final_composer_observation(self):
+        task = self.make_task()
+        task._reel_description_target = (290, 310)
+
+        self.assertEqual(task._find_reel_description_target(), (290, 310))
+        task.vision.find_stable.assert_not_called()
+        task.vision.find_text_cascaded.assert_not_called()
+
+    def test_description_target_falls_back_to_left_sidebar_layout(self):
+        task = self.make_task()
+        task.vision.find_text_cascaded.side_effect = [
+            None,
+            {"center": (290, 310), "text": "Describe your reel..."},
+            None,
+            {"center": (290, 310), "text": "Describe your reel..."},
+        ]
+        task.vision.find_stable.side_effect = lambda locator, **_: locator()
+
+        self.assertEqual(task._find_reel_description_target(), (290, 310))
+        self.assertEqual(
+            task.vision.find_text_cascaded.call_args_list[1].kwargs["region"],
+            (0.00, 0.08, 0.34, 1.0),
+        )
+
+    def test_caption_verification_rejects_untouched_placeholder(self):
+        task = self.make_task()
+        task.caption = "Save this for your routine and follow for more"
+        task.vision.read_text.return_value = [
+            {"text": "Describe your reel..."},
+            {"text": "Uploaded media"},
+            {"text": "Post audience"},
+        ]
+
+        self.assertEqual(task._reel_caption_match_confidence(task.client.screenshot()), 0.0)
+
+    def test_caption_verification_accepts_visible_caption_tokens(self):
+        task = self.make_task()
+        task.caption = "Save this for your routine and follow for more"
+        task._preferred_reel_sidebar_region = task.LEFT_REEL_SIDEBAR
+        task.vision.read_text.return_value = [
+            {"text": "Save this for your routine"},
+            {"text": "Uploaded media"},
+        ]
+
+        self.assertGreaterEqual(
+            task._reel_caption_match_confidence(task.client.screenshot()),
+            0.5,
+        )
+        task.vision.read_text.assert_called_once()
+
+    def test_post_upload_transition_accepts_direct_final_composer(self):
+        task = self.make_task()
+        task._is_reel_final_composer = Mock(return_value=True)
+        task._find_stable_enabled_action = Mock(return_value=(420, 990))
+
+        status, target, _ = task._wait_for_reel_post_upload_transition(
+            timeout=1.0,
+            label="reel_next_ready",
+        )
+
+        self.assertEqual(status, "final_composer")
+        self.assertIsNone(target)
+        task._find_stable_enabled_action.assert_not_called()
+
+    def test_post_upload_transition_preserves_next_flow(self):
+        task = self.make_task()
+        task._is_reel_final_composer = Mock(return_value=False)
+        task._find_stable_enabled_action = Mock(return_value=(420, 990))
+
+        status, target, _ = task._wait_for_reel_post_upload_transition(
+            timeout=1.0,
+            label="reel_next_ready",
+        )
+
+        self.assertEqual(status, "next")
+        self.assertEqual(target, (420, 990))
+        self.assertFalse(
+            task._find_stable_enabled_action.call_args.kwargs["allow_semantic_fallback"]
+        )
+
+
 class ReelProfileActionTests(unittest.TestCase):
     def make_task(self, ocr_items):
         task = FacebookReelTask.__new__(FacebookReelTask)
@@ -726,6 +1001,21 @@ class ReelPublicationVerificationTests(unittest.TestCase):
 
 
 class FirstCommentTargetTests(unittest.TestCase):
+    def test_shared_comment_scan_finds_input_and_action_with_one_ocr_call(self):
+        task = FacebookPostTask.__new__(FacebookPostTask)
+        task.vision = Mock()
+        task.vision.read_text.return_value = [
+            {"text": "Comment", "center": (1130, 390), "confidence": 0.80},
+            {"text": "Comment as Page", "center": (1167, 840), "confidence": 0.95},
+        ]
+        screen = np.zeros((1080, 1920, 3), dtype=np.uint8)
+
+        input_target, action_target = task._find_first_comment_targets(screen)
+
+        self.assertEqual(input_target, (1167, 840))
+        self.assertEqual(action_target["center"], (1130, 390))
+        task.vision.read_text.assert_called_once()
+
     def test_uses_topmost_comment_as_field(self):
         task = FacebookPostTask.__new__(FacebookPostTask)
         task.vision = Mock()
@@ -1068,7 +1358,7 @@ class FirstCommentTargetTests(unittest.TestCase):
         with unittest.mock.patch("tasks.facebook_reel.time.sleep", return_value=None) as sleep:
             status, _ = task.post_reel_first_comment_after_refresh("https://example.com/link")
 
-        self.assertEqual(status, "skipped_latest_post_not_found")
+        self.assertEqual(status, "failed_input_not_found")
         self.assertEqual(task.navigate_to.call_count, 2)
         sleep.assert_called_once_with(10.0)
         task.post_first_comment.assert_not_called()

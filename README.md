@@ -46,7 +46,7 @@ Instead of relying on fragile, obfuscated CSS class names (`x1i10hfl xjbqb8w`) o
 flowchart TD
     subgraph Host["Host Machine"]
         ManagerApp["Manager Dashboard<br/>(React + Vite / Tauri)"]
-        Backend["FastAPI Backend<br/>(:8000)"]
+        Backend["FastAPI Backend<br/>(random loopback port)"]
         QueueWorker["Background Queue Worker & Scheduler"]
     end
 
@@ -148,6 +148,18 @@ if the requested device or libraries are unavailable, the container starts
 with software rendering and records the fallback reason instead of claiming
 hardware acceleration. The Profile Inspector shows the observed renderer and
 effective rendering mode after each start.
+
+The manager starts one loopback-only OCR worker and keeps the selected
+EasyOCR model warm for all automation processes. GPU requests are serialized
+through that worker so concurrent profiles share one CUDA model allocation
+instead of loading a separate copy per process. Each automation process keeps
+its existing local OCR fallback if the shared worker is unavailable.
+
+The desktop manager also starts its API on a fresh random `127.0.0.1` port
+for every app launch. A fresh session token is delivered to the embedded
+frontend through Tauri IPC and is required by every API and shared-media
+request. The service is therefore unreachable from the LAN and unusable by
+ordinary local HTTP clients that do not belong to the running app session.
 
 ### 2. Container Image Build
 Build the isolated Chrome container base image:

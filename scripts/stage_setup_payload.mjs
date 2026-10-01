@@ -24,7 +24,7 @@ const excludedNames = new Set([
 const shouldCopy = (source) => {
   const name = source.split(/[\\/]/).pop() ?? '';
   if (excludedNames.has(name)) return false;
-  return !name.endsWith('.pyc') && !name.endsWith('.log');
+  return !name.endsWith('.pyc') && !name.endsWith('.log') && !name.endsWith('.pth');
 };
 
 rmSync(payloadRoot, { recursive: true, force: true });

@@ -2,7 +2,7 @@ import subprocess
 import os
 import psutil
 from fastapi import APIRouter
-from backend.config import PROFILES_DIR, CPU_THREADS
+from backend.config import PROFILES_DIR, CPU_THREADS, ROOT_DIR
 from backend.services.proxy_service import load_proxy_pool
 from backend.services.docker_service import (
     count_running_profile_containers,
@@ -13,6 +13,15 @@ from backend.services.docker_service import (
 from backend.services.host_metrics_service import get_windows_host_stats
 
 router = APIRouter(prefix="/api/system", tags=["system"])
+
+
+@router.get("/runtime-version")
+def get_runtime_version():
+    try:
+        version = (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip()
+    except Exception:
+        version = "unknown"
+    return {"version": version}
 
 
 def runtime_environment() -> str:

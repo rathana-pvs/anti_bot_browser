@@ -23,6 +23,14 @@ from engine.telemetry import TelemetryRecorder, timed_telemetry_step
 
 
 class BaseTask:
+    FILE_CHOOSER_DIALOG_NAMES = (
+        "Open File",
+        "File Upload",
+        "Select a File",
+        "Choose File",
+        "^Open$",
+    )
+
     WARMING_SURFACES = {
         "news_feed": "https://www.facebook.com/",
         "profile": "https://www.facebook.com/me",
@@ -584,10 +592,18 @@ class BaseTask:
         if wait_seconds > 1.0:
             time.sleep(wait_seconds - 1.0)
 
-    def paste_text(self, text: str) -> None:
+    def paste_text(
+        self,
+        text: str,
+        *,
+        paste_key: str = "ctrl+v",
+        selection: str = "clipboard",
+    ) -> None:
         """
         Copy text (including full Unicode & emojis) to container X11 clipboard
-        using xclip and paste it into the active element with Ctrl+V.
+        using xclip and paste it into the active element with the requested
+        shortcut. ``primary`` + Shift+Insert is available as an independent
+        fallback when a page ignores the regular clipboard shortcut.
         """
         try:
             import subprocess
@@ -603,14 +619,14 @@ class BaseTask:
                     self.client.container_name,
                     "xclip",
                     "-selection",
-                    "clipboard",
+                    selection,
                 ],
                 input=text.encode("utf-8"),
                 check=True,
                 capture_output=True,
             )
             time.sleep(0.15)
-            self.human.key_press("ctrl+v")
+            self.human.key_press(paste_key)
             time.sleep(0.2)
         except Exception as e:
             self.log("WARN", f"Clipboard paste failed, falling back to typing: {e}")
@@ -806,8 +822,26 @@ class BaseTask:
         self.session_check_status = "authenticated"
         return True
 
+    def find_visible_file_chooser(self) -> tuple[str, str] | None:
+        """Return the visible GTK chooser window id and matched title pattern."""
+        for dialog_name in self.FILE_CHOOSER_DIALOG_NAMES:
+            result = self.client.exec_cmd(
+                ["xdotool", "search", "--onlyvisible", "--name", dialog_name],
+                check=False,
+            )
+            if result.returncode != 0:
+                continue
+            window_ids = result.stdout.strip().split()
+            if window_ids:
+                return window_ids[-1], dialog_name
+        return None
+
     @timed_telemetry_step("media_upload")
-    def attach_file_gtk(self, file_path: str) -> bool:
+    def attach_file_gtk(
+        self,
+        file_path: str,
+        chooser_window: tuple[str, str] | None = None,
+    ) -> bool:
         """
         Attach a file using the native Linux GTK file chooser dialog (Zero-CDP).
         Focuses the visible 'Open Files' window, enters the direct path, then
@@ -818,26 +852,16 @@ class BaseTask:
 
         # Wait up to 15s for GTK dialog to appear. Reel Studio can delay opening
         # the native chooser while its upload UI initializes.
-        win_id = None
-        matched_dialog_name = None
-        dialog_names = ("Open File", "File Upload", "Select a File", "Choose File", "^Open$")
+        detected_chooser = chooser_window
         for _ in range(30):
-            for dialog_name in dialog_names:
-                res = self.client.exec_cmd(
-                    ["xdotool", "search", "--onlyvisible", "--name", dialog_name],
-                    check=False,
-                )
-                if res.returncode == 0:
-                    lines = res.stdout.strip().split()
-                    if lines:
-                        win_id = lines[-1]
-                        matched_dialog_name = dialog_name
-                        break
-            if win_id:
+            if detected_chooser is None:
+                detected_chooser = self.find_visible_file_chooser()
+            if detected_chooser is not None:
                 break
             time.sleep(0.5)
 
-        if win_id:
+        if detected_chooser is not None:
+            win_id, matched_dialog_name = detected_chooser
             self.client.exec_cmd(["xdotool", "windowfocus", "--sync", str(win_id)], check=False)
             time.sleep(0.3)
         else:
@@ -849,7 +873,7 @@ class BaseTask:
             self.capture_evidence(
                 "file_chooser_not_detected",
                 visible_window_ids=visible_windows.stdout.strip().split(),
-                searched_titles=list(dialog_names),
+                searched_titles=list(self.FILE_CHOOSER_DIALOG_NAMES),
             )
             return False
 
@@ -975,6 +999,31 @@ class BaseTask:
         candidates.sort(key=lambda item: item.get("center", (0, height + 1))[1])
         return candidates[0]
 
+    def _find_first_comment_targets(self, screen):
+        """Find the first comment input and action with one shared OCR pass."""
+        height, width = screen.shape[:2]
+        region = (
+            max(0, int(width * 0.28)),
+            0,
+            min(width - int(width * 0.28), int(width * 0.67)),
+            height,
+        )
+        inputs = []
+        actions = []
+        for item in self.vision.read_text(screen, region=region, min_confidence=0.15):
+            normalized = re.sub(r"[^a-z0-9]+", " ", item.get("text", "").casefold()).strip()
+            words = set(normalized.split())
+            if normalized.startswith("comment as") or "comment as" in normalized or {"write", "comment"}.issubset(words):
+                inputs.append(item)
+            elif normalized == "comment":
+                actions.append(item)
+
+        inputs.sort(key=lambda item: item.get("center", (0, height + 1))[1])
+        actions.sort(key=lambda item: item.get("center", (0, height + 1))[1])
+        input_target = inputs[0].get("center") if inputs else None
+        action_target = actions[0] if actions else None
+        return input_target, action_target
+
     def _open_profile_first_comment_input(self, *, navigate: bool = True):
         """
         Primary comment targeting method: navigate to the profile and select the
@@ -994,7 +1043,7 @@ class BaseTask:
 
         for scan in range(1, 7):
             screen = self.client.screenshot()
-            target = self._find_first_comment_input(screen)
+            target, action_btn = self._find_first_comment_targets(screen)
             self.log_decision(
                 "Find 'Comment as ...' field",
                 "post card comment input ('Comment as ...' or 'Write a comment...')",
@@ -1006,7 +1055,6 @@ class BaseTask:
                 return target, screen
 
             # If comment input not expanded, check for 'Comment' button under post card
-            action_btn = self._find_first_comment_action(screen)
             if action_btn:
                 self.log("INFO", f"Clicking 'Comment' action at {action_btn['center']} to expand input...")
                 self.click_reversible(
@@ -1024,7 +1072,7 @@ class BaseTask:
             # Move just enough to reveal the remainder of the first post. Large
             # page jumps could make a later post become the topmost visible card.
             self.human.scroll("down", notches=2)
-            time.sleep(1.2)
+            time.sleep(0.8)
 
         return None, None
 

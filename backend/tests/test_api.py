@@ -30,6 +30,28 @@ def test_settings_resource_mode(client):
     # Reset to auto
     client.put("/api/settings/resource-mode", json={"mode": "auto"})
 
+
+def test_runtime_version(client):
+    res = client.get("/api/system/runtime-version")
+    assert res.status_code == 200
+    assert res.json()["version"] == "0.1.0-beta.5"
+
+
+def test_desktop_session_token_protects_api(client, monkeypatch):
+    monkeypatch.setenv("MANAGER_API_TOKEN", "test-desktop-session")
+    assert client.get("/api/profiles").status_code == 403
+    authorized = client.get(
+        "/api/profiles",
+        headers={"X-Manager-Token": "test-desktop-session"},
+    )
+    assert authorized.status_code == 200
+    assert client.get("/api/system/runtime-version").status_code == 403
+    version = client.get(
+        "/api/system/runtime-version",
+        headers={"X-Manager-Token": "test-desktop-session"},
+    )
+    assert version.status_code == 200
+
 def test_system_stats(client):
     res = client.get("/api/system/stats")
     assert res.status_code == 200

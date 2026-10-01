@@ -331,6 +331,7 @@ install_application() {
   "${ROOT_DIR}/automation/venv/bin/python" "${ROOT_DIR}/automation/bootstrap_torch_runtime.py"
   "${ROOT_DIR}/automation/venv/bin/python" -m pip install -r "${ROOT_DIR}/automation/requirements.txt"
   "${ROOT_DIR}/automation/venv/bin/python" -m pip install -r "${ROOT_DIR}/backend/requirements.txt"
+  "${ROOT_DIR}/automation/venv/bin/python" "${ROOT_DIR}/automation/bootstrap_ocr_models.py"
 
   if [ "${DESKTOP_SETUP}" = false ]; then
     echo

@@ -2,16 +2,30 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use serde::Serialize;
-use std::io::{BufRead, BufReader};
-use std::net::{SocketAddr, TcpStream};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, State};
+use uuid::Uuid;
 
 struct BackendProcess(Mutex<Option<Child>>);
 struct SetupProcess(Mutex<bool>);
+
+#[derive(Clone)]
+struct ApiSession {
+    port: u16,
+    token: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ApiSessionInfo {
+    base_url: String,
+    token: String,
+}
 
 #[cfg(target_os = "windows")]
 fn suppress_console_window(command: &mut Command) {
@@ -194,9 +208,108 @@ fn prepare_install_root(app: &AppHandle) -> Result<PathBuf, String> {
     })
 }
 
-fn backend_is_running() -> bool {
-    let address: SocketAddr = "127.0.0.1:3001".parse().expect("valid backend address");
+fn manager_api_port() -> u16 {
+    std::env::var("MANAGER_API_PORT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(3001)
+}
+
+fn choose_loopback_port() -> u16 {
+    TcpListener::bind("127.0.0.1:0")
+        .and_then(|listener| listener.local_addr())
+        .map(|address| address.port())
+        .unwrap_or(3001)
+}
+
+fn backend_is_running_on_port(port: u16) -> bool {
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
     TcpStream::connect_timeout(&address, Duration::from_millis(250)).is_ok()
+}
+
+fn backend_is_running() -> bool {
+    backend_is_running_on_port(manager_api_port())
+}
+
+#[cfg(target_os = "windows")]
+fn backend_runtime_version() -> Option<String> {
+    let address = SocketAddr::from(([127, 0, 0, 1], manager_api_port()));
+    let token = std::env::var("MANAGER_API_TOKEN").ok()?;
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(500)).ok()?;
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
+    let request = format!(
+        "GET /api/system/runtime-version HTTP/1.0\r\nHost: 127.0.0.1\r\nX-Manager-Token: {token}\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).ok()?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response).ok()?;
+    if !response.starts_with("HTTP/1.0 200") && !response.starts_with("HTTP/1.1 200") {
+        return None;
+    }
+    let body = response.split("\r\n\r\n").nth(1)?;
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()?
+        .get("version")?
+        .as_str()
+        .map(str::to_string)
+}
+
+#[cfg(target_os = "windows")]
+fn installed_wsl_runtime_version(distribution: &str) -> Option<String> {
+    command_output(
+        "wsl.exe",
+        &[
+            "-d",
+            distribution,
+            "--",
+            "bash",
+            "-lc",
+            "cat \"$HOME/automat_fb-beta/VERSION\" 2>/dev/null",
+        ],
+    )
+    .map(|value| value.trim().to_string())
+    .filter(|value| !value.is_empty())
+}
+
+#[cfg(target_os = "windows")]
+fn stop_wsl_backend_on_port(distribution: Option<&str>, port: u16) {
+    let Some(distribution) = distribution else {
+        return;
+    };
+    let stop_command = format!(
+        "pkill -f '[u]vicorn backend.main:app.*--port {port}' >/dev/null 2>&1 || true"
+    );
+    let _ = command_succeeds(
+        "wsl.exe",
+        &[
+            "-d",
+            distribution,
+            "--",
+            "bash",
+            "-lc",
+            &stop_command,
+        ],
+    );
+    for _ in 0..20 {
+        if !backend_is_running_on_port(port) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn stop_wsl_backend(distribution: Option<&str>) {
+    stop_wsl_backend_on_port(distribution, manager_api_port());
+}
+
+#[tauri::command]
+fn get_api_session(state: State<'_, ApiSession>) -> ApiSessionInfo {
+    ApiSessionInfo {
+        base_url: format!("http://127.0.0.1:{}", state.port),
+        token: state.token.clone(),
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -437,19 +550,9 @@ fn setup_state(root: Option<&PathBuf>) -> (bool, bool, bool, bool, bool) {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
     });
-    let installed_runtime_version = distribution.as_ref().and_then(|name| {
-        command_output(
-            "wsl.exe",
-            &[
-                "-d",
-                name,
-                "--",
-                "bash",
-                "-lc",
-                "cat \"$HOME/automat_fb-beta/VERSION\" 2>/dev/null",
-            ],
-        )
-    });
+    let installed_runtime_version = distribution
+        .as_ref()
+        .and_then(|name| installed_wsl_runtime_version(name));
     let runtime_version_current = bundled_runtime_version
         .as_ref()
         .map(|version| installed_runtime_version.as_ref() == Some(version))
@@ -543,7 +646,10 @@ fn setup_snapshot(app: &AppHandle) -> SetupSnapshot {
         };
         format!("{host} · {browser} · {ocr}")
     };
-    let verification_ready = backend_is_running() && platform_ready && image_ready;
+    // Backend startup is asynchronous and can still be warming when the UI
+    // asks for setup status. Installed-component verification must not force
+    // the user through Setup Center on every normal launch.
+    let verification_ready = platform_ready && runtime_ready && image_ready && configuration_ready;
     let platform_installed = container_platform_installed();
     let status = |ready: bool, waiting: bool| {
         if ready {
@@ -635,7 +741,7 @@ fn setup_snapshot(app: &AppHandle) -> SetupSnapshot {
             description: "Backend, Docker, browser image, and local connectivity".into(),
             status: status(verification_ready, !(runtime_ready && image_ready)).into(),
             detail: if verification_ready {
-                "All core services are ready"
+                "Installed components are verified; application services start automatically"
             } else {
                 "Final system test is pending"
             }
@@ -772,10 +878,26 @@ async fn run_setup(
         Ok(result) => result,
         Err(error) => Err(format!("Setup worker failed: {error}")),
     };
-    if result.as_ref().map(|value| value.success).unwrap_or(false) && !backend_is_running() {
-        if let Some(child) = spawn_backend(&app) {
+    if result.as_ref().map(|value| value.success).unwrap_or(false) {
+        #[cfg(target_os = "windows")]
+        let should_spawn_backend = {
             if let Ok(mut backend) = backend_state.0.lock() {
-                *backend = Some(child);
+                if let Some(mut child) = backend.take() {
+                    let _ = child.kill();
+                }
+            }
+            let distribution = find_ubuntu_distribution();
+            stop_wsl_backend(distribution.as_deref());
+            true
+        };
+        #[cfg(not(target_os = "windows"))]
+        let should_spawn_backend = !backend_is_running();
+
+        if should_spawn_backend {
+            if let Some(child) = spawn_backend(&app) {
+                if let Ok(mut backend) = backend_state.0.lock() {
+                    *backend = Some(child);
+                }
             }
         }
         let wait_app = app.clone();
@@ -1030,21 +1152,55 @@ fn spawn_wsl_backend() -> Option<Child> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+    let distribution = find_ubuntu_distribution()?;
+    let port = manager_api_port();
+    std::env::var("MANAGER_API_TOKEN").ok()?;
+
+    // Remove the fixed-port backend left by releases older than beta.5.
+    if port != 3001 && backend_is_running_on_port(3001) {
+        stop_wsl_backend_on_port(Some(&distribution), 3001);
+    }
     if backend_is_running() {
-        println!("[Tauri] Reusing backend already listening on 127.0.0.1:3001");
-        return None;
+        let installed_version = installed_wsl_runtime_version(&distribution);
+        let running_version = backend_runtime_version();
+        if installed_version.is_some() && installed_version == running_version {
+            println!(
+                "[Tauri] Reusing matching backend {} on the private loopback port",
+                running_version.as_deref().unwrap_or("unknown")
+            );
+            return None;
+        }
+        println!(
+            "[Tauri] Restarting stale backend (running={:?}, installed={:?})",
+            running_version, installed_version
+        );
+        stop_wsl_backend(Some(&distribution));
     }
 
-    let distribution = find_ubuntu_distribution()?;
-    let launch = concat!(
-        "cd \"$HOME/automat_fb-beta\" && ",
-        "mkdir -p data && ",
-        "PYTHONPATH=. exec automation/venv/bin/uvicorn backend.main:app ",
-        "--host 127.0.0.1 --port 3001 --no-access-log >> data/install.log 2>&1"
+    let launch = format!(
+        concat!(
+            "cd \"$HOME/automat_fb-beta\" && ",
+            "mkdir -p data && ",
+            "MANAGER_API_TOKEN=\"$MANAGER_API_TOKEN\" PYTHONPATH=. exec automation/venv/bin/uvicorn backend.main:app ",
+            "--host 127.0.0.1 --port {port} --no-access-log >> data/install.log 2>&1"
+        ),
+        port = port,
     );
+    let existing_wslenv = std::env::var("WSLENV").unwrap_or_default();
+    let wslenv = if existing_wslenv.is_empty() {
+        "MANAGER_API_TOKEN".to_string()
+    } else if existing_wslenv
+        .split(':')
+        .any(|entry| entry.split('/').next() == Some("MANAGER_API_TOKEN"))
+    {
+        existing_wslenv
+    } else {
+        format!("{existing_wslenv}:MANAGER_API_TOKEN")
+    };
     let mut command = Command::new("wsl.exe");
     command
-        .args(["-d", &distribution, "--", "bash", "-lc", launch])
+        .args(["-d", &distribution, "--", "bash", "-lc", &launch])
+        .env("WSLENV", wslenv)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -1052,7 +1208,7 @@ fn spawn_wsl_backend() -> Option<Child> {
 
     match command.spawn() {
         Ok(child) => {
-            println!("[Tauri] Starting backend in WSL distribution {distribution}");
+            println!("[Tauri] Starting backend on a private loopback port in WSL distribution {distribution}");
             Some(child)
         }
         Err(error) => {
@@ -1130,6 +1286,10 @@ fn spawn_backend(app: &AppHandle) -> Option<Child> {
     if let Some(binary_path) = find_backend_binary(app) {
         println!("[Tauri] Starting backend server from {:?}", binary_path);
         let mut cmd = Command::new(&binary_path);
+        cmd.env("PORT", manager_api_port().to_string());
+        if let Ok(token) = std::env::var("MANAGER_API_TOKEN") {
+            cmd.env("MANAGER_API_TOKEN", token);
+        }
 
         match cmd.spawn() {
             Ok(child) => {
@@ -1149,12 +1309,16 @@ fn spawn_backend(app: &AppHandle) -> Option<Child> {
             let uvicorn = root.join("automation/venv/bin/uvicorn");
             if uvicorn.exists() {
                 println!("[Tauri] Starting backend from the private application runtime");
-                return Command::new(uvicorn)
-                    .args(["backend.main:app", "--host", "127.0.0.1", "--port", "3001"])
+                let port = manager_api_port().to_string();
+                let mut command = Command::new(uvicorn);
+                command
+                    .args(["backend.main:app", "--host", "127.0.0.1", "--port", &port])
                     .current_dir(&root)
-                    .env("PYTHONPATH", &root)
-                    .spawn()
-                    .ok();
+                    .env("PYTHONPATH", &root);
+                if let Ok(token) = std::env::var("MANAGER_API_TOKEN") {
+                    command.env("MANAGER_API_TOKEN", token);
+                }
+                return command.spawn().ok();
             }
         }
         println!("[Tauri] No backend runtime was found. Setup is required.");
@@ -1163,9 +1327,18 @@ fn spawn_backend(app: &AppHandle) -> Option<Child> {
 }
 
 fn main() {
+    let api_session = ApiSession {
+        port: choose_loopback_port(),
+        token: Uuid::new_v4().simple().to_string(),
+    };
+    std::env::set_var("MANAGER_API_PORT", api_session.port.to_string());
+    std::env::set_var("MANAGER_API_TOKEN", &api_session.token);
+
     tauri::Builder::default()
         .manage(SetupProcess(Mutex::new(false)))
+        .manage(api_session)
         .invoke_handler(tauri::generate_handler![
+            get_api_session,
             get_setup_status,
             get_setup_log,
             run_setup,
@@ -1188,6 +1361,11 @@ fn main() {
                                 let _ = child.kill();
                             }
                         }
+                    }
+                    #[cfg(target_os = "windows")]
+                    {
+                        let distribution = find_ubuntu_distribution();
+                        stop_wsl_backend(distribution.as_deref());
                     }
                 }
             }

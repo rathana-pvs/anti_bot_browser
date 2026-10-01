@@ -3,6 +3,7 @@ import {
 } from '../types/profile';
 import { ProxyItem } from '../types/proxy';
 import { BrainActionResponse, BrainCatalogResponse, BrainUploadResponse } from '../types/brain';
+import { invoke } from '@tauri-apps/api/core';
 
 const isTauriEnv = typeof window !== 'undefined' && (
   '__TAURI_INTERNALS__' in window ||
@@ -13,15 +14,51 @@ const isTauriEnv = typeof window !== 'undefined' && (
   (window.location.port !== '5173' && window.location.port !== '3001')
 );
 
-export const BACKEND_BASE = isTauriEnv ? 'http://127.0.0.1:3001' : '';
-export const API_BASE = `${BACKEND_BASE}/api`;
+export let BACKEND_BASE = '';
+export let API_BASE = '/api';
+let backendToken = '';
+let authenticatedFetchInstalled = false;
+
+interface ApiSessionInfo {
+  baseUrl: string;
+  token: string;
+}
+
+export async function initializeBackendSession(): Promise<void> {
+  if (!isTauriEnv) return;
+
+  const session = await invoke<ApiSessionInfo>('get_api_session');
+  BACKEND_BASE = session.baseUrl;
+  API_BASE = `${BACKEND_BASE}/api`;
+  backendToken = session.token;
+
+  if (authenticatedFetchInstalled) return;
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+    const target = typeof input === 'string'
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : input.url;
+    if (!target.startsWith(BACKEND_BASE)) return nativeFetch(input, init);
+
+    const headers = new Headers(input instanceof Request ? input.headers : undefined);
+    if (init?.headers) {
+      new Headers(init.headers).forEach((value, key) => headers.set(key, value));
+    }
+    headers.set('X-Manager-Token', backendToken);
+    return nativeFetch(input, { ...init, headers });
+  };
+  authenticatedFetchInstalled = true;
+}
 
 export function getSharedMediaUrl(filename?: string | null): string {
   if (!filename) return '';
   if (filename.startsWith('http://') || filename.startsWith('https://')) return filename;
   const cleanPath = filename.startsWith('/') ? filename : `/shared_media/${filename}`;
-  const base = BACKEND_BASE || (typeof window !== 'undefined' && window.location.port === '5173' ? '' : 'http://127.0.0.1:3001');
-  return `${base}${cleanPath}`;
+  const url = `${BACKEND_BASE}${cleanPath}`;
+  if (!backendToken) return url;
+  return `${url}?access_token=${encodeURIComponent(backendToken)}`;
 }
 
 export async function fetchProfiles(): Promise<Profile[]> {

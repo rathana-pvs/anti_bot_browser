@@ -288,6 +288,12 @@ export interface ResourceModeSettings {
     admission_allowed: boolean;
     admission_reason: string;
     memory_paused: boolean;
+    ocr_worker?: {
+      status: 'starting' | 'initializing' | 'ready' | 'error' | 'stopped';
+      device: 'cpu' | 'cuda' | 'unavailable' | 'initializing' | null;
+      cache_entries: number;
+      error: string | null;
+    };
   };
 }
 

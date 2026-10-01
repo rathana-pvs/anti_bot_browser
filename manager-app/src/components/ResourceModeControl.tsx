@@ -86,9 +86,12 @@ export const ResourceModeControl: React.FC = () => {
                   ? 'border-amber-700/70 bg-amber-950/40 text-amber-300'
                   : 'border-zinc-700 bg-zinc-950 text-zinc-300'
             }`}
-            title={settings.hardware.ocr.gpu_name || settings.hardware.ocr.fallback_reason || undefined}
+            title={settings.runtime.ocr_worker?.error || settings.hardware.ocr.gpu_name || settings.hardware.ocr.fallback_reason || undefined}
           >
             OCR: <strong>{settings.hardware.ocr.label}</strong>
+            {settings.runtime.ocr_worker?.status === 'ready' ? ' · Shared' : ''}
+            {settings.runtime.ocr_worker && ['starting', 'initializing'].includes(settings.runtime.ocr_worker.status) ? ' · Warming' : ''}
+            {settings.runtime.ocr_worker && ['error', 'stopped'].includes(settings.runtime.ocr_worker.status) ? ' · Local fallback' : ''}
             {settings.hardware.ocr.device === 'cpu' && settings.hardware.ocr.nvidia_detected ? ' (CUDA unavailable)' : ''}
           </span>
           <span><strong className="text-zinc-200">{settings.limits.ocr_threads_per_worker}</strong> OCR threads/worker</span>

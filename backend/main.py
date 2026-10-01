@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from backend.security import DesktopSessionAuthMiddleware
 
 from backend.config import SHARED_MEDIA_DIR, MANAGER_DIST_DIR
 from backend.scheduler.background import setup_background_tasks, shutdown_background_tasks
@@ -12,6 +13,7 @@ from backend.services.automation_service import (
     recover_stale_queue_executions,
     active_automation_tasks,
 )
+from backend.services.ocr_worker_service import start_shared_ocr_worker, stop_shared_ocr_worker
 
 from backend.routers import (
     settings,
@@ -31,8 +33,9 @@ from backend.routers import (
 async def lifespan(app: FastAPI):
     # Startup
     recover_stale_queue_executions("manager_startup_stale_lease")
+    shared_ocr = start_shared_ocr_worker()
     setup_background_tasks()
-    print("FastAPI Backend started successfully.")
+    print(f"FastAPI Backend started successfully. Shared OCR: {shared_ocr.get('url') or 'local fallback'}")
     yield
     # Shutdown
     shutdown_background_tasks()
@@ -43,6 +46,7 @@ async def lifespan(app: FastAPI):
                 proc.terminate()
             except Exception:
                 pass
+    stop_shared_ocr_worker()
     print("FastAPI Backend shutdown complete.")
 
 app = FastAPI(
@@ -52,12 +56,18 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(DesktopSessionAuthMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=[
+        "http://tauri.localhost",
+        "https://tauri.localhost",
+        "tauri://localhost",
+        "http://localhost:5173",
+    ],
+    allow_credentials=False,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["Content-Type", "X-Manager-Token"],
 )
 
 # Register API Routers

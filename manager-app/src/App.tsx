@@ -112,8 +112,7 @@ export const App: React.FC = () => {
     if (!isDesktopApp()) return;
     fetchSetupStatus()
       .then((status) => {
-        const previouslyCompleted = localStorage.getItem('desktop_setup_completed_v3') === 'true';
-        setSetupStatus(status.ready && previouslyCompleted ? null : status);
+        setSetupStatus(status.ready ? null : status);
       })
       .catch((error) => {
         console.error('Failed to inspect desktop setup:', error);
@@ -199,7 +198,6 @@ export const App: React.FC = () => {
       <SetupCenter
         initialStatus={setupStatus}
         onComplete={() => {
-          localStorage.setItem('desktop_setup_completed_v3', 'true');
           setSetupStatus(null);
         }}
       />

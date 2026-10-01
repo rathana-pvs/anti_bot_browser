@@ -85,6 +85,8 @@ class TelemetryRecorder:
             "theme": None,
             "theme_confidence": None,
             "browser_zoom": None,
+            "ocr_device": None,
+            "ocr_worker": None,
         }
 
     def set_environment(self, **values) -> None:
