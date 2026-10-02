@@ -5,6 +5,8 @@ import { createBatch, fetchAutomationTasks, stopAutomation, uploadMediaFiles, ge
 import { BatchPostCreator } from './BatchPostCreator';
 import { PostingQueuePanel } from './PostingQueuePanel';
 import { ResourceModeControl } from './ResourceModeControl';
+import { Checkbox } from './ui/Checkbox';
+import { useAppDialog } from './ui/AppDialogProvider';
 import {
   Flame,
   Send,
@@ -40,6 +42,7 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
   isSidebarOpen,
   onToggleSidebar,
 }) => {
+  const { showAlert } = useAppDialog();
   const [activeMainTab, setActiveMainTab] = useState<'batch_creator' | 'queue_monitor' | 'instant'>('batch_creator');
   const [taskType, setTaskType] = useState<'warming' | 'post'>('warming');
   const [selectedProfileIds, setSelectedProfileIds] = useState<string[]>([]);
@@ -184,7 +187,7 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
       await stopAutomation(profileId);
       await loadTasks();
     } catch (err: any) {
-      alert(`Failed to stop: ${err.message}`);
+      await showAlert(`Failed to stop: ${err.message}`, { title: 'Could not stop automation', variant: 'danger' });
     }
   };
 
@@ -556,9 +559,9 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
                   const isTaskRunning = activeTasks[p.id]?.status === 'running';
 
                   return (
-                    <div
+                    <label
+                      htmlFor={`instant-profile-${p.id}`}
                       key={p.id}
-                      onClick={() => toggleProfileSelection(p.id)}
                       className={`flex items-center justify-between p-2.5 rounded-lg border text-xs cursor-pointer transition-colors ${
                         isSelected
                           ? 'bg-zinc-850 border-emerald-500/50 text-white'
@@ -566,11 +569,11 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
                       }`}
                     >
                       <div className="flex items-center gap-2.5 truncate">
-                        <input
-                          type="checkbox"
+                        <Checkbox
+                          id={`instant-profile-${p.id}`}
                           checked={isSelected}
-                          onChange={() => {}}
-                          className="rounded border-zinc-700 text-emerald-600 focus:ring-0"
+                          onCheckedChange={() => toggleProfileSelection(p.id)}
+                          className="data-[state=checked]:border-emerald-500 data-[state=checked]:bg-emerald-600"
                         />
                         <div className="truncate">
                           <span className="font-medium text-zinc-200 block truncate">{p.name}</span>
@@ -597,7 +600,7 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
                           {p.status}
                         </span>
                       </div>
-                    </div>
+                    </label>
                   );
                 })}
               </div>

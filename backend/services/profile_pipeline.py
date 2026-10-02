@@ -23,8 +23,12 @@ def parse_iso_time(value: str | None) -> float:
     except Exception:
         return 0.0
 
-def batch_iteration_availability(batch: dict | None, now_ms: float | None = None) -> dict:
-    """Gate publisher starts so iterations in one batch observe a completion cooldown."""
+def batch_iteration_availability(
+    batch: dict | None,
+    now_ms: float | None = None,
+    target_execution: dict | None = None,
+) -> dict:
+    """Gate publishers and pause only when advancing to the next post."""
     if now_ms is None:
         now_ms = time.time() * 1000
     batch = batch or {}
@@ -34,8 +38,8 @@ def batch_iteration_availability(batch: dict | None, now_ms: float | None = None
     except (TypeError, ValueError):
         delay_seconds = 0
 
-    latest_publisher_end_ms = 0.0
-    for post in batch.get("posts", []):
+    posts = batch.get("posts", [])
+    for post in posts:
         for execution in post.get("executions", []):
             lease = execution.get("scheduler_lease") or {}
             if execution.get("status") == "running" and lease.get("kind") == "publisher":
@@ -45,13 +49,46 @@ def batch_iteration_availability(batch: dict | None, now_ms: float | None = None
                     "retry_after_ms": None,
                 }
 
-            last_lease = execution.get("last_scheduler_lease") or {}
-            if last_lease.get("kind") != "publisher":
-                continue
-            latest_publisher_end_ms = max(
-                latest_publisher_end_ms,
-                parse_iso_time(execution.get("ended_at")),
+    target_post_index = None
+    target_execution_id = (target_execution or {}).get("execution_id")
+    for post_index, post in enumerate(posts):
+        if any(
+            execution is target_execution
+            or (
+                target_execution_id
+                and execution.get("execution_id") == target_execution_id
             )
+            for execution in post.get("executions", [])
+        ):
+            target_post_index = post_index
+            break
+
+    # The first post has no preceding iteration. Profiles publishing that
+    # same post hand off immediately once the single publisher slot is free.
+    if target_post_index in (None, 0):
+        return {"allowed": True, "reason": "batch_iteration_ready", "retry_after_ms": 0}
+
+    previous_post = posts[target_post_index - 1]
+    previous_executions = previous_post.get("executions", [])
+    if any(
+        execution.get("status") in ("pending", "ready", "running", "preparing")
+        for execution in previous_executions
+    ):
+        return {
+            "allowed": False,
+            "reason": "batch_iteration_waiting_for_profiles",
+            "retry_after_ms": None,
+        }
+
+    latest_publisher_end_ms = 0.0
+    for execution in previous_executions:
+        last_lease = execution.get("last_scheduler_lease") or {}
+        if last_lease.get("kind") != "publisher":
+            continue
+        latest_publisher_end_ms = max(
+            latest_publisher_end_ms,
+            parse_iso_time(execution.get("ended_at")),
+        )
 
     ready_at_ms = latest_publisher_end_ms + delay_seconds * 1000
     if latest_publisher_end_ms and now_ms < ready_at_ms:

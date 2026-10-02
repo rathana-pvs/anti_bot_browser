@@ -4,6 +4,8 @@ import { Profile, ProfileUpdateRequest, RequestedEnvironment, ResourceLimits } f
 import { formatProxyGeography, ProxyItem } from '../types/proxy';
 import { SCREEN_RESOLUTIONS, getHostTimezone } from '../services/fingerprintPool';
 import { fetchProfileDefaults } from '../services/api';
+import { Checkbox } from './ui/Checkbox';
+import { Select } from './ui/Select';
 
 interface EditProfileModalProps {
   profile: Profile | null;
@@ -133,11 +135,12 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
           </label>
           <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
             <div className="flex items-center gap-1.5 font-medium text-zinc-300"><Globe className="h-3.5 w-3.5" />Network</div>
-            <select value={networkChoice} onChange={(e) => changeNetwork(e.target.value)} className="w-full rounded border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-zinc-100">
-              <option value="direct">Direct connection</option>
-              {poolChoices.map((proxy) => <option key={proxy.id} value={proxy.id}>{proxy.host}:{proxy.port} — {formatProxyGeography(proxy)}</option>)}
-              <option value="custom">Custom proxy</option>
-            </select>
+            <Select value={networkChoice} onValueChange={changeNetwork} ariaLabel="Network connection"
+              options={[
+                { value: 'direct', label: 'Direct connection' },
+                ...poolChoices.map((proxy) => ({ value: proxy.id, label: `${proxy.host}:${proxy.port} — ${formatProxyGeography(proxy)}` })),
+                { value: 'custom', label: 'Custom proxy' },
+              ]} />
             {selectedPoolProxy && <p className="text-[11px] text-zinc-400">{formatProxyGeography(selectedPoolProxy)}</p>}
             {selectedPoolProxy && !selectedPoolProxy.timezone && (
               <label className="block text-amber-300">Timezone required because this proxy has no location metadata
@@ -160,16 +163,14 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
             <div className="flex items-center gap-1.5 font-medium text-zinc-300"><Cpu className="h-3.5 w-3.5" />Container resource limits</div>
             <div className="grid grid-cols-2 gap-2">
               <label className="text-zinc-500">CPU quota
-                <select value={resources.cpu_limit} onChange={(e) => setResources((current) => ({ ...current, cpu_limit: Number(e.target.value) }))}
-                  className="mt-1 w-full rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-200">
-                  {cpuOptions.map((value) => <option key={value} value={value}>{value} vCPU</option>)}
-                </select>
+                <Select value={String(resources.cpu_limit)} onValueChange={(value) => setResources((current) => ({ ...current, cpu_limit: Number(value) }))}
+                  ariaLabel="CPU quota" className="mt-1 min-h-8 py-1.5"
+                  options={cpuOptions.map((value) => ({ value: String(value), label: `${value} vCPU` }))} />
               </label>
               <label className="text-zinc-500">Memory ceiling
-                <select value={resources.memory_mb} onChange={(e) => setResources((current) => ({ ...current, memory_mb: Number(e.target.value) }))}
-                  className="mt-1 w-full rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-200">
-                  {memoryOptions.map((value) => <option key={value} value={value}>{value / 1024} GiB</option>)}
-                </select>
+                <Select value={String(resources.memory_mb)} onValueChange={(value) => setResources((current) => ({ ...current, memory_mb: Number(value) }))}
+                  ariaLabel="Memory ceiling" className="mt-1 min-h-8 py-1.5"
+                  options={memoryOptions.map((value) => ({ value: String(value), label: `${value / 1024} GiB` }))} />
               </label>
             </div>
             <p className="text-[10px] text-zinc-500">These are ceilings, not reserved CPU or memory. Changes apply after restart.</p>
@@ -177,19 +178,21 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
           <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
             <div className="flex items-center gap-1.5 font-medium text-zinc-300"><Monitor className="h-3.5 w-3.5" />Requested browser environment</div>
             <div className="grid grid-cols-2 gap-2">
-              <select value={environment.screen_resolution} onChange={(e) => setEnvironment({ ...environment, screen_resolution: e.target.value })} className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-200">
-                {SCREEN_RESOLUTIONS.map((resolution) => <option key={resolution}>{resolution}</option>)}
-              </select>
+              <Select value={environment.screen_resolution} onValueChange={(value) => setEnvironment({ ...environment, screen_resolution: value })}
+                ariaLabel="Display resolution" className="min-h-8 py-1.5"
+                options={SCREEN_RESOLUTIONS.map((resolution) => ({ value: resolution, label: resolution }))} />
               <input value={environment.language} onChange={(e) => setEnvironment({ ...environment, language: e.target.value })} className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-200" />
               <div className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-300">Browser-managed UA</div>
-              <select value={environment.rendering_mode} onChange={(e) => setEnvironment({ ...environment, rendering_mode: e.target.value as RequestedEnvironment['rendering_mode'] })} className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-200">
-                <option value="host_gpu">Host GPU</option><option value="software">Software renderer</option>
-              </select>
+              <Select value={environment.rendering_mode} onValueChange={(value) => setEnvironment({ ...environment, rendering_mode: value as RequestedEnvironment['rendering_mode'] })}
+                ariaLabel="Rendering mode" className="min-h-8 py-1.5"
+                options={[{ value: 'host_gpu', label: 'Host GPU' }, { value: 'software', label: 'Software renderer' }]} />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-2">
             <label className="text-zinc-400">Warming week<input type="number" min={1} value={warmingWeek} onChange={(e) => setWarmingWeek(Number(e.target.value))} className="mt-1 w-full rounded border border-zinc-800 bg-zinc-950 px-2 py-1.5 text-zinc-200" /></label>
-            <label className="flex items-end gap-2 pb-2 text-zinc-400"><input type="checkbox" checked={warmingComplete} onChange={(e) => setWarmingComplete(e.target.checked)} />Warming complete</label>
+            <label htmlFor="warming-complete" className="flex cursor-pointer items-end gap-2 pb-2 text-zinc-400">
+              <Checkbox id="warming-complete" checked={warmingComplete} onCheckedChange={setWarmingComplete} />Warming complete
+            </label>
           </div>
           <label className="block text-zinc-400">Notes<textarea value={notes} onChange={(e) => setNotes(e.target.value)} className="mt-1 w-full rounded border border-zinc-800 bg-zinc-950 px-2 py-1.5 text-zinc-200" /></label>
           {error && <p className="rounded border border-red-900/50 bg-red-950/30 p-2 text-red-300">{error}</p>}

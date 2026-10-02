@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Profile } from '../types/profile';
 import { Shield, Trash2, HardDrive, Network, PanelRightClose, Activity, Loader2, Sparkles, AlertTriangle } from 'lucide-react';
 import { cleanProfileEvidence } from '../services/api';
+import { useAppDialog } from './ui/AppDialogProvider';
 
 interface ProfileDetailsProps {
   profile: Profile | null;
@@ -20,6 +21,7 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
   onToggle,
   onRefresh,
 }) => {
+  const { showConfirm } = useAppDialog();
   const [isCleaning, setIsCleaning] = useState(false);
   const [cleanupMessage, setCleanupMessage] = useState<string | null>(null);
   const [cleanupError, setCleanupError] = useState<string | null>(null);
@@ -312,8 +314,10 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
       {/* Delete Action */}
       <div className="pt-4 border-t border-border mt-4">
         <button
-          onClick={() => {
-            if (confirm(`Are you sure you want to delete profile "${profile.name}"?`)) {
+          onClick={async () => {
+            if (await showConfirm(`Delete profile "${profile.name}"?`, {
+              title: 'Delete profile', confirmLabel: 'Delete profile', variant: 'danger',
+            })) {
               onDelete(profile.id);
             }
           }}

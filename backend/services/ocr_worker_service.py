@@ -1,5 +1,6 @@
 """Lifecycle manager for the shared OCR subprocess."""
 
+import atexit
 import json
 import os
 import secrets
@@ -7,6 +8,8 @@ import socket
 import subprocess
 from urllib import error, request
 from pathlib import Path
+
+import psutil
 
 from backend.config import AUTOMATION_PYTHON, CPU_THREADS, DATA_DIR, OCR_RUNTIME, ROOT_DIR
 from backend.services.resource_service import recommended_ocr_threads, settings_manager
@@ -22,6 +25,28 @@ def _available_loopback_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def _stop_legacy_workers(worker_script: Path) -> int:
+    """Remove workers from older releases that had no owner watchdog."""
+    legacy = []
+    expected_script = str(worker_script.resolve())
+    for process in psutil.process_iter(["cmdline"]):
+        try:
+            command = process.info.get("cmdline") or []
+            if expected_script not in command or "--parent-pid" in command:
+                continue
+            process.terminate()
+            legacy.append(process)
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+            continue
+    _, survivors = psutil.wait_procs(legacy, timeout=2)
+    for process in survivors:
+        try:
+            process.kill()
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+            pass
+    return len(legacy)
+
+
 def start_shared_ocr_worker() -> dict:
     global _process, _log_handle
     if _process is not None and _process.poll() is None:
@@ -33,6 +58,9 @@ def start_shared_ocr_worker() -> dict:
     limits = settings_manager.get_snapshot()["limits"]
     threads = recommended_ocr_threads(CPU_THREADS, limits["max_total_automation_tasks"])
     worker_script = ROOT_DIR / "automation" / "ocr_worker.py"
+    stopped_legacy_workers = _stop_legacy_workers(worker_script)
+    if stopped_legacy_workers:
+        print(f"Stopped {stopped_legacy_workers} legacy OCR worker(s).")
     log_path = DATA_DIR / "ocr_worker.log"
     try:
         _log_handle = open(log_path, "a", encoding="utf-8")
@@ -40,6 +68,7 @@ def start_shared_ocr_worker() -> dict:
         env["PYTHONUNBUFFERED"] = "1"
         env["AUTOMATION_OCR_DEVICE"] = OCR_RUNTIME["device"]
         env["AUTOMATION_OCR_THREADS"] = str(threads)
+        env["AUTOMATION_OCR_WORKER_TOKEN"] = token
         _process = subprocess.Popen(
             [
                 str(AUTOMATION_PYTHON),
@@ -47,8 +76,8 @@ def start_shared_ocr_worker() -> dict:
                 str(worker_script),
                 "--port",
                 str(port),
-                "--token",
-                token,
+                "--parent-pid",
+                str(os.getpid()),
                 "--device",
                 OCR_RUNTIME["device"],
                 "--threads",
@@ -87,6 +116,9 @@ def stop_shared_ocr_worker() -> None:
     if _log_handle is not None:
         _log_handle.close()
         _log_handle = None
+
+
+atexit.register(stop_shared_ocr_worker)
 
 
 def shared_ocr_worker_snapshot() -> dict:

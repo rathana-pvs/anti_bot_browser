@@ -2,6 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { DailyBatch, QueueDataResponse, QueueExecutionItem } from '../types/automation';
 import { Profile } from '../types/profile';
 import { AppendBatchPostsDialog } from './AppendBatchPostsDialog';
+import { Checkbox } from './ui/Checkbox';
+import { Select } from './ui/Select';
+import { useAppDialog } from './ui/AppDialogProvider';
 import {
   backfillExecutionPermalink,
   downloadSupportBundle,
@@ -55,6 +58,7 @@ interface LightboxMedia {
 }
 
 export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }) => {
+  const { showConfirm, showPrompt } = useAppDialog();
   const [queueData, setQueueData] = useState<QueueDataResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [filterProfile, setFilterProfile] = useState<string>('all');
@@ -142,7 +146,9 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
   };
 
   const handleDeleteBatch = async (batchId: string) => {
-    if (!confirm('Are you sure you want to remove this batch and all its pending executions?')) return;
+    if (!await showConfirm('Remove this batch and all of its pending executions?', {
+      title: 'Remove batch', confirmLabel: 'Remove batch', variant: 'danger',
+    })) return;
     try {
       await deleteBatch(batchId);
       loadQueue();
@@ -152,7 +158,11 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
   };
 
   const handlePermalinkBackfill = async (item: QueueExecutionItem) => {
-    const postUrl = window.prompt('Paste the verified Facebook permalink for this published execution:');
+    const postUrl = await showPrompt('Paste the verified Facebook permalink for this published execution:', {
+      title: 'Attach verified permalink',
+      confirmLabel: 'Attach permalink',
+      placeholder: 'https://www.facebook.com/...',
+    });
     if (!postUrl?.trim()) return;
     setActionError(null);
     try {
@@ -170,7 +180,9 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
   };
 
   const handleCommentRetry = async (item: QueueExecutionItem) => {
-    if (!confirm('Retry only the first comment? The published post will not be recreated.')) return;
+    if (!await showConfirm('Retry only the first comment? The published post will not be recreated.', {
+      title: 'Retry first comment', confirmLabel: 'Retry comment',
+    })) return;
     setRetryingCommentId(item.execution_id);
     setActionError(null);
     try {
@@ -617,36 +629,32 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
         {/* Account filter */}
         <div className="flex items-center gap-1.5 text-xs">
           <span className="text-zinc-500 font-medium">Account:</span>
-          <select
+          <Select
             value={filterProfile}
-            onChange={(e) => setFilterProfile(e.target.value)}
-            className="px-2.5 py-1.5 text-xs rounded-xl bg-zinc-950 border border-zinc-800 text-zinc-200 focus:outline-none focus:border-blue-500"
-          >
-            <option value="all">All Accounts ({profiles.length})</option>
-            {profiles.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
+            onValueChange={setFilterProfile}
+            ariaLabel="Filter by account"
+            className="min-h-8 w-[232px] rounded-xl py-1.5"
+            options={[
+              { value: 'all', label: `All Accounts (${profiles.length})` },
+              ...profiles.map((profile) => ({ value: profile.id, label: profile.name })),
+            ]}
+          />
         </div>
 
         {/* Batch filter with inline delete */}
         {batches.length > 0 && (
           <div className="flex items-center gap-1.5 text-xs">
             <span className="text-zinc-500 font-medium">Batch:</span>
-            <select
+            <Select
               value={filterBatch}
-              onChange={(e) => setFilterBatch(e.target.value)}
-              className="px-2.5 py-1.5 text-xs rounded-xl bg-zinc-950 border border-zinc-800 text-zinc-200 focus:outline-none focus:border-blue-500 max-w-[200px]"
-            >
-              <option value="all">All Batches ({batches.length})</option>
-              {batches.map((b) => (
-                <option key={b.batch_id} value={b.batch_id}>
-                  {b.name}
-                </option>
-              ))}
-            </select>
+              onValueChange={setFilterBatch}
+              ariaLabel="Filter by batch"
+              className="min-h-8 w-[250px] max-w-[250px] rounded-xl py-1.5"
+              options={[
+                { value: 'all', label: `All Batches (${batches.length})` },
+                ...batches.map((batch) => ({ value: batch.batch_id, label: batch.name })),
+              ]}
+            />
             {filterBatch !== 'all' && (
               <button
                 type="button"
@@ -1210,12 +1218,12 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
 
               {reportingItem && (
                 <div className="space-y-2.5">
-                  <label className="flex items-start gap-2.5 p-3 rounded-xl bg-zinc-900/50 border border-zinc-800 cursor-pointer hover:border-zinc-700">
-                    <input
-                      type="checkbox"
+                  <label htmlFor="report-include-evidence" className="flex items-start gap-2.5 p-3 rounded-xl bg-zinc-900/50 border border-zinc-800 cursor-pointer hover:border-zinc-700">
+                    <Checkbox
+                      id="report-include-evidence"
                       checked={reportIncludeEvidence}
-                      onChange={(e) => setReportIncludeEvidence(e.target.checked)}
-                      className="mt-0.5 accent-cyan-500"
+                      onCheckedChange={setReportIncludeEvidence}
+                      className="mt-0.5 data-[state=checked]:border-cyan-500 data-[state=checked]:bg-cyan-600"
                     />
                     <span>
                       <span className="block text-xs font-medium text-zinc-200">Include relevant evidence screenshots</span>
@@ -1224,12 +1232,12 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                       </span>
                     </span>
                   </label>
-                  <label className="flex items-start gap-2.5 p-3 rounded-xl bg-zinc-900/50 border border-zinc-800 cursor-pointer hover:border-zinc-700">
-                    <input
-                      type="checkbox"
+                  <label htmlFor="report-include-content" className="flex items-start gap-2.5 p-3 rounded-xl bg-zinc-900/50 border border-zinc-800 cursor-pointer hover:border-zinc-700">
+                    <Checkbox
+                      id="report-include-content"
                       checked={reportIncludeContent}
-                      onChange={(e) => setReportIncludeContent(e.target.checked)}
-                      className="mt-0.5 accent-cyan-500"
+                      onCheckedChange={setReportIncludeContent}
+                      className="mt-0.5 data-[state=checked]:border-cyan-500 data-[state=checked]:bg-cyan-600"
                     />
                     <span>
                       <span className="block text-xs font-medium text-zinc-200">Include caption, comment, media filename, and permalink</span>

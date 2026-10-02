@@ -875,6 +875,7 @@ class VisionEngine:
     def find_comment_input(
         self,
         screen: np.ndarray | None = None,
+        regions: list[tuple[int, int, int, int] | None] | None = None,
     ) -> tuple[int, int] | None:
         """
         Locate the Facebook 'Comment as ...' or 'Write a comment...' input field.
@@ -887,7 +888,7 @@ class VisionEngine:
 
         h, w = screen.shape[:2]
 
-        candidate_regions = [
+        candidate_regions = regions or [
             # 1. Active modal bottom area (e.g. permalink overlay / post view)
             (max(0, int(w * 0.25)), int(h * 0.40), min(w, int(w * 0.55)), int(h * 0.60)),
             # 2. Main feed post stream column (e.g. profile page or newsfeed)

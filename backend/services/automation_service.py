@@ -457,7 +457,10 @@ def claim_queue_execution(execution_id: str, kind: str = "publisher") -> dict:
             raise err
 
         if kind == "publisher":
-            iteration_check = batch_iteration_availability(target_batch)
+            iteration_check = batch_iteration_availability(
+                target_batch,
+                target_execution=target_exec,
+            )
             if not iteration_check["allowed"]:
                 err = RuntimeError(f"Batch iteration is not ready: {iteration_check['reason']}")
                 err.schedulerReason = iteration_check["reason"]
@@ -1168,7 +1171,10 @@ async def dispatch_pending_queue():
                 batch_id = batch_id or f"batch:{id(match['batch'])}"
                 if batch_id in publisher_batches_claimed:
                     continue
-                iteration_check = batch_iteration_availability(match["batch"])
+                iteration_check = batch_iteration_availability(
+                    match["batch"],
+                    target_execution=match["execution"],
+                )
                 if not iteration_check["allowed"]:
                     retry_after_ms = iteration_check.get("retry_after_ms")
                     if retry_after_ms is not None:

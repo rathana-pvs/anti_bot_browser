@@ -961,16 +961,46 @@ class BaseTask:
 
         return True
 
-    def _find_first_comment_input(self, screen=None):
+    @staticmethod
+    def _first_comment_search_regions(screen):
+        """Return the evidence-backed local crop and the existing broad fallback."""
+        height, width = screen.shape[:2]
+        narrow = (
+            int(width * 0.53),
+            int(height * 0.62),
+            int(width * 0.38),
+            int(height * 0.29),
+        )
+        broad = (
+            max(0, int(width * 0.28)),
+            0,
+            min(width - int(width * 0.28), int(width * 0.67)),
+            height,
+        )
+        return narrow, broad
+
+    @staticmethod
+    def _submitted_comment_region(screen, comment_box_pos):
+        """Crop around the verified input and the newly rendered comment above it."""
+        height, width = screen.shape[:2]
+        anchor_x, anchor_y = comment_box_pos
+        x1 = max(int(width * 0.28), int(anchor_x - width * 0.08))
+        y1 = max(0, int(anchor_y - height * 0.20))
+        x2 = min(int(width * 0.95), int(anchor_x + width * 0.34))
+        y2 = min(height, int(anchor_y + height * 0.10))
+        return x1, y1, max(1, x2 - x1), max(1, y2 - y1)
+
+    def _find_first_comment_input(self, screen=None, region=None):
         """Locate the 'Comment as ...' or 'Write a comment...' input field."""
         if hasattr(self.vision, "find_comment_input"):
-            res = self.vision.find_comment_input(screen=screen)
+            regions = [region] if region is not None else None
+            res = self.vision.find_comment_input(screen=screen, regions=regions)
             if res is not None and type(res).__name__ not in ("Mock", "MagicMock"):
                 return res
         # Fallback / mock support
         candidates = []
         screen = self.client.screenshot() if screen is None and hasattr(self, "client") and self.client else screen
-        for item in self.vision.read_text(screen, min_confidence=0.15):
+        for item in self.vision.read_text(screen, region=region, min_confidence=0.15):
             normalized = re.sub(r"[^a-z0-9]+", " ", item["text"].casefold()).strip()
             words = set(normalized.split())
             if normalized.startswith("comment as") or "comment as" in normalized or {"write", "comment"}.issubset(words):
@@ -999,30 +1029,35 @@ class BaseTask:
         candidates.sort(key=lambda item: item.get("center", (0, height + 1))[1])
         return candidates[0]
 
-    def _find_first_comment_targets(self, screen):
-        """Find the first comment input and action with one shared OCR pass."""
-        height, width = screen.shape[:2]
-        region = (
-            max(0, int(width * 0.28)),
-            0,
-            min(width - int(width * 0.28), int(width * 0.67)),
-            height,
-        )
-        inputs = []
-        actions = []
-        for item in self.vision.read_text(screen, region=region, min_confidence=0.15):
-            normalized = re.sub(r"[^a-z0-9]+", " ", item.get("text", "").casefold()).strip()
-            words = set(normalized.split())
-            if normalized.startswith("comment as") or "comment as" in normalized or {"write", "comment"}.issubset(words):
-                inputs.append(item)
-            elif normalized == "comment":
-                actions.append(item)
+    def _find_first_comment_targets(self, screen, *, allow_broad_fallback=True):
+        """Search the expected comment crop first, then the existing broad region."""
+        height = screen.shape[0]
+        narrow, broad = self._first_comment_search_regions(screen)
+        regions = [("narrow", narrow)]
+        if allow_broad_fallback:
+            regions.append(("broad", broad))
 
-        inputs.sort(key=lambda item: item.get("center", (0, height + 1))[1])
-        actions.sort(key=lambda item: item.get("center", (0, height + 1))[1])
-        input_target = inputs[0].get("center") if inputs else None
-        action_target = actions[0] if actions else None
-        return input_target, action_target
+        for tier, region in regions:
+            inputs = []
+            actions = []
+            for item in self.vision.read_text(screen, region=region, min_confidence=0.15):
+                normalized = re.sub(r"[^a-z0-9]+", " ", item.get("text", "").casefold()).strip()
+                words = set(normalized.split())
+                if normalized.startswith("comment as") or "comment as" in normalized or {"write", "comment"}.issubset(words):
+                    inputs.append(item)
+                elif normalized == "comment":
+                    actions.append(item)
+
+            inputs.sort(key=lambda item: item.get("center", (0, height + 1))[1])
+            actions.sort(key=lambda item: item.get("center", (0, height + 1))[1])
+            input_target = inputs[0].get("center") if inputs else None
+            action_target = actions[0] if actions else None
+            if input_target or action_target:
+                self._last_comment_search_tier = tier
+                return input_target, action_target
+
+        self._last_comment_search_tier = "not_found"
+        return None, None
 
     def _open_profile_first_comment_input(self, *, navigate: bool = True):
         """
@@ -1043,11 +1078,18 @@ class BaseTask:
 
         for scan in range(1, 7):
             screen = self.client.screenshot()
-            target, action_btn = self._find_first_comment_targets(screen)
+            # Give the stable expected crop two chances before paying for the
+            # broad right-side OCR fallback. The first retry does not scroll.
+            allow_broad_fallback = scan >= 2
+            target, action_btn = self._find_first_comment_targets(
+                screen,
+                allow_broad_fallback=allow_broad_fallback,
+            )
+            search_tier = getattr(self, "_last_comment_search_tier", "unknown")
             self.log_decision(
                 "Find 'Comment as ...' field",
                 "post card comment input ('Comment as ...' or 'Write a comment...')",
-                f"scan={scan}, target={target}",
+                f"scan={scan}, tier={search_tier}, target={target}",
                 "click comment field" if target else "scroll and scan again",
                 level="INFO",
             )
@@ -1065,9 +1107,16 @@ class BaseTask:
                 )
                 time.sleep(1.5)
                 screen = self.client.screenshot()
-                target = self._find_first_comment_input(screen)
+                narrow, broad = self._first_comment_search_regions(screen)
+                target = self._find_first_comment_input(screen, region=narrow)
+                if not target:
+                    target = self._find_first_comment_input(screen, region=broad)
                 if target:
                     return target, screen
+
+            if scan == 1:
+                time.sleep(0.8)
+                continue
 
             # Move just enough to reveal the remainder of the first post. Large
             # page jumps could make a later post become the topmost visible card.
@@ -1202,20 +1251,28 @@ class BaseTask:
         visible_streak = 0
         best_comment_confidence = 0.0
         settled_observations = 0
+        local_verification_misses = 0
         for _ in range(30):
             time.sleep(2.0)
             after_comment = self.client.screenshot()
             screen_h, screen_w = after_comment.shape[:2]
-            # Page/profile layouts place the comment card in the right-hand
-            # feed column.  Keep the left sidebar out of OCR, but include the
-            # full card width; the prior 73%-of-screen right edge truncated URL
-            # comments and link-preview titles, producing false unverified
-            # results even when the submitted comment was visibly present.
-            comment_region = (
+            # Verify around the known input first. After two local misses, use
+            # the established broad card crop so long comments and link-preview
+            # titles at the right edge still remain verifiable.
+            broad_comment_region = (
                 int(screen_w * 0.28),
                 int(screen_h * 0.22),
                 int(screen_w * 0.67),
                 int(screen_h * 0.73),
+            )
+            focused_comment_region = self._submitted_comment_region(
+                after_comment,
+                comment_box_pos,
+            )
+            comment_region = (
+                focused_comment_region
+                if local_verification_misses < 2
+                else broad_comment_region
             )
             comment_items = self.vision.read_text(
                 after_comment,
@@ -1251,6 +1308,7 @@ class BaseTask:
                 visible_streak += 1
             else:
                 visible_streak = 0
+                local_verification_misses += 1
             # Two consecutive visible observations confirm the comment. When
             # OCR cannot match it, allow four settled observations before
             # returning unverified so a slowly rendered link preview is not

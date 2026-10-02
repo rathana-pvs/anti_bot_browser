@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 import './styles/globals.css';
 import { initializeBackendSession } from './services/api';
+import { AppDialogProvider } from './components/ui/AppDialogProvider';
 
 async function startApp() {
   try {
@@ -13,7 +14,9 @@ async function startApp() {
 
   ReactDOM.createRoot(document.getElementById('root')!).render(
     <React.StrictMode>
-      <App />
+      <AppDialogProvider>
+        <App />
+      </AppDialogProvider>
     </React.StrictMode>
   );
 }

@@ -22,6 +22,7 @@ import { BrainPanel } from './components/BrainPanel';
 import { ProfileActionErrorModal } from './components/ProfileActionErrorModal';
 import { SetupCenter } from './components/SetupCenter';
 import { fetchSetupStatus, isDesktopApp, SetupSnapshot } from './services/setup';
+import { useAppDialog } from './components/ui/AppDialogProvider';
 
 type ProfileAction = 'start' | 'stop' | 'pause' | 'unpause';
 
@@ -33,6 +34,7 @@ interface ProfileActionError {
 }
 
 export const App: React.FC = () => {
+  const { showAlert } = useAppDialog();
   const [setupStatus, setSetupStatus] = useState<SetupSnapshot | null | undefined>(
     () => isDesktopApp() ? undefined : null,
   );
@@ -157,7 +159,7 @@ export const App: React.FC = () => {
       setSelectedProfileId(newProfile.id);
       setActiveTab('profiles');
     } catch (err: any) {
-      alert(`Failed to create profile: ${err.message}`);
+      await showAlert(`Failed to create profile: ${err.message}`, { title: 'Profile creation failed', variant: 'danger' });
     }
   };
 
@@ -166,7 +168,7 @@ export const App: React.FC = () => {
       await updateProfile(profileId, updates);
       await loadData();
     } catch (err: any) {
-      alert(`Failed to update profile: ${err.message}`);
+      await showAlert(`Failed to update profile: ${err.message}`, { title: 'Profile update failed', variant: 'danger' });
     }
   };
 
@@ -178,7 +180,7 @@ export const App: React.FC = () => {
       }
       await loadData();
     } catch (err: any) {
-      alert(`Failed to delete profile: ${err.message}`);
+      await showAlert(`Failed to delete profile: ${err.message}`, { title: 'Profile deletion failed', variant: 'danger' });
     }
   };
 

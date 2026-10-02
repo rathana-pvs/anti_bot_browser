@@ -24,6 +24,8 @@ import {
   Users,
   Plus,
 } from 'lucide-react';
+import { Checkbox } from './ui/Checkbox';
+import { Select } from './ui/Select';
 
 interface BatchPostCreatorProps {
   profiles: Profile[];
@@ -805,7 +807,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
 
             {/* 4. Global AI Caption Spin Toggle */}
             <div className="pt-1 border-t border-zinc-800/80">
-              <label className="flex items-center justify-between cursor-pointer py-1">
+              <label htmlFor="ai-caption-spinning" className="flex items-center justify-between cursor-pointer py-1">
                 <div>
                   <div className="text-xs font-medium text-zinc-200">
                     AI Caption Spinning
@@ -814,11 +816,10 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                     Generate unique variation per profile to prevent bot detection
                   </div>
                 </div>
-                <input
-                  type="checkbox"
+                <Checkbox
+                  id="ai-caption-spinning"
                   checked={aiSpinAll}
-                  onChange={(e) => setAiSpinAll(e.target.checked)}
-                  className="w-4 h-4 rounded border-zinc-700 bg-zinc-950 text-blue-600 focus:ring-blue-500"
+                  onCheckedChange={setAiSpinAll}
                 />
               </label>
             </div>
@@ -902,17 +903,16 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                     <label className="block text-zinc-400 mb-1">
                       Rolling Session Preparation
                     </label>
-                    <select
+                    <Select
                       value={preparationMode}
-                      onChange={(e) =>
-                        setPreparationMode(e.target.value as 'off' | 'brief' | 'extended')
-                      }
-                      className="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-white focus:outline-none focus:border-blue-500"
-                    >
-                      <option value="brief">Brief browsing (40–55s) [Recommended]</option>
-                      <option value="extended">Extended browsing (55–70s)</option>
-                      <option value="off">Off</option>
-                    </select>
+                      onValueChange={(value) => setPreparationMode(value as 'off' | 'brief' | 'extended')}
+                      ariaLabel="Rolling session preparation"
+                      options={[
+                        { value: 'brief', label: 'Brief browsing (40–55s) [Recommended]' },
+                        { value: 'extended', label: 'Extended browsing (55–70s)' },
+                        { value: 'off', label: 'Off' },
+                      ]}
+                    />
                   </div>
                 </div>
               )}
@@ -1030,6 +1030,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
 
                   return (
                     <label
+                      htmlFor={`batch-profile-${profile.id}`}
                       key={profile.id}
                       className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition-all ${
                         isSelected
@@ -1038,11 +1039,10 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                       }`}
                     >
                       <div className="flex items-center gap-3 min-w-0">
-                        <input
-                          type="checkbox"
+                        <Checkbox
+                          id={`batch-profile-${profile.id}`}
                           checked={isSelected}
-                          onChange={() => toggleProfile(profile.id)}
-                          className="w-4 h-4 rounded border-zinc-700 text-blue-600 focus:ring-blue-500 bg-zinc-900"
+                          onCheckedChange={() => toggleProfile(profile.id)}
                         />
                         <div className="truncate">
                           <div className="text-xs font-semibold text-zinc-200 truncate">

@@ -1106,6 +1106,61 @@ class FirstCommentTargetTests(unittest.TestCase):
         self.assertEqual(input_target, (1167, 840))
         self.assertEqual(action_target["center"], (1130, 390))
         task.vision.read_text.assert_called_once()
+        self.assertEqual(
+            task.vision.read_text.call_args.kwargs["region"],
+            task._first_comment_search_regions(screen)[0],
+        )
+
+    def test_comment_scan_uses_existing_broad_region_after_narrow_miss(self):
+        task = FacebookReelTask.__new__(FacebookReelTask)
+        task.vision = Mock()
+        screen = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task.vision.read_text.side_effect = [
+            [],
+            [{"text": "Comment as Creator", "center": (1167, 840), "confidence": 0.95}],
+        ]
+
+        input_target, action_target = task._find_first_comment_targets(
+            screen,
+            allow_broad_fallback=True,
+        )
+
+        self.assertEqual(input_target, (1167, 840))
+        self.assertIsNone(action_target)
+        self.assertEqual(task._last_comment_search_tier, "broad")
+        narrow, broad = task._first_comment_search_regions(screen)
+        self.assertEqual(
+            [call.kwargs["region"] for call in task.vision.read_text.call_args_list],
+            [narrow, broad],
+        )
+
+    def test_comment_scan_defers_broad_region_during_first_local_attempt(self):
+        task = FacebookReelTask.__new__(FacebookReelTask)
+        task.vision = Mock()
+        task.vision.read_text.return_value = []
+        screen = np.zeros((1080, 1920, 3), dtype=np.uint8)
+
+        self.assertEqual(
+            task._find_first_comment_targets(screen, allow_broad_fallback=False),
+            (None, None),
+        )
+        task.vision.read_text.assert_called_once()
+
+    def test_comment_input_can_be_constrained_to_verified_region(self):
+        task = FacebookReelTask.__new__(FacebookReelTask)
+        task.vision = Mock()
+        task.vision.find_comment_input.return_value = (1120, 840)
+        screen = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        region = (1017, 669, 729, 313)
+
+        self.assertEqual(
+            task._find_first_comment_input(screen, region=region),
+            (1120, 840),
+        )
+        task.vision.find_comment_input.assert_called_once_with(
+            screen=screen,
+            regions=[region],
+        )
 
     def test_uses_topmost_comment_as_field(self):
         task = FacebookPostTask.__new__(FacebookPostTask)

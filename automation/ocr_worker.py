@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import signal
 import threading
 import time
 from collections import OrderedDict
@@ -171,11 +172,36 @@ class OcrRequestHandler(BaseHTTPRequestHandler):
         return
 
 
+def _parent_is_alive(parent_pid: int) -> bool:
+    """Return whether the backend process that owns this worker still exists."""
+    if parent_pid <= 0:
+        return True
+    if os.name == "posix":
+        # Linux and WSL re-parent an orphan immediately, so this also avoids a
+        # false positive if the original PID is quickly reused.
+        return os.getppid() == parent_pid
+    try:
+        os.kill(parent_pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _watch_parent(parent_pid: int, server: ThreadingHTTPServer, poll_interval: float = 0.5) -> None:
+    if parent_pid <= 0:
+        return
+    while _parent_is_alive(parent_pid):
+        time.sleep(poll_interval)
+    print(f"Shared OCR owner {parent_pid} exited; stopping worker.", flush=True)
+    server.shutdown()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Shared EasyOCR worker")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, required=True)
-    parser.add_argument("--token", default="")
+    parser.add_argument("--token", default=os.environ.get("AUTOMATION_OCR_WORKER_TOKEN", ""))
+    parser.add_argument("--parent-pid", type=int, default=0)
     parser.add_argument("--device", default=os.environ.get("AUTOMATION_OCR_DEVICE", "auto"))
     parser.add_argument("--threads", type=int, default=int(os.environ.get("AUTOMATION_OCR_THREADS", "4")))
     args = parser.parse_args()
@@ -183,8 +209,34 @@ def main() -> None:
     server = ThreadingHTTPServer((args.host, args.port), OcrRequestHandler)
     server.auth_token = args.token
     server.runtime = OcrRuntime(args.device.strip().casefold(), args.threads)
+    stopping = threading.Event()
+
+    def request_shutdown(signum=None, _frame=None) -> None:
+        if stopping.is_set():
+            return
+        stopping.set()
+        if signum is not None:
+            print(f"Shared OCR worker received signal {signum}; stopping.", flush=True)
+        # BaseServer.shutdown() must be called from a thread other than the
+        # one executing serve_forever().
+        threading.Thread(target=server.shutdown, name="ocr-shutdown", daemon=True).start()
+
+    for signal_name in ("SIGTERM", "SIGINT"):
+        shutdown_signal = getattr(signal, signal_name, None)
+        if shutdown_signal is not None:
+            signal.signal(shutdown_signal, request_shutdown)
+    if args.parent_pid > 0:
+        threading.Thread(
+            target=_watch_parent,
+            args=(args.parent_pid, server),
+            name="ocr-parent-watchdog",
+            daemon=True,
+        ).start()
     print(f"Shared OCR worker listening on {args.host}:{args.port}; requested device={args.device}", flush=True)
-    server.serve_forever(poll_interval=0.25)
+    try:
+        server.serve_forever(poll_interval=0.25)
+    finally:
+        server.server_close()
 
 
 if __name__ == "__main__":

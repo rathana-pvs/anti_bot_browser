@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { formatProxyGeography, ProxyItem } from '../types/proxy';
 import { checkProxyGeography, importProxies, refreshProxyStatuses, testProxyPing, deleteProxy } from '../services/api';
 import { Globe, Plus, Trash2, Activity, MapPin, X, PanelLeftOpen } from 'lucide-react';
+import { useAppDialog } from './ui/AppDialogProvider';
 
 interface ProxyPanelProps {
   proxies: ProxyItem[];
@@ -18,6 +19,7 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
   isSidebarOpen = true,
   onToggleSidebar,
 }) => {
+  const { showAlert, showConfirm } = useAppDialog();
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [importText, setImportText] = useState('');
   const [isImporting, setIsImporting] = useState(false);
@@ -36,12 +38,12 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
     setIsImporting(true);
     try {
       const result = await importProxies(importText);
-      alert(`Added ${result.added} proxies (${result.total} total). Online: ${result.online}; offline: ${result.offline}; locations found: ${result.geo_checked}.`);
+      await showAlert(`Added ${result.added} proxies (${result.total} total). Online: ${result.online}; offline: ${result.offline}; locations found: ${result.geo_checked}.`, { title: 'Proxy import complete' });
       setImportText('');
       setIsImportOpen(false);
       onRefresh();
     } catch (err: any) {
-      alert(`Import failed: ${err.message}`);
+      await showAlert(`Import failed: ${err.message}`, { title: 'Proxy import failed', variant: 'danger' });
     } finally {
       setIsImporting(false);
     }
@@ -53,7 +55,7 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
       await checkProxyGeography(proxyId);
       onRefresh();
     } catch (err: any) {
-      alert(`Location check failed: ${err.message}`);
+      await showAlert(`Location check failed: ${err.message}`, { title: 'Location check failed', variant: 'danger' });
     } finally {
       setGeoCheckingId(null);
     }
@@ -64,9 +66,9 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
     try {
       const result = await refreshProxyStatuses();
       onRefresh();
-      alert(`Checked ${result.total} proxies. Online: ${result.online}; offline: ${result.offline}; locations found: ${result.geo_checked}.`);
+      await showAlert(`Checked ${result.total} proxies. Online: ${result.online}; offline: ${result.offline}; locations found: ${result.geo_checked}.`, { title: 'Proxy status updated' });
     } catch (err: any) {
-      alert(`Proxy status refresh failed: ${err.message}`);
+      await showAlert(`Proxy status refresh failed: ${err.message}`, { title: 'Proxy refresh failed', variant: 'danger' });
     } finally {
       setIsRefreshingStatus(false);
     }
@@ -78,19 +80,21 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
       await testProxyPing(proxyId);
       onRefresh();
     } catch (err: any) {
-      alert(`Ping test failed: ${err.message}`);
+      await showAlert(`Ping test failed: ${err.message}`, { title: 'Proxy test failed', variant: 'danger' });
     } finally {
       setTestingId(null);
     }
   };
 
   const handleDelete = async (proxyId: string) => {
-    if (confirm('Are you sure you want to remove this proxy from the pool?')) {
+    if (await showConfirm('Remove this proxy from the pool?', {
+      title: 'Remove proxy', confirmLabel: 'Remove proxy', variant: 'danger',
+    })) {
       try {
         await deleteProxy(proxyId);
         onRefresh();
       } catch (err: any) {
-        alert(`Delete failed: ${err.message}`);
+        await showAlert(`Delete failed: ${err.message}`, { title: 'Proxy deletion failed', variant: 'danger' });
       }
     }
   };

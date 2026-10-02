@@ -11,7 +11,7 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from engine.vision import VisionEngine
-from ocr_worker import OcrRuntime
+from ocr_worker import OcrRuntime, _watch_parent
 
 
 class SharedOcrRuntimeTests(unittest.TestCase):
@@ -38,6 +38,14 @@ class SharedOcrRuntimeTests(unittest.TestCase):
         self.assertTrue(second["cache_hit"])
         self.assertEqual(first["items"], second["items"])
         self.assertEqual(runtime.reader.readtext.call_count, 1)
+
+    def test_parent_watchdog_stops_worker_after_backend_exits(self):
+        server = Mock()
+        with patch("ocr_worker._parent_is_alive", side_effect=[True, False]), \
+             patch("ocr_worker.time.sleep"):
+            _watch_parent(1234, server, poll_interval=0.01)
+
+        server.shutdown.assert_called_once_with()
 
 
 class SharedOcrVisionTests(unittest.TestCase):

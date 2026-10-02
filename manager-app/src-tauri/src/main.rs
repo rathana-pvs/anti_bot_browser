@@ -1483,6 +1483,27 @@ fn spawn_backend(app: &AppHandle) -> Option<Child> {
     }
 }
 
+fn terminate_backend(child: &mut Child) {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let pid = child.id().to_string();
+        let _ = Command::new("kill")
+            .args(["-TERM", &pid])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        for _ in 0..25 {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 fn main() {
     let api_session = ApiSession {
         port: choose_loopback_port(),
@@ -1515,7 +1536,7 @@ fn main() {
                         if let Ok(mut lock) = state.0.lock() {
                             if let Some(mut child) = lock.take() {
                                 println!("[Tauri] Shutting down backend server...");
-                                let _ = child.kill();
+                                terminate_backend(&mut child);
                             }
                         }
                     }

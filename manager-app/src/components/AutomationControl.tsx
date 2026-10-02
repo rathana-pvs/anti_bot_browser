@@ -15,6 +15,7 @@ import {
   Sparkles,
   MessageCircle,
 } from 'lucide-react';
+import { useAppDialog } from './ui/AppDialogProvider';
 
 interface AutomationControlProps {
   profile: Profile;
@@ -22,6 +23,7 @@ interface AutomationControlProps {
 }
 
 export const AutomationControl: React.FC<AutomationControlProps> = ({ profile, onRefreshProfile }) => {
+  const { showConfirm } = useAppDialog();
   const [taskState, setTaskState] = useState<AutomationTaskState>({
     profile_id: profile.id,
     status: 'idle',
@@ -159,7 +161,9 @@ export const AutomationControl: React.FC<AutomationControlProps> = ({ profile, o
   };
 
   const handleStop = async () => {
-    if (!confirm('Are you sure you want to stop the running automation?')) return;
+    if (!await showConfirm('Stop the running automation?', {
+      title: 'Stop automation', confirmLabel: 'Stop automation', variant: 'danger',
+    })) return;
     try {
       await stopAutomation(profile.id);
       await refreshStatus();

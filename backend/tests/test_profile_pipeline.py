@@ -8,27 +8,92 @@ def _timestamp_ms(value: str) -> float:
     return datetime.fromisoformat(value).replace(tzinfo=timezone.utc).timestamp() * 1000
 
 
-def _batch(delay_seconds=60, executions=None):
+def _execution(execution_id, status="pending", ended_at=None):
+    execution = {
+        "execution_id": execution_id,
+        "status": status,
+    }
+    if ended_at:
+        execution["ended_at"] = ended_at
+        execution["last_scheduler_lease"] = {"kind": "publisher"}
+    return execution
+
+
+def _batch(delay_seconds=60, posts=None, executions=None):
     return {
         "schedule_window": {"batch_iteration_delay_seconds": delay_seconds},
-        "posts": [{"executions": executions or []}],
+        "posts": posts or [{"executions": executions or []}],
     }
 
 
 def test_batch_iteration_delay_waits_from_publisher_completion():
-    batch = _batch(executions=[{
-        "status": "published",
-        "ended_at": "2026-09-28T12:00:00+00:00",
-        "last_scheduler_lease": {"kind": "publisher"},
-    }])
+    target = _execution("post-2-profile-1")
+    batch = _batch(posts=[
+        {"executions": [
+            _execution("post-1-profile-1", "published", "2026-09-28T11:59:50+00:00"),
+            _execution("post-1-profile-2", "published", "2026-09-28T12:00:00+00:00"),
+        ]},
+        {"executions": [target]},
+    ])
 
-    waiting = batch_iteration_availability(batch, _timestamp_ms("2026-09-28T12:00:30"))
-    ready = batch_iteration_availability(batch, _timestamp_ms("2026-09-28T12:01:01"))
+    waiting = batch_iteration_availability(
+        batch,
+        _timestamp_ms("2026-09-28T12:00:30"),
+        target_execution=target,
+    )
+    ready = batch_iteration_availability(
+        batch,
+        _timestamp_ms("2026-09-28T12:01:01"),
+        target_execution=target,
+    )
 
     assert waiting["allowed"] is False
     assert waiting["reason"] == "batch_iteration_delay"
     assert waiting["retry_after_ms"] == 30_000
     assert ready["allowed"] is True
+
+
+def test_profiles_within_same_post_handoff_without_iteration_delay():
+    target = _execution("post-1-profile-2")
+    batch = _batch(posts=[{"executions": [
+        _execution("post-1-profile-1", "published", "2026-09-28T12:00:00+00:00"),
+        target,
+    ]}])
+
+    result = batch_iteration_availability(
+        batch,
+        _timestamp_ms("2026-09-28T12:00:01"),
+        target_execution=target,
+    )
+
+    assert result == {
+        "allowed": True,
+        "reason": "batch_iteration_ready",
+        "retry_after_ms": 0,
+    }
+
+
+def test_next_post_waits_until_all_profiles_finish_previous_post():
+    target = _execution("post-2-profile-1")
+    batch = _batch(posts=[
+        {"executions": [
+            _execution("post-1-profile-1", "published", "2026-09-28T12:00:00+00:00"),
+            _execution("post-1-profile-2", "ready"),
+        ]},
+        {"executions": [target]},
+    ])
+
+    result = batch_iteration_availability(
+        batch,
+        _timestamp_ms("2026-09-28T12:02:00"),
+        target_execution=target,
+    )
+
+    assert result == {
+        "allowed": False,
+        "reason": "batch_iteration_waiting_for_profiles",
+        "retry_after_ms": None,
+    }
 
 
 def test_batch_iteration_delay_blocks_parallel_publisher_in_same_batch():
@@ -37,7 +102,12 @@ def test_batch_iteration_delay_blocks_parallel_publisher_in_same_batch():
         "scheduler_lease": {"kind": "publisher"},
     }])
 
-    result = batch_iteration_availability(batch, _timestamp_ms("2026-09-28T12:00:00"))
+    target = batch["posts"][0]["executions"][0]
+    result = batch_iteration_availability(
+        batch,
+        _timestamp_ms("2026-09-28T12:00:00"),
+        target_execution=target,
+    )
 
     assert result == {
         "allowed": False,

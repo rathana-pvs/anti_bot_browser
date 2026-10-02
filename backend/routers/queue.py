@@ -491,7 +491,10 @@ async def run_execution_now(execution_id: str):
 
     target_batch = match.get("batch") or {}
     if not needs_prep and target_batch:
-        iteration_check = batch_iteration_availability(target_batch)
+        iteration_check = batch_iteration_availability(
+            target_batch,
+            target_execution=target_exec,
+        )
         if not iteration_check["allowed"]:
             raise HTTPException(
                 status_code=409,

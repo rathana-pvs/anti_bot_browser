@@ -21,6 +21,8 @@ import {
   Loader2,
   ExternalLink,
 } from 'lucide-react';
+import { Checkbox } from './ui/Checkbox';
+import { useAppDialog } from './ui/AppDialogProvider';
 
 interface VncViewerProps {
   profile: Profile | null;
@@ -39,6 +41,7 @@ export const VncViewer: React.FC<VncViewerProps> = ({
   isSidebarOpen = true,
   onToggleSidebar,
 }) => {
+  const { showAlert } = useAppDialog();
   const containerRef = useRef<HTMLDivElement>(null);
   const rfbRef = useRef<RFB | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('disconnected');
@@ -454,7 +457,7 @@ export const VncViewer: React.FC<VncViewerProps> = ({
                         try {
                           const text = await navigator.clipboard.readText();
                           if (!text) {
-                            alert('Host clipboard is empty.');
+                            await showAlert('Host clipboard is empty.', { title: 'Nothing to paste' });
                             return;
                           }
                           rfbRef.current?.clipboardPasteFrom(text);
@@ -463,7 +466,7 @@ export const VncViewer: React.FC<VncViewerProps> = ({
                           setTimeout(() => setClipboardToast(null), 3000);
                           setIsClipboardOpen(false);
                         } catch (err: any) {
-                          alert('Browser clipboard permission denied. Please paste directly into the box below.');
+                          await showAlert('Browser clipboard permission denied. Please paste directly into the box below.', { title: 'Clipboard unavailable', variant: 'danger' });
                         } finally {
                           setIsInjecting(false);
                         }
@@ -515,7 +518,7 @@ export const VncViewer: React.FC<VncViewerProps> = ({
                             setIsClipboardOpen(false);
                             setClipboardInput('');
                           } catch (err: any) {
-                            alert(`Failed to type: ${err.message}`);
+                            await showAlert(`Failed to type: ${err.message}`, { title: 'Typing failed', variant: 'danger' });
                           } finally {
                             setIsInjecting(false);
                           }
@@ -540,7 +543,7 @@ export const VncViewer: React.FC<VncViewerProps> = ({
                             setIsClipboardOpen(false);
                             setClipboardInput('');
                           } catch (err: any) {
-                            alert(`Failed to paste: ${err.message}`);
+                            await showAlert(`Failed to paste: ${err.message}`, { title: 'Paste failed', variant: 'danger' });
                           } finally {
                             setIsInjecting(false);
                           }
@@ -556,12 +559,12 @@ export const VncViewer: React.FC<VncViewerProps> = ({
 
                     <div className="pt-1.5 border-t border-zinc-800/80 flex items-center justify-between text-[10px] text-zinc-400">
                       <span>Auto-sync on Ctrl+V:</span>
-                      <label className="flex items-center gap-1.5 cursor-pointer">
-                        <input
-                          type="checkbox"
+                      <label htmlFor="auto-sync-clipboard" className="flex items-center gap-1.5 cursor-pointer">
+                        <Checkbox
+                          id="auto-sync-clipboard"
                           checked={autoSyncCtrlV}
-                          onChange={(e) => setAutoSyncCtrlV(e.target.checked)}
-                          className="rounded border-zinc-700 text-emerald-600 focus:ring-0 w-3 h-3"
+                          onCheckedChange={setAutoSyncCtrlV}
+                          className="h-3 w-3 data-[state=checked]:border-emerald-500 data-[state=checked]:bg-emerald-600"
                         />
                         <span className="text-zinc-300">Enabled</span>
                       </label>
