@@ -444,12 +444,83 @@ fn stop_wsl_backend(distribution: Option<&str>) {
     stop_wsl_backend_on_port(distribution, manager_api_port());
 }
 
+#[cfg(target_os = "windows")]
+fn stop_orphaned_wsl_backends(distribution: &str) {
+    let script = "pkill -f '[u]vicorn backend.main:app' >/dev/null 2>&1 || true";
+    let mut command = Command::new("wsl.exe");
+    command
+        .args(["-d", distribution, "--", "bash", "-lc", script])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    suppress_console_window(&mut command);
+    let _ = command.status();
+}
+
 #[tauri::command]
 fn get_api_session(state: State<'_, ApiSession>) -> ApiSessionInfo {
     ApiSessionInfo {
         base_url: format!("http://127.0.0.1:{}", state.port),
         token: state.token.clone(),
     }
+}
+
+fn safe_support_filename(filename: &str) -> String {
+    let basename = Path::new(filename)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("automat_fb_support.zip");
+    let mut safe: String = basename
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if safe.is_empty() || safe == "." || safe == ".." {
+        safe = "automat_fb_support.zip".to_string();
+    }
+    if !safe.to_ascii_lowercase().ends_with(".zip") {
+        safe.push_str(".zip");
+    }
+    safe
+}
+
+fn available_download_path(downloads_dir: &Path, filename: &str) -> PathBuf {
+    let initial = downloads_dir.join(filename);
+    if !initial.exists() {
+        return initial;
+    }
+    let path = Path::new(filename);
+    let stem = path.file_stem().and_then(|value| value.to_str()).unwrap_or("automat_fb_support");
+    let extension = path.extension().and_then(|value| value.to_str()).unwrap_or("zip");
+    for index in 1..10_000 {
+        let candidate = downloads_dir.join(format!("{stem} ({index}).{extension}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    downloads_dir.join(format!("{stem}-{}.{}", Uuid::new_v4().simple(), extension))
+}
+
+#[tauri::command]
+fn save_support_bundle(filename: String, bytes: Vec<u8>) -> Result<String, String> {
+    if bytes.is_empty() {
+        return Err("The generated support ZIP was empty.".to_string());
+    }
+    let user_profile = std::env::var_os("USERPROFILE")
+        .map(PathBuf::from)
+        .ok_or_else(|| "Could not locate the Windows user profile.".to_string())?;
+    let downloads_dir = user_profile.join("Downloads");
+    std::fs::create_dir_all(&downloads_dir)
+        .map_err(|error| format!("Could not create the Downloads folder: {error}"))?;
+    let destination = available_download_path(&downloads_dir, &safe_support_filename(&filename));
+    std::fs::write(&destination, bytes)
+        .map_err(|error| format!("Could not save the support ZIP: {error}"))?;
+    Ok(destination.display().to_string())
 }
 
 #[cfg(target_os = "windows")]
@@ -1313,10 +1384,6 @@ fn spawn_wsl_backend() -> Option<Child> {
     let port = manager_api_port();
     std::env::var("MANAGER_API_TOKEN").ok()?;
 
-    // Remove the fixed-port backend left by releases older than beta.5.
-    if port != 3001 && backend_is_running_on_port(3001) {
-        stop_wsl_backend_on_port(Some(&distribution), 3001);
-    }
     if backend_is_running() {
         let installed_version = installed_wsl_runtime_version(&distribution);
         let running_version = backend_runtime_version();
@@ -1333,6 +1400,12 @@ fn spawn_wsl_backend() -> Option<Child> {
         );
         stop_wsl_backend(Some(&distribution));
     }
+
+    // A manager crash can leave its random-port backend alive. That orphan
+    // continues running the scheduler against the same queue and can race the
+    // new manager. Once this launch has established that its own private port
+    // is not reusable, retire every old manager backend before starting one.
+    stop_orphaned_wsl_backends(&distribution);
 
     let launch = format!(
         concat!(
@@ -1517,6 +1590,7 @@ fn main() {
         .manage(api_session)
         .invoke_handler(tauri::generate_handler![
             get_api_session,
+            save_support_bundle,
             get_setup_status,
             get_setup_log,
             run_setup,

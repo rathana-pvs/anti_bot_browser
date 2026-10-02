@@ -110,6 +110,99 @@ class FacebookPostTask(BaseTask):
 
         return self.vision.find_stable(locate, attempts=2, tolerance_px=8.0)
 
+    @staticmethod
+    def _is_photo_video_label(text: str) -> bool:
+        normalized = re.sub(r"[^a-z0-9]+", " ", text.casefold()).strip()
+        return normalized in {
+            "photo video",
+            "photos videos",
+            "photolvideo",
+            "photoivideo",
+        }
+
+    def _stable_profile_media_target(self):
+        """Locate Photo/video only when it is anchored to the profile composer.
+
+        Profile pages can contain other photo imagery above the composer, most
+        notably the cover photo.  A full-screen template or green-pixel match can
+        therefore produce a plausible but unsafe target.  Require the composer
+        prompt first, then accept only the action row immediately beneath it.
+        """
+        def locate():
+            started = time.perf_counter()
+            screen = self.client.screenshot()
+            stream_region = self.vision.get_pixel_region(
+                screen.shape,
+                "profile_post_stream",
+            )
+            candidates = self.vision.read_text(
+                screen,
+                region=stream_region,
+                min_confidence=0.20,
+            )
+            prompts = [
+                item for item in candidates
+                if self._is_caption_prompt(item["text"])
+            ]
+            labels = [
+                item for item in candidates
+                if self._is_photo_video_label(item["text"])
+            ]
+
+            match = None
+            prompt = None
+            for candidate_prompt in prompts:
+                px, py = candidate_prompt["center"]
+                anchored = [
+                    item for item in labels
+                    if 20 <= item["center"][1] - py <= 150
+                    and abs(item["center"][0] - px) <= 600
+                ]
+                if anchored:
+                    prompt = candidate_prompt
+                    match = min(
+                        anchored,
+                        key=lambda item: (
+                            item["center"][1] - py,
+                            abs(item["center"][0] - px),
+                        ),
+                    )
+                    break
+
+            target = match["center"] if match else None
+            tier = "composer_anchored_ocr"
+
+            # OCR can miss the label even when the icon remains clear. Restrict
+            # visual matching to the narrow action-row band under the confirmed
+            # composer prompt; never search the cover-photo portion of the page.
+            if target is None and prompts:
+                height = screen.shape[0]
+                prompt = max(prompts, key=lambda item: item["center"][1])
+                px, py = prompt["center"]
+                x1 = max(stream_region[0], px - 500)
+                x2 = min(stream_region[0] + stream_region[2], px + 350)
+                y1 = max(stream_region[1], py + 20)
+                y2 = min(height, py + 150)
+                if x2 > x1 and y2 > y1:
+                    target = self.vision.find_photo_video_button(
+                        screen=screen,
+                        region=(x1, y1, x2 - x1, y2 - y1),
+                    )
+                    tier = "composer_anchored_visual"
+
+            self.record_locator_telemetry(
+                "profile_photo_video_action",
+                tier,
+                "profile_post_stream",
+                (time.perf_counter() - started) * 1000.0,
+                bool(target),
+                confidence=match.get("confidence") if match else None,
+                fallback_reason=None if target else "composer_anchored_action_missing",
+            )
+            return target
+
+        return self.vision.find_stable(locate, attempts=2, tolerance_px=8.0)
+
     def _stable_blue_text_target(self, labels, region="bottom_action_bar"):
         """Require an exact label token inside the detected blue button bounds."""
         def locate():
@@ -289,7 +382,16 @@ class FacebookPostTask(BaseTask):
             )
             return caption_target["center"] if found else None
 
-        return self.vision.find_stable(locate, attempts=2, tolerance_px=16.0)
+        # OCR can occasionally miss the low-contrast placeholder for one frame
+        # while Facebook finishes rendering the attached-media preview. Keep the
+        # click gated on two matching coordinates, but tolerate one intervening
+        # miss instead of discarding otherwise consistent visual evidence.
+        return self.vision.find_stable(
+            locate,
+            attempts=2,
+            tolerance_px=16.0,
+            max_intermittent_misses=1,
+        )
 
     @timed_telemetry_step("media_processing")
     def _wait_until_media_ready(self, timeout: float = 75.0):
@@ -434,27 +536,14 @@ class FacebookPostTask(BaseTask):
         if self.media_path:
             self.log("STEP", f"Locating Photo/video button on profile for: {self.media_path}")
 
-            # Locate "Photo/video" button directly on the profile page
-            screen = self.client.screenshot()
-            photo_btn = self.vision.find_template(screen, "photo_video_btn", threshold=0.70)
-            if not photo_btn:
-                photo_btn = self.vision.find_photo_video_button(screen=screen)
-            if not photo_btn:
-                photo_btn = self._stable_ocr_target(
-                    self._brain_labels("media_button", (
-                        "photo/video",
-                        "photo / video",
-                        "photo video",
-                        "photolvideo",
-                        "photoivideo",
-                        "photos/videos",
-                    )),
-                    region="profile_post_stream",
-                )
+            # Locate the action only inside the confirmed profile composer card.
+            # Full-screen photo matching can confuse the Page cover image with
+            # the media action and is intentionally not used here.
+            photo_btn = self._stable_profile_media_target()
 
             self.log_decision(
                 "Click Photo/video on profile",
-                "stable Photo/video button or green photo icon on profile stream",
+                "stable Photo/video action anchored below the profile composer prompt",
                 f"target={photo_btn}",
                 "click target to trigger GTK file chooser" if photo_btn else "fail safe",
             )

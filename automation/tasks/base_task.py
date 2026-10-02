@@ -1030,7 +1030,7 @@ class BaseTask:
         return candidates[0]
 
     def _find_first_comment_targets(self, screen, *, allow_broad_fallback=True):
-        """Search the expected comment crop first, then the existing broad region."""
+        """Search the expected comment crop, then the broad post/feed area."""
         height = screen.shape[0]
         narrow, broad = self._first_comment_search_regions(screen)
         regions = [("narrow", narrow)]
@@ -1076,14 +1076,15 @@ class BaseTask:
         # Move mouse over main post feed column (x ~ 1150, y ~ 500) so mouse wheel / keys scroll feed
         self.client.exec_cmd(["xdotool", "mousemove", "1150", "500"], check=False)
 
-        for scan in range(1, 7):
+        # Comment success is more important than OCR cost here. Tall Reel cards
+        # can require substantially more vertical travel than photo/text posts,
+        # so every scan uses all detection regions and the bounded search goes
+        # far enough to expose the first card's action row.
+        for scan in range(1, 15):
             screen = self.client.screenshot()
-            # Give the stable expected crop two chances before paying for the
-            # broad right-side OCR fallback. The first retry does not scroll.
-            allow_broad_fallback = scan >= 2
             target, action_btn = self._find_first_comment_targets(
                 screen,
-                allow_broad_fallback=allow_broad_fallback,
+                allow_broad_fallback=True,
             )
             search_tier = getattr(self, "_last_comment_search_tier", "unknown")
             self.log_decision(
@@ -1096,23 +1097,27 @@ class BaseTask:
             if target:
                 return target, screen
 
-            # If comment input not expanded, check for 'Comment' button under post card
+            # The Comment action/icon is only a landmark. Clicking it can open a
+            # post overlay without focusing the editor, after which pasted text
+            # is lost. Move the feed just enough to expose the actual comment
+            # input below the action row, then require that input on a later
+            # scan before any text-entry click occurs.
             if action_btn:
-                self.log("INFO", f"Clicking 'Comment' action at {action_btn['center']} to expand input...")
-                self.click_reversible(
-                    action_btn["center"],
-                    label="expand_first_post_comment",
-                    bounds=action_btn.get("bounds"),
-                    max_offset_px=4,
+                action_source = action_btn.get("source", "ocr_comment_label")
+                self.capture_evidence(
+                    "comment_action_observed",
+                    screen,
+                    target=list(action_btn["center"]),
+                    action_source=action_source,
+                    scan=scan,
                 )
-                time.sleep(1.5)
-                screen = self.client.screenshot()
-                narrow, broad = self._first_comment_search_regions(screen)
-                target = self._find_first_comment_input(screen, region=narrow)
-                if not target:
-                    target = self._find_first_comment_input(screen, region=broad)
-                if target:
-                    return target, screen
+                self.log(
+                    "INFO",
+                    f"Observed '{action_source}' at {action_btn['center']}; scrolling to the comment input without clicking the action.",
+                )
+                self.human.scroll("down", notches=1)
+                time.sleep(0.8)
+                continue
 
             if scan == 1:
                 time.sleep(0.8)
@@ -1123,6 +1128,13 @@ class BaseTask:
             self.human.scroll("down", notches=2)
             time.sleep(0.8)
 
+        self.capture_evidence(
+            "comment_input_not_found",
+            self.client.screenshot(),
+            scans=14,
+            broad_post_area=True,
+            full_screen_fallback=False,
+        )
         return None, None
 
     def _open_permalink_comment_input(self, post_url: str | None):
@@ -1139,7 +1151,8 @@ class BaseTask:
             self.navigate_to(clean_url, wait_seconds=3.0)
             for scan in range(1, 4):
                 screen = self.client.screenshot()
-                target = self._find_first_comment_input(screen)
+                _narrow, broad = self._first_comment_search_regions(screen)
+                target = self._find_first_comment_input(screen, region=broad)
                 self.log_decision(
                     "Find permalink comment field",
                     "'Comment as ...' field on the verified permalink",
@@ -1208,6 +1221,16 @@ class BaseTask:
                 comment_box_pos, comment_screen = self._open_profile_first_comment_input()
             if comment_box_pos:
                 self.last_comment_method = "profile_first_post"
+        if not comment_box_pos and reuse_profile_page and not prefer_permalink:
+            self.log(
+                "INFO",
+                "The reused profile feed did not expose a comment field; refreshing and running one full second pass.",
+            )
+            comment_box_pos, comment_screen = self._open_profile_first_comment_input(
+                navigate=True
+            )
+            if comment_box_pos:
+                self.last_comment_method = "profile_first_post_refresh"
         if not comment_box_pos and post_url:
             self.log("WARN", "Primary first-post comment target was not found; trying the verified permalink before submission.")
             comment_box_pos, comment_screen = self._open_permalink_comment_input(post_url)

@@ -129,8 +129,9 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
   const handleRunNow = async (executionId: string) => {
     setActionError(null);
     try {
-      await runExecutionNow(executionId);
-      loadQueue();
+      const result = await runExecutionNow(executionId);
+      setReportSuccess(result.message || (result.queued ? 'Retry queued.' : 'Execution started.'));
+      await loadQueue();
     } catch (err: any) {
       setActionError(err.message || 'Failed to dispatch execution');
     }
@@ -208,14 +209,14 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
     setIsGeneratingReport(true);
     setActionError(null);
     try {
-      const filename = await downloadSupportBundle({
+      const savedLocation = await downloadSupportBundle({
         executionId: reportingItem?.execution_id,
         description: reportDescription.trim(),
         includeEvidence: Boolean(reportingItem) && reportIncludeEvidence,
         includeContent: Boolean(reportingItem) && reportIncludeContent,
       });
       setReportDialogOpen(false);
-      setReportSuccess(`${filename} downloaded. Review it before sending it to support.`);
+      setReportSuccess(`Support ZIP saved to ${savedLocation}. Review it before sending it to support.`);
     } catch (err: any) {
       setActionError(err.message || 'Failed to create support bundle');
     } finally {
@@ -292,7 +293,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
         return (
           <span
             className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-950 text-amber-300 border border-amber-800/80 flex items-center gap-1 shadow-sm"
-            title="Outcome uncertain. Rerun locked until operator review."
+            title="Outcome was not verified. Direct rerun is available."
           >
             <ShieldAlert className="w-3 h-3 text-amber-400" /> {status === 'needs_review' ? 'Needs Review' : 'Uncertain'}
           </span>
@@ -593,7 +594,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                 </span>
               </div>
               <div className="text-[11px] text-amber-300/80 mt-0.5 leading-snug">
-                {uncertainCount > 0 && `${uncertainCount} post(s) held for Phase 0 review to prevent duplicates. `}
+                {uncertainCount > 0 && `${uncertainCount} post(s) has an unverified outcome and can be reviewed or re-run. `}
                 {failedCount > 0 && `${failedCount} post(s) failed pre-publish and can be retried safely.`}
               </div>
             </div>
@@ -1082,8 +1083,8 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                     </button>
                   )}
 
-                  {/* Re-run button for failed or skipped items */}
-                  {(item.status === 'failed' || item.status === 'failed_before_publish' || item.status.startsWith('skipped')) && (
+                  {/* Re-run button for every non-active retryable outcome */}
+                  {(item.status === 'failed' || item.status === 'failed_before_publish' || item.status === 'uncertain' || item.status === 'needs_review' || item.status.startsWith('skipped')) && (
                     <button
                       type="button"
                       onClick={() => handleRunNow(item.execution_id)}
@@ -1104,7 +1105,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                     <Bug className="w-3.5 h-3.5" />
                   </button>
 
-                  {/* Delete button (locked while active or uncertain) */}
+                  {/* Delete button remains locked while active or unresolved. */}
                   {!['running', 'uncertain', 'needs_review'].includes(item.status) ? (
                     <button
                       type="button"
@@ -1117,7 +1118,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                   ) : (
                     <span
                       className="p-1.5 text-zinc-600 cursor-not-allowed"
-                      title="Cannot delete while execution is running or held at safety gate"
+                      title="Cannot delete while execution is running or unresolved"
                     >
                       <Lock className="w-3.5 h-3.5" />
                     </span>
@@ -1412,7 +1413,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                 <div className="p-3 bg-amber-950/30 border border-amber-800/50 rounded-xl text-xs text-amber-200/90 leading-relaxed flex items-start gap-2.5">
                   <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
                   <div>
-                    <strong className="text-amber-300">Duplicate Prevention Policy:</strong> Direct rerun is locked to prevent duplicate posts on Facebook. Inspect the browser via noVNC before deciding.
+                    <strong className="text-amber-300">Unverified outcome:</strong> You may resolve the recorded result or close this dialog and re-run the execution directly.
                   </div>
                 </div>
 

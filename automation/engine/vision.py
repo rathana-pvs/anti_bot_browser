@@ -978,22 +978,31 @@ class VisionEngine:
         attempts: int = 2,
         tolerance_px: float = 6.0,
         interval: float = 0.35,
+        max_intermittent_misses: int = 0,
     ) -> tuple[int, int] | None:
         """Require a locator to return nearly identical coordinates repeatedly."""
         previous = None
         stable_count = 0
-        for _ in range(max(2, attempts + 1)):
+        intermittent_misses = 0
+        for _ in range(max(2, attempts + 1 + max(0, max_intermittent_misses))):
             current = locator()
             if current is None:
+                if previous is not None and intermittent_misses < max_intermittent_misses:
+                    intermittent_misses += 1
+                    time.sleep(interval)
+                    continue
                 previous = None
                 stable_count = 0
+                intermittent_misses = 0
             elif previous is not None and np.hypot(current[0] - previous[0], current[1] - previous[1]) <= tolerance_px:
                 stable_count += 1
+                intermittent_misses = 0
                 if stable_count >= attempts - 1:
                     return current
             else:
                 previous = current
                 stable_count = 0
+                intermittent_misses = 0
             time.sleep(interval)
         return None
 

@@ -2733,15 +2733,9 @@ app.post('/api/queue/run-now/:execution_id', async (req, res) => {
       return res.status(404).json({ error: 'Execution not found' });
     }
 
-    if (targetExec.status === 'uncertain' || targetExec.status === 'needs_review') {
-      return res.status(400).json({
-        error: `Cannot rerun an execution in '${targetExec.status}' state directly. Please review on Facebook and resolve the outcome first to prevent duplicate posts.`,
-      });
-    }
-
-    // A skipped authentication preflight is safe to retry manually after the
-    // operator logs the profile back in. It must not retry automatically.
-    if (targetExec.status?.startsWith('skipped_')) {
+    const isManualRetry = targetExec.status?.startsWith('skipped_')
+      || ['failed', 'failed_before_publish', 'uncertain', 'needs_review'].includes(targetExec.status);
+    if (isManualRetry) {
       const now = new Date().toISOString();
       targetExec.status = 'pending';
       targetExec.stage = 'pending';
@@ -2753,7 +2747,7 @@ app.post('/api/queue/run-now/:execution_id', async (req, res) => {
       targetExec.stage_history.push({
         stage: 'pending',
         timestamp: now,
-        reason: 'manual_retry_after_safe_skip',
+        reason: 'manual_retry',
       });
       savePostingQueue(queue);
     }

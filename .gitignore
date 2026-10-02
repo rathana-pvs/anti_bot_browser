@@ -28,7 +28,7 @@ profiles/*/config.json
 profiles/*/config.json.v*.bak
 profiles/shared_media/
 data/shared_media/
-data/posting_queue.json
+data/posting_queue*.json
 proxies/proxy_pool.json
 
 # Environment Variables & Logs

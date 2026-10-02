@@ -494,6 +494,22 @@ class CaptionTargetTests(unittest.TestCase):
 
         self.assertIsNone(task._stable_caption_target())
 
+    def test_caption_target_tolerates_one_intermittent_ocr_miss(self):
+        task = FacebookPostTask.__new__(FacebookPostTask)
+        task.client = Mock()
+        task.vision = VisionEngine.__new__(VisionEngine)
+        task.record_locator_telemetry = Mock()
+        task.client.screenshot.return_value = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task.vision.get_pixel_region = Mock(return_value=(384, 162, 1152, 756))
+        detected = [
+            {"text": "Create post", "center": (952, 399), "confidence": 0.99},
+            {"text": "What's on your mind?", "center": (787, 517), "confidence": 0.92},
+        ]
+        task.vision.read_text = Mock(side_effect=[detected, [], detected])
+
+        with unittest.mock.patch("engine.vision.time.sleep", return_value=None):
+            self.assertEqual(task._stable_caption_target(), (787, 517))
+
 
 class FeedComposerTargetTests(unittest.TestCase):
     def make_task(self, detected_text):
@@ -518,6 +534,48 @@ class FeedComposerTargetTests(unittest.TestCase):
         task = self.make_task("Share something on your page")
 
         self.assertIsNone(task._stable_feed_composer_target())
+
+
+class ProfileMediaTargetTests(unittest.TestCase):
+    def make_task(self, detected_text):
+        task = FacebookPostTask.__new__(FacebookPostTask)
+        task.client = Mock()
+        task.vision = Mock()
+        task.record_locator_telemetry = Mock()
+        task.client.screenshot.return_value = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task.vision.get_pixel_region.return_value = (230, 216, 1460, 864)
+        task.vision.read_text.return_value = detected_text
+        task.vision.find_stable.side_effect = lambda locator, **_: locator()
+        task.vision.find_photo_video_button.return_value = None
+        return task
+
+    def test_accepts_photo_video_below_composer_prompt(self):
+        task = self.make_task([
+            {"text": "What's on your mind?", "center": (1400, 940), "confidence": 0.91},
+            {"text": "Photo/video", "center": (1180, 1002), "confidence": 0.96},
+        ])
+
+        self.assertEqual(task._stable_profile_media_target(), (1180, 1002))
+        task.vision.find_photo_video_button.assert_not_called()
+
+    def test_rejects_cover_photo_target_above_composer(self):
+        task = self.make_task([
+            {"text": "Photo/video", "center": (1338, 311), "confidence": 0.99},
+            {"text": "What's on your mind?", "center": (1400, 940), "confidence": 0.91},
+        ])
+
+        self.assertIsNone(task._stable_profile_media_target())
+        visual_region = task.vision.find_photo_video_button.call_args.kwargs["region"]
+        self.assertGreaterEqual(visual_region[1], 960)
+        self.assertLessEqual(visual_region[1] + visual_region[3], 1080)
+
+    def test_requires_composer_prompt_before_using_visual_fallback(self):
+        task = self.make_task([
+            {"text": "Photo/video", "center": (1338, 311), "confidence": 0.99},
+        ])
+
+        self.assertIsNone(task._stable_profile_media_target())
+        task.vision.find_photo_video_button.assert_not_called()
 
 
 class ActionTargetTests(unittest.TestCase):
@@ -729,6 +787,26 @@ class ReelEntryFlowTests(unittest.TestCase):
 
         self.assertTrue(task._is_reel_final_composer(task.client.screenshot()))
 
+    def test_profile_006_next_share_flow_requires_editing_surface_markers(self):
+        task = self.make_task()
+        task.vision.read_text.return_value = [
+            {"text": "Create reel"},
+            {"text": "Uploaded media"},
+            {"text": "Edit"},
+            {"text": "Audio"},
+            {"text": "Closed captions"},
+            {"text": "Audio descriptions"},
+        ]
+
+        self.assertTrue(task._is_reel_next_share_composer(task.client.screenshot()))
+
+        task.vision.read_text.return_value = [
+            {"text": "Create reel"},
+            {"text": "Uploaded media"},
+            {"text": "Post audience"},
+        ]
+        self.assertFalse(task._is_reel_next_share_composer(task.client.screenshot()))
+
     def test_early_caption_entry_pastes_and_marks_caption_entered(self):
         task = self.make_task()
         task.caption = "Caption while the video processes"
@@ -833,6 +911,30 @@ class ReelEntryFlowTests(unittest.TestCase):
             (0.00, 0.08, 0.34, 1.0),
         )
 
+    def test_description_target_uses_uploaded_media_heading_as_geometry_anchor(self):
+        task = self.make_task()
+
+        def find_text(labels, **_kwargs):
+            if tuple(labels) == ("uploaded media",):
+                return {"center": (80, 388), "text": "Uploaded media"}
+            return None
+
+        task.vision.find_text_cascaded.side_effect = find_text
+        task.vision.find_stable.side_effect = lambda locator, **_: locator()
+
+        self.assertEqual(task._find_reel_description_target(), (170, 310))
+
+    def test_description_target_does_not_use_distant_post_audience_anchor(self):
+        task = self.make_task()
+        task.vision.find_text_cascaded.return_value = None
+        task.vision.find_stable.side_effect = lambda locator, **_: locator()
+
+        self.assertIsNone(task._find_reel_description_target())
+        searched_labels = [
+            tuple(call.args[0]) for call in task.vision.find_text_cascaded.call_args_list
+        ]
+        self.assertNotIn(("public", "post audience", "tag and collaborate", "add ai label"), searched_labels)
+
     def test_caption_verification_rejects_untouched_placeholder(self):
         task = self.make_task()
         task.caption = "Save this for your routine and follow for more"
@@ -859,10 +961,50 @@ class ReelEntryFlowTests(unittest.TestCase):
         )
         task.vision.read_text.assert_called_once()
 
-    def test_post_upload_transition_accepts_direct_final_composer(self):
+    def test_caption_verification_rejects_common_words_outside_empty_editor(self):
         task = self.make_task()
+        task.caption = (
+            "In an interview with the Radio Times the musician announced a formal end "
+            "to the relationship and discussed the ongoing conflict"
+        )
+        task._reel_description_target = (290, 310)
+        task.vision.read_text.return_value = [
+            {"text": "Describe your reel..."},
+            {"text": "Uploaded media"},
+            {"text": "Post audience"},
+            {"text": "Remixing and use of original audio"},
+        ]
+
+        self.assertLess(
+            task._reel_caption_match_confidence(task.client.screenshot()),
+            0.6,
+        )
+        region = task.vision.read_text.call_args.kwargs["region"]
+        self.assertLess(region[0], task._reel_description_target[0])
+        self.assertLess(region[1], task._reel_description_target[1])
+        self.assertGreater(region[0] + region[2], task._reel_description_target[0])
+        self.assertGreater(region[1] + region[3], task._reel_description_target[1])
+
+    def test_profile_006_composer_with_enabled_next_advances_instead_of_publishing(self):
+        task = self.make_task()
+        task._is_reel_next_share_composer = Mock(return_value=True)
         task._is_reel_final_composer = Mock(return_value=True)
-        task._find_stable_enabled_action = Mock(return_value=(420, 990))
+        task._find_stable_enabled_action = Mock(return_value=(300, 1046))
+
+        status, target, _ = task._wait_for_reel_post_upload_transition(
+            timeout=1.0,
+            label="reel_next_ready",
+        )
+
+        self.assertEqual(status, "next")
+        self.assertEqual(target, (300, 1046))
+        task._is_reel_final_composer.assert_not_called()
+
+    def test_existing_direct_final_composer_path_remains_unchanged(self):
+        task = self.make_task()
+        task._is_reel_next_share_composer = Mock(return_value=False)
+        task._is_reel_final_composer = Mock(return_value=True)
+        task._find_stable_enabled_action = Mock(return_value=(300, 1046))
 
         status, target, _ = task._wait_for_reel_post_upload_transition(
             timeout=1.0,
@@ -871,10 +1013,12 @@ class ReelEntryFlowTests(unittest.TestCase):
 
         self.assertEqual(status, "final_composer")
         self.assertIsNone(target)
+        task._is_reel_final_composer.assert_called_once()
         task._find_stable_enabled_action.assert_not_called()
 
     def test_post_upload_transition_preserves_next_flow(self):
         task = self.make_task()
+        task._is_reel_next_share_composer = Mock(return_value=False)
         task._is_reel_final_composer = Mock(return_value=False)
         task._find_stable_enabled_action = Mock(return_value=(420, 990))
 
@@ -888,6 +1032,118 @@ class ReelEntryFlowTests(unittest.TestCase):
         self.assertFalse(
             task._find_stable_enabled_action.call_args.kwargs["allow_semantic_fallback"]
         )
+
+    def test_video_composer_wait_is_capped_at_two_minutes_total(self):
+        task = self.make_task()
+        task._video_composer_started_at = 1000.0
+
+        with unittest.mock.patch("tasks.facebook_reel.time.monotonic", return_value=1115.0):
+            self.assertEqual(task._remaining_video_composer_wait(), 5.0)
+            self.assertEqual(task._remaining_video_composer_wait(30.0), 5.0)
+
+        with unittest.mock.patch("tasks.facebook_reel.time.monotonic", return_value=1121.0):
+            self.assertEqual(task._remaining_video_composer_wait(), 0.0)
+
+    def test_share_surface_requires_heading_audience_and_review_option(self):
+        task = self.make_task()
+        task.vision.read_text.return_value = [
+            {"text": "Share"},
+            {"text": "Post audience"},
+            {"text": "Remixing and use of original audio"},
+            {"text": "Boost post"},
+        ]
+
+        self.assertTrue(task._is_reel_share_surface(task.client.screenshot()))
+
+        task.vision.read_text.return_value = [
+            {"text": "Post audience"},
+            {"text": "Boost post"},
+        ]
+        self.assertFalse(task._is_reel_share_surface(task.client.screenshot()))
+
+    def test_publish_action_uses_unique_blue_cta_on_confirmed_share_surface(self):
+        task = self.make_task()
+        task.remember_reversible_click_bounds = Mock()
+        task._is_reel_share_surface = Mock(return_value=True)
+        task.vision.find_blue_action_buttons.return_value = [{
+            "center": (256, 580),
+            "bounds": (162, 568, 351, 593),
+        }]
+        task.vision.find_text_cascaded.return_value = None
+        task.vision.find_stable.side_effect = lambda locator, **_: locator()
+
+        self.assertEqual(task._find_stable_reel_publish_action(), (256, 580))
+        task._is_reel_share_surface.assert_called_once()
+        self.assertEqual(
+            task.vision.find_blue_action_buttons.call_args.kwargs["region"],
+            task.LEFT_PUBLICATION_REGION,
+        )
+
+    def test_publish_action_preserves_old_explicit_post_flow(self):
+        task = self.make_task()
+        task.remember_reversible_click_bounds = Mock()
+        task._is_reel_share_surface = Mock(return_value=False)
+        task.vision.find_blue_action_buttons.return_value = [{
+            "center": (960, 990),
+            "bounds": (840, 965, 1080, 1015),
+        }]
+        task.vision.find_text_cascaded.return_value = {
+            "text": "Post",
+            "center": (960, 990),
+            "confidence": 0.96,
+        }
+        task.vision.find_stable.side_effect = lambda locator, **_: locator()
+
+        self.assertEqual(task._find_stable_reel_publish_action(), (960, 990))
+        task._is_reel_share_surface.assert_not_called()
+
+    def test_publish_action_rejects_unrecognized_surface_when_post_ocr_misses(self):
+        task = self.make_task()
+        task.remember_reversible_click_bounds = Mock()
+        task._is_reel_share_surface = Mock(return_value=False)
+        task.vision.find_blue_action_buttons.return_value = [{
+            "center": (256, 580),
+            "bounds": (162, 568, 351, 593),
+        }]
+        task.vision.find_text_cascaded.return_value = None
+        task.vision.find_stable.side_effect = lambda locator, **_: locator()
+
+        self.assertIsNone(task._find_stable_reel_publish_action())
+        task.remember_reversible_click_bounds.assert_not_called()
+
+    def test_publish_action_rejects_ambiguous_multiple_blue_ctas(self):
+        task = self.make_task()
+        task.remember_reversible_click_bounds = Mock()
+        task._is_reel_share_surface = Mock(return_value=True)
+        task.vision.find_blue_action_buttons.return_value = [
+            {"center": (256, 580), "bounds": (162, 568, 351, 593)},
+            {"center": (80, 580), "bounds": (20, 568, 140, 593)},
+        ]
+        task.vision.find_text_cascaded.return_value = None
+        task.vision.find_stable.side_effect = lambda locator, **_: locator()
+
+        self.assertIsNone(task._find_stable_reel_publish_action())
+        task._is_reel_share_surface.assert_not_called()
+
+    def test_legacy_publish_fallback_disables_semantic_guessing(self):
+        task = self.make_task()
+        task._find_stable_enabled_action = Mock(return_value=(960, 990))
+
+        self.assertEqual(
+            task._find_explicit_legacy_reel_publish_action(),
+            (960, 990),
+        )
+        self.assertFalse(
+            task._find_stable_enabled_action.call_args.kwargs["allow_semantic_fallback"]
+        )
+
+    def test_new_share_flow_suppresses_refresh_while_post_is_still_visible(self):
+        task = self.make_task()
+        screen = task.client.screenshot()
+        task._is_reel_share_surface = Mock(return_value=True)
+
+        self.assertTrue(task._new_share_post_is_still_pending(screen, True))
+        self.assertFalse(task._new_share_post_is_still_pending(screen, False))
 
 
 class ReelProfileActionTests(unittest.TestCase):
@@ -1133,6 +1389,96 @@ class FirstCommentTargetTests(unittest.TestCase):
             [call.kwargs["region"] for call in task.vision.read_text.call_args_list],
             [narrow, broad],
         )
+
+    def test_comment_scan_stops_after_broad_post_area(self):
+        task = FacebookReelTask.__new__(FacebookReelTask)
+        task.vision = Mock()
+        screen = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task.vision.read_text.side_effect = [
+            [],
+            [],
+            [{"text": "Write a public comment...", "center": (410, 910), "confidence": 0.91}],
+        ]
+
+        input_target, action_target = task._find_first_comment_targets(
+            screen,
+            allow_broad_fallback=True,
+        )
+
+        self.assertIsNone(input_target)
+        self.assertIsNone(action_target)
+        self.assertEqual(task._last_comment_search_tier, "not_found")
+        narrow, broad = task._first_comment_search_regions(screen)
+        self.assertEqual(
+            [call.kwargs["region"] for call in task.vision.read_text.call_args_list],
+            [narrow, broad],
+        )
+
+    def test_broad_post_area_does_not_consult_full_screen_results(self):
+        task = FacebookReelTask.__new__(FacebookReelTask)
+        task.vision = Mock()
+        screen = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task.vision.read_text.side_effect = [
+            [],
+            [],
+            [{"text": "Comment", "center": (200, 150), "confidence": 0.99}],
+        ]
+
+        self.assertEqual(
+            task._find_first_comment_targets(screen, allow_broad_fallback=True),
+            (None, None),
+        )
+        self.assertEqual(task._last_comment_search_tier, "not_found")
+
+    def test_comment_scan_never_clicks_comment_action_and_finds_input_after_scroll(self):
+        task = FacebookReelTask.__new__(FacebookReelTask)
+        screen = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task.client = Mock()
+        task.client.screenshot.return_value = screen
+        task.human = Mock()
+        task.log = Mock()
+        task.log_decision = Mock()
+        task.capture_evidence = Mock()
+        task.click_reversible = Mock()
+        task._find_first_comment_targets = Mock(side_effect=[
+            (None, {
+                "center": (1116, 879),
+                "bounds": (1102, 865, 1130, 893),
+                "source": "ocr_comment_label",
+            }),
+            ((1160, 910), None),
+        ])
+
+        with unittest.mock.patch("tasks.base_task.time.sleep", return_value=None):
+            target, target_screen = task._open_profile_first_comment_input(navigate=False)
+
+        self.assertEqual(target, (1160, 910))
+        self.assertIs(target_screen, screen)
+        task.click_reversible.assert_not_called()
+        task.human.scroll.assert_called_once_with("down", notches=1)
+
+    def test_comment_scan_reaches_bottom_of_tall_reel_card(self):
+        task = FacebookReelTask.__new__(FacebookReelTask)
+        screen = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task.client = Mock()
+        task.client.screenshot.return_value = screen
+        task.human = Mock()
+        task.log = Mock()
+        task.log_decision = Mock()
+        task.capture_evidence = Mock()
+        task._find_first_comment_targets = Mock(
+            side_effect=[(None, None)] * 8 + [((1160, 910), None)],
+        )
+
+        with unittest.mock.patch("tasks.base_task.time.sleep", return_value=None):
+            target, _ = task._open_profile_first_comment_input(navigate=False)
+
+        self.assertEqual(target, (1160, 910))
+        self.assertEqual(task.human.scroll.call_count, 7)
+        self.assertTrue(all(
+            call.kwargs["allow_broad_fallback"] is True
+            for call in task._find_first_comment_targets.call_args_list
+        ))
 
     def test_comment_scan_defers_broad_region_during_first_local_attempt(self):
         task = FacebookReelTask.__new__(FacebookReelTask)

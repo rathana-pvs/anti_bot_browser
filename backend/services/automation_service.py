@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 import time
+import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1129,6 +1130,48 @@ def heartbeat_scheduler_leases():
     recover_stale_queue_executions("scheduler_lease_expired")
 
 _is_dispatching = False
+
+
+def _reserve_dispatch_slot(reservations: dict, kind: str, profile_id: str, config: dict) -> bool:
+    """Reserve capacity inside one dispatcher pass before async claims can run."""
+    if profile_id in reservations["profiles"]:
+        return False
+    if reservations["total"] >= config["max_total_automation_tasks"]:
+        return False
+    key = "publishers" if kind == "publisher" else "preparers"
+    limit_key = "max_publishers" if kind == "publisher" else "max_preparers"
+    if reservations[key] >= config[limit_key]:
+        return False
+    reservations["profiles"].add(profile_id)
+    reservations["total"] += 1
+    reservations[key] += 1
+    return True
+
+
+async def _run_dispatched_queue_task(execution_id: str, kind: str):
+    """Consume claim races as normal scheduler deferrals instead of orphan errors."""
+    try:
+        if kind == "preparer":
+            return await execute_queue_preparation(execution_id)
+        return await execute_queue_item(execution_id, kind)
+    except Exception as err:
+        message = str(err)
+        expected_prefixes = (
+            "Batch iteration is not ready:",
+            "Scheduler could not claim execution:",
+            "Execution is not ready for the publisher slot",
+            "Execution does not require passive preparation",
+            "Execution not found",
+            "queue_claim_in_progress",
+        )
+        if isinstance(err, RuntimeError) and message.startswith(expected_prefixes):
+            print(f"[Queue Dispatcher] Deferred {execution_id}: {message}")
+            return {"success": False, "status": "deferred", "error": message}
+        print(f"[Queue Dispatcher] Execution task {execution_id} failed: {message}")
+        traceback.print_exc()
+        return {"success": False, "status": "scheduler_error", "error": message}
+
+
 async def dispatch_pending_queue():
     global _is_dispatching
     if _is_dispatching:
@@ -1139,6 +1182,18 @@ async def dispatch_pending_queue():
         scheduler_cfg = get_scheduler_config()
         queue_snapshot = load_posting_queue()
         due_executions = ordered_due_executions(queue_snapshot, time.time() * 1000)
+
+        initial_slots = scheduler_snapshot(
+            queue_snapshot,
+            active_in_memory_scheduler_leases(),
+            scheduler_cfg,
+        )["active"]
+        reservations = {
+            "profiles": set(),
+            "publishers": initial_slots["publishers"],
+            "preparers": initial_slots["preparers"],
+            "total": initial_slots["total"],
+        }
 
         publisher_batches_claimed = set()
         cooldown_retry_ms = None
@@ -1190,20 +1245,23 @@ async def dispatch_pending_queue():
             if not availability["allowed"]:
                 continue
 
+            if not _reserve_dispatch_slot(reservations, slot_kind, pid, scheduler_cfg):
+                continue
+
             if get_container_status(pid) != "running":
                 admission = claim_container_start_admission()
                 if not admission["allowed"]:
+                    reservations["profiles"].discard(pid)
+                    reservations["total"] -= 1
+                    reservations["publishers" if slot_kind == "publisher" else "preparers"] -= 1
                     if admission.get("reason") == "container_start_spacing":
                         asyncio.create_task(_delayed_dispatch(CONTAINER_START_SPACING_MS + 100))
                     continue
 
             print(f"[Queue Dispatcher] Claiming {slot_kind} slot for {exec_id} on profile {pid}...")
-            if needs_prep:
-                asyncio.create_task(execute_queue_preparation(exec_id))
-            else:
-                if slot_kind == "publisher":
-                    publisher_batches_claimed.add(batch_id)
-                asyncio.create_task(execute_queue_item(exec_id, slot_kind))
+            if slot_kind == "publisher":
+                publisher_batches_claimed.add(batch_id)
+            asyncio.create_task(_run_dispatched_queue_task(exec_id, slot_kind))
         if cooldown_retry_ms is not None:
             asyncio.create_task(_delayed_dispatch(cooldown_retry_ms + 100))
     except Exception as err:

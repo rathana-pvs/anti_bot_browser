@@ -367,6 +367,10 @@ export async function downloadSupportBundle(options: SupportBundleOptions = {}):
   const filenameMatch = disposition.match(/filename="?([^";]+)"?/i);
   const filename = filenameMatch?.[1] || 'automat_fb_support.zip';
   const blob = await res.blob();
+  if (isTauriEnv) {
+    const bytes = Array.from(new Uint8Array(await blob.arrayBuffer()));
+    return invoke<string>('save_support_bundle', { filename, bytes });
+  }
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;
@@ -374,7 +378,7 @@ export async function downloadSupportBundle(options: SupportBundleOptions = {}):
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
-  URL.revokeObjectURL(url);
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
   return filename;
 }
 
@@ -444,13 +448,12 @@ export async function deleteExecution(executionId: string): Promise<{ success: b
   return res.json();
 }
 
-export async function runExecutionNow(executionId: string): Promise<{ success: boolean }> {
+export async function runExecutionNow(executionId: string): Promise<{ success: boolean; queued?: boolean; message?: string }> {
   const res = await fetch(`${API_BASE}/queue/run-now/${executionId}`, {
     method: 'POST',
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || 'Failed to run execution now');
+    throw await apiError(res, 'Failed to run execution now');
   }
   return res.json();
 }

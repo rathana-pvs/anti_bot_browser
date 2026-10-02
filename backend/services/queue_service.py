@@ -1,7 +1,9 @@
 import json
 import os
+import re
 import shutil
 import tempfile
+import threading
 import time
 import uuid
 import zipfile
@@ -61,25 +63,76 @@ from backend.services.docker_service import (
     claim_container_start_admission,
 )
 
-def load_posting_queue() -> dict:
+_QUEUE_IO_LOCK = threading.RLock()
+
+
+def _queue_backup_file() -> Path:
+    return QUEUE_FILE.with_suffix(".json.bak")
+
+
+def _read_queue_file(path: Path) -> dict:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError(f"Queue root in {path.name} is not an object")
+    return data
+
+
+def _atomic_json_write(path: Path, data: dict) -> None:
+    """Write JSON through a writer-specific temp file before replacing path."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=str(path.parent),
+    )
+    tmp_path = Path(tmp_name)
     try:
-        if QUEUE_FILE.exists():
-            with open(QUEUE_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception as err:
-        print(f"Error loading posting_queue.json: {err}")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def load_posting_queue() -> dict:
+    with _QUEUE_IO_LOCK:
+        try:
+            if QUEUE_FILE.exists():
+                return _read_queue_file(QUEUE_FILE)
+        except Exception as err:
+            print(f"Error loading posting_queue.json: {err}")
+            backup_file = _queue_backup_file()
+            try:
+                if backup_file.exists():
+                    recovered = _read_queue_file(backup_file)
+                    print(f"Recovered posting queue from {backup_file.name}")
+                    return recovered
+            except Exception as backup_err:
+                print(f"Error loading posting queue backup: {backup_err}")
     return {"queue_version": "2.0", "daily_batches": []}
 
 def save_posting_queue(data: dict) -> bool:
-    try:
-        tmp_file = QUEUE_FILE.with_suffix(".json.tmp")
-        with open(tmp_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        tmp_file.replace(QUEUE_FILE)
-        return True
-    except Exception as err:
-        print(f"Error atomically saving posting_queue.json: {err}")
-        return False
+    with _QUEUE_IO_LOCK:
+        try:
+            # Keep the last known-good generation. A corrupt primary is never
+            # promoted over an existing valid backup.
+            if QUEUE_FILE.exists():
+                try:
+                    previous = _read_queue_file(QUEUE_FILE)
+                    _atomic_json_write(_queue_backup_file(), previous)
+                except Exception as backup_err:
+                    print(f"Skipping posting queue backup because the current file is invalid: {backup_err}")
+            _atomic_json_write(QUEUE_FILE, data)
+            return True
+        except Exception as err:
+            print(f"Error atomically saving posting_queue.json: {err}")
+            return False
 
 def with_queue_claim_lock(callback):
     scheduler_cfg = get_scheduler_config()

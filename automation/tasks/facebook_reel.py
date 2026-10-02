@@ -13,6 +13,7 @@ from .base_task import BaseTask
 
 
 class FacebookReelTask(BaseTask):
+    VIDEO_COMPOSER_WAIT_TIMEOUT = 120.0
     RIGHT_REEL_SIDEBAR = "reel_sidebar"
     LEFT_REEL_SIDEBAR = (0.00, 0.08, 0.34, 1.0)
     LEFT_PUBLICATION_REGION = (0.00, 0.50, 0.40, 1.0)
@@ -45,6 +46,24 @@ class FacebookReelTask(BaseTask):
         self.log("WARN", message)
         self.capture_evidence(code, screen, error_code=code, message=message)
         return self.set_outcome("needs_review", code, message=message)
+
+    def _remaining_video_composer_wait(self, requested: float | None = None) -> float:
+        """Return time left in the hard two-minute post-upload composer budget."""
+        started_at = getattr(self, "_video_composer_started_at", None)
+        if started_at is None:
+            return self.VIDEO_COMPOSER_WAIT_TIMEOUT if requested is None else requested
+        remaining = max(
+            0.0,
+            self.VIDEO_COMPOSER_WAIT_TIMEOUT - (time.monotonic() - started_at),
+        )
+        return remaining if requested is None else min(requested, remaining)
+
+    def _video_composer_timeout(self, screen=None) -> bool:
+        return self._fail(
+            "reel_composer_timeout",
+            "The video upload composer did not become ready within 2 minutes; stopping this profile so the next profile can run.",
+            screen,
+        )
 
     def _find_stable_text(self, labels, prefer_lower_half=False, min_confidence=0.25, region=None):
         def locate():
@@ -240,6 +259,104 @@ class FacebookReelTask(BaseTask):
 
         return self.vision.find_stable(locate, attempts=2, tolerance_px=8.0)
 
+    def _is_reel_share_surface(self, screen) -> bool:
+        """Recognize the final left-side Share review used by newer Reel flows.
+
+        This screen appears only after Next and no longer contains the caption
+        editor.  Requiring its heading, audience control, and another review
+        option keeps the structural publish fallback away from upload/edit
+        screens that can also contain a blue Next button.
+        """
+        items = self.vision.read_text(
+            screen,
+            region=self.LEFT_REEL_SIDEBAR,
+            min_confidence=0.18,
+        )
+        normalized = [
+            self._normalized_ocr_text(item.get("text", ""))
+            for item in items
+        ]
+        has_share_heading = any(text == "share" for text in normalized)
+        has_audience = any(
+            text == "post audience" or text.startswith("post audience ")
+            for text in normalized
+        )
+        has_review_option = any(
+            text.startswith("remixing and use of original audio")
+            or text.startswith("share to groups")
+            or text.startswith("share to story")
+            or text.startswith("add to playlist")
+            or text.startswith("boost post")
+            for text in normalized
+        )
+        return has_share_heading and has_audience and has_review_option
+
+    def _find_stable_reel_publish_action(self):
+        """Find Post text, or safely infer the sole CTA on the final Share page."""
+        labels = ("post", "publish", "share")
+
+        def locate():
+            screen = self.client.screenshot()
+            blue_buttons = self.vision.find_blue_action_buttons(
+                screen=screen,
+                region=self.LEFT_PUBLICATION_REGION,
+            )
+            if not isinstance(blue_buttons, list) or not blue_buttons:
+                return None
+
+            # Prefer an explicit label and bind it to the same blue rectangle.
+            for button in blue_buttons:
+                x1, y1, x2, y2 = button["bounds"]
+                text_match = self.vision.find_text_cascaded(
+                    labels,
+                    screen=screen,
+                    region=(x1, y1, x2 - x1, y2 - y1),
+                    min_confidence=0.15,
+                    allow_full_screen_fallback=False,
+                )
+                if text_match:
+                    self.remember_reversible_click_bounds(
+                        button["center"],
+                        button["bounds"],
+                    )
+                    return button["center"]
+
+            # Newer Reel flows expose a final Share settings page. OCR can miss
+            # its small white Post label, so accept geometry only when the page
+            # is independently recognized and it has exactly one enabled CTA.
+            if len(blue_buttons) == 1 and self._is_reel_share_surface(screen):
+                button = blue_buttons[0]
+                self.remember_reversible_click_bounds(
+                    button["center"],
+                    button["bounds"],
+                )
+                return button["center"]
+            return None
+
+        return self.vision.find_stable(
+            locate,
+            attempts=2,
+            tolerance_px=8.0,
+            max_intermittent_misses=1,
+        )
+
+    def _find_explicit_legacy_reel_publish_action(self):
+        """Preserve the old labeled Post fallback without semantic guessing."""
+        return self._find_stable_enabled_action(
+            ("post", "publish", "share"),
+            region="bottom_action_bar",
+            allow_semantic_fallback=False,
+            allow_full_screen_fallback=True,
+        )
+
+    def _new_share_post_is_still_pending(self, screen, new_flow: bool) -> bool:
+        """Fence refreshes while the new flow is still on its Share review."""
+        return bool(
+            new_flow
+            and screen is not None
+            and self._is_reel_share_surface(screen)
+        )
+
     def _reel_safety_observation(self, screen, local_misses: int):
         """Use cheap dialog OCR normally and retain bounded full-screen safety fallback."""
         observation = self.recognizer.observe_safety_gate(screen)
@@ -380,7 +497,7 @@ class FacebookReelTask(BaseTask):
             normalized = [self._normalized_ocr_text(item.get("text", "")) for item in items]
             description_item = next((
                 item for item, text in zip(items, normalized)
-                if text in {"describe your reel", "write a caption", "description"}
+                if text in {"describe your reel", "write a caption"}
                 or text.startswith("describe your reel ")
             ), None)
             has_description = description_item is not None or (
@@ -400,6 +517,33 @@ class FacebookReelTask(BaseTask):
                 return True
         return False
 
+    def _is_reel_next_share_composer(self, screen) -> bool:
+        """Recognize the new Create reel -> Next -> Share -> Post variant.
+
+        Unlike the existing direct composer, this surface already has the
+        caption and uploaded media but still exposes editing tools before a
+        separate Share review. Keep this classifier narrow so legacy flows are
+        not rerouted.
+        """
+        items = self.vision.read_text(
+            screen,
+            region=self.LEFT_REEL_SIDEBAR,
+            min_confidence=0.18,
+        )
+        normalized = [
+            self._normalized_ocr_text(item.get("text", ""))
+            for item in items
+        ]
+        has_create_reel = any(text == "create reel" for text in normalized)
+        has_uploaded_media = any(text == "uploaded media" for text in normalized)
+        has_edit_heading = any(text == "edit" for text in normalized)
+        edit_controls = sum(
+            1
+            for marker in ("audio", "crop", "closed captions", "audio descriptions", "text transcripts")
+            if any(text == marker or text.startswith(f"{marker} ") for text in normalized)
+        )
+        return has_create_reel and has_uploaded_media and has_edit_heading and edit_controls >= 2
+
     def _find_reel_description_target(self, allow_full_screen_fallback: bool = False):
         """Locate the caption field in either the left- or right-sidebar layout."""
         remembered_target = getattr(self, "_reel_description_target", None)
@@ -410,8 +554,6 @@ class FacebookReelTask(BaseTask):
             "describe your reel",
             "describe your reel...",
             "write a caption",
-            "description",
-            "describe",
         )
 
         def locate():
@@ -426,18 +568,23 @@ class FacebookReelTask(BaseTask):
             if match:
                 return match["center"]
 
-            # Visual fallback: the description textarea is about 170px above
-            # the Public/Post audience settings in the left Reel sidebar.
-            public_label = self.vision.find_text_cascaded(
-                ("public", "post audience", "tag and collaborate", "add ai label"),
+            # The Uploaded media heading sits immediately below the description
+            # textarea in the direct Reel layout. It is a safer anchor than Post
+            # audience, whose distance changes dramatically with thumbnails and
+            # other composer controls.
+            media_label = self.vision.find_text_cascaded(
+                ("uploaded media",),
                 region=self.LEFT_REEL_SIDEBAR,
                 screen=screen,
                 min_confidence=0.35,
                 allow_full_screen_fallback=allow_full_screen_fallback,
             )
-            if public_label:
-                px, py = public_label["center"]
-                return (px + 100, max(200, py - 170))
+            if media_label:
+                mx, my = media_label["center"]
+                target = (max(150, mx + 90), max(180, my - 78))
+                height, width = screen.shape[:2]
+                if target[0] < int(width * 0.32) and target[1] < int(height * 0.48):
+                    return target
             return None
 
         return self.vision.find_stable(locate, attempts=2, tolerance_px=8.0)
@@ -536,15 +683,39 @@ class FacebookReelTask(BaseTask):
         screen,
         allow_layout_fallback: bool = False,
     ) -> float:
-        """Measure whether the requested caption is visible in either sidebar."""
+        """Measure whether the caption prefix is visible inside its input box."""
         target = self._normalized_ocr_text(self.caption or "")
         target_tokens = [token for token in target.split() if len(token) >= 3]
         if not target_tokens:
             return 1.0
 
+        # Once the description field has been located, never verify against the
+        # whole sidebar. Common words in controls such as Post audience or
+        # Uploaded media previously produced false positives for long captions.
+        anchor = getattr(self, "_reel_description_target", None)
+        if anchor:
+            height, width = screen.shape[:2]
+            anchor_x, anchor_y = anchor
+            x1 = max(0, int(anchor_x - width * 0.16))
+            y1 = max(0, int(anchor_y - height * 0.07))
+            x2 = min(width, int(anchor_x + width * 0.16))
+            y2 = min(height, int(anchor_y + height * 0.12))
+            regions = [(x1, y1, max(1, x2 - x1), max(1, y2 - y1))]
+        else:
+            regions = self._ordered_reel_sidebar_regions(allow_layout_fallback)
+
+        # The beginning of a pasted caption is what remains visible in the
+        # editor. Use distinct leading tokens so repeated/common words elsewhere
+        # cannot satisfy verification.
+        probe_tokens = []
+        for token in target_tokens:
+            if token not in probe_tokens:
+                probe_tokens.append(token)
+            if len(probe_tokens) >= 6:
+                break
+
         best_confidence = 0.0
-        minimum_matches = min(2, len(target_tokens))
-        for region in self._ordered_reel_sidebar_regions(allow_layout_fallback):
+        for region in regions:
             items = self.vision.read_text(screen, region=region, min_confidence=0.15)
             visible_parts = []
             for item in items:
@@ -555,11 +726,9 @@ class FacebookReelTask(BaseTask):
             if target in visible_text:
                 return 1.0
             visible_tokens = set(visible_text.split())
-            matched = sum(1 for token in target_tokens if token in visible_tokens)
-            confidence = matched / len(target_tokens)
+            matched = sum(1 for token in probe_tokens if token in visible_tokens)
+            confidence = matched / len(probe_tokens)
             best_confidence = max(best_confidence, confidence)
-            if matched >= minimum_matches:
-                return confidence
         return best_confidence
 
     def _wait_for_reel_caption(self, timeout: float = 8.0) -> tuple[bool, object, float]:
@@ -574,13 +743,13 @@ class FacebookReelTask(BaseTask):
                 allow_layout_fallback=local_misses >= 2,
             )
             best_confidence = max(best_confidence, confidence)
-            # Two or more meaningful tokens is enough to overcome ordinary OCR
-            # truncation while still rejecting an untouched placeholder.
             meaningful_tokens = [
                 token for token in self._normalized_ocr_text(self.caption or "").split()
                 if len(token) >= 3
             ]
-            minimum_confidence = min(1.0, 2 / max(1, len(meaningful_tokens)))
+            # Short captions must match completely. Longer captions must match
+            # most of their distinct leading words inside the editor itself.
+            minimum_confidence = 1.0 if len(set(meaningful_tokens)) <= 2 else 0.6
             if confidence >= minimum_confidence:
                 return True, last_screen, confidence
             local_misses += 1
@@ -671,8 +840,33 @@ class FacebookReelTask(BaseTask):
         while time.time() < deadline:
             screen = self.client.screenshot()
 
-            # The direct-upload Facebook variant skips both Next screens and
-            # lands here immediately after the chooser closes.
+            if self._is_reel_next_share_composer(screen):
+                # New account-06 flow: this is not final even though it has the
+                # same caption/media markers as the legacy direct composer.
+                next_button = self._find_stable_enabled_action(
+                    ("next",),
+                    region="bottom_action_bar",
+                    allow_semantic_fallback=False,
+                    allow_full_screen_fallback=local_misses >= 2,
+                )
+                if next_button:
+                    self.capture_evidence(
+                        label,
+                        screen,
+                        target=list(next_button),
+                        transition="next_share_flow",
+                    )
+                    finish("ready", "next_share_flow")
+                    return "next", next_button, screen
+                local_misses += 1
+                observation = self._reel_safety_observation(screen, local_misses)
+                if observation.state == ScreenState.ERROR_DIALOG:
+                    finish("error")
+                    return "error", None, screen
+                time.sleep(2.0)
+                continue
+
+            # Existing direct flow remains first and unchanged.
             if self._is_reel_final_composer(
                 screen,
                 allow_layout_fallback=local_misses >= 2,
@@ -976,6 +1170,10 @@ class FacebookReelTask(BaseTask):
         if not self.attach_file_gtk(container_path, chooser_window=chooser_window):
             return self._fail("file_chooser_failed", "The Reel file chooser could not be completed safely.")
 
+        # From this point onward, all waits on the uploading-video composer
+        # share one hard deadline. Individual polling loops may be shorter, but
+        # none can extend the total composer wait beyond two minutes.
+        self._video_composer_started_at = time.monotonic()
         self._reel_caption_entered = False
         if entry_status == "direct_file_chooser":
             self.log("INFO", "Confirming that the new Reel layout accepted the selected video...")
@@ -1003,11 +1201,14 @@ class FacebookReelTask(BaseTask):
                 )
 
         if self.caption and entry_status == "direct_file_chooser":
+            caption_timeout = self._remaining_video_composer_wait(15.0)
+            if caption_timeout <= 0:
+                return self._video_composer_timeout(media_screen)
             self.log(
                 "STEP",
                 "Entering the Reel caption immediately while the video continues processing...",
             )
-            early_caption_status, early_caption_screen = self._enter_reel_caption(timeout=15.0)
+            early_caption_status, early_caption_screen = self._enter_reel_caption(timeout=caption_timeout)
             if early_caption_status == "error":
                 return self._fail(
                     "reel_description_error",
@@ -1026,22 +1227,36 @@ class FacebookReelTask(BaseTask):
                     "The caption field is not ready yet; continuing the layout transition and retrying on the final composer.",
                 )
 
-        if entry_status == "direct_file_chooser":
+        direct_next_share_flow = bool(
+            entry_status == "direct_file_chooser"
+            and self._is_reel_next_share_composer(media_screen)
+        )
+        if entry_status == "direct_file_chooser" and not direct_next_share_flow:
+            # Preserve the existing direct composer behavior exactly.
             self.log(
                 "INFO",
                 "Direct Reel composer and attached media are already confirmed; skipping the obsolete Next check.",
             )
             next_status, next_button, screen = "final_composer", None, media_screen
         else:
-            self.log("INFO", "Waiting for video processing, an enabled Next action, or the final Reel composer...")
+            if direct_next_share_flow:
+                self.log(
+                    "INFO",
+                    "Detected the new Reel Next -> Share -> Post flow; waiting for its enabled Next action.",
+                )
+            else:
+                self.log("INFO", "Waiting for video processing, an enabled Next action, or the final Reel composer...")
+            composer_timeout = self._remaining_video_composer_wait()
+            if composer_timeout <= 0:
+                return self._video_composer_timeout(screen)
             next_status, next_button, screen = self._wait_for_reel_post_upload_transition(
-                timeout=120.0,
+                timeout=composer_timeout,
                 label="reel_next_ready",
             )
         if next_status == "error":
             return self._fail("reel_processing_error", "Facebook displayed a Reel processing error.", screen)
         if next_status == "timeout":
-            return self._fail("reel_processing_timeout", "An enabled Next action did not appear after processing.")
+            return self._video_composer_timeout(screen)
 
         if next_status == "next" and next_button:
             self.log("STEP", f"Clicking Next action at {next_button}...")
@@ -1050,12 +1265,17 @@ class FacebookReelTask(BaseTask):
 
             # Check for either an intermediate Edit reel Next action or the
             # final composer. Facebook variants do not all include Edit reel.
+            edit_timeout = self._remaining_video_composer_wait(15.0)
+            if edit_timeout <= 0:
+                return self._video_composer_timeout(screen)
             edit_next_status, edit_next_button, screen = self._wait_for_reel_post_upload_transition(
-                timeout=15.0,
+                timeout=edit_timeout,
                 label="reel_edit_next_ready",
             )
             if edit_next_status == "error":
                 return self._fail("reel_edit_error", "Facebook displayed an error on the Reel edit step.", screen)
+            if edit_next_status == "timeout" and self._remaining_video_composer_wait() <= 0:
+                return self._video_composer_timeout(screen)
             if edit_next_status == "next" and edit_next_button:
                 self.log("STEP", f"Clicking intermediate Next action on Edit reel step at {edit_next_button}...")
                 self.click_reversible(edit_next_button, label="reel_edit_next", max_offset_px=5)
@@ -1064,8 +1284,11 @@ class FacebookReelTask(BaseTask):
             self.log("INFO", "Facebook skipped the Reel Next/Edit steps and opened the final composer directly.")
 
         if self.caption and not self._reel_caption_entered:
+            caption_timeout = self._remaining_video_composer_wait(30.0)
+            if caption_timeout <= 0:
+                return self._video_composer_timeout(screen)
             self.log("STEP", "Locating Reel description input...")
-            caption_status, caption_screen = self._enter_reel_caption(timeout=30.0)
+            caption_status, caption_screen = self._enter_reel_caption(timeout=caption_timeout)
             if caption_status == "error":
                 return self._fail(
                     "reel_description_error",
@@ -1073,6 +1296,8 @@ class FacebookReelTask(BaseTask):
                     caption_screen,
                 )
             if caption_status == "unavailable":
+                if self._remaining_video_composer_wait() <= 0:
+                    return self._video_composer_timeout(caption_screen)
                 return self._fail("reel_description_not_found", "Reel description input could not be located confidently.")
             if caption_status == "verification_failed":
                 return self._fail(
@@ -1087,23 +1312,20 @@ class FacebookReelTask(BaseTask):
 
         self.log("INFO", "Waiting for enabled Post / Publish action (background processing / copyright check)...")
         self._requires_review = False
+        publish_timeout = self._remaining_video_composer_wait(90.0)
+        if publish_timeout <= 0:
+            return self._video_composer_timeout(screen)
         publish_status, publish_button, screen = self._wait_for_target(
-            lambda: self._find_stable_enabled_action(
-                ("post", "publish", "share"),
-                region="bottom_action_bar",
-                allow_full_screen_fallback=False,
-            ),
-            timeout=90.0,
+            self._find_stable_reel_publish_action,
+            timeout=publish_timeout,
             label="reel_publish_ready",
-            fallback_locator=lambda: self._find_stable_enabled_action(
-                ("post", "publish", "share"),
-                region="bottom_action_bar",
-                allow_full_screen_fallback=True,
-            ),
+            fallback_locator=self._find_explicit_legacy_reel_publish_action,
         )
         if publish_status == "error":
             return self._fail("reel_publish_error", "Facebook displayed an error before publication.", screen)
         if not publish_button:
+            if self._remaining_video_composer_wait() <= 0:
+                return self._video_composer_timeout(screen)
             if getattr(self, "_requires_review", False):
                 return self._needs_review(
                     "semantic_publish_gated",
@@ -1111,6 +1333,13 @@ class FacebookReelTask(BaseTask):
                     screen,
                 )
             return self._fail("reel_publish_not_found", "Enabled Reel Post / Publish action could not be confirmed.")
+
+        if direct_next_share_flow and not self._is_reel_share_surface(screen):
+            return self._fail(
+                "reel_share_review_not_confirmed",
+                "The new Next -> Share flow did not reach its final Share review; publication was stopped before clicking.",
+                screen,
+            )
 
         self.set_stage("ready_to_publish", target=list(publish_button))
         before_publish = self.client.screenshot()
@@ -1144,6 +1373,15 @@ class FacebookReelTask(BaseTask):
 
         if result == "failed":
             return self._fail("reel_publish_rejected", "Facebook displayed an error after Reel publication.", final_screen)
+        if result != "published" and self._new_share_post_is_still_pending(
+            final_screen,
+            direct_next_share_flow,
+        ):
+            return self._uncertain(
+                "reel_share_post_still_visible",
+                "The Post action remained visible after the single click attempt; profile refresh was suppressed to preserve the pending Share page.",
+                final_screen,
+            )
         if self.comment_link:
             comment_status, permalink_info = self.post_reel_first_comment_after_refresh(
                 self.comment_link,

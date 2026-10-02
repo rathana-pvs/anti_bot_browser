@@ -467,21 +467,18 @@ async def run_execution_now(execution_id: str):
     target_post = match["post"]
     current_status = target_exec.get("status", "")
 
-    if current_status in ("uncertain", "needs_review"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Cannot rerun an execution in '{target_exec['status']}' state directly. Please review on Facebook and resolve the outcome first to prevent duplicate posts.",
-        )
-
-    is_manual_retry = current_status.startswith("skipped_") or current_status in ("failed", "failed_before_publish")
+    is_manual_retry = current_status.startswith("skipped_") or current_status in (
+        "failed",
+        "failed_before_publish",
+        "uncertain",
+        "needs_review",
+    )
     standalone_warming = target_post.get("type") == "warming"
     prep_mode = target_exec.get("preparation_mode") or "off"
     effective_status = "pending" if is_manual_retry else current_status
-    effective_preparation_status = (
-        "pending"
-        if is_manual_retry and prep_mode != "off"
-        else target_exec.get("preparation_status")
-    )
+    effective_preparation_status = target_exec.get("preparation_status")
+    if is_manual_retry and prep_mode != "off" and effective_preparation_status != "ready":
+        effective_preparation_status = "pending"
     needs_prep = (
         not standalone_warming
         and effective_status == "pending"
@@ -490,29 +487,42 @@ async def run_execution_now(execution_id: str):
     )
 
     target_batch = match.get("batch") or {}
+    deferred_reason = None
     if not needs_prep and target_batch:
         iteration_check = batch_iteration_availability(
             target_batch,
             target_execution=target_exec,
         )
         if not iteration_check["allowed"]:
-            raise HTTPException(
-                status_code=409,
-                detail="The previous batch iteration is still running or its delay has not finished.",
-            )
+            if is_manual_retry:
+                deferred_reason = "waiting for the previous batch iteration"
+            else:
+                raise HTTPException(
+                    status_code=409,
+                    detail="The previous batch iteration is still running or its delay has not finished.",
+                )
 
     scheduler_cfg = get_scheduler_config()
     if needs_prep and count_buffered_preparations(queue, execution_id) >= scheduler_cfg["max_preparers"]:
-        raise HTTPException(status_code=409, detail="All preparation buffers are currently occupied.")
+        if is_manual_retry:
+            deferred_reason = "waiting for a preparation slot"
+        else:
+            raise HTTPException(status_code=409, detail="All preparation buffers are currently occupied.")
 
     pid = target_exec["profile_id"]
     if get_container_status(pid) != "running" and count_running_profile_containers() >= scheduler_cfg["max_active_profile_containers"]:
-        raise HTTPException(status_code=409, detail="The active profile-container limit has been reached.")
+        if is_manual_retry:
+            deferred_reason = "waiting for a profile-container slot"
+        else:
+            raise HTTPException(status_code=409, detail="The active profile-container limit has been reached.")
 
-    if get_container_status(pid) != "running":
+    if get_container_status(pid) != "running" and deferred_reason is None:
         admission = claim_container_start_admission()
         if not admission["allowed"]:
-            raise HTTPException(status_code=409, detail=f"Container start delayed: {admission['reason']}.")
+            if is_manual_retry:
+                deferred_reason = f"waiting for container admission ({admission['reason']})"
+            else:
+                raise HTTPException(status_code=409, detail=f"Container start delayed: {admission['reason']}.")
 
     # Persist a retry transition only after every admission check succeeds. This
     # prevents a rejected run-now request from leaving an execution runnable.
@@ -521,7 +531,7 @@ async def run_execution_now(execution_id: str):
         target_exec["status"] = "pending"
         target_exec["stage"] = "pending"
         target_exec["error"] = None
-        if prep_mode != "off":
+        if prep_mode != "off" and effective_preparation_status != "ready":
             target_exec["preparation_status"] = "pending"
         history = target_exec.get("stage_history")
         if not isinstance(history, list):
@@ -529,6 +539,14 @@ async def run_execution_now(execution_id: str):
             target_exec["stage_history"] = history
         history.append({"stage": "pending", "timestamp": now_iso, "reason": "manual_retry"})
         save_posting_queue(queue)
+
+    if deferred_reason:
+        asyncio.create_task(dispatch_pending_queue())
+        return {
+            "success": True,
+            "queued": True,
+            "message": f"Retry queued for execution {execution_id}: {deferred_reason}.",
+        }
 
     slot_kind = "preparer" if (needs_prep or standalone_warming) else "publisher"
     if needs_prep:
