@@ -1,0 +1,26 @@
+schema_version: 1
+template_id: t2
+content_family: reel
+recognition:
+  minimum_score: 0.82
+  required:
+    - direct_file_chooser
+    - final_reel_composer
+  weighted:
+    - signal: uploaded_media_visible
+      weight: 0.5
+  forbidden:
+    - next_share_surface
+    - checkpoint_visible
+steps:
+  - capability: select_media
+    target: direct_file_chooser
+    input: media_path
+  - capability: type_text
+    target: reel_caption
+    input: caption
+    when: caption
+  - capability: request_publish
+    target: publish_button
+  - capability: verify_publication
+

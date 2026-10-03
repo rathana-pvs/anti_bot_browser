@@ -1,0 +1,31 @@
+schema_version: 1
+template_id: t1
+content_family: reel
+recognition:
+  minimum_score: 0.82
+  required:
+    - reel_studio_surface
+    - upload_control
+  weighted:
+    - signal: studio_sidebar
+      weight: 0.5
+  forbidden:
+    - checkpoint_visible
+steps:
+  - capability: select_media
+    target: upload_control
+    input: media_path
+  - capability: click_candidate
+    target: next_button
+    optional: true
+  - capability: click_candidate
+    target: edit_next_button
+    optional: true
+  - capability: type_text
+    target: reel_caption
+    input: caption
+    when: caption
+  - capability: request_publish
+    target: publish_button
+  - capability: verify_publication
+

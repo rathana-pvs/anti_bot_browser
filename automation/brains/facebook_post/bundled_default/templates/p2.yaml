@@ -1,0 +1,23 @@
+schema_version: 1
+template_id: p2
+content_family: post
+recognition:
+  minimum_score: 0.82
+  required:
+    - composer_ready
+    - enabled_next_button
+  weighted:
+    - signal: review_flow_surface
+      weight: 0.5
+  forbidden:
+    - checkpoint_visible
+steps:
+  - capability: click_candidate
+    target: next_button
+    expect: post_review
+  - capability: wait_for_state
+    state: post_review
+  - capability: request_publish
+    target: publish_button
+  - capability: verify_publication
+

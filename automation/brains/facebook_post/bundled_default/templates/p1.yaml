@@ -1,0 +1,19 @@
+schema_version: 1
+template_id: p1
+content_family: post
+recognition:
+  minimum_score: 0.82
+  required:
+    - composer_ready
+    - enabled_post_button
+  weighted:
+    - signal: direct_post_surface
+      weight: 0.5
+  forbidden:
+    - enabled_next_button
+    - checkpoint_visible
+steps:
+  - capability: request_publish
+    target: publish_button
+  - capability: verify_publication
+

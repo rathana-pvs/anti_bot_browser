@@ -1,0 +1,30 @@
+schema_version: 1
+template_id: t3
+content_family: reel
+recognition:
+  minimum_score: 0.82
+  required:
+    - direct_file_chooser
+    - next_share_surface
+  weighted:
+    - signal: reel_edit_controls
+      weight: 0.5
+  forbidden:
+    - checkpoint_visible
+steps:
+  - capability: select_media
+    target: direct_file_chooser
+    input: media_path
+  - capability: type_text
+    target: reel_caption
+    input: caption
+    when: caption
+  - capability: click_candidate
+    target: next_button
+    expect: share_review
+  - capability: wait_for_state
+    state: share_review
+  - capability: request_publish
+    target: publish_button
+  - capability: verify_publication
+
