@@ -31,11 +31,15 @@ class FacebookReelTask(BaseTask):
         video_path: str,
         caption: str,
         comment_link: str | None = None,
+        preflight_complete: bool = False,
+        defer_comment: bool = False,
     ):
         super().__init__(profile_id)
         self.video_path = video_path
         self.caption = caption
         self.comment_link = comment_link
+        self.preflight_complete = preflight_complete
+        self.defer_comment = defer_comment
         configured = (
             (getattr(self, "profile_config", {}).get("automation") or {})
             .get("reel_template", "auto")
@@ -1067,7 +1071,7 @@ class FacebookReelTask(BaseTask):
             should_check_prompt = local_misses in {2, 5}
             prompt_status = "absent"
             if not prompt_dismissed and should_check_prompt:
-                prompt_status = self.post_publish_prompt.handle(screen)
+                prompt_status = self.handle_post_publish_prompt(screen)
             if prompt_status == "failed":
                 return "failed", last
             if not prompt_dismissed and prompt_status == "dismissed":
@@ -1158,7 +1162,9 @@ class FacebookReelTask(BaseTask):
 
     def post_reel_first_comment_after_refresh(self, comment_link: str) -> tuple[str, dict]:
         """Find the newly published Reel after bounded refreshes, then comment once."""
-        if not self._refresh_until_latest_reel_visible():
+        reel_already_confirmed = getattr(self, "_latest_reel_confirmed_on_profile", False)
+        self._latest_reel_confirmed_on_profile = False
+        if not reel_already_confirmed and not self._refresh_until_latest_reel_visible():
             self.log(
                 "WARN",
                 "Latest Reel was not found after two refreshes; skipping submission and marking the first comment incomplete.",
@@ -1176,10 +1182,11 @@ class FacebookReelTask(BaseTask):
         self.set_stage("preparing")
         self.log("STEP", "Starting guarded Facebook Reel task...")
 
-        if not self.client.is_running():
-            return self._fail("container_stopped", f"Container {self.client.container_name} is not running.")
-        if not self.verify_logged_in(target_url="https://www.facebook.com/me"):
-            return self.skip_unverified_session()
+        if not self.preflight_complete:
+            if not self.client.is_running():
+                return self._fail("container_stopped", f"Container {self.client.container_name} is not running.")
+            if not self.verify_logged_in(target_url="https://www.facebook.com/me"):
+                return self.skip_unverified_session()
 
         self.log("INFO", "Reusing the verified profile page for Reel creation.")
 
@@ -1474,6 +1481,23 @@ class FacebookReelTask(BaseTask):
                 "reel_share_post_still_visible",
                 "The Post action remained visible after the single click attempt; profile refresh was suppressed to preserve the pending Share page.",
                 final_screen,
+            )
+        if self.defer_comment:
+            if result != "published":
+                if not self._refresh_until_latest_reel_visible():
+                    return self._uncertain(
+                        "reel_publish_unconfirmed",
+                        "The success popup was absent and the latest Reel was not found after two profile refreshes.",
+                        final_screen,
+                    )
+                self._latest_reel_confirmed_on_profile = True
+            self.log("INFO", "Reel publication confirmed; deferring first comment to the Comment module.")
+            return self.set_outcome(
+                "published",
+                None,
+                reel_template=self.reel_template_id,
+                reel_template_selection=self.reel_template_selection,
+                first_comment="deferred",
             )
         if self.comment_link:
             comment_status, permalink_info = self.post_reel_first_comment_after_refresh(

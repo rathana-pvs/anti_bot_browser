@@ -32,11 +32,15 @@ class FacebookPostTask(BaseTask):
         comment_link: str | None = None,
         media_path: str | None = None,
         brain_package=None,
+        preflight_complete: bool = False,
+        defer_comment: bool = False,
     ):
         super().__init__(profile_id)
         self.caption = caption
         self.comment_link = comment_link
         self.media_path = media_path
+        self.preflight_complete = preflight_complete
+        self.defer_comment = defer_comment
         self.brain_metadata = brain_package.metadata() if brain_package is not None else None
         self.brain_targets = {}
         if brain_package is not None:
@@ -510,7 +514,7 @@ class FacebookPostTask(BaseTask):
             # This prompt is optional. Once dismissed, the publish click has been
             # accepted and the comment stage may begin without another navigation.
             prompt_status = (
-                self.post_publish_prompt.handle(screen)
+                self.handle_post_publish_prompt(screen)
                 if not prompt_dismissed else "dismissed"
             )
             if prompt_status == "failed":
@@ -574,12 +578,13 @@ class FacebookPostTask(BaseTask):
         self.set_stage("preparing")
         self.log("STEP", "Starting Facebook auto-post task...")
 
-        if not self.client.is_running():
-            return self._fail("container_stopped", f"Container {self.client.container_name} is not running.")
+        if not self.preflight_complete:
+            if not self.client.is_running():
+                return self._fail("container_stopped", f"Container {self.client.container_name} is not running.")
 
-        # Step 1: Pre-task login gate
-        if not self.verify_logged_in(target_url="https://www.facebook.com/me"):
-            return self.skip_unverified_session()
+            # Standalone compatibility: the fixed pipeline normally owns this gate.
+            if not self.verify_logged_in(target_url="https://www.facebook.com/me"):
+                return self.skip_unverified_session()
 
         # Login verification already opened and validated the profile page.
         self.log("INFO", "Reusing the verified profile page for post composition.")
@@ -799,6 +804,15 @@ class FacebookPostTask(BaseTask):
                 "publish_unconfirmed",
                 "The final Post action was clicked once, but publication could not be positively confirmed. Automatic retry is blocked.",
                 final_screen,
+            )
+
+        if self.defer_comment:
+            self.log("INFO", "Publication confirmed; deferring first comment to the Comment module.")
+            return self.set_outcome(
+                "published",
+                None,
+                post_template=self.post_template_id,
+                first_comment="deferred",
             )
 
         if self.comment_link:

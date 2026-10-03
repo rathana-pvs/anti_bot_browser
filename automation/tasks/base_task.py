@@ -299,18 +299,33 @@ class BaseTask:
         self.result_status = status
         self.result_error = error
         self.set_stage(status, error=error, **extra)
+        self.result_extra = extra
+        if getattr(self, "_pipeline_defer_finalization", False):
+            return status in {"published", "completed"}
+        self.finalize_outcome()
+        return status in {"published", "completed"}
+
+    def finalize_outcome(self, **extra) -> None:
+        """Write the final task record once all pipeline modules have finished."""
+        if getattr(self, "_outcome_finalized", False):
+            return
+        self._outcome_finalized = True
+        merged_extra = {**self.result_extra, **extra}
         telemetry = getattr(self, "telemetry", None)
         if telemetry is not None:
             try:
-                extra = {**extra, "telemetry": telemetry.finalize(status)}
+                merged_extra["telemetry"] = telemetry.finalize(self.result_status)
             except Exception as exc:
                 self.log("WARN", f"Could not finalize execution telemetry: {exc}")
-        self.result_extra = extra
+        self.result_extra = merged_extra
         try:
-            self.evidence.write_result(status, error, **extra)
+            self.evidence.write_result(
+                self.result_status,
+                self.result_error,
+                **merged_extra,
+            )
         except Exception as exc:
             self.log("WARN", f"Could not write evidence result: {exc}")
-        return status in {"published", "completed"}
 
     def rank_candidates_semantically(
         self,
@@ -505,6 +520,13 @@ class BaseTask:
         except Exception as exc:
             self.log("DEBUG", f"Error during post prompt check: {exc}")
         return False
+
+    def handle_post_publish_prompt(self, screen=None) -> str:
+        """Use the shared prompt handler, with compatibility for lightweight task doubles."""
+        handler = getattr(self, "post_publish_prompt", None)
+        if handler is not None:
+            return handler.handle(screen)
+        return "dismissed" if self.check_and_dismiss_post_prompt(screen) else "absent"
 
     def navigate_to(
         self,

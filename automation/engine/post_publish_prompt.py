@@ -13,13 +13,16 @@ class PostPublishPromptHandler:
         self.close_timeout = close_timeout
         self.poll_interval = poll_interval
         self.dismissed = False
+        self.last_status = "not_checked"
 
     def handle(self, screen=None) -> str:
         if self.dismissed:
+            self.last_status = "dismissed"
             return "dismissed"
         screen = screen if screen is not None else self.task.client.screenshot()
         match = self.task.find_post_publish_prompt(screen)
         if not match:
+            self.last_status = "absent"
             return "absent"
         self.task.log(
             "INFO",
@@ -37,7 +40,8 @@ class PostPublishPromptHandler:
             current = self.task.client.screenshot()
             if not self.task.find_post_publish_prompt(current):
                 self.dismissed = True
+                self.last_status = "dismissed"
                 return "dismissed"
             time.sleep(self.poll_interval)
+        self.last_status = "failed"
         return "failed"
-

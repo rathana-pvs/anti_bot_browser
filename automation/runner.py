@@ -23,6 +23,7 @@ from tasks.facebook_reel import FacebookReelTask
 from tasks.facebook_comment import FacebookCommentTask
 from tasks.facebook_preparation import FacebookPreparationTask
 from engine.brain_runtime import BrainRegistry
+from modules import build_publishing_pipeline
 
 
 BRAINS_ROOT = Path(__file__).resolve().parent / "brains"
@@ -86,7 +87,13 @@ def main():
                 f"Pinned Brain {brain_package.brain_id} v{brain_package.version} "
                 f"({brain_package.digest[:12]})",
             )
-            success = task.run()
+            orchestrator, context = build_publishing_pipeline(
+                task,
+                content_type="image" if args.media else "text",
+                comment_text=args.comment_link,
+            )
+            pipeline_result = orchestrator.run(context)
+            success = task.result_status == "published"
             result["success"] = success
             result["logs"] = task.logs
         elif args.task == "reel":
@@ -99,7 +106,13 @@ def main():
                 caption=args.caption,
                 comment_link=args.comment_link,
             )
-            success = task.run()
+            orchestrator, context = build_publishing_pipeline(
+                task,
+                content_type="reel",
+                comment_text=args.comment_link,
+            )
+            pipeline_result = orchestrator.run(context)
+            success = task.result_status == "published"
             result["success"] = success
             result["logs"] = task.logs
         elif args.task == "comment":
@@ -143,6 +156,18 @@ def main():
         result["evidence_dir"] = getattr(evidence, "directory", None)
         if brain_package is not None:
             result["brain"] = brain_package.metadata()
+        if "pipeline_result" in locals():
+            result["pipeline"] = {
+                "outcome": pipeline_result.outcome,
+                "stopped_at": pipeline_result.stopped_at,
+                "modules": {
+                    module_id: {
+                        "outcome": module_result.outcome,
+                        "reason": module_result.reason,
+                    }
+                    for module_id, module_result in pipeline_result.module_results.items()
+                },
+            }
 
         print(json.dumps(result), flush=True)
         if result["status"] in ("uncertain", "needs_review"):
