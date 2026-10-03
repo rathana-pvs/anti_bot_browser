@@ -2,9 +2,9 @@
   "queue_version": "2.0",
   "daily_batches": [
     {
-      "batch_id": "batch_1790945244202",
+      "batch_id": "batch_1791001574598",
       "name": "Test Instant Batch",
-      "created_at": "2026-10-02T12:47:24.202729+00:00",
+      "created_at": "2026-10-03T04:26:14.598864+00:00",
       "target_profiles": [
         "profile_001"
       ],
@@ -37,49 +37,48 @@
           "ai_spin": false,
           "executions": [
             {
-              "execution_id": "exec_1790945244202_0_0",
+              "execution_id": "exec_1791001574598_0_0",
               "profile_id": "profile_001",
-              "scheduled_at": "2026-10-02T12:47:24.202640+00:00",
+              "scheduled_at": "2026-10-03T04:26:14.598824+00:00",
               "batch_iteration_index": 0,
               "spun_caption": "Test caption",
-              "status": "failed_before_publish",
-              "stage": "failed_before_publish",
+              "status": "stopped",
+              "stage": "stopped",
               "stage_history": [
                 {
                   "stage": "pending",
-                  "timestamp": "2026-10-02T12:47:24.202712+00:00"
+                  "timestamp": "2026-10-03T04:26:14.598857+00:00"
                 },
                 {
                   "stage": "preparing",
-                  "timestamp": "2026-10-02T12:47:24.392533+00:00",
+                  "timestamp": "2026-10-03T04:26:14.700645+00:00",
                   "reason": "preparer_scheduler_lease_claimed",
-                  "lease_id": "c15279d9-5223-405b-b9ab-c4e16a2aaa94"
+                  "lease_id": "df8e90e2-725c-4082-831f-f9a9267e5caa"
                 }
               ],
               "preparation_mode": "brief",
-              "preparation_status": "failed",
+              "preparation_status": "pending",
               "retry_count": 0,
-              "error": "Container startup failed: Error: Configuration file not found: /home/rathana/Desktop/automat_fb/profiles/profile_001/config.json",
+              "error": null,
               "published_at": null,
               "logs": [],
-              "scheduler_lease": null,
-              "started_at": "2026-10-02T12:47:24.392533+00:00",
-              "ended_at": "2026-10-02T12:47:24.441728+00:00",
-              "stage_updated_at": "2026-10-02T12:47:24.392533+00:00",
-              "last_scheduler_lease": {
-                "lease_id": "c15279d9-5223-405b-b9ab-c4e16a2aaa94",
-                "owner_id": "mgr_e0f75f795e91",
+              "scheduler_lease": {
+                "lease_id": "df8e90e2-725c-4082-831f-f9a9267e5caa",
+                "owner_id": "mgr_7c8a69d96486",
                 "kind": "preparer",
                 "profile_id": "profile_001",
-                "claimed_at": "2026-10-02T12:47:24.392465+00:00",
-                "heartbeat_at": "2026-10-02T12:47:24.392465+00:00",
-                "expires_at": "2026-10-02T12:48:24.392465+00:00"
-              }
+                "claimed_at": "2026-10-03T04:26:14.700607+00:00",
+                "heartbeat_at": "2026-10-03T04:26:14.700607+00:00",
+                "expires_at": "2026-10-03T04:27:14.700607+00:00"
+              },
+              "started_at": "2026-10-03T04:26:14.700645+00:00",
+              "ended_at": null,
+              "stage_updated_at": "2026-10-03T04:26:14.700645+00:00"
             }
           ]
         },
         {
-          "post_id": "p_append_1790945244221_0",
+          "post_id": "p_append_1791001574608_0",
           "type": "photo",
           "media_file": "",
           "base_caption": "Appended while running",
@@ -88,17 +87,17 @@
           "ai_spin": false,
           "executions": [
             {
-              "execution_id": "exec_1790945244221_append_0_0",
+              "execution_id": "exec_1791001574608_append_0_0",
               "profile_id": "profile_001",
-              "scheduled_at": "2026-10-02T12:47:24.202640+00:00",
+              "scheduled_at": "2026-10-03T04:26:14.598824+00:00",
               "batch_iteration_index": 1,
               "spun_caption": "Appended while running",
-              "status": "pending",
-              "stage": "pending",
+              "status": "stopped",
+              "stage": "stopped",
               "stage_history": [
                 {
                   "stage": "pending",
-                  "timestamp": "2026-10-02T12:47:24.221910+00:00",
+                  "timestamp": "2026-10-03T04:26:14.608155+00:00",
                   "reason": "appended_to_active_batch"
                 }
               ],
@@ -112,7 +111,7 @@
           ]
         }
       ],
-      "updated_at": "2026-10-02T12:47:24.221910+00:00"
+      "updated_at": "2026-10-03T04:26:14.608155+00:00"
     },
     {
       "batch_id": "batch_1790852627967",
