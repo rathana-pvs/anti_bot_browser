@@ -8,7 +8,12 @@ from pathlib import Path
 
 # Paths
 BACKEND_DIR = Path(__file__).resolve().parent
-ROOT_DIR = BACKEND_DIR.parent
+_configured_root = os.environ.get("AUTOMAT_FB_ROOT", "").strip()
+ROOT_DIR = (
+    Path(_configured_root).expanduser().resolve()
+    if _configured_root
+    else BACKEND_DIR.parent
+)
 PROFILES_DIR = ROOT_DIR / "profiles"
 SCRIPTS_DIR = ROOT_DIR / "scripts"
 DATA_DIR = ROOT_DIR / "data"

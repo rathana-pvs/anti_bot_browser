@@ -1517,6 +1517,16 @@ fn spawn_backend(app: &AppHandle) -> Option<Child> {
         println!("[Tauri] Starting backend server from {:?}", binary_path);
         let mut cmd = Command::new(&binary_path);
         cmd.env("PORT", manager_api_port().to_string());
+        if let Some(root) = find_install_root(app) {
+            // A frozen Python sidecar resolves __file__ inside PyInstaller's
+            // temporary extraction directory. Hand it the persistent runtime
+            // explicitly so profiles and automation assets survive restarts.
+            cmd.current_dir(&root).env("AUTOMAT_FB_ROOT", &root);
+        } else {
+            eprintln!(
+                "[Tauri] Persistent application runtime was not found; backend data paths may be unavailable."
+            );
+        }
         if let Ok(token) = std::env::var("MANAGER_API_TOKEN") {
             cmd.env("MANAGER_API_TOKEN", token);
         }
