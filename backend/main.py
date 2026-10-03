@@ -103,4 +103,4 @@ if MANAGER_DIST_DIR.exists():
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", "3001"))
-    uvicorn.run("backend.main:app", host="127.0.0.1", port=port, reload=True)
+    uvicorn.run(app, host="127.0.0.1", port=port, reload=False)

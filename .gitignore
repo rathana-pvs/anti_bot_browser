@@ -18,6 +18,7 @@ manager-app/node_modules/
 manager-app/dist/
 manager-app/tsconfig.tsbuildinfo
 manager-app/src-tauri/target/
+manager-app/src-tauri/binaries/backend_server
 target/
 
 # Sensitive Browser Profile Data & Real Credentials (CRITICAL - PUBLIC REPO SAFETY)

@@ -18,8 +18,13 @@ cd "${ROOT_DIR}"
   --distpath "${DIST_DIR}" \
   --workpath "${ROOT_DIR}/build/pyinstaller_work" \
   --specpath "${ROOT_DIR}/build" \
-  --add-data "automation/brains:automation/brains" \
-  --add-data "automation/templates:automation/templates" \
+  --paths "${ROOT_DIR}" \
+  --exclude-module torch \
+  --exclude-module torchvision \
+  --exclude-module scipy \
+  --exclude-module pytest \
+  --add-data "${ROOT_DIR}/automation/brains:automation/brains" \
+  --add-data "${ROOT_DIR}/automation/templates:automation/templates" \
   backend/main.py
 
 echo "==> Sidecar binary built at: ${DIST_DIR}/backend_server"
