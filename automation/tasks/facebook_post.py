@@ -5,6 +5,11 @@ from pathlib import Path
 import random
 import time
 import re
+from composer_templates import (
+    ComposerTemplateDetector,
+    ComposerTemplateRegistry,
+    TemplateObservation,
+)
 from engine.screen_state import ScreenState
 from engine.telemetry import timed_telemetry_step
 from .base_task import BaseTask
@@ -42,6 +47,49 @@ class FacebookPostTask(BaseTask):
                     self.brain_targets = loaded_targets
             except (OSError, json.JSONDecodeError) as exc:
                 self.log("WARN", f"Brain target configuration could not be loaded: {exc}")
+        package_root = (
+            Path(__file__).resolve().parents[1]
+            / "brains" / "facebook_post" / "bundled_default"
+        )
+        self.post_templates = ComposerTemplateRegistry(package_root).load("post")
+        self.post_template_detector = ComposerTemplateDetector()
+        self.post_template_id = None
+
+    def _select_post_template(self):
+        """Detect P1/P2 from stable enabled actions after composer preparation."""
+        next_target = self._stable_blue_text_target(
+            self._brain_labels("next_button", ("next",)),
+            region="bottom_action_bar",
+        )
+        publish_target = self._stable_blue_text_target(
+            self._brain_labels("publish_button", ("post", "publish")),
+            region="bottom_action_bar",
+        )
+        signals = {
+            "composer_ready": 1.0 if next_target or publish_target else 0.0,
+            "enabled_next_button": 0.98 if next_target else 0.0,
+            "enabled_post_button": 0.98 if publish_target else 0.0,
+            "review_flow_surface": 0.95 if next_target else 0.0,
+            "direct_post_surface": 0.95 if publish_target and not next_target else 0.0,
+        }
+        observation = TemplateObservation(signals)
+        result = self.post_template_detector.detect(
+            self.post_templates.values(),
+            [observation, observation],
+        )
+        if result.outcome != "selected" or result.template is None:
+            self.log(
+                "WARN",
+                f"Post template detection failed: {result.outcome} ({result.reason}).",
+            )
+            return None, None, None
+        self.post_template_id = result.template.template_id
+        self.log(
+            "INFO",
+            f"Selected Post template {self.post_template_id.upper()} "
+            f"(confidence={result.score:.2f}).",
+        )
+        return self.post_template_id, next_target, publish_target
 
     def _brain_labels(self, name: str, fallback) -> tuple[str, ...]:
         configured = getattr(self, "brain_targets", {}).get(name)
@@ -461,12 +509,17 @@ class FacebookPostTask(BaseTask):
             # Dismiss post-publish prompts if present (e.g. "Speak With People Directly" -> "Not now")
             # This prompt is optional. Once dismissed, the publish click has been
             # accepted and the comment stage may begin without another navigation.
-            if not prompt_dismissed and self.check_and_dismiss_post_prompt(screen):
+            prompt_status = (
+                self.post_publish_prompt.handle(screen)
+                if not prompt_dismissed else "dismissed"
+            )
+            if prompt_status == "failed":
+                return "failed", last
+            if not prompt_dismissed and prompt_status == "dismissed":
                 prompt_dismissed = True
                 self.log("INFO", "Dismissed post-publish prompt ('Not now').")
                 # Clicking the optional prompt is not itself the transition
                 # boundary. Wait until Facebook removes every publishing modal.
-                time.sleep(1.5)
                 continue
 
             observation = self.recognizer.observe(screen)
@@ -639,16 +692,25 @@ class FacebookPostTask(BaseTask):
         else:
             self.log("INFO", "No caption requested; skipping caption-field detection and text-entry pause.")
 
-        # Some Facebook composer variants use a two-step flow: caption/media,
-        # then Next, then the final Post confirmation screen.
-        next_btn = self._stable_next_target()
+        # Select a declarative composer family from stable visual signals.
+        post_template, next_btn, detected_post_btn = self._select_post_template()
+        if post_template is None:
+            return self._needs_review(
+                "post_template_not_recognized",
+                "The prepared Post composer did not match a known template.",
+            )
         self.log_decision(
-            "Next action",
-            "the word Next inside the enabled blue action button",
-            f"target={next_btn}" if next_btn else "Next was not found on the blue action",
-            "click Next and wait for final Post" if next_btn else "check for a direct Post action",
+            "Post template",
+            "a stable P1 direct-Post or P2 Next-review composer",
+            f"template={post_template}, next={next_btn}, post={detected_post_btn}",
+            "execute the selected template",
         )
-        if next_btn:
+        if post_template == "p2":
+            if not next_btn:
+                return self._fail(
+                    "post_next_not_found",
+                    "P2 was selected but its enabled Next action is unavailable.",
+                )
             before_next = self.client.screenshot()
             self.capture_evidence("before_next", before_next, target=list(next_btn))
             self.log("STEP", f"Clicking the visually confirmed Next action at {next_btn}...")
@@ -686,7 +748,11 @@ class FacebookPostTask(BaseTask):
 
         self.log("STEP", "Locating a stable enabled Post action...")
         self._requires_review = False
-        post_btn = self._stable_post_target(review_confirmed=bool(next_btn))
+        post_btn = (
+            detected_post_btn
+            if post_template == "p1"
+            else self._stable_post_target(review_confirmed=True)
+        )
         self.log_decision(
             "Final publish",
             "Post or Publish text inside the enabled blue action button",
@@ -744,6 +810,7 @@ class FacebookPostTask(BaseTask):
             return self.set_outcome(
                 "published",
                 None,
+                post_template=self.post_template_id,
                 first_comment=comment_status,
                 first_comment_method=getattr(self, "last_comment_method", None),
                 **permalink_info,
@@ -755,6 +822,7 @@ class FacebookPostTask(BaseTask):
         return self.set_outcome(
             "published",
             None,
+            post_template=self.post_template_id,
             first_comment="not_requested",
             **permalink_info,
         )

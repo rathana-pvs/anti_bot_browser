@@ -179,6 +179,19 @@ class PublishGateTests(unittest.TestCase):
         self.assertFalse(task.execute_publish_gate((500, 80)))
         task.human.click.assert_not_called()
 
+    def test_gate_supports_reel_publication_observation(self):
+        task = self.make_task()
+        task.LEFT_PUBLICATION_REGION = (0.0, 0.5, 0.4, 1.0)
+        task.recognizer.observe_publication_gate.return_value = StateObservation(
+            ScreenState.POST_ENABLED, 0.96, ["reel publish action"]
+        )
+
+        self.assertTrue(
+            task.execute_publish_gate((100, 80), publish_kind="reel")
+        )
+        task.recognizer.observe_publication_gate.assert_called_once()
+        task.human.click.assert_called_once_with(100, 80)
+
 
 if __name__ == "__main__":
     unittest.main()

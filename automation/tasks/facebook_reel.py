@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 import re
 import time
 
+from composer_templates import (
+    ComposerTemplateDetector,
+    ComposerTemplateRegistry,
+    TemplateObservation,
+)
 from engine.screen_state import ScreenState
 from engine.telemetry import timed_telemetry_step
 from engine.vision import VisionEngine
@@ -30,6 +36,69 @@ class FacebookReelTask(BaseTask):
         self.video_path = video_path
         self.caption = caption
         self.comment_link = comment_link
+        configured = (
+            (getattr(self, "profile_config", {}).get("automation") or {})
+            .get("reel_template", "auto")
+        )
+        self.reel_template_selection = (
+            configured if configured in {"auto", "t1", "t2", "t3"} else "auto"
+        )
+        self.reel_template_id = None
+        package_root = (
+            Path(__file__).resolve().parents[1]
+            / "brains" / "facebook_reel" / "bundled_default"
+        )
+        self.reel_templates = ComposerTemplateRegistry(package_root).load("reel")
+        self.reel_template_detector = ComposerTemplateDetector()
+
+    def _select_reel_template(self, entry_status: str, screen=None) -> str | None:
+        """Select Auto from observed signals or enforce a manual profile choice."""
+        selected = self.reel_template_selection
+        if selected != "auto":
+            expected_entry = "reel_studio" if selected == "t1" else "direct_file_chooser"
+            if entry_status != expected_entry:
+                return None
+            self.reel_template_id = selected
+            self.log("INFO", f"Using manually assigned Reel template {selected.upper()}; detector bypassed.")
+            return selected
+
+        if entry_status == "reel_studio":
+            signals = {
+                "reel_studio_surface": 1.0,
+                "upload_control": 1.0,
+                "studio_sidebar": 0.95,
+            }
+        elif entry_status == "direct_file_chooser" and screen is not None:
+            next_share = self._is_reel_next_share_composer(screen)
+            final_composer = self._is_reel_final_composer(screen, allow_layout_fallback=True)
+            signals = {
+                "direct_file_chooser": 1.0,
+                "uploaded_media_visible": 0.95,
+                "next_share_surface": 0.98 if next_share else 0.0,
+                "reel_edit_controls": 0.95 if next_share else 0.0,
+                "final_reel_composer": 0.95 if final_composer else 0.0,
+            }
+        else:
+            return None
+
+        observation = TemplateObservation(signals)
+        result = self.reel_template_detector.detect(
+            self.reel_templates.values(),
+            [observation, observation],
+        )
+        if result.outcome != "selected" or result.template is None:
+            self.log(
+                "WARN",
+                f"Automatic Reel template detection failed: {result.outcome} ({result.reason}).",
+            )
+            return None
+        self.reel_template_id = result.template.template_id
+        self.log(
+            "INFO",
+            f"Automatically selected Reel template {self.reel_template_id.upper()} "
+            f"(confidence={result.score:.2f}).",
+        )
+        return self.reel_template_id
 
     def _fail(self, code: str, message: str, screen=None) -> bool:
         self.log("ERROR", message)
@@ -996,14 +1065,14 @@ class FacebookReelTask(BaseTask):
 
             # Dismiss post-publish prompts first (e.g. "Speak With People Directly" -> "Not now")
             should_check_prompt = local_misses in {2, 5}
-            if (
-                not prompt_dismissed
-                and should_check_prompt
-                and self.check_and_dismiss_post_prompt(screen)
-            ):
+            prompt_status = "absent"
+            if not prompt_dismissed and should_check_prompt:
+                prompt_status = self.post_publish_prompt.handle(screen)
+            if prompt_status == "failed":
+                return "failed", last
+            if not prompt_dismissed and prompt_status == "dismissed":
                 prompt_dismissed = True
                 self.log("INFO", "Dismissed post-publish prompt ('Not now').")
-                time.sleep(2.0)
                 continue
 
             local_misses += 1
@@ -1154,6 +1223,22 @@ class FacebookReelTask(BaseTask):
                 "Neither a direct file chooser nor a Reel Studio upload control could be located confidently.",
             )
 
+        # T1 can be selected as soon as Reel Studio is visible. Direct layouts
+        # need the attached-media screen to distinguish T2 from T3.
+        if entry_status == "reel_studio":
+            if not self._select_reel_template(entry_status, screen):
+                return self._needs_review(
+                    "reel_template_mismatch",
+                    f"Reel Studio does not match the configured template {self.reel_template_selection!r}.",
+                    screen,
+                )
+        elif self.reel_template_selection == "t1":
+            return self._needs_review(
+                "reel_template_mismatch",
+                "The profile is assigned T1, but Facebook opened a direct Reel composer.",
+                screen,
+            )
+
         container_path = self.video_path
         if not container_path.startswith("/"):
             container_path = f"/data/shared_media/{container_path}"
@@ -1200,6 +1285,13 @@ class FacebookReelTask(BaseTask):
                     media_screen,
                 )
 
+            if not self._select_reel_template(entry_status, media_screen):
+                return self._needs_review(
+                    "reel_template_mismatch",
+                    f"The direct Reel composer does not match the configured template {self.reel_template_selection!r}.",
+                    media_screen,
+                )
+
         if self.caption and entry_status == "direct_file_chooser":
             caption_timeout = self._remaining_video_composer_wait(15.0)
             if caption_timeout <= 0:
@@ -1227,10 +1319,7 @@ class FacebookReelTask(BaseTask):
                     "The caption field is not ready yet; continuing the layout transition and retrying on the final composer.",
                 )
 
-        direct_next_share_flow = bool(
-            entry_status == "direct_file_chooser"
-            and self._is_reel_next_share_composer(media_screen)
-        )
+        direct_next_share_flow = self.reel_template_id == "t3"
         if entry_status == "direct_file_chooser" and not direct_next_share_flow:
             # Preserve the existing direct composer behavior exactly.
             self.log(
@@ -1345,8 +1434,12 @@ class FacebookReelTask(BaseTask):
         before_publish = self.client.screenshot()
         self.capture_evidence("before_reel_publish", before_publish, target=list(publish_button))
         self.log("STEP", f"Clicking final Reel Post action once at {publish_button}...")
-        self.set_stage("publish_clicked", target=list(publish_button))
-        self.human.click(*publish_button)
+        if not self.execute_publish_gate(publish_button, publish_kind="reel"):
+            return self._fail(
+                "reel_publish_gate_rejected",
+                "The engine-owned publish gate rejected the final Reel action; no click was sent.",
+                screen,
+            )
 
         self.set_stage("verifying")
         popup_timeout = 30.0
@@ -1396,6 +1489,8 @@ class FacebookReelTask(BaseTask):
             return self.set_outcome(
                 "published",
                 None,
+                reel_template=self.reel_template_id,
+                reel_template_selection=self.reel_template_selection,
                 first_comment=comment_status,
                 first_comment_method=getattr(self, "last_comment_method", None),
                 **permalink_info,
@@ -1414,6 +1509,8 @@ class FacebookReelTask(BaseTask):
         return self.set_outcome(
             "published",
             None,
+            reel_template=self.reel_template_id,
+            reel_template_selection=self.reel_template_selection,
             first_comment="not_requested",
             **permalink_info,
         )

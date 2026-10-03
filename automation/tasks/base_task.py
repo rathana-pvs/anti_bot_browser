@@ -14,6 +14,7 @@ from engine.container_client import ContainerClient
 from engine.evidence import EvidenceRecorder
 from engine.human_input import HumanInput
 from engine.behavior_profile import load_behavior_session
+from engine.post_publish_prompt import PostPublishPromptHandler
 from engine.screen_state import FacebookStateRecognizer, ScreenState, StateObservation
 from engine.vision import VisionEngine
 from engine.semantic_fallback import (
@@ -62,6 +63,7 @@ class BaseTask:
         )
         self.vision.telemetry = self.telemetry
         self.semantic_fallback = SemanticFallbackEngine()
+        self.post_publish_prompt = PostPublishPromptHandler(self)
         self.logs: list[dict] = []
         self.result_status = "running"
         self.result_error: str | None = None
@@ -80,6 +82,7 @@ class BaseTask:
         try:
             with open(config_path, "r", encoding="utf-8") as handle:
                 config = json.load(handle)
+            self.profile_config = config if isinstance(config, dict) else {}
             fingerprint = config.get("fingerprint", {})
             browser_zoom = config.get("browser_zoom")
             self.telemetry.set_environment(
@@ -93,6 +96,7 @@ class BaseTask:
                 browser_zoom=browser_zoom,
             )
         except Exception:
+            self.profile_config = {}
             pass
 
     def detect_visual_theme(self, screen=None) -> tuple[str, float]:
@@ -130,7 +134,12 @@ class BaseTask:
         except Exception as exc:
             self.log("WARN", f"Could not record stage '{stage}': {exc}")
 
-    def execute_publish_gate(self, target: tuple[int, int]) -> bool:
+    def execute_publish_gate(
+        self,
+        target: tuple[int, int],
+        *,
+        publish_kind: str = "post",
+    ) -> bool:
         """Execute the irreversible publish click through an engine-owned gate.
 
         Workflow code can request publication, but only this host method may
@@ -151,7 +160,16 @@ class BaseTask:
             self.log("WARN", f"Publish gate rejected out-of-viewport target: {(x, y)}")
             return False
 
-        observation = self.recognizer.observe(screen)
+        if publish_kind == "post":
+            observation = self.recognizer.observe(screen)
+        elif publish_kind == "reel":
+            observation = self.recognizer.observe_publication_gate(
+                screen,
+                region=getattr(self, "LEFT_PUBLICATION_REGION", None),
+            )
+        else:
+            self.log("WARN", f"Publish gate rejected unknown publish kind: {publish_kind}")
+            return False
         if observation.state != ScreenState.POST_ENABLED:
             self.log(
                 "WARN",
@@ -173,6 +191,7 @@ class BaseTask:
             target=[x, y],
             observation_state=observation.state.value,
             observation_confidence=observation.confidence,
+            publish_kind=publish_kind,
         )
         # Set publish_clicked before the input call. If the actuator raises or
         # the process dies, outer recovery must classify the result uncertain.
@@ -442,41 +461,36 @@ class BaseTask:
             self.log("DEBUG", f"Error during leave site dialog check: {exc}")
         return False
 
+    def find_post_publish_prompt(self, screen=None):
+        """Return a modal-scoped Not now match when the known prompt is visible."""
+        if screen is None:
+            screen = self.client.screenshot() if getattr(self, "client", None) else None
+        if screen is None:
+            return None
+        match = None
+        height, width = screen.shape[:2]
+        prompt_region = (
+            int(width * 0.15), int(height * 0.08),
+            int(width * 0.70), int(height * 0.87),
+        )
+        for item in self.vision.read_text(screen, region=prompt_region, min_confidence=0.15):
+            normalized = re.sub(r"[^a-z0-9]+", " ", item["text"].casefold()).strip()
+            compact = normalized.replace(" ", "")
+            words = set(normalized.split())
+            if compact in {"notnow", "notn0w"} or (
+                "not" in words and ("now" in words or "n0w" in words)
+            ):
+                if match is None or item["confidence"] > match["confidence"]:
+                    match = item
+        return match
+
     def check_and_dismiss_post_prompt(self, screen=None) -> bool:
         """
         Detect and dismiss Facebook post-publish prompts (e.g. 'Speak With People Directly',
         'Add a button', WhatsApp prompts, or upsell modals) by clicking 'Not now'.
         """
         try:
-            if screen is None:
-                screen = self.client.screenshot() if hasattr(self, "client") and self.client else None
-            if screen is None:
-                return False
-
-            # Read the current frame once and use token matching. The prompt can
-            # appear only after Facebook finishes its Posting state, and OCR can
-            # render "Not now" as one token or confuse the letter o with zero.
-            match = None
-            height, width = screen.shape[:2]
-            prompt_region = (
-                int(width * 0.15),
-                int(height * 0.08),
-                int(width * 0.70),
-                int(height * 0.87),
-            )
-            for item in self.vision.read_text(
-                screen,
-                region=prompt_region,
-                min_confidence=0.15,
-            ):
-                normalized = re.sub(r"[^a-z0-9]+", " ", item["text"].casefold()).strip()
-                compact = normalized.replace(" ", "")
-                words = set(normalized.split())
-                if compact in {"notnow", "notn0w"} or (
-                    "not" in words and ("now" in words or "n0w" in words)
-                ):
-                    if match is None or item["confidence"] > match["confidence"]:
-                        match = item
+            match = self.find_post_publish_prompt(screen)
             if match:
                 self.log("INFO", f"Detected post-publish prompt ('Not now'). Clicking at {match['center']}...")
                 self.capture_evidence("dismiss_post_prompt", screen, target=list(match["center"]))
