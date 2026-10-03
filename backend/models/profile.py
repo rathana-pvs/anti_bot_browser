@@ -47,6 +47,12 @@ class ResourceLimitsInput(BaseModel):
     memory_mb: int = Field(default=4096, ge=512, le=131072)
 
 
+class AutomationPreferencesInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    reel_template: Literal["auto", "t1", "t2", "t3"] = "auto"
+
+
 class ProfileCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -54,6 +60,8 @@ class ProfileCreateRequest(BaseModel):
     network: NetworkIntent = Field(default_factory=NetworkIntent)
     requested_environment: RequestedEnvironmentInput = Field(default_factory=RequestedEnvironmentInput)
     resources: ResourceLimitsInput = Field(default_factory=ResourceLimitsInput)
+    behavior_mode: Literal["fast", "medium", "slow"] = "medium"
+    automation: AutomationPreferencesInput = Field(default_factory=AutomationPreferencesInput)
     account: dict[str, Any] | None = None
 
 
@@ -64,5 +72,6 @@ class ProfileUpdateRequest(BaseModel):
     network: NetworkIntent | None = None
     requested_environment: RequestedEnvironmentInput | None = None
     resources: ResourceLimitsInput | None = None
+    behavior_mode: Literal["fast", "medium", "slow"] | None = None
+    automation: AutomationPreferencesInput | None = None
     account: dict[str, Any] | None = None
-

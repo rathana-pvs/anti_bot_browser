@@ -1,4 +1,5 @@
 import json
+import secrets
 import shutil
 from copy import deepcopy
 from pathlib import Path
@@ -138,6 +139,9 @@ def create_profile(request: ProfileCreateRequest):
                 "restart_required": False,
                 "resources": _validated_resources(request.resources.model_dump()),
                 "effective_resources": None,
+                "behavior_mode": request.behavior_mode,
+                "behavior_seed": secrets.randbits(63) or 1,
+                "automation": request.automation.model_dump(),
                 "fingerprint": compatibility_fingerprint(requested),
                 "container": {
                     "id": None, "vnc_port": vnc_port, "ws_port": ws_port,
@@ -194,6 +198,10 @@ def update_profile(profile_id: str, request: ProfileUpdateRequest):
             existing["account"] = {**existing.get("account", {}), **request.account}
         if request.resources is not None:
             existing["resources"] = _validated_resources(request.resources.model_dump())
+        if request.behavior_mode is not None:
+            existing["behavior_mode"] = request.behavior_mode
+        if request.automation is not None:
+            existing["automation"] = request.automation.model_dump()
         runtime_changed = (
             original.get("network") != existing.get("network")
             or original.get("requested_environment") != existing.get("requested_environment")

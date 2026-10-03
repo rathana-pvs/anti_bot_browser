@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { AlertTriangle, Cpu, Globe, Monitor, X } from 'lucide-react';
-import { Profile, ProfileUpdateRequest, RequestedEnvironment, ResourceLimits } from '../types/profile';
+import { BehaviorMode, Profile, ProfileUpdateRequest, ReelTemplateSelection, RequestedEnvironment, ResourceLimits } from '../types/profile';
 import { formatProxyGeography, ProxyItem } from '../types/proxy';
 import { SCREEN_RESOLUTIONS, getHostTimezone } from '../services/fingerprintPool';
 import { fetchProfileDefaults } from '../services/api';
@@ -33,6 +33,10 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
   const [name, setName] = useState('');
   const [environment, setEnvironment] = useState<RequestedEnvironment | null>(null);
   const [resources, setResources] = useState<ResourceLimits>({ cpu_limit: 4, memory_mb: 4096 });
+  const [behaviorMode, setBehaviorMode] = useState<BehaviorMode>('medium');
+  const [reelTemplate, setReelTemplate] = useState<ReelTemplateSelection>('auto');
+  const [behaviorOptions, setBehaviorOptions] = useState<BehaviorMode[]>(['fast', 'medium', 'slow']);
+  const [reelTemplateOptions, setReelTemplateOptions] = useState<ReelTemplateSelection[]>(['auto', 't1', 't2', 't3']);
   const [cpuOptions, setCpuOptions] = useState([1, 2, 4, 6, 8]);
   const [memoryOptions, setMemoryOptions] = useState([1024, 2048, 3072, 4096, 6144, 8192]);
   const [networkChoice, setNetworkChoice] = useState('direct');
@@ -51,6 +55,8 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
     setName(profile.name);
     setEnvironment(environmentFor(profile));
     setResources(profile.resources || { cpu_limit: 4, memory_mb: 4096 });
+    setBehaviorMode(profile.behavior_mode || 'medium');
+    setReelTemplate(profile.automation?.reel_template || 'auto');
     setWarmingWeek(profile.account.warming_week || 1);
     setWarmingComplete(Boolean(profile.account.warming_complete));
     setNotes(profile.account.notes || '');
@@ -69,6 +75,8 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
     fetchProfileDefaults().then((defaults) => {
       setCpuOptions(defaults.resource_options.cpu_limits.filter((value) => value <= defaults.resource_options.host_cpu_threads));
       setMemoryOptions(defaults.resource_options.memory_mb.filter((value) => value <= defaults.resource_options.host_memory_mb));
+      setBehaviorOptions(defaults.behavior_modes);
+      setReelTemplateOptions(defaults.reel_template_options);
     }).catch(() => undefined);
   }, [isOpen, profile?.id]);
 
@@ -107,6 +115,8 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
           : { mode: 'pool', proxy_id: networkChoice };
       await onSave(profile.id, {
         name: name.trim(), network, requested_environment: environment, resources,
+        behavior_mode: behaviorMode,
+        automation: { reel_template: reelTemplate },
         account: { warming_week: warmingWeek, warming_complete: warmingComplete, notes: notes.trim() },
       });
       onClose();
@@ -133,6 +143,22 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
           <label className="block text-zinc-400">Profile name
             <input required value={name} onChange={(e) => setName(e.target.value)} className="mt-1.5 w-full rounded border border-zinc-800 bg-zinc-950 px-3 py-2 text-zinc-100" />
           </label>
+          <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
+            <div className="font-medium text-zinc-300">Automation behavior</div>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="text-zinc-500">Behavior mode
+                <Select value={behaviorMode} onValueChange={(value) => setBehaviorMode(value as BehaviorMode)}
+                  ariaLabel="Behavior mode" className="mt-1 min-h-8 py-1.5"
+                  options={behaviorOptions.map((value) => ({ value, label: value[0].toUpperCase() + value.slice(1) }))} />
+              </label>
+              <label className="text-zinc-500">Reel template
+                <Select value={reelTemplate} onValueChange={(value) => setReelTemplate(value as ReelTemplateSelection)}
+                  ariaLabel="Reel template" className="mt-1 min-h-8 py-1.5"
+                  options={reelTemplateOptions.map((value) => ({ value, label: value === 'auto' ? 'Auto detect' : value.toUpperCase() }))} />
+              </label>
+            </div>
+            <p className="text-[10px] leading-relaxed text-zinc-500">These settings apply to subsequent automation jobs and do not require a browser restart.</p>
+          </div>
           <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
             <div className="flex items-center gap-1.5 font-medium text-zinc-300"><Globe className="h-3.5 w-3.5" />Network</div>
             <Select value={networkChoice} onValueChange={changeNetwork} ariaLabel="Network connection"

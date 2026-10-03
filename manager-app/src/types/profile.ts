@@ -88,6 +88,13 @@ export interface ResourceLimits {
   memory_mb: number;
 }
 
+export type BehaviorMode = 'fast' | 'medium' | 'slow';
+export type ReelTemplateSelection = 'auto' | 't1' | 't2' | 't3';
+
+export interface AutomationPreferences {
+  reel_template: ReelTemplateSelection;
+}
+
 export interface EffectiveResourceLimits extends ResourceLimits {
   configuration_revision: number;
   applied_at: string;
@@ -138,6 +145,8 @@ export interface Profile {
   restart_required?: boolean;
   resources?: ResourceLimits;
   effective_resources?: EffectiveResourceLimits | null;
+  behavior_mode?: BehaviorMode;
+  automation?: AutomationPreferences;
   ram_usage?: string;
   cpu_usage?: string;
   disk_usage?: string;
@@ -148,6 +157,8 @@ export interface ProfileCreateRequest {
   network: NetworkIntent;
   requested_environment: RequestedEnvironment;
   resources: ResourceLimits;
+  behavior_mode: BehaviorMode;
+  automation: AutomationPreferences;
   account?: Partial<ProfileAccount>;
 }
 
@@ -156,6 +167,8 @@ export interface ProfileUpdateRequest {
   network?: NetworkIntent;
   requested_environment?: RequestedEnvironment;
   resources?: ResourceLimits;
+  behavior_mode?: BehaviorMode;
+  automation?: AutomationPreferences;
   account?: Partial<ProfileAccount>;
 }
 
@@ -164,6 +177,10 @@ export interface ProfileDefaults {
   supported_resolutions: string[];
   default_environment: RequestedEnvironment;
   default_resources: ResourceLimits;
+  default_behavior_mode: BehaviorMode;
+  behavior_modes: BehaviorMode[];
+  default_automation: AutomationPreferences;
+  reel_template_options: ReelTemplateSelection[];
   resource_options: {
     cpu_limits: number[];
     memory_mb: number[];

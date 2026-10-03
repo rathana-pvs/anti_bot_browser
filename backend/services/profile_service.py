@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 import socket
 import threading
 from copy import deepcopy
@@ -14,8 +15,10 @@ from backend.config import CPU_THREADS, PROFILES_DIR, TOTAL_MEMORY_GB, get_host_
 from backend.services.proxy_service import load_proxy_pool
 
 
-PROFILE_SCHEMA_VERSION = 4
+PROFILE_SCHEMA_VERSION = 5
 DEFAULT_RESOURCE_LIMITS = {"cpu_limit": 4.0, "memory_mb": 4096}
+BEHAVIOR_MODES = ("fast", "medium", "slow")
+REEL_TEMPLATE_OPTIONS = ("auto", "t1", "t2", "t3")
 SUPPORTED_RESOLUTIONS = (
     "1920x1080",
     "1600x900",
@@ -61,6 +64,10 @@ def profile_defaults() -> dict[str, Any]:
             "rendering_mode": "host_gpu",
         },
         "default_resources": dict(DEFAULT_RESOURCE_LIMITS),
+        "default_behavior_mode": "medium",
+        "behavior_modes": list(BEHAVIOR_MODES),
+        "default_automation": {"reel_template": "auto"},
+        "reel_template_options": list(REEL_TEMPLATE_OPTIONS),
         "resource_options": {
             "cpu_limits": [1, 2, 4, 6, 8],
             "memory_mb": [1024, 2048, 3072, 4096, 6144, 8192],
@@ -214,11 +221,42 @@ def legacy_network_to_v2(network: dict[str, Any], profile_id: str) -> dict[str, 
     }
 
 
+def _apply_execution_preferences(profile: dict[str, Any]) -> None:
+    legacy_mode = str(profile.get("behavior_mode") or "medium").casefold()
+    profile["behavior_mode"] = {
+        "quick": "fast",
+        "balanced": "medium",
+        "careful": "slow",
+    }.get(legacy_mode, legacy_mode if legacy_mode in BEHAVIOR_MODES else "medium")
+    seed = profile.get("behavior_seed")
+    if not isinstance(seed, int) or isinstance(seed, bool) or seed < 1:
+        profile["behavior_seed"] = secrets.randbits(63) or 1
+    automation = profile.get("automation")
+    if not isinstance(automation, dict):
+        automation = {}
+    reel_template = str(automation.get("reel_template") or "auto").casefold()
+    automation["reel_template"] = (
+        reel_template if reel_template in REEL_TEMPLATE_OPTIONS else "auto"
+    )
+    profile["automation"] = automation
+
+
 def migrate_profile(profile: dict[str, Any], profile_dir: Path, *, persist: bool = True) -> tuple[dict[str, Any], bool]:
     source_version = int(profile.get("schema_version") or 1)
     if source_version >= PROFILE_SCHEMA_VERSION:
         return profile, False
     migrated = deepcopy(profile)
+    if source_version == 4:
+        _apply_execution_preferences(migrated)
+        migrated["schema_version"] = PROFILE_SCHEMA_VERSION
+        migrated["configuration_revision"] = int(migrated.get("configuration_revision") or 1) + 1
+        if persist:
+            config_path = profile_dir / "config.json"
+            backup = profile_dir / "config.json.v4.bak"
+            if config_path.exists() and not backup.exists():
+                backup.write_bytes(config_path.read_bytes())
+            atomic_write_json(config_path, migrated)
+        return migrated, True
     if source_version == 3:
         requested = migrated.get("requested_environment") or {}
         requested["user_agent_policy"] = "browser_default"
@@ -232,6 +270,7 @@ def migrate_profile(profile: dict[str, Any], profile_dir: Path, *, persist: bool
         migrated["effective_environment"] = None
         migrated["observed_environment"] = None
         migrated["restart_required"] = True
+        _apply_execution_preferences(migrated)
         if persist:
             config_path = profile_dir / "config.json"
             backup = profile_dir / "config.json.v3.bak"
@@ -262,6 +301,7 @@ def migrate_profile(profile: dict[str, Any], profile_dir: Path, *, persist: bool
         migrated["resources"] = dict(DEFAULT_RESOURCE_LIMITS)
         migrated["effective_resources"] = None
         migrated["restart_required"] = True
+        _apply_execution_preferences(migrated)
         if persist:
             config_path = profile_dir / "config.json"
             backup = profile_dir / f"config.json.v{source_version}.bak"
@@ -304,6 +344,7 @@ def migrate_profile(profile: dict[str, Any], profile_dir: Path, *, persist: bool
             "fingerprint": compatibility_fingerprint(requested, legacy_fp),
         }
     )
+    _apply_execution_preferences(migrated)
     if persist:
         config_path = profile_dir / "config.json"
         backup = profile_dir / f"config.json.v{source_version}.bak"
@@ -324,4 +365,3 @@ def environment_differences(requested: dict[str, Any], observed: dict[str, Any])
         else:
             differences[key] = "different"
     return differences
-

@@ -70,10 +70,13 @@ def test_direct_legacy_profile_migrates_with_backup(tmp_path):
     migrated, changed = profile_service.migrate_profile(legacy, directory)
 
     assert changed is True
-    assert migrated["schema_version"] == 4
+    assert migrated["schema_version"] == 5
     assert migrated["network"]["mode"] == "direct"
     assert migrated["network"]["proxy_port"] is None
     assert migrated["effective_environment"] is None
+    assert migrated["behavior_mode"] == "medium"
+    assert migrated["automation"] == {"reel_template": "auto"}
+    assert isinstance(migrated["behavior_seed"], int)
     assert (directory / "config.json.v1.bak").exists()
 
 
@@ -92,7 +95,7 @@ def test_v2_profile_migrates_to_default_resource_limits(tmp_path):
     migrated, changed = profile_service.migrate_profile(profile, directory)
 
     assert changed is True
-    assert migrated["schema_version"] == 4
+    assert migrated["schema_version"] == 5
     assert migrated["resources"] == {"cpu_limit": 4.0, "memory_mb": 4096}
     assert migrated["effective_resources"] is None
     assert migrated["restart_required"] is True
@@ -123,13 +126,35 @@ def test_v3_profile_migrates_to_browser_default_without_resetting_resources(tmp_
     migrated, changed = profile_service.migrate_profile(profile, directory)
 
     assert changed is True
-    assert migrated["schema_version"] == 4
+    assert migrated["schema_version"] == 5
     assert migrated["requested_environment"]["user_agent_policy"] == "browser_default"
     assert migrated["requested_environment"]["user_agent"] is None
     assert migrated["fingerprint"]["user_agent"] == ""
     assert migrated["resources"] == {"cpu_limit": 6.0, "memory_mb": 6144}
     assert migrated["restart_required"] is True
     assert (directory / "config.json.v3.bak").exists()
+
+
+def test_v4_profile_adds_execution_preferences_without_restart(tmp_path):
+    directory = tmp_path / "profile_004"
+    directory.mkdir()
+    profile = {
+        "schema_version": 4,
+        "configuration_revision": 3,
+        "id": "profile_004",
+        "restart_required": False,
+    }
+    (directory / "config.json").write_text(json.dumps(profile), encoding="utf-8")
+
+    migrated, changed = profile_service.migrate_profile(profile, directory)
+
+    assert changed is True
+    assert migrated["schema_version"] == 5
+    assert migrated["configuration_revision"] == 4
+    assert migrated["behavior_mode"] == "medium"
+    assert migrated["automation"] == {"reel_template": "auto"}
+    assert migrated["restart_required"] is False
+    assert (directory / "config.json.v4.bak").exists()
 
 
 def test_observation_comparison_does_not_invent_missing_values():
@@ -167,6 +192,8 @@ def test_direct_creation_never_auto_assigns_proxy(tmp_path, monkeypatch):
     assert profile["network"]["proxy_id"] is None
     assert profile["network"]["proxy_host"] == ""
     assert profile["network"]["proxy_port"] is None
+    assert profile["behavior_mode"] == "medium"
+    assert profile["automation"] == {"reel_template": "auto"}
 
 
 def test_proxy_entrypoint_is_fail_closed_for_both_ip_families():

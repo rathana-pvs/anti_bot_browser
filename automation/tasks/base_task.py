@@ -7,11 +7,13 @@ import random
 import re
 import time
 import urllib.parse
+import uuid
 import numpy as np
 from datetime import datetime, timezone
 from engine.container_client import ContainerClient
 from engine.evidence import EvidenceRecorder
 from engine.human_input import HumanInput
+from engine.behavior_profile import load_behavior_session
 from engine.screen_state import FacebookStateRecognizer, ScreenState, StateObservation
 from engine.vision import VisionEngine
 from engine.semantic_fallback import (
@@ -39,7 +41,11 @@ class BaseTask:
     def __init__(self, profile_id: str):
         self.profile_id = profile_id
         self.client = ContainerClient(profile_id)
-        self.human = HumanInput(self.client)
+        self.behavior_session = load_behavior_session(
+            profile_id,
+            f"{self.__class__.__name__}:{uuid.uuid4().hex}",
+        )
+        self.human = HumanInput(self.client, self.behavior_session)
         self.vision = VisionEngine(self.client)
         self.recognizer = FacebookStateRecognizer(self.vision)
         self.evidence = EvidenceRecorder(profile_id, self.__class__.__name__)
@@ -47,6 +53,12 @@ class BaseTask:
             profile_id,
             self.__class__.__name__,
             self.evidence.directory,
+        )
+        self.telemetry.record_step(
+            "behavior_session",
+            0.0,
+            outcome="configured",
+            **self.behavior_session.summary(),
         )
         self.vision.telemetry = self.telemetry
         self.semantic_fallback = SemanticFallbackEngine()

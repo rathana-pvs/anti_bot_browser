@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Cpu, Globe, Monitor, Shield, X } from 'lucide-react';
 import { fetchProfileDefaults } from '../services/api';
-import { ProfileCreateRequest, RequestedEnvironment, ResourceLimits } from '../types/profile';
+import { BehaviorMode, ProfileCreateRequest, ReelTemplateSelection, RequestedEnvironment, ResourceLimits } from '../types/profile';
 import { formatProxyGeography, ProxyItem } from '../types/proxy';
 import { RESOLUTION_OPTIONS, getHostTimezone } from '../services/fingerprintPool';
 import { Select } from './ui/Select';
@@ -30,6 +30,10 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
   const [name, setName] = useState('');
   const [environment, setEnvironment] = useState<RequestedEnvironment>(fallbackEnvironment);
   const [resources, setResources] = useState<ResourceLimits>({ cpu_limit: 4, memory_mb: 4096 });
+  const [behaviorMode, setBehaviorMode] = useState<BehaviorMode>('medium');
+  const [reelTemplate, setReelTemplate] = useState<ReelTemplateSelection>('auto');
+  const [behaviorOptions, setBehaviorOptions] = useState<BehaviorMode[]>(['fast', 'medium', 'slow']);
+  const [reelTemplateOptions, setReelTemplateOptions] = useState<ReelTemplateSelection[]>(['auto', 't1', 't2', 't3']);
   const [cpuOptions, setCpuOptions] = useState([1, 2, 4, 6, 8]);
   const [memoryOptions, setMemoryOptions] = useState([1024, 2048, 3072, 4096, 6144, 8192]);
   const [resolutions, setResolutions] = useState(RESOLUTION_OPTIONS.map((item) => item.value));
@@ -49,11 +53,17 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
     setCustomPort('1080');
     setCustomUser('');
     setCustomPassword('');
+    setBehaviorMode('medium');
+    setReelTemplate('auto');
     setError(null);
     fetchProfileDefaults()
       .then((defaults) => {
         setEnvironment(defaults.default_environment);
         setResources(defaults.default_resources);
+        setBehaviorMode(defaults.default_behavior_mode);
+        setReelTemplate(defaults.default_automation.reel_template);
+        setBehaviorOptions(defaults.behavior_modes);
+        setReelTemplateOptions(defaults.reel_template_options);
         setCpuOptions(defaults.resource_options.cpu_limits.filter((value) => value <= defaults.resource_options.host_cpu_threads));
         setMemoryOptions(defaults.resource_options.memory_mb.filter((value) => value <= defaults.resource_options.host_memory_mb));
         setResolutions(defaults.supported_resolutions);
@@ -101,7 +111,11 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
               username: customUser.trim(), password: customPassword,
             }
           : { mode: 'pool', proxy_id: networkChoice };
-      await onCreate({ name: name.trim(), network, requested_environment: environment, resources });
+      await onCreate({
+        name: name.trim(), network, requested_environment: environment, resources,
+        behavior_mode: behaviorMode,
+        automation: { reel_template: reelTemplate },
+      });
       onClose();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Could not create profile');
@@ -128,6 +142,23 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
               <input required value={name} onChange={(e) => setName(e.target.value)}
                 className="w-full rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2 text-zinc-100 focus:border-zinc-600 focus:outline-none" />
             </label>
+
+            <div className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
+              <div className="font-medium text-zinc-300">Automation behavior</div>
+              <div className="grid grid-cols-2 gap-2">
+                <label className="text-zinc-500">Behavior mode
+                  <Select value={behaviorMode} onValueChange={(value) => setBehaviorMode(value as BehaviorMode)}
+                    ariaLabel="Behavior mode" className="mt-1 min-h-8 py-1.5"
+                    options={behaviorOptions.map((value) => ({ value, label: value[0].toUpperCase() + value.slice(1) }))} />
+                </label>
+                <label className="text-zinc-500">Reel template
+                  <Select value={reelTemplate} onValueChange={(value) => setReelTemplate(value as ReelTemplateSelection)}
+                    ariaLabel="Reel template" className="mt-1 min-h-8 py-1.5"
+                    options={reelTemplateOptions.map((value) => ({ value, label: value === 'auto' ? 'Auto detect' : value.toUpperCase() }))} />
+                </label>
+              </div>
+              <p className="text-[10px] leading-relaxed text-zinc-500">Auto detects the Reel composer. A selected template runs directly and stops if one of its required steps is unavailable.</p>
+            </div>
 
             <div className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
               <div className="flex items-center gap-1.5 font-medium text-zinc-300"><Globe className="h-3.5 w-3.5" />Network</div>

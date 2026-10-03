@@ -29,8 +29,19 @@ def _ease_in_out(t: float) -> float:
 
 
 class HumanInput:
-    def __init__(self, client: ContainerClient):
+    def __init__(self, client: ContainerClient, behavior_session=None):
         self.client = client
+        self.behavior_session = behavior_session
+
+    def _rng(self, channel: str):
+        if self.behavior_session is not None:
+            return self.behavior_session.stream(channel)
+        return random
+
+    def _duration(self, channel: str, value: float) -> float:
+        if self.behavior_session is not None:
+            return self.behavior_session.scaled_duration(channel, value)
+        return value
 
     @staticmethod
     def safe_click_point(
@@ -80,11 +91,15 @@ class HumanInput:
             return
 
         # Determine step count and duration based on distance
+        rng = self._rng("mouse")
         if duration_sec is None:
             # 0.2s for short distances up to 0.7s for cross-screen
-            duration_sec = min(0.7, max(0.2, dist / 2000.0 + random.uniform(0.1, 0.25)))
+            duration_sec = self._duration(
+                "mouse",
+                min(0.7, max(0.2, dist / 2000.0 + rng.uniform(0.1, 0.25))),
+            )
 
-        steps = max(12, min(35, int(dist / 40.0) + random.randint(8, 14)))
+        steps = max(12, min(35, int(dist / 40.0) + rng.randint(8, 14)))
 
         # Calculate Bezier control points with random perpendicular deviation
         dx = target_x - start_x
@@ -94,8 +109,8 @@ class HumanInput:
         perp_y = dx / norm
 
         # Random control point deviations
-        dev1 = random.uniform(-0.25, 0.25) * dist
-        dev2 = random.uniform(-0.15, 0.15) * dist
+        dev1 = rng.uniform(-0.25, 0.25) * dist
+        dev2 = rng.uniform(-0.15, 0.15) * dist
 
         cp1_x = start_x + dx * 0.3 + perp_x * dev1
         cp1_y = start_y + dy * 0.3 + perp_y * dev1
@@ -112,8 +127,8 @@ class HumanInput:
 
             # Micro-jitter along trajectory
             if i < steps:
-                bx += random.uniform(-1.0, 1.0)
-                by += random.uniform(-1.0, 1.0)
+                bx += rng.uniform(-1.0, 1.0)
+                by += rng.uniform(-1.0, 1.0)
             else:
                 bx = target_x
                 by = target_y
@@ -127,7 +142,7 @@ class HumanInput:
             time.sleep(step_sleep)
 
         # Micro-settle at destination
-        time.sleep(random.uniform(0.04, 0.09))
+        time.sleep(self._duration("mouse", rng.uniform(0.04, 0.09)))
 
     def click(self, x: int | None = None, y: int | None = None) -> None:
         """
@@ -137,11 +152,12 @@ class HumanInput:
         if x is not None and y is not None:
             self.move_to(x, y)
 
-        time.sleep(random.uniform(0.03, 0.08))
+        rng = self._rng("click")
+        time.sleep(self._duration("click", rng.uniform(0.03, 0.08)))
         self.client.xdo("mousedown 1")
-        time.sleep(random.uniform(0.05, 0.11))
+        time.sleep(self._duration("click", rng.uniform(0.05, 0.11)))
         self.client.xdo("mouseup 1")
-        time.sleep(random.uniform(0.05, 0.12))
+        time.sleep(self._duration("click", rng.uniform(0.05, 0.12)))
 
     def double_click(self, x: int | None = None, y: int | None = None) -> None:
         """Execute double click with realistic interval."""
@@ -149,42 +165,46 @@ class HumanInput:
             self.move_to(x, y)
 
         self.click()
-        time.sleep(random.uniform(0.08, 0.15))
+        rng = self._rng("click")
+        time.sleep(self._duration("click", rng.uniform(0.08, 0.15)))
         self.click()
 
-    def type_text(self, text: str, wpm: int = 55) -> None:
+    def type_text(self, text: str, wpm: int | None = None) -> None:
         """
         Type text character-by-character at a natural WPM cadence,
         introducing natural pauses after punctuation and simulated thinking stops.
         """
+        rng = self._rng("typing")
+        if wpm is None:
+            wpm = self.behavior_session.typing_speed() if self.behavior_session else 55
         base_char_delay = 60.0 / (wpm * 5)  # Average 5 chars per word
 
         for idx, char in enumerate(text):
             # Special character handling for xdotool
             if char == "\n":
                 self.client.xdo("key Return")
-                time.sleep(random.uniform(0.2, 0.45))
+                time.sleep(rng.uniform(0.2, 0.45))
                 continue
             elif char == " ":
                 self.client.xdo("key space")
-                delay = base_char_delay * random.uniform(0.9, 1.4)
+                delay = base_char_delay * rng.uniform(0.9, 1.4)
             elif char in ("'", '"', "$", "&", "<", ">", "|", "\\"):
                 # Use key or escaped type
                 self.client.xdo(f"type -- {char}")
-                delay = base_char_delay * random.uniform(0.8, 1.3)
+                delay = base_char_delay * rng.uniform(0.8, 1.3)
             else:
                 self.client.xdo(f"type -- {char}")
-                delay = base_char_delay * random.uniform(0.7, 1.25)
+                delay = base_char_delay * rng.uniform(0.7, 1.25)
 
             # Extra thinking pause after punctuation
             if char in (".", "!", "?"):
-                delay += random.uniform(0.25, 0.6)
+                delay += rng.uniform(0.25, 0.6)
             elif char in (",", ";", ":"):
-                delay += random.uniform(0.15, 0.35)
+                delay += rng.uniform(0.15, 0.35)
 
             # Random 4% chance of a hesitation pause (thinking/looking at keyboard)
-            if random.random() < 0.04:
-                delay += random.uniform(0.2, 0.5)
+            if rng.random() < 0.04:
+                delay += rng.uniform(0.2, 0.5)
 
             time.sleep(delay)
 
@@ -194,12 +214,14 @@ class HumanInput:
         direction: 'down' (Button 5) or 'up' (Button 4).
         """
         btn = "5" if direction.lower() == "down" else "4"
+        rng = self._rng("scroll")
         for _ in range(notches):
             self.client.xdo(f"click {btn}")
-            time.sleep(random.uniform(0.08, 0.22))
-        time.sleep(random.uniform(0.3, 0.8))
+            time.sleep(self._duration("scroll", rng.uniform(0.08, 0.22)))
+        time.sleep(self._duration("scroll", rng.uniform(0.3, 0.8)))
 
     def key_press(self, key_name: str) -> None:
         """Press a keyboard key or combination (e.g. 'Return', 'ctrl+a', 'BackSpace')."""
         self.client.xdo(f"key {key_name}")
-        time.sleep(random.uniform(0.08, 0.18))
+        rng = self._rng("click")
+        time.sleep(self._duration("click", rng.uniform(0.08, 0.18)))
