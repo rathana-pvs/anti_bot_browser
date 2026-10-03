@@ -1,10 +1,25 @@
 # Final Modular Automation Flow Plan
 
-Updated: 2026-10-03. Status: approved design; implementation pending.
+Updated: 2026-10-03. Status: baseline implementation complete; live fixture
+capture and canary rollout remain operational follow-up work.
 
 This version supersedes the earlier shared Post branching and strict Reel
 assignment design. Post uses separate templates selected automatically. Reel
 supports Auto or direct manual selection.
+
+Implemented on `codex/modular-automation-flow`:
+
+- fixed Startup/Warming/Publish/Prompt/Comment/Finalize orchestration;
+- profile behavior modes and Auto/T1/T2/T3 Reel assignment;
+- validated P1/P2 and T1/T2/T3 template registry, detector, and safe executor;
+- Post automatic routing and Reel automatic/manual routing;
+- shared optional-prompt handling and engine-owned Post/Reel publish gates;
+- independently reported comment outcomes and one final evidence/telemetry write;
+- pinned Post and Reel Brain packages with version and content digest metadata.
+
+Real Facebook screenshot fixtures and shadow/canary metrics cannot be produced
+from unit tests alone. Capture them from authorized profile runs before declaring
+new composer variants production-ready.
 
 ## 1. Fixed Pipeline
 
@@ -248,11 +263,7 @@ automation/
     post_publish_prompt.py
     brain_runtime.py
   modules/
-    startup.py
-    warming.py
-    publish.py
-    comment.py
-    finalize.py
+    publishing_pipeline.py
   composer_templates/
     registry.py
     detector.py

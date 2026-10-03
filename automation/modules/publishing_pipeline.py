@@ -13,6 +13,8 @@ from engine.module_contract import (
     ModuleResult,
 )
 
+FLOW_VERSION = "1.0.0"
+
 
 def _task_result(task, *, success_reason: str) -> ModuleResult:
     status = getattr(task, "result_status", "failed_before_publish")
@@ -55,6 +57,7 @@ class StartupModule:
         return ModuleResult.success(
             "container_and_session_verified",
             auth_preflight=self.task.session_check_status,
+            flow_version=FLOW_VERSION,
         )
 
 
@@ -189,6 +192,9 @@ class FinalizeModule:
         self.task.finalize_outcome(
             **final_outputs,
             pipeline_modules=module_summary,
+            module_durations_ms=dict(
+                context.environment.get("module_durations_ms", {})
+            ),
         )
         return ModuleResult.success("outcome_persisted")
 

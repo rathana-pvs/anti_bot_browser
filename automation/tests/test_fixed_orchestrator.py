@@ -49,6 +49,8 @@ class FixedAutomationOrchestratorTests(unittest.TestCase):
         self.assertEqual(result.outcome, "success")
         self.assertIsNone(result.stopped_at)
         self.assertEqual(list(result.module_results), list(PIPELINE_ORDER))
+        self.assertEqual(set(result.module_durations_ms), set(PIPELINE_ORDER))
+        self.assertTrue(all(value >= 0 for value in result.module_durations_ms.values()))
 
     def test_disabled_optional_module_is_recorded_and_pipeline_continues(self):
         calls = []

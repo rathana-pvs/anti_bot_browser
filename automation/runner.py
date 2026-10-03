@@ -174,6 +174,7 @@ def main():
                     module_id: {
                         "outcome": module_result.outcome,
                         "reason": module_result.reason,
+                        "duration_ms": pipeline_result.module_durations_ms.get(module_id),
                     }
                     for module_id, module_result in pipeline_result.module_results.items()
                 },
