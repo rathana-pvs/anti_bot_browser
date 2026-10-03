@@ -42,6 +42,11 @@ class PostTemplateSelectionTests(unittest.TestCase):
         template, _, _ = task._select_post_template()
         self.assertIsNone(template)
 
+    def test_review_behavior_comes_from_template_steps(self):
+        task = make_task()
+        self.assertFalse(task._post_template_uses_review("p1"))
+        self.assertTrue(task._post_template_uses_review("p2"))
+
 
 if __name__ == "__main__":
     unittest.main()

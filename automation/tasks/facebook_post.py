@@ -58,6 +58,15 @@ class FacebookPostTask(BaseTask):
         self.post_templates = ComposerTemplateRegistry(package_root).load("post")
         self.post_template_detector = ComposerTemplateDetector()
         self.post_template_id = None
+        self.template_selection_details = None
+
+    def _post_template_uses_review(self, template_id: str) -> bool:
+        template = self.post_templates[template_id]
+        return any(
+            step.get("capability") == "click_candidate"
+            and step.get("target") == "next_button"
+            for step in template.steps
+        )
 
     def _select_post_template(self):
         """Detect P1/P2 from stable enabled actions after composer preparation."""
@@ -88,6 +97,13 @@ class FacebookPostTask(BaseTask):
             )
             return None, None, None
         self.post_template_id = result.template.template_id
+        self.template_selection_details = {
+            "policy": "auto",
+            "selected": self.post_template_id,
+            "score": result.score,
+            "runner_up_score": result.runner_up_score,
+            "candidates": list(result.candidates),
+        }
         self.log(
             "INFO",
             f"Selected Post template {self.post_template_id.upper()} "
@@ -710,7 +726,7 @@ class FacebookPostTask(BaseTask):
             f"template={post_template}, next={next_btn}, post={detected_post_btn}",
             "execute the selected template",
         )
-        if post_template == "p2":
+        if self._post_template_uses_review(post_template):
             if not next_btn:
                 return self._fail(
                     "post_next_not_found",

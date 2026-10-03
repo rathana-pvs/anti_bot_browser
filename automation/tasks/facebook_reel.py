@@ -50,6 +50,7 @@ class FacebookReelTask(BaseTask):
             configured if configured in {"auto", "t1", "t2", "t3"} else "auto"
         )
         self.reel_template_id = None
+        self.template_selection_details = None
         package_root = Path(brain_package.root) if brain_package is not None else (
             Path(__file__).resolve().parents[1]
             / "brains" / "facebook_reel" / "bundled_default"
@@ -57,14 +58,35 @@ class FacebookReelTask(BaseTask):
         self.reel_templates = ComposerTemplateRegistry(package_root).load("reel")
         self.reel_template_detector = ComposerTemplateDetector()
 
+    def _reel_template_entry(self, template_id: str) -> str | None:
+        required = {rule.signal for rule in self.reel_templates[template_id].required}
+        if "reel_studio_surface" in required:
+            return "reel_studio"
+        if "direct_file_chooser" in required:
+            return "direct_file_chooser"
+        return None
+
+    def _reel_template_uses_share_review(self, template_id: str) -> bool:
+        return any(
+            step.get("expect") == "share_review"
+            for step in self.reel_templates[template_id].steps
+        )
+
     def _select_reel_template(self, entry_status: str, screen=None) -> str | None:
         """Select Auto from observed signals or enforce a manual profile choice."""
         selected = self.reel_template_selection
         if selected != "auto":
-            expected_entry = "reel_studio" if selected == "t1" else "direct_file_chooser"
+            if selected not in self.reel_templates:
+                return None
+            expected_entry = self._reel_template_entry(selected)
             if entry_status != expected_entry:
                 return None
             self.reel_template_id = selected
+            self.template_selection_details = {
+                "policy": "manual",
+                "selected": selected,
+                "detector_bypassed": True,
+            }
             self.log("INFO", f"Using manually assigned Reel template {selected.upper()}; detector bypassed.")
             return selected
 
@@ -99,6 +121,13 @@ class FacebookReelTask(BaseTask):
             )
             return None
         self.reel_template_id = result.template.template_id
+        self.template_selection_details = {
+            "policy": "auto",
+            "selected": self.reel_template_id,
+            "score": result.score,
+            "runner_up_score": result.runner_up_score,
+            "candidates": list(result.candidates),
+        }
         self.log(
             "INFO",
             f"Automatically selected Reel template {self.reel_template_id.upper()} "
@@ -1328,7 +1357,9 @@ class FacebookReelTask(BaseTask):
                     "The caption field is not ready yet; continuing the layout transition and retrying on the final composer.",
                 )
 
-        direct_next_share_flow = self.reel_template_id == "t3"
+        direct_next_share_flow = self._reel_template_uses_share_review(
+            self.reel_template_id
+        )
         if entry_status == "direct_file_chooser" and not direct_next_share_flow:
             # Preserve the existing direct composer behavior exactly.
             self.log(

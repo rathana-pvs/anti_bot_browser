@@ -1,4 +1,5 @@
 from pathlib import Path
+from dataclasses import replace
 import unittest
 from unittest.mock import Mock
 
@@ -38,6 +39,19 @@ class ReelTemplateSelectionTests(unittest.TestCase):
         self.assertIsNone(
             task._select_reel_template("direct_file_chooser", object())
         )
+
+    def test_manual_entry_family_comes_from_template_rules_not_template_id(self):
+        task = make_task("t4")
+        task.reel_templates["t4"] = replace(
+            task.reel_templates["t1"],
+            template_id="t4",
+        )
+        self.assertEqual(task._select_reel_template("reel_studio", object()), "t4")
+
+    def test_share_review_behavior_comes_from_template_steps(self):
+        task = make_task()
+        self.assertFalse(task._reel_template_uses_share_review("t2"))
+        self.assertTrue(task._reel_template_uses_share_review("t3"))
 
     def test_auto_selects_studio_template(self):
         task = make_task("auto")

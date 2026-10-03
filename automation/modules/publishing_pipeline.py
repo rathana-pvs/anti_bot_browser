@@ -22,6 +22,8 @@ def _task_result(task, *, success_reason: str) -> ModuleResult:
     if getattr(task, "reel_template_id", None):
         outputs["reel_template"] = task.reel_template_id
         outputs["reel_template_selection"] = task.reel_template_selection
+    if getattr(task, "template_selection_details", None):
+        outputs["template_selection_details"] = task.template_selection_details
     if status in {"published", "completed"}:
         return ModuleResult.success(success_reason, **outputs)
     if status == "uncertain":
