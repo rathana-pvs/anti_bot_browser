@@ -30,6 +30,26 @@ class RecognitionRule:
 
 
 @dataclass(frozen=True)
+class RecognitionProfile:
+    """Declarative candidate used for routing before a composer is selected."""
+
+    template_id: str
+    minimum_score: float
+    required: tuple[RecognitionRule, ...]
+    weighted: tuple[RecognitionRule, ...]
+    forbidden: tuple[str, ...]
+    source: Path
+
+
+class DetectionCandidate(Protocol):
+    template_id: str
+    minimum_score: float
+    required: tuple[RecognitionRule, ...]
+    weighted: tuple[RecognitionRule, ...]
+    forbidden: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ComposerTemplate:
     template_id: str
     content_family: str
@@ -55,7 +75,7 @@ class TemplateObservation:
 @dataclass(frozen=True)
 class DetectionResult:
     outcome: str
-    template: ComposerTemplate | None = None
+    template: DetectionCandidate | None = None
     score: float | None = None
     runner_up_score: float | None = None
     reason: str = ""
@@ -184,6 +204,78 @@ class ComposerTemplateRegistry:
         )
 
 
+class RecognitionProfileRegistry:
+    """Load non-executable recognition profiles for staged routing."""
+
+    def __init__(self, path: str | Path):
+        self.path = Path(path).resolve()
+
+    def load(self) -> dict[str, RecognitionProfile]:
+        try:
+            raw = yaml.safe_load(self.path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError) as exc:
+            raise TemplateValidationError(
+                f"Could not read recognition profiles {self.path}: {exc}"
+            ) from exc
+        if not isinstance(raw, dict) or raw.get("schema_version") != 1:
+            raise TemplateValidationError(
+                f"Unsupported recognition profile schema in {self.path}"
+            )
+        entries = raw.get("profiles")
+        if not isinstance(entries, list) or not entries:
+            raise TemplateValidationError(
+                f"Recognition profiles must be a non-empty list in {self.path}"
+            )
+        profiles: dict[str, RecognitionProfile] = {}
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise TemplateValidationError("Recognition profile must be a mapping")
+            profile_id = entry.get("profile_id")
+            if not isinstance(profile_id, str) or not _ID_RE.fullmatch(profile_id):
+                raise TemplateValidationError("Recognition profile id is invalid")
+            if profile_id in profiles:
+                raise TemplateValidationError(
+                    f"Duplicate recognition profile id: {profile_id}"
+                )
+            recognition = entry.get("recognition")
+            if not isinstance(recognition, dict):
+                raise TemplateValidationError(
+                    f"Recognition profile {profile_id} needs recognition rules"
+                )
+            minimum_score = recognition.get("minimum_score")
+            if (
+                not isinstance(minimum_score, (int, float))
+                or isinstance(minimum_score, bool)
+                or not 0.0 < float(minimum_score) <= 1.0
+            ):
+                raise TemplateValidationError(
+                    f"Recognition profile {profile_id} minimum_score is invalid"
+                )
+            required = _parse_rules(
+                recognition.get("required"), profile_id, required=True
+            )
+            weighted = _parse_rules(
+                recognition.get("weighted", []), profile_id, required=False
+            )
+            forbidden_raw = recognition.get("forbidden", [])
+            if not isinstance(forbidden_raw, list) or any(
+                not isinstance(signal, str) or not _ID_RE.fullmatch(signal)
+                for signal in forbidden_raw
+            ):
+                raise TemplateValidationError(
+                    f"Recognition profile {profile_id} forbidden rules are invalid"
+                )
+            profiles[profile_id] = RecognitionProfile(
+                template_id=profile_id,
+                minimum_score=float(minimum_score),
+                required=required,
+                weighted=weighted,
+                forbidden=tuple(forbidden_raw),
+                source=self.path,
+            )
+        return profiles
+
+
 def _parse_rules(value, template_id: str, *, required: bool) -> tuple[RecognitionRule, ...]:
     if not isinstance(value, list) or (required and not value):
         label = "required" if required else "weighted"
@@ -215,7 +307,7 @@ class ComposerTemplateDetector:
 
     def detect(
         self,
-        templates: Iterable[ComposerTemplate],
+        templates: Iterable[DetectionCandidate],
         observations: Iterable[TemplateObservation],
     ) -> DetectionResult:
         templates = tuple(templates)
@@ -225,7 +317,7 @@ class ComposerTemplateDetector:
 
         frame_winners = []
         last_candidates: tuple[tuple[str, float], ...] = ()
-        last_ranked: list[tuple[ComposerTemplate, float]] = []
+        last_ranked: list[tuple[DetectionCandidate, float]] = []
         for observation in observations[-self.stable_observations:]:
             ranked = self._rank(templates, observation)
             last_ranked = ranked
@@ -263,8 +355,8 @@ class ComposerTemplateDetector:
 
     @staticmethod
     def _rank(
-        templates: Iterable[ComposerTemplate], observation: TemplateObservation
-    ) -> list[tuple[ComposerTemplate, float]]:
+        templates: Iterable[DetectionCandidate], observation: TemplateObservation
+    ) -> list[tuple[DetectionCandidate, float]]:
         ranked = []
         for template in templates:
             if any(observation.confidence(signal) > 0.0 for signal in template.forbidden):
@@ -279,6 +371,30 @@ class ComposerTemplateDetector:
             ranked.append((template, round(score, 4)))
         ranked.sort(key=lambda item: (-item[1], item[0].template_id))
         return ranked
+
+
+def validate_recognition_candidate(
+    candidate: DetectionCandidate,
+    observation: TemplateObservation,
+) -> tuple[bool, float, str]:
+    """Validate one assigned candidate without running selection or comparison."""
+    if any(observation.confidence(signal) > 0.0 for signal in candidate.forbidden):
+        return False, 0.0, "forbidden_signal_present"
+    if any(
+        observation.confidence(rule.signal) <= 0.0
+        for rule in candidate.required
+    ):
+        return False, 0.0, "required_signal_missing"
+    rules = candidate.required + candidate.weighted
+    total_weight = sum(rule.weight for rule in rules)
+    score = sum(
+        rule.weight * observation.confidence(rule.signal)
+        for rule in rules
+    ) / total_weight
+    score = round(score, 4)
+    if score < candidate.minimum_score:
+        return False, score, "minimum_score_not_met"
+    return True, score, "matched"
 
 
 class ComposerTemplateExecutor:
@@ -327,4 +443,3 @@ class ComposerTemplateExecutor:
         return TemplateExecutionResult(
             "success", template.template_id, completed, data=runtime_context
         )
-

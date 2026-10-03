@@ -7,8 +7,10 @@ from composer_templates import (
     ComposerTemplateDetector,
     ComposerTemplateExecutor,
     ComposerTemplateRegistry,
+    RecognitionProfileRegistry,
     TemplateObservation,
     TemplateValidationError,
+    validate_recognition_candidate,
 )
 from engine.brain_runtime import CapabilityResult
 
@@ -28,6 +30,35 @@ class ComposerTemplateTests(unittest.TestCase):
             AUTOMATION_ROOT / "brains" / "facebook_reel" / "bundled_default"
         ).load("reel")
         self.assertEqual(set(templates), {"t1", "t2", "t3"})
+
+    def test_reel_entry_profiles_use_the_generic_detector(self):
+        profiles = RecognitionProfileRegistry(
+            AUTOMATION_ROOT / "brains" / "facebook_reel" / "bundled_default"
+            / "routing" / "entry.yaml"
+        ).load()
+        frame = TemplateObservation({"direct_file_chooser": 1.0})
+        result = ComposerTemplateDetector().detect(
+            profiles.values(),
+            [frame, frame],
+        )
+        self.assertEqual(result.outcome, "selected")
+        self.assertEqual(result.template.template_id, "direct")
+
+    def test_manual_validation_checks_rules_without_candidate_selection(self):
+        templates = ComposerTemplateRegistry(
+            AUTOMATION_ROOT / "brains" / "facebook_reel" / "bundled_default"
+        ).load("reel")
+        matched, score, reason = validate_recognition_candidate(
+            templates["t2"],
+            TemplateObservation({
+                "direct_file_chooser": 1.0,
+                "final_reel_composer": 0.95,
+                "uploaded_media_visible": 0.95,
+            }),
+        )
+        self.assertTrue(matched)
+        self.assertGreaterEqual(score, templates["t2"].minimum_score)
+        self.assertEqual(reason, "matched")
 
     def test_detector_selects_stable_post_template(self):
         templates = ComposerTemplateRegistry(

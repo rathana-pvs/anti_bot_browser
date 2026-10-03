@@ -10,7 +10,9 @@ import time
 from composer_templates import (
     ComposerTemplateDetector,
     ComposerTemplateRegistry,
+    RecognitionProfileRegistry,
     TemplateObservation,
+    validate_recognition_candidate,
 )
 from engine.screen_state import ScreenState
 from engine.telemetry import timed_telemetry_step
@@ -24,6 +26,11 @@ class FacebookReelTask(BaseTask):
     LEFT_REEL_SIDEBAR = (0.00, 0.08, 0.34, 1.0)
     LEFT_PUBLICATION_REGION = (0.00, 0.50, 0.40, 1.0)
     REEL_SIDEBAR_REGIONS = (RIGHT_REEL_SIDEBAR, LEFT_REEL_SIDEBAR)
+    TEMPLATE_LABELS = {
+        "t1": "T1",
+        "t2": "T2A",
+        "t3": "T2B",
+    }
 
     def __init__(
         self,
@@ -56,7 +63,13 @@ class FacebookReelTask(BaseTask):
             / "brains" / "facebook_reel" / "bundled_default"
         )
         self.reel_templates = ComposerTemplateRegistry(package_root).load("reel")
-        self.reel_template_detector = ComposerTemplateDetector()
+        self.reel_entry_profiles = RecognitionProfileRegistry(
+            package_root / "routing" / "entry.yaml"
+        ).load()
+        self.reel_entry_detector = ComposerTemplateDetector()
+        self.reel_composer_detector = ComposerTemplateDetector()
+        self.reel_entry_route = None
+        self.entry_detection_details = None
 
     def _reel_template_entry(self, template_id: str) -> str | None:
         required = {rule.signal for rule in self.reel_templates[template_id].required}
@@ -66,71 +79,164 @@ class FacebookReelTask(BaseTask):
             return "direct_file_chooser"
         return None
 
+    def _reel_template_label(self, template_id: str) -> str:
+        return self.TEMPLATE_LABELS.get(template_id, template_id.upper())
+
     def _reel_template_uses_share_review(self, template_id: str) -> bool:
         return any(
             step.get("expect") == "share_review"
             for step in self.reel_templates[template_id].steps
         )
 
-    def _select_reel_template(self, entry_status: str, screen=None) -> str | None:
-        """Select Auto from observed signals or enforce a manual profile choice."""
-        selected = self.reel_template_selection
-        if selected != "auto":
-            if selected not in self.reel_templates:
-                return None
-            expected_entry = self._reel_template_entry(selected)
-            if entry_status != expected_entry:
-                return None
-            self.reel_template_id = selected
-            self.template_selection_details = {
-                "policy": "manual",
-                "selected": selected,
-                "detector_bypassed": True,
-            }
-            self.log("INFO", f"Using manually assigned Reel template {selected.upper()}; detector bypassed.")
-            return selected
+    @staticmethod
+    def _result_details(result) -> dict:
+        return {
+            "selected": result.template.template_id if result.template else None,
+            "score": result.score,
+            "runner_up_score": result.runner_up_score,
+            "candidates": list(result.candidates),
+            "outcome": result.outcome,
+            "reason": result.reason,
+        }
 
+    def _entry_observation(self, entry_status: str) -> TemplateObservation | None:
         if entry_status == "reel_studio":
-            signals = {
+            return TemplateObservation({
                 "reel_studio_surface": 1.0,
                 "upload_control": 1.0,
                 "studio_sidebar": 0.95,
-            }
-        elif entry_status == "direct_file_chooser" and screen is not None:
-            next_share = self._is_reel_next_share_composer(screen)
-            final_composer = self._is_reel_final_composer(screen, allow_layout_fallback=True)
-            signals = {
-                "direct_file_chooser": 1.0,
-                "uploaded_media_visible": 0.95,
-                "next_share_surface": 0.98 if next_share else 0.0,
-                "reel_edit_controls": 0.95 if next_share else 0.0,
-                "final_reel_composer": 0.95 if final_composer else 0.0,
-            }
-        else:
-            return None
+            })
+        if entry_status == "direct_file_chooser":
+            return TemplateObservation({"direct_file_chooser": 1.0})
+        return None
 
-        observation = TemplateObservation(signals)
-        result = self.reel_template_detector.detect(
-            self.reel_templates.values(),
+    def _composer_observation(self, screen) -> TemplateObservation:
+        next_share = self._is_reel_next_share_composer(screen)
+        final_composer = self._is_reel_final_composer(
+            screen,
+            allow_layout_fallback=True,
+        )
+        return TemplateObservation({
+            "direct_file_chooser": 1.0,
+            "uploaded_media_visible": 0.95,
+            "next_share_surface": 0.98 if next_share else 0.0,
+            "reel_edit_controls": 0.95 if next_share else 0.0,
+            "final_reel_composer": 0.95 if final_composer else 0.0,
+        })
+
+    def _detect_reel_entry_route(self, entry_status: str) -> str | None:
+        observation = self._entry_observation(entry_status)
+        if observation is None:
+            return None
+        result = self.reel_entry_detector.detect(
+            self.reel_entry_profiles.values(),
             [observation, observation],
         )
+        self.entry_detection_details = self._result_details(result)
         if result.outcome != "selected" or result.template is None:
             self.log(
                 "WARN",
-                f"Automatic Reel template detection failed: {result.outcome} ({result.reason}).",
+                f"Automatic Reel entry detection failed: {result.outcome} ({result.reason}).",
+            )
+            return None
+        self.reel_entry_route = result.template.template_id
+        self.log(
+            "INFO",
+            f"Reel entry detector selected {self.reel_entry_route!r} "
+            f"(confidence={result.score:.2f}).",
+        )
+        return self.reel_entry_route
+
+    def _select_studio_template(self) -> str | None:
+        candidates = [
+            template
+            for template in self.reel_templates.values()
+            if self._reel_template_entry(template.template_id) == "reel_studio"
+        ]
+        if len(candidates) != 1:
+            self.log(
+                "WARN",
+                "The Studio entry route does not map to exactly one Reel template.",
+            )
+            return None
+        self.reel_template_id = candidates[0].template_id
+        self.template_selection_details = {
+            "policy": "auto",
+            "selected": self.reel_template_id,
+            "selected_label": self._reel_template_label(self.reel_template_id),
+            "entry_detection": self.entry_detection_details,
+            "composer_detection": {"outcome": "not_required"},
+        }
+        self.log(
+            "INFO",
+            f"Studio entry selected Reel template {self._reel_template_label(self.reel_template_id)}.",
+        )
+        return self.reel_template_id
+
+    def _select_manual_template_for_entry(self, entry_status: str) -> str | None:
+        selected = self.reel_template_selection
+        if selected not in self.reel_templates:
+            return None
+        expected_entry = self._reel_template_entry(selected)
+        if entry_status != expected_entry:
+            return None
+        self.reel_entry_route = "studio" if entry_status == "reel_studio" else "direct"
+        self.reel_template_id = selected
+        self.template_selection_details = {
+            "policy": "manual",
+            "selected": selected,
+            "selected_label": self._reel_template_label(selected),
+            "entry_detection": {"outcome": "bypassed", "validated": True},
+            "composer_detection": {"outcome": "bypassed"},
+        }
+        self.log(
+            "INFO",
+            f"Using manually assigned Reel template {self._reel_template_label(selected)}; selection detectors bypassed.",
+        )
+        return selected
+
+    def _validate_manual_direct_composer(self, screen) -> bool:
+        template = self.reel_templates[self.reel_template_id]
+        matched, score, reason = validate_recognition_candidate(
+            template,
+            self._composer_observation(screen),
+        )
+        self.template_selection_details["composer_validation"] = {
+            "matched": matched,
+            "score": score,
+            "reason": reason,
+        }
+        return matched
+
+    def _detect_direct_composer_template(self, screen) -> str | None:
+        candidates = [
+            template
+            for template in self.reel_templates.values()
+            if self._reel_template_entry(template.template_id) == "direct_file_chooser"
+        ]
+        observation = self._composer_observation(screen)
+        result = self.reel_composer_detector.detect(
+            candidates,
+            [observation, observation],
+        )
+        details = self._result_details(result)
+        if result.outcome != "selected" or result.template is None:
+            self.log(
+                "WARN",
+                f"Automatic Reel composer detection failed: {result.outcome} ({result.reason}).",
             )
             return None
         self.reel_template_id = result.template.template_id
         self.template_selection_details = {
             "policy": "auto",
             "selected": self.reel_template_id,
-            "score": result.score,
-            "runner_up_score": result.runner_up_score,
-            "candidates": list(result.candidates),
+            "selected_label": self._reel_template_label(self.reel_template_id),
+            "entry_detection": self.entry_detection_details,
+            "composer_detection": details,
         }
         self.log(
             "INFO",
-            f"Automatically selected Reel template {self.reel_template_id.upper()} "
+            f"Reel composer detector selected {self._reel_template_label(self.reel_template_id)} "
             f"(confidence={result.score:.2f}).",
         )
         return self.reel_template_id
@@ -1261,19 +1367,26 @@ class FacebookReelTask(BaseTask):
                 "Neither a direct file chooser nor a Reel Studio upload control could be located confidently.",
             )
 
-        # T1 can be selected as soon as Reel Studio is visible. Direct layouts
-        # need the attached-media screen to distinguish T2 from T3.
-        if entry_status == "reel_studio":
-            if not self._select_reel_template(entry_status, screen):
+        # Auto uses the first detector to choose Studio versus Direct. Manual
+        # assignments bypass selection and only validate their expected entry.
+        if self.reel_template_selection == "auto":
+            entry_route = self._detect_reel_entry_route(entry_status)
+            if entry_route is None:
                 return self._needs_review(
-                    "reel_template_mismatch",
-                    f"Reel Studio does not match the configured template {self.reel_template_selection!r}.",
+                    "reel_entry_route_not_recognized",
+                    "The Reel entry screen did not match a known Studio or Direct route.",
                     screen,
                 )
-        elif self.reel_template_selection == "t1":
+            if entry_route == "studio" and not self._select_studio_template():
+                return self._needs_review(
+                    "reel_studio_template_ambiguous",
+                    "The Studio entry route does not map to one known template.",
+                    screen,
+                )
+        elif not self._select_manual_template_for_entry(entry_status):
             return self._needs_review(
                 "reel_template_mismatch",
-                "The profile is assigned T1, but Facebook opened a direct Reel composer.",
+                f"The observed Reel entry does not match assigned template {self.reel_template_selection!r}.",
                 screen,
             )
 
@@ -1323,10 +1436,17 @@ class FacebookReelTask(BaseTask):
                     media_screen,
                 )
 
-            if not self._select_reel_template(entry_status, media_screen):
+            if self.reel_template_selection == "auto":
+                if self.reel_entry_route != "direct" or not self._detect_direct_composer_template(media_screen):
+                    return self._needs_review(
+                        "reel_composer_not_recognized",
+                        "The Direct Reel composer did not clearly match T2A or T2B.",
+                        media_screen,
+                    )
+            elif not self._validate_manual_direct_composer(media_screen):
                 return self._needs_review(
                     "reel_template_mismatch",
-                    f"The direct Reel composer does not match the configured template {self.reel_template_selection!r}.",
+                    f"The Direct Reel composer does not match assigned template {self.reel_template_selection!r}.",
                     media_screen,
                 )
 

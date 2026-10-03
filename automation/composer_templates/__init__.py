@@ -6,9 +6,12 @@ from .runtime import (
     ComposerTemplateExecutor,
     ComposerTemplateRegistry,
     DetectionResult,
+    RecognitionProfile,
+    RecognitionProfileRegistry,
     TemplateExecutionResult,
     TemplateObservation,
     TemplateValidationError,
+    validate_recognition_candidate,
 )
 
 __all__ = [
@@ -17,8 +20,10 @@ __all__ = [
     "ComposerTemplateExecutor",
     "ComposerTemplateRegistry",
     "DetectionResult",
+    "RecognitionProfile",
+    "RecognitionProfileRegistry",
     "TemplateExecutionResult",
     "TemplateObservation",
     "TemplateValidationError",
+    "validate_recognition_candidate",
 ]
-

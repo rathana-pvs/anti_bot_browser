@@ -10,8 +10,8 @@ supports Auto or direct manual selection.
 Implemented on `codex/modular-automation-flow`:
 
 - fixed Startup/Warming/Publish/Prompt/Comment/Finalize orchestration;
-- profile behavior modes and Auto/T1/T2/T3 Reel assignment;
-- validated P1/P2 and T1/T2/T3 template registry, detector, and safe executor;
+- profile behavior modes and Auto/T1/T2A/T2B Reel assignment;
+- two-stage Reel routing plus validated P1/P2 and T1/T2/T3 internal templates;
 - Post automatic routing and Reel automatic/manual routing;
 - shared optional-prompt handling and engine-owned Post/Reel publish gates;
 - independently reported comment outcomes and one final evidence/telemetry write;
@@ -29,8 +29,11 @@ Startup
   -> Publish
        Text/Image -> detector -> P1/P2/future Post template
        Reel
-         Auto     -> detector -> T1/T2/T3/future Reel template
-         Assigned -> execute selected Reel template directly
+         Auto
+           -> entry detector: Studio or Direct
+           -> Studio: T1
+           -> Direct composer detector: T2A or T2B
+         Assigned -> validate and execute selected Reel template directly
   -> Optional post-publish prompt
   -> Comment (skip when no comment supplied)
   -> Finalize
@@ -47,7 +50,7 @@ Expose both settings in Create Profile and Edit Profile:
 | Setting | Options | Default |
 | --- | --- | --- |
 | Behavior mode | Fast, Medium, Slow | Medium |
-| Reel template | Auto, T1, T2, T3, future registered templates | Auto |
+| Reel template | Auto, T1 Studio, T2A Direct, T2B Next/Share | Auto |
 
 Proposed fields, merged into the existing profile document:
 
@@ -62,7 +65,7 @@ Proposed fields, merged into the existing profile document:
 
 - Text/image posts always use automatic template selection.
 - Auto is a selection policy, not a template ID.
-- Manual Reel selection skips template detection completely.
+- Manual Reel selection skips both selection detectors completely.
 - Normal step checks still verify required controls and expected transitions.
 - A failed manual-template step stops execution; it never silently switches templates.
 - Changes affect subsequent jobs without a browser restart.
@@ -93,7 +96,22 @@ comment submission, or finalization when the orchestrator owns those steps.
 Optional environment observations may return unknown; required login checks must
 succeed before publication.
 
-## 4. Initial Composer Templates
+## 4. Initial Reel Routes and Composer Templates
+
+Reel selection has two boundaries because T2A and T2B share their entry and
+upload work:
+
+```text
+Entry detector
+  Studio -> T1
+  Direct -> attach and verify media -> composer detector
+                                      Direct final composer -> T2A
+                                      Next/Share composer   -> T2B
+```
+
+The stored template IDs remain `t1`, `t2`, and `t3` for compatibility with
+existing profiles, job history, and package versions. The product labels are
+T1, T2A, and T2B.
 
 Extract these families from the existing runtime code:
 
@@ -101,9 +119,9 @@ Extract these families from the existing runtime code:
 | --- | --- | --- |
 | P1 | Post direct | Composer -> Post |
 | P2 | Post review | Composer -> Next -> Review -> Post |
-| T1 | Reel Studio | Upload -> optional Next/Edit -> final composer -> Post |
-| T2 | Reel direct | Direct chooser -> final composer -> Post |
-| T3 | Reel Next/Share | Direct chooser -> editing screen -> Next -> Share review -> Post |
+| T1 (`t1`) | Reel Studio | Upload -> optional Next/Edit -> final composer -> Post |
+| T2A (`t2`) | Reel direct | Direct chooser -> final composer -> Post |
+| T2B (`t3`) | Reel Next/Share | Direct chooser -> editing screen -> Next -> Share review -> Post |
 
 These are proposed stable IDs. Confirm their exact mapping with screenshot
 fixtures before exposing assignments. Optional stages within a family do not
@@ -128,7 +146,7 @@ Each template declares:
 - final publish request and verification requirements;
 - positive, negative, and transition screenshot fixtures.
 
-For automatic selection:
+For automatic Post selection:
 
 1. Capture observations once and share OCR/visual results across candidates.
 2. Evaluate eligible templates using their declared recognition rules.
@@ -139,9 +157,15 @@ For automatic selection:
 Missing OCR text alone must not prove a different layout. Calibrate scores and
 thresholds with fixtures; earlier illustrative numbers are not production defaults.
 
-Manual Reel selection loads and executes the chosen template directly. It does
-not call recognition scoring or the generic detector. Required step checks still
-apply before clicking or typing.
+For automatic Reel selection, the same detector engine runs with different rule
+sets at two stages. The entry rules choose Studio or Direct. Studio currently
+maps to T1. After a Direct upload is attached, composer rules distinguish T2A
+from T2B. Unknown, unstable, or ambiguous results stop for review.
+
+Manual Reel selection loads the chosen internal template directly. It does not
+call either selection detector. A non-comparative validator checks the assigned
+template's required and forbidden signals, and normal step checks still apply
+before clicking or typing.
 
 The detector has no P1/P2/T1-specific branches. Adding a composer normally means
 adding a template, recognition rules, a registry entry, and fixtures. A genuinely
@@ -277,6 +301,7 @@ automation/
       tests/
     facebook_reel/bundled_default/
       manifest.json
+      routing/entry.yaml
       templates/t1.yaml
       templates/t2.yaml
       templates/t3.yaml
@@ -301,7 +326,7 @@ reordering is required.
    verification and before Comment.
 4. Behavior/settings: add central modes, migration, backend validation, and
    Create/Edit selectors. Expose only implemented registered templates.
-5. Template extraction: capture fixtures and extract Post P1/P2 and Reel T1/T2/T3,
+5. Template extraction: capture fixtures and extract Post P1/P2 and Reel T1/T2A/T2B,
    preserving established transitions and deadlines.
 6. Detector/executor: implement validated rules, shared observations, ambiguity
    handling, step execution, and engine publication gates.
@@ -315,7 +340,8 @@ reordering is required.
 - The fixed order holds; Finalize runs after success, exceptions, and early stops.
 - Disabled warming and absent comments return recorded skipped outcomes.
 - Post P1/P2 detection works with both text and image paths.
-- Reel Auto detects T1/T2/T3; manual selection never invokes the detector.
+- Reel Auto detects the entry family, then detects T2A/T2B only for Direct;
+  manual selection never invokes either selection detector.
 - Wrong manual assignments fail at execution checks without silently switching
   templates or issuing an unsafe publish action.
 - Unknown/ambiguous automatic matches stop; transient misses remain bounded.

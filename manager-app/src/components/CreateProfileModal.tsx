@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Cpu, Globe, Monitor, Shield, X } from 'lucide-react';
 import { fetchProfileDefaults } from '../services/api';
-import { BehaviorMode, ProfileCreateRequest, ReelTemplateSelection, RequestedEnvironment, ResourceLimits } from '../types/profile';
+import { BehaviorMode, ProfileCreateRequest, ReelTemplateSelection, RequestedEnvironment, ResourceLimits, reelTemplateLabel } from '../types/profile';
 import { formatProxyGeography, ProxyItem } from '../types/proxy';
 import { RESOLUTION_OPTIONS, getHostTimezone } from '../services/fingerprintPool';
 import { Select } from './ui/Select';
@@ -154,10 +154,10 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
                 <label className="text-zinc-500">Reel template
                   <Select value={reelTemplate} onValueChange={(value) => setReelTemplate(value as ReelTemplateSelection)}
                     ariaLabel="Reel template" className="mt-1 min-h-8 py-1.5"
-                    options={reelTemplateOptions.map((value) => ({ value, label: value === 'auto' ? 'Auto detect' : value.toUpperCase() }))} />
+                    options={reelTemplateOptions.map((value) => ({ value, label: reelTemplateLabel(value) }))} />
                 </label>
               </div>
-              <p className="text-[10px] leading-relaxed text-zinc-500">Auto detects the Reel composer. A selected template runs directly and stops if one of its required steps is unavailable.</p>
+              <p className="text-[10px] leading-relaxed text-zinc-500">Auto first detects Studio or Direct upload, then distinguishes Direct from Next / Share. A selected template bypasses selection and validates its expected screens.</p>
             </div>
 
             <div className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950 p-3">

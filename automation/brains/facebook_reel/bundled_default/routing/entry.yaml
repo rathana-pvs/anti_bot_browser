@@ -1,0 +1,24 @@
+schema_version: 1
+profiles:
+  - profile_id: studio
+    recognition:
+      minimum_score: 0.82
+      required:
+        - reel_studio_surface
+        - upload_control
+      weighted:
+        - signal: studio_sidebar
+          weight: 0.5
+      forbidden:
+        - direct_file_chooser
+        - checkpoint_visible
+
+  - profile_id: direct
+    recognition:
+      minimum_score: 0.82
+      required:
+        - direct_file_chooser
+      weighted: []
+      forbidden:
+        - reel_studio_surface
+        - checkpoint_visible

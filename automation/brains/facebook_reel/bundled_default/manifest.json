@@ -14,5 +14,5 @@
   "supported_locales": ["en"],
   "supported_themes": ["light", "dark"],
   "supported_viewports": ["desktop_standard", "desktop_wide"],
-  "change_log": "Initial T1, T2, and T3 Reel composer package."
+  "change_log": "Two-stage Reel routing with T1 Studio, T2A Direct, and T2B Next/Share layouts."
 }

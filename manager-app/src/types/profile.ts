@@ -91,6 +91,13 @@ export interface ResourceLimits {
 export type BehaviorMode = 'fast' | 'medium' | 'slow';
 export type ReelTemplateSelection = 'auto' | 't1' | 't2' | 't3';
 
+export const reelTemplateLabel = (value: ReelTemplateSelection): string => ({
+  auto: 'Auto detect',
+  t1: 'T1 — Studio',
+  t2: 'T2A — Direct',
+  t3: 'T2B — Next / Share',
+}[value]);
+
 export interface AutomationPreferences {
   reel_template: ReelTemplateSelection;
 }

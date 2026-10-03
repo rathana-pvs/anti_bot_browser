@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { AlertTriangle, Cpu, Globe, Monitor, X } from 'lucide-react';
-import { BehaviorMode, Profile, ProfileUpdateRequest, ReelTemplateSelection, RequestedEnvironment, ResourceLimits } from '../types/profile';
+import { BehaviorMode, Profile, ProfileUpdateRequest, ReelTemplateSelection, RequestedEnvironment, ResourceLimits, reelTemplateLabel } from '../types/profile';
 import { formatProxyGeography, ProxyItem } from '../types/proxy';
 import { SCREEN_RESOLUTIONS, getHostTimezone } from '../services/fingerprintPool';
 import { fetchProfileDefaults } from '../services/api';
@@ -154,10 +154,10 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
               <label className="text-zinc-500">Reel template
                 <Select value={reelTemplate} onValueChange={(value) => setReelTemplate(value as ReelTemplateSelection)}
                   ariaLabel="Reel template" className="mt-1 min-h-8 py-1.5"
-                  options={reelTemplateOptions.map((value) => ({ value, label: value === 'auto' ? 'Auto detect' : value.toUpperCase() }))} />
+                  options={reelTemplateOptions.map((value) => ({ value, label: reelTemplateLabel(value) }))} />
               </label>
             </div>
-            <p className="text-[10px] leading-relaxed text-zinc-500">These settings apply to subsequent automation jobs and do not require a browser restart.</p>
+            <p className="text-[10px] leading-relaxed text-zinc-500">Auto uses two-stage Reel detection. A selected template bypasses selection and validates its expected screens. Changes apply to subsequent jobs.</p>
           </div>
           <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
             <div className="flex items-center gap-1.5 font-medium text-zinc-300"><Globe className="h-3.5 w-3.5" />Network</div>
