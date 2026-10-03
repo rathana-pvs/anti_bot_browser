@@ -1,0 +1,18 @@
+{
+  "$schema": "brain-manifest-v1",
+  "manifest_version": 1,
+  "brain_api_version": 1,
+  "id": "facebook_reel",
+  "version": "1.0.0",
+  "name": "Facebook Reel Workflow",
+  "description": "Factory workflow and composer templates for Facebook Reels.",
+  "platform": "facebook",
+  "task_type": "reel",
+  "min_engine_version": "1.0.0",
+  "max_engine_version_exclusive": "2.0.0",
+  "released_at": "2026-10-03T00:00:00Z",
+  "supported_locales": ["en"],
+  "supported_themes": ["light", "dark"],
+  "supported_viewports": ["desktop_standard", "desktop_wide"],
+  "change_log": "Initial T1, T2, and T3 Reel composer package."
+}

@@ -32,6 +32,14 @@ class BrainRuntimeTests(unittest.TestCase):
         self.assertEqual(package.version, "1.0.0")
         self.assertEqual(len(package.digest), 64)
 
+    def test_bundled_reel_package_is_valid_and_resolvable(self):
+        registry = BrainRegistry(AUTOMATION_ROOT / "brains")
+        package = registry.resolve("facebook_reel")
+        self.assertEqual(package.brain_id, "facebook_reel")
+        self.assertEqual(package.manifest["task_type"], "reel")
+        self.assertEqual(len(package.digest), 64)
+        self.assertTrue((package.root / "templates" / "t3.yaml").is_file())
+
     def test_registry_rejects_path_traversal_version(self):
         registry = BrainRegistry(AUTOMATION_ROOT / "brains")
         with self.assertRaises(BrainResolutionError):

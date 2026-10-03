@@ -42,7 +42,7 @@ def main():
     parser.add_argument(
         "--brain-version",
         default=None,
-        help="Pinned workflow Brain directory version (post tasks only)",
+        help="Pinned workflow Brain directory version (post/reel tasks)",
     )
 
     args = parser.parse_args()
@@ -100,11 +100,21 @@ def main():
             if not args.media:
                 print(json.dumps({"error": "Missing --media for reel task"}))
                 sys.exit(1)
+            brain_package = BrainRegistry(BRAINS_ROOT).resolve(
+                "facebook_reel",
+                requested_version=args.brain_version,
+            )
             task = FacebookReelTask(
                 profile_id=args.profile,
                 video_path=args.media,
                 caption=args.caption,
                 comment_link=args.comment_link,
+                brain_package=brain_package,
+            )
+            task.log(
+                "INFO",
+                f"Pinned Brain {brain_package.brain_id} v{brain_package.version} "
+                f"({brain_package.digest[:12]})",
             )
             orchestrator, context = build_publishing_pipeline(
                 task,

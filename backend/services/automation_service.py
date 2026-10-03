@@ -302,7 +302,8 @@ async def launch_manual_automation(
     runner_script = ROOT_DIR / "automation" / "runner.py"
     args = ["-u", str(runner_script), "--profile", profile_id, "--task", task]
 
-    brain_pin = resolve_brain_pin("facebook_post", brain_version) if task == "post" else None
+    brain_id = "facebook_post" if task == "post" else ("facebook_reel" if task == "reel" else None)
+    brain_pin = resolve_brain_pin(brain_id, brain_version) if brain_id else None
     if brain_pin:
         args.extend(["--brain-version", brain_pin["directory"]])
     if scrolls is not None:
@@ -676,7 +677,8 @@ async def execute_queue_item(execution_id: str, scheduler_kind: str = "publisher
     task_type = "warming" if target_post.get("type") == "warming" else ("reel" if target_post.get("type") == "reel" else "post")
     args = ["-u", str(runner_script), "--profile", profile_id, "--task", task_type]
 
-    brain_pin = resolve_brain_pin("facebook_post") if task_type == "post" else None
+    brain_id = "facebook_post" if task_type == "post" else ("facebook_reel" if task_type == "reel" else None)
+    brain_pin = resolve_brain_pin(brain_id) if brain_id else None
     if brain_pin:
         args.extend(["--brain-version", brain_pin["directory"]])
         pin_q = load_posting_queue()

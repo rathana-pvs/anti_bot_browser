@@ -31,6 +31,7 @@ class FacebookReelTask(BaseTask):
         video_path: str,
         caption: str,
         comment_link: str | None = None,
+        brain_package=None,
         preflight_complete: bool = False,
         defer_comment: bool = False,
     ):
@@ -40,6 +41,7 @@ class FacebookReelTask(BaseTask):
         self.comment_link = comment_link
         self.preflight_complete = preflight_complete
         self.defer_comment = defer_comment
+        self.brain_metadata = brain_package.metadata() if brain_package is not None else None
         configured = (
             (getattr(self, "profile_config", {}).get("automation") or {})
             .get("reel_template", "auto")
@@ -48,7 +50,7 @@ class FacebookReelTask(BaseTask):
             configured if configured in {"auto", "t1", "t2", "t3"} else "auto"
         )
         self.reel_template_id = None
-        package_root = (
+        package_root = Path(brain_package.root) if brain_package is not None else (
             Path(__file__).resolve().parents[1]
             / "brains" / "facebook_reel" / "bundled_default"
         )

@@ -51,7 +51,7 @@ class FacebookPostTask(BaseTask):
                     self.brain_targets = loaded_targets
             except (OSError, json.JSONDecodeError) as exc:
                 self.log("WARN", f"Brain target configuration could not be loaded: {exc}")
-        package_root = (
+        package_root = Path(brain_package.root) if brain_package is not None else (
             Path(__file__).resolve().parents[1]
             / "brains" / "facebook_post" / "bundled_default"
         )

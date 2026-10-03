@@ -1,0 +1,60 @@
+schema_version: 1
+brain_api_version: 1
+workflow_id: facebook_reel
+
+limits:
+  max_steps: 80
+  max_runtime_seconds: 600
+  max_recovery_attempts: 3
+
+initial_state: profile_ready
+
+states:
+  profile_ready:
+    actions:
+      - capability: find_text
+        target: reel_entry
+      - capability: click_candidate
+        target: reel_entry
+    on_success: select_video
+    on_timeout: operator_review
+    on_failure: failed_safe
+
+  select_video:
+    actions:
+      - capability: select_media
+        input: media_path
+    on_success: composer_ready
+    on_known_dialog: select_video
+    on_timeout: failed_safe
+    on_failure: failed_safe
+
+  composer_ready:
+    actions:
+      - capability: type_text
+        target: caption_input
+        input: caption
+        when: caption_present
+      - capability: wait_for_state
+        state: post_enabled
+    on_success: publish
+    on_timeout: failed_safe
+    on_failure: failed_safe
+
+  publish:
+    actions:
+      - capability: request_publish
+        target: publish_button
+    on_success: verify_publication
+    on_rejected: operator_review
+    on_uncertain: uncertain
+    on_failure: failed_safe
+
+  verify_publication:
+    actions:
+      - capability: verify_publication
+    on_success: completed
+    on_timeout: uncertain
+    on_uncertain: uncertain
+    on_rejected: uncertain
+    on_failure: uncertain
