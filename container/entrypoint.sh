@@ -27,12 +27,13 @@ fi
 SCREEN_RES="${SCREEN_RESOLUTION:-1920x1080x24}"
 SCREEN_GEOMETRY="${SCREEN_RES%x*}"
 WIN_SIZE="${WINDOW_SIZE:-1920,1080}"
-CHROME_LANG="${LANG:-en-US}"
+CHROME_LANG="${BROWSER_LANG:-en-US}"
 TARGET_URL="${START_URL:-https://www.google.com}"
 RENDERING_MODE="${RENDERING_MODE:-host_gpu}"
 GPU_DEVICE_BACKEND="${GPU_DEVICE_BACKEND:-none}"
 EXTRA_CHROME_FLAGS="${EXTRA_CHROME_FLAGS:-}"
 TUN2SOCKS_PID=""
+PROBE_PID=""
 EFFECTIVE_RENDERING_MODE="host_gpu"
 RENDERING_FALLBACK_REASON=""
 
@@ -50,7 +51,9 @@ elif [ "$GPU_DEVICE_BACKEND" = "wsl_dxg" ] && [ -c /dev/dxg ] \
     RENDER_ARGS=(--ignore-gpu-blocklist --enable-gpu-rasterization --enable-zero-copy --use-gl=angle --use-angle=gl-egl)
 elif [ "$GPU_DEVICE_BACKEND" = "drm" ] && [ -d /dev/dri ]; then
     export LIBGL_ALWAYS_SOFTWARE=0
-    RENDER_ARGS=(--ignore-gpu-blocklist --enable-gpu-rasterization --enable-zero-copy)
+    # ANGLE's Vulkan backend can use the passed DRM render node directly even
+    # though Xvfb's own GLX renderer is software-only.
+    RENDER_ARGS=(--ignore-gpu-blocklist --enable-gpu-rasterization --enable-zero-copy --use-gl=angle --use-angle=vulkan)
 else
     EFFECTIVE_RENDERING_MODE="software"
     RENDERING_FALLBACK_REASON="a compatible host GPU device was not available inside the container"
@@ -104,9 +107,13 @@ if [ -z "$OPENGL_RENDERER" ]; then
     OPENGL_RENDERER="Not measured"
 fi
 if printf '%s' "$OPENGL_RENDERER" | grep -Eqi 'llvmpipe|softpipe|swiftshader|software rasterizer'; then
-    EFFECTIVE_RENDERING_MODE="software"
-    if [ -z "$RENDERING_FALLBACK_REASON" ]; then
-        RENDERING_FALLBACK_REASON="the active display renderer is software-only"
+    if [ "$RENDERING_MODE" = "host_gpu" ] && [ "$GPU_DEVICE_BACKEND" = "drm" ]; then
+        RENDERING_FALLBACK_REASON="Xvfb GLX is software; awaiting Chrome WebGL measurement"
+    else
+        EFFECTIVE_RENDERING_MODE="software"
+        if [ -z "$RENDERING_FALLBACK_REASON" ]; then
+            RENDERING_FALLBACK_REASON="the active display renderer is software-only"
+        fi
     fi
 fi
 write_rendering_status "$OPENGL_RENDERER"
@@ -259,6 +266,9 @@ cleanup() {
     if [ -n "${TUN2SOCKS_PID:-}" ]; then
         kill -TERM "$TUN2SOCKS_PID" 2>/dev/null || true
     fi
+    if [ -n "${PROBE_PID:-}" ]; then
+        kill -TERM "$PROBE_PID" 2>/dev/null || true
+    fi
     kill -TERM "$WEBSOCKIFY_PID" 2>/dev/null || true
     kill -TERM "$DISPLAY_PID" 2>/dev/null || true
     echo "Container cleanup finished."
@@ -270,6 +280,26 @@ trap cleanup SIGTERM SIGINT
 # 5. Launch Google Chrome as chromeuser
 echo "Clearing stale browser locks..."
 rm -f /data/profile/Singleton* 2>/dev/null || true
+rm -f /run/browser-observation.json
+
+echo "Starting local browser environment observation page..."
+python3 /usr/local/bin/browser_probe.py \
+    --output /run/browser-observation.json \
+    --target "${TARGET_URL}" \
+    --port 9223 &
+PROBE_PID=$!
+PROBE_READY=false
+for _ in {1..20}; do
+    if curl -fsS http://127.0.0.1:9223/ >/dev/null 2>&1; then
+        PROBE_READY=true
+        break
+    fi
+    sleep 0.1
+done
+if [ "$PROBE_READY" != "true" ]; then
+    echo "Browser environment observation page failed to start." >&2
+    exit 79
+fi
 
 echo "Launching Google Chrome with the requested privacy and isolation policy..."
 gosu chromeuser env TZ="${TZ}" google-chrome \
@@ -283,7 +313,7 @@ gosu chromeuser env TZ="${TZ}" google-chrome \
     --window-position=0,0 \
     "${RENDER_ARGS[@]}" \
     ${EXTRA_CHROME_FLAGS} \
-    "${TARGET_URL}" &
+    "http://127.0.0.1:9223/" &
 
 CHROME_PID=$!
 echo "Google Chrome running (PID: $CHROME_PID)."

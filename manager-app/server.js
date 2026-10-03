@@ -689,15 +689,16 @@ app.get('/api/profiles', (req, res) => {
   }
 });
 
-// Real host hardware specifications (TigerLake Iris Xe / i7-11370H / 16GB)
-const REAL_HOST_SPECS = {
-  webgl_vendor: 'Intel Open Source Technology Center',
-  webgl_renderer: 'Mesa Intel(R) Iris(R) Xe Graphics (TGL GT2)',
-  user_agent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+// Legacy endpoint compatibility defaults. Runtime-sensitive browser values are
+// intentionally unknown until measured; do not persist fabricated host claims.
+const RUNTIME_MEASURED_DEFAULTS = {
+  webgl_vendor: null,
+  webgl_renderer: null,
+  user_agent: '',
   color_depth: 24,
   language: 'en-US',
-  hardware_concurrency: 8,
-  device_memory: 16,
+  hardware_concurrency: null,
+  device_memory: null,
 };
 
 // POST /api/profiles
@@ -730,19 +731,19 @@ app.post('/api/profiles', (req, res) => {
       assignedProxy = syncProxyAssignment(profile.id, profile.network.proxy_host, profile.network.proxy_port);
     }
 
-    // Ensure authentic host real device specs while preserving user-selected resolution & proxy timezone
+    // Preserve user selections while leaving browser-only values for runtime measurement.
     const selectedResolution = profile.fingerprint?.screen_resolution || '1920x1080';
     const selectedTimezone = (assignedProxy && assignedProxy.timezone) || profile.fingerprint?.timezone || 'America/Los_Angeles';
 
     profile.fingerprint = {
-      ...REAL_HOST_SPECS,
+      ...RUNTIME_MEASURED_DEFAULTS,
       ...profile.fingerprint,
-      webgl_vendor: REAL_HOST_SPECS.webgl_vendor,
-      webgl_renderer: REAL_HOST_SPECS.webgl_renderer,
-      hardware_concurrency: REAL_HOST_SPECS.hardware_concurrency,
-      device_memory: REAL_HOST_SPECS.device_memory,
-      user_agent: REAL_HOST_SPECS.user_agent,
-      color_depth: REAL_HOST_SPECS.color_depth,
+      webgl_vendor: null,
+      webgl_renderer: null,
+      hardware_concurrency: null,
+      device_memory: null,
+      user_agent: '',
+      color_depth: RUNTIME_MEASURED_DEFAULTS.color_depth,
       screen_resolution: selectedResolution,
       timezone: selectedTimezone,
     };

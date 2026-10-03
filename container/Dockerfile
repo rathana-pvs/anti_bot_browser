@@ -6,10 +6,12 @@ LABEL org.automat-fb.browser-image-version="2"
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=America/New_York
 ENV DISPLAY=:99
+ENV LANG=en_US.UTF-8
+ENV LC_ALL=en_US.UTF-8
 
 # Install core system dependencies and virtual display packages
 RUN apt-get update && apt-get install -y \
-    wget curl gnupg ca-certificates tzdata unzip gosu \
+    wget curl gnupg ca-certificates tzdata locales unzip gosu \
     xvfb x11vnc websockify novnc \
     redsocks iptables iproute2 \
     fonts-liberation \
@@ -24,6 +26,8 @@ RUN apt-get update && apt-get install -y \
     ffmpeg libva2 vainfo mesa-utils libgl1-mesa-dri mesa-va-drivers \
     mesa-vulkan-drivers vulkan-tools intel-media-va-driver python3-minimal \
     --no-install-recommends && \
+    locale-gen en_US.UTF-8 && \
+    update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 && \
     rm -rf /var/lib/apt/lists/*
 
 # Install tun2socks release binary
@@ -41,9 +45,14 @@ RUN wget -q -O /tmp/chrome.deb \
     rm -f /tmp/chrome.deb && \
     rm -rf /var/lib/apt/lists/*
 
-# Configure font rendering to mimic Windows ClearType
+# Configure ordinary Linux LCD font rendering.
 COPY fonts.conf /etc/fonts/local.conf
 RUN fc-cache -fv
+
+# Local-only page used to record values exposed by Chrome itself. This avoids
+# mistaking container-side GLX/system values for the browser's web fingerprint.
+COPY browser_probe.py /usr/local/bin/browser_probe.py
+RUN chmod 0755 /usr/local/bin/browser_probe.py
 
 # Create non-root chromeuser for safe unprivileged browser execution
 RUN useradd -m -s /bin/bash chromeuser && \

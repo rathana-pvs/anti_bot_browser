@@ -41,8 +41,12 @@ for d in (DATA_DIR, SHARED_MEDIA_DIR, BRAIN_UPLOAD_DIR, PROFILES_DIR):
 MANAGER_INSTANCE_ID = f"mgr_{uuid.uuid4().hex[:12]}"
 
 # Hardware Specs
+def detect_total_memory_gb() -> float:
+    return round(psutil.virtual_memory().total / (1024 ** 3), 1)
+
+
 TOTAL_MEMORY_BYTES = psutil.virtual_memory().total
-TOTAL_MEMORY_GB = round(TOTAL_MEMORY_BYTES / (1024 ** 3), 1)
+TOTAL_MEMORY_GB = detect_total_memory_gb()
 CPU_THREADS = os.cpu_count() or 4
 
 def get_host_timezone() -> str:

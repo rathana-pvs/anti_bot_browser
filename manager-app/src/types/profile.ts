@@ -46,7 +46,10 @@ export interface ObservedEnvironment {
   screen_resolution?: string | null;
   timezone?: string | null;
   language?: string | null;
+  languages?: string[] | null;
+  system_locale?: string | null;
   browser_version?: string | null;
+  webgl_vendor?: string | null;
   webgl_renderer?: string | null;
   rendering?: {
     requested_mode: 'host_gpu' | 'software';
@@ -54,11 +57,28 @@ export interface ObservedEnvironment {
     device_backend: 'drm' | 'wsl_dxg' | 'none';
     accelerated: boolean;
     renderer: string;
+    display_renderer?: string | null;
+    browser_webgl_vendor?: string | null;
+    browser_webgl_renderer?: string | null;
     fallback_reason: string;
   } | null;
   user_agent?: string | null;
+  platform?: string | null;
   hardware_concurrency?: number | null;
   device_memory?: number | null;
+  webdriver?: boolean | null;
+  screen?: {
+    width?: number;
+    height?: number;
+    avail_width?: number;
+    avail_height?: number;
+    color_depth?: number;
+    pixel_depth?: number;
+    device_pixel_ratio?: number;
+    viewport_width?: number;
+    viewport_height?: number;
+  } | null;
+  user_agent_data?: Record<string, unknown> | null;
   comparison?: Record<string, 'matched' | 'different' | 'not_measured'>;
   note?: string;
 }

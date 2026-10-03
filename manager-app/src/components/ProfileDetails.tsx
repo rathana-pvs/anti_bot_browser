@@ -222,6 +222,11 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
               <span className="text-[11px] text-zinc-300 font-mono">
                 {requested.language} · {requested.rendering_mode === 'host_gpu' ? 'Host GPU' : 'Software'}
               </span>
+              {observed && (
+                <span className={`mt-1 block text-[10px] ${observed.language === requested.language ? 'text-emerald-400' : 'text-amber-400'}`}>
+                  Browser {observed.language || 'not measured'} · system {observed.system_locale || 'not measured'}
+                </span>
+              )}
             </div>
             <div>
               <span className="block text-[11px] text-zinc-500">Observed renderer</span>
@@ -237,6 +242,11 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
               )}
             </div>
             {observed?.browser_version && <div className="truncate text-[10px] text-zinc-500">{observed.browser_version}</div>}
+            {observed?.user_agent && (
+              <div className="truncate text-[10px] text-zinc-500" title={observed.user_agent}>
+                {observed.platform || 'unknown platform'} · {observed.hardware_concurrency || '?'} CPU · {observed.device_memory || '?'} GiB
+              </div>
+            )}
             {effective?.network_preflight && (
               <div className={`truncate text-[10px] ${effective.network_preflight.startsWith('passed:') ? 'text-emerald-400' : 'text-red-400'}`}>
                 Network: {effective.network_preflight}

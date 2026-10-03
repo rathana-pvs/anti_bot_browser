@@ -1,0 +1,1257 @@
+{
+  "queue_version": "2.0",
+  "daily_batches": [
+    {
+      "batch_id": "batch_1790945244202",
+      "name": "Test Instant Batch",
+      "created_at": "2026-10-02T12:47:24.202729+00:00",
+      "target_profiles": [
+        "profile_001"
+      ],
+      "profile_execution_order": [
+        "profile_001"
+      ],
+      "schedule_window": {
+        "start_time": "00:00",
+        "end_time": "23:59",
+        "profile_stagger_seconds": 0,
+        "batch_iteration_delay_seconds": 45,
+        "session_preparation_mode": "brief",
+        "start_now": true,
+        "execution_flow": "sequential"
+      },
+      "posting_order_per_profile": {
+        "profile_001": [
+          0,
+          1
+        ]
+      },
+      "posts": [
+        {
+          "post_id": "p_1",
+          "type": "reel",
+          "media_file": "test_video.mp4",
+          "base_caption": "Test caption",
+          "first_comment": "https://example.com",
+          "scrolls": 4,
+          "ai_spin": false,
+          "executions": [
+            {
+              "execution_id": "exec_1790945244202_0_0",
+              "profile_id": "profile_001",
+              "scheduled_at": "2026-10-02T12:47:24.202640+00:00",
+              "batch_iteration_index": 0,
+              "spun_caption": "Test caption",
+              "status": "failed_before_publish",
+              "stage": "failed_before_publish",
+              "stage_history": [
+                {
+                  "stage": "pending",
+                  "timestamp": "2026-10-02T12:47:24.202712+00:00"
+                },
+                {
+                  "stage": "preparing",
+                  "timestamp": "2026-10-02T12:47:24.392533+00:00",
+                  "reason": "preparer_scheduler_lease_claimed",
+                  "lease_id": "c15279d9-5223-405b-b9ab-c4e16a2aaa94"
+                }
+              ],
+              "preparation_mode": "brief",
+              "preparation_status": "failed",
+              "retry_count": 0,
+              "error": "Container startup failed: Error: Configuration file not found: /home/rathana/Desktop/automat_fb/profiles/profile_001/config.json",
+              "published_at": null,
+              "logs": [],
+              "scheduler_lease": null,
+              "started_at": "2026-10-02T12:47:24.392533+00:00",
+              "ended_at": "2026-10-02T12:47:24.441728+00:00",
+              "stage_updated_at": "2026-10-02T12:47:24.392533+00:00",
+              "last_scheduler_lease": {
+                "lease_id": "c15279d9-5223-405b-b9ab-c4e16a2aaa94",
+                "owner_id": "mgr_e0f75f795e91",
+                "kind": "preparer",
+                "profile_id": "profile_001",
+                "claimed_at": "2026-10-02T12:47:24.392465+00:00",
+                "heartbeat_at": "2026-10-02T12:47:24.392465+00:00",
+                "expires_at": "2026-10-02T12:48:24.392465+00:00"
+              }
+            }
+          ]
+        },
+        {
+          "post_id": "p_append_1790945244221_0",
+          "type": "photo",
+          "media_file": "",
+          "base_caption": "Appended while running",
+          "first_comment": null,
+          "scrolls": 4,
+          "ai_spin": false,
+          "executions": [
+            {
+              "execution_id": "exec_1790945244221_append_0_0",
+              "profile_id": "profile_001",
+              "scheduled_at": "2026-10-02T12:47:24.202640+00:00",
+              "batch_iteration_index": 1,
+              "spun_caption": "Appended while running",
+              "status": "pending",
+              "stage": "pending",
+              "stage_history": [
+                {
+                  "stage": "pending",
+                  "timestamp": "2026-10-02T12:47:24.221910+00:00",
+                  "reason": "appended_to_active_batch"
+                }
+              ],
+              "preparation_mode": "brief",
+              "preparation_status": "pending",
+              "retry_count": 0,
+              "error": null,
+              "published_at": null,
+              "logs": []
+            }
+          ]
+        }
+      ],
+      "updated_at": "2026-10-02T12:47:24.221910+00:00"
+    },
+    {
+      "batch_id": "batch_1790852627967",
+      "name": "Daily Batch 9/29/2026",
+      "created_at": "2026-10-01T11:03:47.969343+00:00",
+      "target_profiles": [
+        "profile_002"
+      ],
+      "profile_execution_order": [
+        "profile_002"
+      ],
+      "schedule_window": {
+        "start_time": "09:00",
+        "end_time": "21:00",
+        "profile_stagger_seconds": 60,
+        "batch_iteration_delay_seconds": 60,
+        "session_preparation_mode": "brief",
+        "start_now": true,
+        "execution_flow": "sequential"
+      },
+      "posting_order_per_profile": {
+        "profile_002": [
+          0
+        ]
+      },
+      "posts": [
+        {
+          "post_id": "p_1",
+          "type": "reel",
+          "media_file": "1790852592765_FDownloader.Net_AQM1R8gaa5jr1muRcrVzw8yU5g6AUuF968tt8EjtFJnuAJHo8j8VtBaHojiuD8QoBSEPwlolb5aGRNaMm3EmM3_1q7XF_9RRg9ujil5rCQ_360p_(SD).mp4",
+          "base_caption": "why, you ...",
+          "first_comment": "top fan, fat frog",
+          "scrolls": 4,
+          "ai_spin": false,
+          "executions": [
+            {
+              "execution_id": "exec_1790852627968_0_0",
+              "profile_id": "profile_002",
+              "scheduled_at": "2026-10-01T11:03:47.968255+00:00",
+              "batch_iteration_index": 0,
+              "spun_caption": "why, you ...",
+              "status": "published",
+              "stage": "published",
+              "stage_history": [
+                {
+                  "stage": "preparing",
+                  "timestamp": "2026-10-01T18:05:00.748664"
+                },
+                {
+                  "stage": "composing",
+                  "timestamp": "2026-10-01T18:05:39.907269"
+                },
+                {
+                  "stage": "ready_to_publish",
+                  "timestamp": "2026-10-01T18:08:50.979906",
+                  "target": [
+                    377,
+                    981
+                  ]
+                },
+                {
+                  "stage": "publish_clicked",
+                  "timestamp": "2026-10-01T18:08:51.578843",
+                  "target": [
+                    377,
+                    981
+                  ]
+                },
+                {
+                  "stage": "verifying",
+                  "timestamp": "2026-10-01T18:08:56.861077"
+                },
+                {
+                  "stage": "commenting",
+                  "timestamp": "2026-10-01T18:09:56.991418"
+                },
+                {
+                  "stage": "published",
+                  "timestamp": "2026-10-01T18:10:57.184997",
+                  "error": null,
+                  "first_comment": "submitted_verified",
+                  "first_comment_method": "profile_first_post",
+                  "post_url": null,
+                  "post_url_verified_at": null,
+                  "post_match_confidence": null,
+                  "permalink_status": "not_requested",
+                  "permalink_missing": false,
+                  "permalink_recovery_attempted": false
+                }
+              ],
+              "preparation_mode": "brief",
+              "preparation_status": "ready",
+              "retry_count": 0,
+              "error": null,
+              "published_at": "2026-10-01T11:10:57.879397+00:00",
+              "logs": [
+                "Execution stage: preparing",
+                "Starting guarded Facebook Reel task...",
+                "Verifying Facebook session login state...",
+                "Visual preflight theme=dark, confidence=0.91",
+                "Evidence captured: /home/rathana/Desktop/automat_fb/profiles/profile_002/automation_evidence/20261001T110500_748317Z_FacebookReelTask/01_login_check.png",
+                "Reusing the verified profile page for Reel creation.",
+                "Locating Reel button on profile page...",
+                "Evidence captured: /home/rathana/Desktop/automat_fb/profiles/profile_002/automation_evidence/20261001T110500_748317Z_FacebookReelTask/02_profile_reel_button_ready.png",
+                "Open Reel Studio:\\n- what it is looking for: stable Reel action anchored inside the profile composer card\\n- what it found: target=(1402, 533)\\n- decision: click Reel button to open Reel creator dialog",
+                "Evidence captured: /home/rathana/Desktop/automat_fb/profiles/profile_002/automation_evidence/20261001T110500_748317Z_FacebookReelTask/03_before_click_reel_button.png",
+                "Safe reversible click 'profile_reel': bounds=(1383, 525, 1421, 541), detected_target=(1402, 533), final_target=(1400, 532)",
+                "Execution stage: composing",
+                "Detecting direct file chooser or Reel Studio upload flow...",
+                "Evidence captured: /home/rathana/Desktop/automat_fb/profiles/profile_002/automation_evidence/20261001T110500_748317Z_FacebookReelTask/04_reel_studio_upload_ready.png",
+                "Facebook opened Reel Studio; using the Upload/Add video flow.",
+                "Safe reversible click 'reel_upload': bounds=(123, 961, 459, 1001), detected_target=(291, 981), final_target=(286, 977)",
+                "Zero-CDP GTK file attachment: /data/shared_media/1790852592765_FDownloader.Net_AQM1R8gaa5jr1muRcrVzw8yU5g6AUuF968tt8EjtFJnuAJHo8j8VtBaHojiuD8QoBSEPwlolb5aGRNaMm3EmM3_1q7XF_9RRg9ujil5rCQ_360p_(SD).mp4",
+                "Evidence captured: /home/rathana/Desktop/automat_fb/profiles/profile_002/automation_evidence/20261001T110500_748317Z_FacebookReelTask/05_file_chooser_ready.png",
+                "Clicking the visually confirmed Open button at (1076, 800)...",
+                "GTK file chooser dismissed successfully.",
+                "Waiting for video processing, an enabled Next action, or the final Reel composer...",
+                "Evidence captured: /home/rathana/Desktop/automat_fb/profiles/profile_002/automation_evidence/20261001T110500_748317Z_FacebookReelTask/06_reel_next_ready.png",
+                "Clicking Next action at (291, 981)...",
+                "Safe reversible click 'reel_next': bounds=(123, 961, 459, 1001), detected_target=(291, 981), final_target=(288, 981)",
+                "Evidence captured: /home/rathana/Desktop/automat_fb/profiles/profile_002/automation_evidence/20261001T110500_748317Z_FacebookReelTask/07_reel_edit_next_ready.png",
+                "Clicking intermediate Next action on Edit reel step at (291, 981)...",
+                "Safe reversible click 'reel_edit_next': bounds=(123, 961, 459, 1001), detected_target=(291, 981), final_target=(287, 986)",
+                "Locating Reel description input...",
+                "Evidence captured: /home/rathana/Desktop/automat_fb/profiles/profile_002/automation_evidence/20261001T110500_748317Z_FacebookReelTask/08_reel_description_ready.png",
+                "Evidence captured: /home/rathana/Desktop/automat_fb/profiles/profile_002/automation_evidence/20261001T110500_748317Z_FacebookReelTask/09_reel_caption_verification.png",
+                "Reel caption was visibly verified (confidence=1.00).",
+                "Waiting for enabled Post / Publish action (background processing / copyright check)...",
+                "Evidence captured: /home/rathana/Desktop/automat_fb/profiles/profile_002/automation_evidence/20261001T110500_748317Z_FacebookReelTask/10_reel_publish_ready.png",
+                "Execution stage: ready_to_publish",
+                "Evidence captured: /home/rathana/Desktop/automat_fb/profiles/profile_002/automation_evidence/20261001T110500_748317Z_FacebookReelTask/11_before_reel_publish.png",
+                "Clicking final Reel Post action once at (377, 981)...",
+                "Execution stage: publish_clicked",
+                "Execution stage: verifying",
+                "Waiting up to 30 seconds for Facebook's Reel success popup before using profile fallback checks.",
+                "Profile feed is visible, but Reel success has not been confirmed yet; continuing to wait without refreshing.",
+                "Reel success popup was not detected within 30 seconds; checking the refreshed profile instead.",
+                "Evidence captured: /home/rathana/Desktop/automat_fb/profiles/profile_002/automation_evidence/20261001T110500_748317Z_FacebookReelTask/12_reel_publication_verification.png",
+                "Refreshing the profile to check for the latest Reel (attempt 1/2).",
+                "Latest Reel not visible on scan 1/6; scrolling toward the first post.",
+                "Latest Reel not visible on scan 2/6; scrolling toward the first post.",
+                "Latest Reel found in the profile feed on scan 3/6.",
+                "Evidence captured: /home/rathana/Desktop/automat_fb/profiles/profile_002/automation_evidence/20261001T110500_748317Z_FacebookReelTask/13_latest_reel_check_1.png",
+                "Execution stage: commenting",
+                "Locating 'Comment as ...' field for first comment...",
+                "Primary comment method: opening the profile's first post...",
+                "Reusing the verified post-publication profile feed for comment targeting.",
+                "Find 'Comment as ...' field:\\n- what it is looking for: post card comment input ('Comment as ...' or 'Write a comment...')\\n- what it found: scan=1, target=None\\n- decision: scroll and scan again",
+                "Find 'Comment as ...' field:\\n- what it is looking for: post card comment input ('Comment as ...' or 'Write a comment...')\\n- what it found: scan=2, target=None\\n- decision: scroll and scan again",
+                "Find 'Comment as ...' field:\\n- what it is looking for: post card comment input ('Comment as ...' or 'Write a comment...')\\n- what it found: scan=3, target=None\\n- decision: scroll and scan again",
+                "Find 'Comment as ...' field:\\n- what it is looking for: post card comment input ('Comment as ...' or 'Write a comment...')\\n- what it found: scan=4, target=(1181, 1023)\\n- decision: click comment field",
+                "Evidence captured: /home/rathana/Desktop/automat_fb/profiles/profile_002/automation_evidence/20261001T110500_748317Z_FacebookReelTask/14_before_first_comment.png",
+                "Submit first comment:\\n- what it is looking for: 'Comment as ...' field under post\\n- what it found: method=profile_first_post, target=(1181, 1023)\\n- decision: click 'Comment as ...', paste configured comment, and submit once",
+                "Clicking 'Comment as ...' at (1181, 1023)...",
+                "First comment was submitted once; waiting for Facebook's Posting indicator to clear.",
+                "Evidence captured: /home/rathana/Desktop/automat_fb/profiles/profile_002/automation_evidence/20261001T110500_748317Z_FacebookReelTask/15_after_first_comment.png",
+                "First comment text was visibly verified (confidence=1.00).",
+                "Comment verification complete; returning immediately for container shutdown.",
+                "Facebook Reel publication was visually confirmed.",
+                "Execution stage: published"
+              ],
+              "scheduler_lease": null,
+              "started_at": "2026-10-01T11:04:59.903847+00:00",
+              "ended_at": "2026-10-01T11:10:57.879397+00:00",
+              "stage_updated_at": "2026-10-01T18:10:57.185007",
+              "preparation_telemetry": {
+                "schema_version": "1.0",
+                "profile_id": "profile_002",
+                "task": "FacebookPreparationTask",
+                "started_at": "2026-10-01T11:03:49.714650+00:00",
+                "ended_at": "2026-10-01T11:04:58.939763+00:00",
+                "outcome": "completed",
+                "total_duration_ms": 69225.1,
+                "stage_durations_ms": {
+                  "preparing": 69224.57,
+                  "ready": 0.21,
+                  "completed": 0.17
+                },
+                "steps": [
+                  {
+                    "name": "navigation",
+                    "duration_ms": 3229.31,
+                    "outcome": "completed",
+                    "recorded_at": "2026-10-01T11:04:03.825907+00:00",
+                    "destination": "https://www.facebook.com/me"
+                  }
+                ],
+                "ocr": {
+                  "calls": 3,
+                  "total_duration_ms": 8680.85,
+                  "median_duration_ms": 6.02,
+                  "p95_duration_ms": 7803.65,
+                  "inference_calls": 1,
+                  "inference_total_duration_ms": 8670.05,
+                  "cache_hits": 2,
+                  "cache_hit_rate_pct": 66.7,
+                  "samples": [
+                    {
+                      "duration_ms": 8670.05,
+                      "region": "session_gate",
+                      "candidate_count": 8,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 6.02,
+                      "region": "session_gate",
+                      "candidate_count": 8,
+                      "max_confidence": 1.0,
+                      "outcome": "cache_hit"
+                    },
+                    {
+                      "duration_ms": 4.78,
+                      "region": "session_gate",
+                      "candidate_count": 8,
+                      "max_confidence": 1.0,
+                      "outcome": "cache_hit"
+                    }
+                  ]
+                },
+                "locators": {
+                  "events": [],
+                  "tier_counts": {},
+                  "fallback_count": 0
+                },
+                "semantic_fallbacks": [],
+                "environment": {
+                  "screen_size": [
+                    1920,
+                    1080
+                  ],
+                  "configured_screen_resolution": "1920x1080",
+                  "locale": "en-US",
+                  "theme": "dark",
+                  "theme_confidence": 0.594,
+                  "browser_zoom": null,
+                  "ocr_device": "cpu",
+                  "ocr_worker": "local"
+                }
+              },
+              "preparation_ended_at": "2026-10-01T11:04:59.691887+00:00",
+              "last_scheduler_lease": {
+                "lease_id": "e97c8ae0-2fff-4dd7-a4be-1e07f0d7fc0e",
+                "owner_id": "mgr_74e68aa7a07e",
+                "kind": "publisher",
+                "profile_id": "profile_002",
+                "claimed_at": "2026-10-01T11:04:59.903696+00:00",
+                "heartbeat_at": "2026-10-01T11:10:55.815862+00:00",
+                "expires_at": "2026-10-01T11:11:55.815862+00:00"
+              },
+              "permalink_recovery_attempted": false,
+              "permalink_missing": false,
+              "permalink_status": "not_requested",
+              "permalink_source": null,
+              "permalink_note": null,
+              "first_comment_status": "submitted_verified",
+              "first_comment_method": "profile_first_post",
+              "first_comment_verified_at": "2026-10-01T11:10:57.879397+00:00",
+              "evidence_dir": "/home/rathana/Desktop/automat_fb/profiles/profile_002/automation_evidence/20261001T110500_748317Z_FacebookReelTask",
+              "telemetry": {
+                "schema_version": "1.0",
+                "profile_id": "profile_002",
+                "task": "FacebookReelTask",
+                "started_at": "2026-10-01T11:05:00.748515+00:00",
+                "ended_at": "2026-10-01T11:10:57.185224+00:00",
+                "outcome": "published",
+                "total_duration_ms": 356436.69,
+                "stage_durations_ms": {
+                  "preparing": 39158.64,
+                  "composing": 191072.6,
+                  "ready_to_publish": 598.94,
+                  "publish_clicked": 5282.27,
+                  "verifying": 60130.31,
+                  "commenting": 60193.58,
+                  "published": 0.21
+                },
+                "steps": [
+                  {
+                    "name": "navigation",
+                    "duration_ms": 3185.09,
+                    "outcome": "completed",
+                    "recorded_at": "2026-10-01T11:05:03.951066+00:00",
+                    "destination": "https://www.facebook.com/me"
+                  },
+                  {
+                    "name": "target_wait",
+                    "duration_ms": 12357.82,
+                    "outcome": "ready",
+                    "recorded_at": "2026-10-01T11:05:31.622657+00:00",
+                    "target": "profile_reel_button_ready"
+                  },
+                  {
+                    "name": "reel_entry_flow",
+                    "duration_ms": 8223.42,
+                    "outcome": "ready",
+                    "recorded_at": "2026-10-01T11:05:48.131498+00:00",
+                    "entry_flow": "reel_studio"
+                  },
+                  {
+                    "name": "media_upload",
+                    "duration_ms": 9765.73,
+                    "outcome": "completed",
+                    "recorded_at": "2026-10-01T11:06:04.373270+00:00"
+                  },
+                  {
+                    "name": "media_processing",
+                    "duration_ms": 19755.54,
+                    "outcome": "ready",
+                    "recorded_at": "2026-10-01T11:06:24.128885+00:00",
+                    "target": "reel_next_ready",
+                    "transition": "next"
+                  },
+                  {
+                    "name": "reel_edit_transition",
+                    "duration_ms": 19453.62,
+                    "outcome": "ready",
+                    "recorded_at": "2026-10-01T11:06:51.489737+00:00",
+                    "target": "reel_edit_next_ready",
+                    "transition": "next"
+                  },
+                  {
+                    "name": "target_wait",
+                    "duration_ms": 84897.85,
+                    "outcome": "ready",
+                    "recorded_at": "2026-10-01T11:08:20.903858+00:00",
+                    "target": "reel_description_ready"
+                  },
+                  {
+                    "name": "publish_readiness",
+                    "duration_ms": 10902.99,
+                    "outcome": "ready",
+                    "recorded_at": "2026-10-01T11:08:50.979884+00:00",
+                    "target": "reel_publish_ready"
+                  },
+                  {
+                    "name": "publication_verification",
+                    "duration_ms": 30115.85,
+                    "outcome": "completed",
+                    "recorded_at": "2026-10-01T11:09:26.978054+00:00"
+                  },
+                  {
+                    "name": "navigation",
+                    "duration_ms": 7344.15,
+                    "outcome": "completed",
+                    "recorded_at": "2026-10-01T11:09:34.386958+00:00",
+                    "destination": "https://www.facebook.com/me"
+                  }
+                ],
+                "ocr": {
+                  "calls": 70,
+                  "total_duration_ms": 244259.6,
+                  "median_duration_ms": 4488.72,
+                  "p95_duration_ms": 8222.83,
+                  "inference_calls": 52,
+                  "inference_total_duration_ms": 244118.23,
+                  "cache_hits": 18,
+                  "cache_hit_rate_pct": 25.7,
+                  "samples": [
+                    {
+                      "duration_ms": 8391.25,
+                      "region": "session_gate",
+                      "candidate_count": 6,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 4473.42,
+                      "region": "full_screen",
+                      "candidate_count": 24,
+                      "max_confidence": 0.9999,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 112.74,
+                      "region": "region:16.0,1028.0,328.0,36.0",
+                      "candidate_count": 1,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 6066.04,
+                      "region": "full_screen",
+                      "candidate_count": 55,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 0.18,
+                      "region": "region:16.0,1028.0,328.0,36.0",
+                      "candidate_count": 1,
+                      "max_confidence": 1.0,
+                      "outcome": "cache_hit"
+                    },
+                    {
+                      "duration_ms": 4841.75,
+                      "region": "region:230.0,216.0,1460.0,864.0",
+                      "max_confidence": 1.0,
+                      "outcome": "cache_hit"
+                    },
+                    {
+                      "duration_ms": 4841.75,
+                      "region": "region:230.0,216.0,1460.0,864.0",
+                      "candidate_count": 41,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 11.51,
+                      "region": "region:230.0,216.0,1460.0,864.0",
+                      "candidate_count": 41,
+                      "max_confidence": 1.0,
+                      "outcome": "cache_hit"
+                    },
+                    {
+                      "duration_ms": 6191.24,
+                      "region": "full_screen",
+                      "candidate_count": 30,
+                      "max_confidence": 0.9999,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 136.14,
+                      "region": "region:123.0,961.0,336.0,40.0",
+                      "candidate_count": 1,
+                      "max_confidence": 0.9991,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 0.2,
+                      "region": "region:123.0,961.0,336.0,40.0",
+                      "candidate_count": 1,
+                      "max_confidence": 0.9991,
+                      "outcome": "cache_hit"
+                    },
+                    {
+                      "duration_ms": 667.59,
+                      "region": "region:562.0,548.0,562.0,274.0",
+                      "candidate_count": 3,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 6729.44,
+                      "region": "full_screen",
+                      "candidate_count": 27,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 140.57,
+                      "region": "region:123.0,961.0,336.0,40.0",
+                      "candidate_count": 1,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 4606.18,
+                      "region": "reel_sidebar",
+                      "candidate_count": 5,
+                      "max_confidence": 0.9865,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 4304.38,
+                      "region": "region:0.0,0.08,0.34,1.0",
+                      "candidate_count": 23,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 656.37,
+                      "region": "region:31.0,931.0,520.0,100.0",
+                      "candidate_count": 2,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 478.65,
+                      "region": "region:31.0,931.0,520.0,100.0",
+                      "candidate_count": 2,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 6710.94,
+                      "region": "full_screen",
+                      "candidate_count": 28,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 139.98,
+                      "region": "region:123.0,961.0,336.0,40.0",
+                      "candidate_count": 1,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 4406.35,
+                      "region": "reel_sidebar",
+                      "candidate_count": 5,
+                      "max_confidence": 0.9987,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 4504.02,
+                      "region": "region:0.0,0.08,0.34,1.0",
+                      "candidate_count": 24,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 489.11,
+                      "region": "region:31.0,931.0,520.0,100.0",
+                      "candidate_count": 2,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 442.7,
+                      "region": "region:31.0,931.0,520.0,100.0",
+                      "candidate_count": 2,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 8282.81,
+                      "region": "full_screen",
+                      "candidate_count": 45,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 108.01,
+                      "region": "region:295.0,961.0,164.0,40.0",
+                      "candidate_count": 1,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 4675.63,
+                      "region": "region:1114.0,108.0,806.0,972.0",
+                      "candidate_count": 5,
+                      "max_confidence": 0.9854,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 6217.72,
+                      "region": "region:953.0,0.0,967.0,1080.0",
+                      "candidate_count": 7,
+                      "max_confidence": 0.9997,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 7911.53,
+                      "region": "full_screen",
+                      "candidate_count": 51,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 4589.22,
+                      "region": "region:1114.0,108.0,806.0,972.0",
+                      "candidate_count": 5,
+                      "max_confidence": 0.9999,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 6791.61,
+                      "region": "region:953.0,0.0,967.0,1080.0",
+                      "candidate_count": 7,
+                      "max_confidence": 0.9995,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 8617.48,
+                      "region": "full_screen",
+                      "candidate_count": 51,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 6101.08,
+                      "region": "region:0.0,86.0,653.0,994.0",
+                      "candidate_count": 48,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 8149.53,
+                      "region": "region:0.0,0.0,913.0,1080.0",
+                      "candidate_count": 50,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 12.28,
+                      "region": "full_screen",
+                      "candidate_count": 51,
+                      "max_confidence": 1.0,
+                      "outcome": "cache_hit"
+                    },
+                    {
+                      "duration_ms": 5.42,
+                      "region": "region:1114.0,108.0,806.0,972.0",
+                      "candidate_count": 5,
+                      "max_confidence": 0.9999,
+                      "outcome": "cache_hit"
+                    },
+                    {
+                      "duration_ms": 9.42,
+                      "region": "region:953.0,0.0,967.0,1080.0",
+                      "candidate_count": 7,
+                      "max_confidence": 0.9995,
+                      "outcome": "cache_hit"
+                    },
+                    {
+                      "duration_ms": 13.99,
+                      "region": "full_screen",
+                      "candidate_count": 45,
+                      "max_confidence": 1.0,
+                      "outcome": "cache_hit"
+                    },
+                    {
+                      "duration_ms": 4416.83,
+                      "region": "region:1114.0,108.0,806.0,972.0",
+                      "candidate_count": 5,
+                      "max_confidence": 0.9987,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 6654.94,
+                      "region": "region:953.0,0.0,967.0,1080.0",
+                      "candidate_count": 7,
+                      "max_confidence": 0.9995,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 8450.46,
+                      "region": "full_screen",
+                      "candidate_count": 51,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 4.89,
+                      "region": "region:0.0,86.0,653.0,994.0",
+                      "candidate_count": 48,
+                      "max_confidence": 1.0,
+                      "outcome": "cache_hit"
+                    },
+                    {
+                      "duration_ms": 6.17,
+                      "region": "region:0.0,0.0,913.0,1080.0",
+                      "candidate_count": 50,
+                      "max_confidence": 1.0,
+                      "outcome": "cache_hit"
+                    },
+                    {
+                      "duration_ms": 13.93,
+                      "region": "full_screen",
+                      "candidate_count": 51,
+                      "max_confidence": 1.0,
+                      "outcome": "cache_hit"
+                    },
+                    {
+                      "duration_ms": 5.2,
+                      "region": "region:1114.0,108.0,806.0,972.0",
+                      "candidate_count": 5,
+                      "max_confidence": 0.9987,
+                      "outcome": "cache_hit"
+                    },
+                    {
+                      "duration_ms": 8.69,
+                      "region": "region:953.0,0.0,967.0,1080.0",
+                      "candidate_count": 7,
+                      "max_confidence": 0.9995,
+                      "outcome": "cache_hit"
+                    },
+                    {
+                      "duration_ms": 15.33,
+                      "region": "full_screen",
+                      "candidate_count": 45,
+                      "max_confidence": 1.0,
+                      "outcome": "cache_hit"
+                    },
+                    {
+                      "duration_ms": 4677.55,
+                      "region": "reel_sidebar",
+                      "candidate_count": 5,
+                      "max_confidence": 0.9999,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 5815.94,
+                      "region": "region:0.0,0.08,0.34,1.0",
+                      "candidate_count": 49,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 7804.6,
+                      "region": "full_screen",
+                      "candidate_count": 44,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 0.14,
+                      "region": "region:295.0,961.0,164.0,40.0",
+                      "candidate_count": 1,
+                      "max_confidence": 1.0,
+                      "outcome": "cache_hit"
+                    },
+                    {
+                      "duration_ms": 575.71,
+                      "region": "region:117.0,931.0,520.0,100.0",
+                      "candidate_count": 2,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 0.49,
+                      "region": "region:117.0,931.0,520.0,100.0",
+                      "candidate_count": 2,
+                      "max_confidence": 1.0,
+                      "outcome": "cache_hit"
+                    },
+                    {
+                      "duration_ms": 7447.07,
+                      "region": "full_screen",
+                      "candidate_count": 36,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 5128.78,
+                      "region": "region:288.0,86.0,1344.0,939.0",
+                      "candidate_count": 22,
+                      "max_confidence": 0.9911,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 16.21,
+                      "region": "full_screen",
+                      "candidate_count": 31,
+                      "max_confidence": 1.0,
+                      "outcome": "cache_hit"
+                    },
+                    {
+                      "duration_ms": 5707.07,
+                      "region": "full_screen",
+                      "candidate_count": 63,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 5864.46,
+                      "region": "region:288.0,86.0,1344.0,939.0",
+                      "candidate_count": 44,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 11.21,
+                      "region": "full_screen",
+                      "candidate_count": 55,
+                      "max_confidence": 1.0,
+                      "outcome": "cache_hit"
+                    },
+                    {
+                      "duration_ms": 99.78,
+                      "region": "region:16.0,1028.0,328.0,36.0",
+                      "candidate_count": 1,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 2873.41,
+                      "region": "browser_dialog",
+                      "candidate_count": 1,
+                      "max_confidence": 0.9976,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 5378.23,
+                      "region": "region:537.0,172.0,1286.0,842.0",
+                      "candidate_count": 23,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 5468.15,
+                      "region": "region:537.0,172.0,1286.0,842.0",
+                      "candidate_count": 37,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 5584.08,
+                      "region": "region:537.0,172.0,1286.0,842.0",
+                      "candidate_count": 45,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 6850.82,
+                      "region": "region:537.0,0.0,1286.0,1080.0",
+                      "candidate_count": 47,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 6584.99,
+                      "region": "region:537.0,0.0,1286.0,1080.0",
+                      "candidate_count": 36,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 6470.11,
+                      "region": "region:537.0,0.0,1286.0,1080.0",
+                      "candidate_count": 35,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 6454.88,
+                      "region": "region:537.0,0.0,1286.0,1080.0",
+                      "candidate_count": 33,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 5046.48,
+                      "region": "region:537.0,237.0,1286.0,788.0",
+                      "candidate_count": 27,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 4830.41,
+                      "region": "region:537.0,237.0,1286.0,788.0",
+                      "candidate_count": 27,
+                      "max_confidence": 1.0,
+                      "outcome": "completed"
+                    },
+                    {
+                      "duration_ms": 6.11,
+                      "region": "region:537.0,237.0,1286.0,788.0",
+                      "candidate_count": 27,
+                      "max_confidence": 1.0,
+                      "outcome": "cache_hit"
+                    }
+                  ]
+                },
+                "locators": {
+                  "events": [
+                    {
+                      "locator": "profile_reel_composer_action",
+                      "tier": "composer_anchored_ocr",
+                      "region": "profile_post_stream",
+                      "duration_ms": 5131.31,
+                      "found": true,
+                      "confidence": 1.0,
+                      "fallback_reason": null
+                    },
+                    {
+                      "locator": "profile_reel_composer_action",
+                      "tier": "composer_anchored_ocr",
+                      "region": "profile_post_stream",
+                      "duration_ms": 386.33,
+                      "found": true,
+                      "confidence": 1.0,
+                      "fallback_reason": null
+                    },
+                    {
+                      "locator": "text:next",
+                      "tier": "target_region_ocr",
+                      "region": "region:31.0,931.0,520.0,100.0",
+                      "duration_ms": 656.47,
+                      "found": true,
+                      "confidence": 1.0,
+                      "fallback_reason": null
+                    },
+                    {
+                      "locator": "text:next",
+                      "tier": "target_region_ocr",
+                      "region": "region:31.0,931.0,520.0,100.0",
+                      "duration_ms": 478.74,
+                      "found": true,
+                      "confidence": 1.0,
+                      "fallback_reason": null
+                    },
+                    {
+                      "locator": "text:next",
+                      "tier": "target_region_ocr",
+                      "region": "region:31.0,931.0,520.0,100.0",
+                      "duration_ms": 489.18,
+                      "found": true,
+                      "confidence": 1.0,
+                      "fallback_reason": null
+                    },
+                    {
+                      "locator": "text:next",
+                      "tier": "target_region_ocr",
+                      "region": "region:31.0,931.0,520.0,100.0",
+                      "duration_ms": 442.77,
+                      "found": true,
+                      "confidence": 1.0,
+                      "fallback_reason": null
+                    },
+                    {
+                      "locator": "text:describe your reel|describe your reel...|write a caption|description|describe",
+                      "tier": "full_screen_ocr",
+                      "region": "full_screen",
+                      "duration_ms": 18805.09,
+                      "found": true,
+                      "confidence": 0.4056,
+                      "fallback_reason": "local_regions_exhausted"
+                    },
+                    {
+                      "locator": "text:describe your reel|describe your reel...|write a caption|description|describe",
+                      "tier": "full_screen_ocr",
+                      "region": "full_screen",
+                      "duration_ms": 19998.56,
+                      "found": false,
+                      "confidence": null,
+                      "fallback_reason": "local_regions_exhausted"
+                    },
+                    {
+                      "locator": "text:describe your reel|describe your reel...|write a caption|description|describe",
+                      "tier": "full_screen_ocr",
+                      "region": "full_screen",
+                      "duration_ms": 14263.23,
+                      "found": false,
+                      "confidence": null,
+                      "fallback_reason": "local_regions_exhausted"
+                    },
+                    {
+                      "locator": "text:public|post audience|tag and collaborate|add ai label",
+                      "tier": "full_screen_ocr",
+                      "region": "full_screen",
+                      "duration_ms": 29.02,
+                      "found": true,
+                      "confidence": 0.9113,
+                      "fallback_reason": "local_regions_exhausted"
+                    },
+                    {
+                      "locator": "text:describe your reel|describe your reel...|write a caption|description|describe",
+                      "tier": "full_screen_ocr",
+                      "region": "full_screen",
+                      "duration_ms": 19522.46,
+                      "found": false,
+                      "confidence": null,
+                      "fallback_reason": "local_regions_exhausted"
+                    },
+                    {
+                      "locator": "text:describe your reel|describe your reel...|write a caption|description|describe",
+                      "tier": "full_screen_ocr",
+                      "region": "full_screen",
+                      "duration_ms": 25.28,
+                      "found": false,
+                      "confidence": null,
+                      "fallback_reason": "local_regions_exhausted"
+                    },
+                    {
+                      "locator": "text:public|post audience|tag and collaborate|add ai label",
+                      "tier": "full_screen_ocr",
+                      "region": "full_screen",
+                      "duration_ms": 29.41,
+                      "found": true,
+                      "confidence": 0.9113,
+                      "fallback_reason": "local_regions_exhausted"
+                    },
+                    {
+                      "locator": "text:post|publish|share",
+                      "tier": "target_region_ocr",
+                      "region": "region:117.0,931.0,520.0,100.0",
+                      "duration_ms": 575.79,
+                      "found": true,
+                      "confidence": 1.0,
+                      "fallback_reason": null
+                    },
+                    {
+                      "locator": "text:post|publish|share",
+                      "tier": "target_region_ocr",
+                      "region": "region:117.0,931.0,520.0,100.0",
+                      "duration_ms": 0.57,
+                      "found": true,
+                      "confidence": 1.0,
+                      "fallback_reason": null
+                    }
+                  ],
+                  "tier_counts": {
+                    "composer_anchored_ocr": 2,
+                    "target_region_ocr": 6,
+                    "full_screen_ocr": 7
+                  },
+                  "fallback_count": 7
+                },
+                "semantic_fallbacks": [],
+                "environment": {
+                  "screen_size": [
+                    1920,
+                    1080
+                  ],
+                  "configured_screen_resolution": "1920x1080",
+                  "locale": "en-US",
+                  "theme": "dark",
+                  "theme_confidence": 0.914,
+                  "browser_zoom": null,
+                  "ocr_device": "cpu",
+                  "ocr_worker": "local"
+                }
+              },
+              "container_stopped_at": "2026-10-01T11:10:58.354607+00:00",
+              "container_cleanup": {
+                "stopped": true,
+                "already_stopped": false
+              },
+              "container_cleanup_error": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "batch_id": "batch_1790696287519",
+      "name": "Test Instant Batch",
+      "created_at": "2026-09-29T15:38:07.519747+00:00",
+      "target_profiles": [
+        "profile_001"
+      ],
+      "profile_execution_order": [
+        "profile_001"
+      ],
+      "schedule_window": {
+        "start_time": "00:00",
+        "end_time": "23:59",
+        "profile_stagger_seconds": 0,
+        "batch_iteration_delay_seconds": 45,
+        "session_preparation_mode": "brief",
+        "start_now": true,
+        "execution_flow": "sequential"
+      },
+      "posting_order_per_profile": {
+        "profile_001": [
+          0,
+          1
+        ]
+      },
+      "posts": [
+        {
+          "post_id": "p_1",
+          "type": "reel",
+          "media_file": "test_video.mp4",
+          "base_caption": "Test caption",
+          "first_comment": "https://example.com",
+          "scrolls": 4,
+          "ai_spin": false,
+          "executions": [
+            {
+              "execution_id": "exec_1790696287519_0_0",
+              "profile_id": "profile_001",
+              "scheduled_at": "2026-09-29T15:38:07.519714+00:00",
+              "batch_iteration_index": 0,
+              "spun_caption": "Test caption",
+              "status": "failed_before_publish",
+              "stage": "failed_before_publish",
+              "stage_history": [
+                {
+                  "stage": "pending",
+                  "timestamp": "2026-09-29T15:38:07.519741+00:00"
+                },
+                {
+                  "stage": "preparing",
+                  "timestamp": "2026-09-29T15:38:07.620917+00:00",
+                  "reason": "preparer_scheduler_lease_claimed",
+                  "lease_id": "b4b6ce54-0371-4a95-bbad-8756bcee5a67"
+                }
+              ],
+              "preparation_mode": "brief",
+              "preparation_status": "failed",
+              "retry_count": 0,
+              "error": "Container startup failed: Error: Configuration file not found: /home/rathana/Desktop/automat_fb/profiles/profile_001/config.json",
+              "published_at": null,
+              "logs": [],
+              "scheduler_lease": null,
+              "started_at": "2026-09-29T15:38:07.620917+00:00",
+              "ended_at": "2026-09-29T15:38:07.636323+00:00",
+              "stage_updated_at": "2026-09-29T15:38:07.620917+00:00",
+              "last_scheduler_lease": {
+                "lease_id": "b4b6ce54-0371-4a95-bbad-8756bcee5a67",
+                "owner_id": "mgr_d215ecb459a6",
+                "kind": "preparer",
+                "profile_id": "profile_001",
+                "claimed_at": "2026-09-29T15:38:07.620890+00:00",
+                "heartbeat_at": "2026-09-29T15:38:07.620890+00:00",
+                "expires_at": "2026-09-29T15:39:07.620890+00:00"
+              }
+            }
+          ]
+        },
+        {
+          "post_id": "p_append_1790696287522_0",
+          "type": "photo",
+          "media_file": "",
+          "base_caption": "Appended while running",
+          "first_comment": null,
+          "scrolls": 4,
+          "ai_spin": false,
+          "executions": [
+            {
+              "execution_id": "exec_1790696287522_append_0_0",
+              "profile_id": "profile_001",
+              "scheduled_at": "2026-09-29T15:38:07.519714+00:00",
+              "batch_iteration_index": 1,
+              "spun_caption": "Appended while running",
+              "status": "stopped",
+              "stage": "stopped",
+              "stage_history": [
+                {
+                  "stage": "pending",
+                  "timestamp": "2026-09-29T15:38:07.522196+00:00",
+                  "reason": "appended_to_active_batch"
+                }
+              ],
+              "preparation_mode": "brief",
+              "preparation_status": "pending",
+              "retry_count": 0,
+              "error": null,
+              "published_at": null,
+              "logs": []
+            }
+          ]
+        }
+      ],
+      "updated_at": "2026-09-29T15:38:07.522196+00:00"
+    }
+  ]
+}

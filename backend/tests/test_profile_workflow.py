@@ -193,6 +193,57 @@ def test_browser_uses_its_native_user_agent_and_client_hints():
     assert "USER_AGENT=" not in launcher
 
 
+def test_browser_language_is_separate_from_valid_linux_locale():
+    root = Path(__file__).resolve().parents[2]
+    dockerfile = (root / "container" / "Dockerfile").read_text(encoding="utf-8")
+    entrypoint = (root / "container" / "entrypoint.sh").read_text(encoding="utf-8")
+    launcher = (root / "scripts" / "run_profile.sh").read_text(encoding="utf-8")
+
+    assert "locale-gen en_US.UTF-8" in dockerfile
+    assert '-e "BROWSER_LANG=${LANG_VAL}"' in launcher
+    assert '-e "LANG=en_US.UTF-8"' in launcher
+    assert '-e "LC_ALL=en_US.UTF-8"' in launcher
+    assert 'CHROME_LANG="${BROWSER_LANG:-en-US}"' in entrypoint
+
+
+def test_browser_probe_is_local_and_does_not_enable_cdp():
+    root = Path(__file__).resolve().parents[2]
+    entrypoint = (root / "container" / "entrypoint.sh").read_text(encoding="utf-8")
+    probe = (root / "container" / "browser_probe.py").read_text(encoding="utf-8")
+
+    assert '"127.0.0.1", args.port' in probe
+    assert "navigator.userAgent" in probe
+    assert "WEBGL_debug_renderer_info" in probe
+    assert "navigator.webdriver" in probe
+    assert "http://127.0.0.1:9223/" in entrypoint
+    assert "--remote-debugging" not in entrypoint
+
+
+def test_browser_observation_normalizes_browser_visible_values():
+    observed = docker_service._browser_observation_values({
+        "user_agent": "Chrome Linux",
+        "platform": "Linux x86_64",
+        "language": "en-US",
+        "languages": ["en-US", "en"],
+        "timezone": "America/New_York",
+        "hardware_concurrency": 4,
+        "device_memory": 4,
+        "webdriver": False,
+        "screen": {"width": 1920, "height": 1080},
+        "webgl": {
+            "renderer": "WebKit WebGL",
+            "unmasked_vendor": "Mesa",
+            "unmasked_renderer": "llvmpipe",
+        },
+    })
+
+    assert observed["screen_resolution"] == "1920x1080"
+    assert observed["webgl_vendor"] == "Mesa"
+    assert observed["webgl_renderer"] == "llvmpipe"
+    assert observed["webdriver"] is False
+    assert docker_service._renderer_is_software(observed["webgl_renderer"]) is True
+
+
 def test_browser_launcher_supports_linux_and_wsl_gpu_devices():
     root = Path(__file__).resolve().parents[2]
     launcher = (root / "scripts" / "run_profile.sh").read_text(encoding="utf-8")
@@ -205,6 +256,7 @@ def test_browser_launcher_supports_linux_and_wsl_gpu_devices():
     assert "/run/rendering-status.json" in entrypoint
     assert "GALLIUM_DRIVER=d3d12" in entrypoint
     assert "--use-gl=angle --use-angle=gl-egl" in entrypoint
+    assert "--use-gl=angle --use-angle=vulkan" in entrypoint
 
 
 def test_proxy_pool_removes_fabricated_legacy_location(tmp_path, monkeypatch):

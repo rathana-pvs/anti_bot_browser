@@ -13,7 +13,12 @@ from backend import config
 
 class GpuDetectionTests(unittest.TestCase):
     def test_reports_actual_memory_instead_of_a_coarse_bucket(self):
-        self.assertEqual(config.TOTAL_MEMORY_GB, 45.1)
+        with patch.object(
+            config.psutil,
+            "virtual_memory",
+            return_value=SimpleNamespace(total=48_399_773_696),
+        ):
+            self.assertEqual(config.detect_total_memory_gb(), 45.1)
 
     def test_reports_nvidia_when_cuda_runtime_is_unavailable(self):
         torch = SimpleNamespace(

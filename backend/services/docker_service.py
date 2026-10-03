@@ -369,8 +369,53 @@ def _container_text(container_name: str, command: str) -> str | None:
         return None
 
 
+def _parse_json_object(value: str | None) -> dict | None:
+    if not value:
+        return None
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _renderer_is_software(renderer: str | None) -> bool:
+    return bool(renderer and re.search(
+        r"llvmpipe|softpipe|swiftshader|software rasterizer",
+        renderer,
+        flags=re.IGNORECASE,
+    ))
+
+
+def _browser_observation_values(browser: dict | None) -> dict:
+    """Normalize values measured by the localhost page running in Chrome."""
+    browser = browser or {}
+    screen = browser.get("screen") if isinstance(browser.get("screen"), dict) else {}
+    webgl = browser.get("webgl") if isinstance(browser.get("webgl"), dict) else {}
+    renderer = webgl.get("unmasked_renderer") or webgl.get("renderer")
+    vendor = webgl.get("unmasked_vendor") or webgl.get("vendor")
+    screen_resolution = None
+    if screen.get("width") and screen.get("height"):
+        screen_resolution = f"{screen['width']}x{screen['height']}"
+    return {
+        "screen_resolution": screen_resolution,
+        "timezone": browser.get("timezone"),
+        "language": browser.get("language"),
+        "languages": browser.get("languages"),
+        "user_agent": browser.get("user_agent"),
+        "platform": browser.get("platform"),
+        "hardware_concurrency": browser.get("hardware_concurrency"),
+        "device_memory": browser.get("device_memory"),
+        "webdriver": browser.get("webdriver"),
+        "webgl_vendor": vendor,
+        "webgl_renderer": renderer,
+        "screen": screen or None,
+        "user_agent_data": browser.get("user_agent_data"),
+    }
+
+
 def observe_container_environment(profile_id: str) -> dict:
-    """Collect only values that can be measured without CDP or page injection."""
+    """Collect container values and the browser's localhost self-observation."""
     container_name = f"isolated_{profile_id}"
     geometry = None
     for _ in range(20):
@@ -385,39 +430,71 @@ def observe_container_environment(profile_id: str) -> dict:
         container_name,
         "cat /etc/timezone 2>/dev/null || readlink /etc/localtime | sed 's#^.*/zoneinfo/##'",
     )
-    language = _container_text(container_name, "printf '%s' \"${LANG:-}\"")
+    system_locale = _container_text(container_name, "printf '%s' \"${LANG:-}\"")
     browser_version = _container_text(container_name, "google-chrome --version 2>/dev/null")
-    rendering_status = None
-    raw_rendering_status = _container_text(
+    rendering_status = _parse_json_object(_container_text(
         container_name,
         "cat /run/rendering-status.json 2>/dev/null",
-    )
-    if raw_rendering_status:
-        try:
-            rendering_status = json.loads(raw_rendering_status)
-        except json.JSONDecodeError:
-            rendering_status = None
-    renderer = (
-        rendering_status.get("renderer")
-        if rendering_status
-        else _container_text(
+    ))
+    browser_probe = None
+    for _ in range(20):
+        browser_probe = _parse_json_object(_container_text(
             container_name,
-            "glxinfo -B 2>/dev/null | sed -n 's/^OpenGL renderer string: //p' | head -1",
-        )
+            "cat /run/browser-observation.json 2>/dev/null",
+        ))
+        if browser_probe:
+            break
+        time.sleep(0.25)
+    browser_values = _browser_observation_values(browser_probe)
+    display_renderer = (
+        rendering_status.get("renderer") if rendering_status else None
+    ) or _container_text(
+        container_name,
+        "glxinfo -B 2>/dev/null | sed -n 's/^OpenGL renderer string: //p' | head -1",
     )
+    browser_renderer = browser_values.get("webgl_renderer")
+    if rendering_status is not None:
+        rendering_status = {
+            **rendering_status,
+            "display_renderer": display_renderer,
+            "browser_webgl_vendor": browser_values.get("webgl_vendor"),
+            "browser_webgl_renderer": browser_renderer,
+            "accelerated": (
+                not _renderer_is_software(browser_renderer)
+                if browser_renderer
+                else bool(rendering_status.get("accelerated"))
+            ),
+        }
+        if browser_renderer and _renderer_is_software(browser_renderer):
+            rendering_status["effective_mode"] = "software"
+            rendering_status["fallback_reason"] = "Chrome WebGL reports software rendering"
+        elif browser_renderer and rendering_status.get("requested_mode") == "host_gpu":
+            rendering_status["effective_mode"] = "host_gpu"
+            rendering_status["fallback_reason"] = ""
     return {
-        "source": "container_runtime",
+        "source": "browser_probe" if browser_probe else "container_runtime",
         "observed_at": utc_now(),
-        "screen_resolution": geometry,
-        "timezone": timezone_name,
-        "language": language,
+        "screen_resolution": browser_values.get("screen_resolution") or geometry,
+        "timezone": browser_values.get("timezone") or timezone_name,
+        "language": browser_values.get("language"),
+        "languages": browser_values.get("languages"),
+        "system_locale": system_locale,
         "browser_version": browser_version,
-        "webgl_renderer": renderer,
+        "webgl_vendor": browser_values.get("webgl_vendor"),
+        "webgl_renderer": browser_renderer or display_renderer,
         "rendering": rendering_status,
-        "user_agent": None,
-        "hardware_concurrency": None,
-        "device_memory": None,
-        "note": "Renderer data is measured from the container display stack; navigator-only values are not measured without an explicit browser probe.",
+        "user_agent": browser_values.get("user_agent"),
+        "platform": browser_values.get("platform"),
+        "hardware_concurrency": browser_values.get("hardware_concurrency"),
+        "device_memory": browser_values.get("device_memory"),
+        "webdriver": browser_values.get("webdriver"),
+        "screen": browser_values.get("screen"),
+        "user_agent_data": browser_values.get("user_agent_data"),
+        "note": (
+            "Browser-visible values were measured by a localhost page without CDP."
+            if browser_probe else
+            "The browser probe did not complete; values are limited to the container runtime."
+        ),
     }
 
 

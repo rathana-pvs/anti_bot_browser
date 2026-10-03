@@ -1598,6 +1598,12 @@ fn main() {
         ])
         .setup(|app| {
             let handle = app.handle();
+            // Refresh bundled application code before launching the backend. User data
+            // (profiles, browser sessions, queues, and settings) lives outside the
+            // bundled payload and is preserved by copy_setup_payload.
+            if let Err(error) = prepare_install_root(handle) {
+                eprintln!("[Tauri] Failed to refresh the private application runtime: {error}");
+            }
             let child = spawn_backend(handle);
             app.manage(BackendProcess(Mutex::new(child)));
             Ok(())

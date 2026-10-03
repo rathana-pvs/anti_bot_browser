@@ -71,7 +71,9 @@ case "$ACTION" in
             -e "WINDOW_SIZE=${SCREEN_RES/x/,}"
             -e "RENDERING_MODE=${RENDERING_MODE}"
             -e "TZ=${TIMEZONE}"
-            -e "LANG=${LANG_VAL}"
+            -e "BROWSER_LANG=${LANG_VAL}"
+            -e "LANG=en_US.UTF-8"
+            -e "LC_ALL=en_US.UTF-8"
         )
         CAP_ARGS=(--cap-add=SYS_ADMIN)
         if [ -n "$PROXY_HOST" ]; then

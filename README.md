@@ -146,8 +146,16 @@ drivers used by browser acceleration. Profile startup supports native Linux
 `/dev/dri` devices and the WSL2 `/dev/dxg` bridge. `host_gpu` is the default;
 if the requested device or libraries are unavailable, the container starts
 with software rendering and records the fallback reason instead of claiming
-hardware acceleration. The Profile Inspector shows the observed renderer and
-effective rendering mode after each start.
+hardware acceleration. Native Linux uses ANGLE's Vulkan backend so Chrome can
+render through the DRM device even though the private Xvfb display has a
+software-only GLX renderer.
+
+Each Chrome start first visits a loopback-only diagnostic page. It records the
+browser-visible user agent, Client Hints, language, timezone, screen values,
+CPU and memory values, automation flag, and WebGL renderer without CDP or
+external requests, then continues to the requested start URL. The Profile
+Inspector shows these observed values and uses Chrome's WebGL result—not the
+container's GLX result—to determine the effective rendering mode.
 
 The manager starts one loopback-only OCR worker and keeps the selected
 EasyOCR model warm for all automation processes. GPU requests are serialized
