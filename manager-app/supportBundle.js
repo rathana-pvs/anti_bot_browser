@@ -130,7 +130,7 @@ export function buildQueueDiagnosticSummary(queue, options = {}) {
     counts: {
       total: executions.length,
       published: executions.filter((item) => item.status === 'published').length,
-      failed: executions.filter((item) => ['failed', 'failed_before_publish'].includes(item.status)).length,
+      failed: executions.filter((item) => ['failed', 'failed_before_publish', 'failed_after_publish'].includes(item.status)).length,
       unresolved: executions.filter((item) => ['uncertain', 'needs_review'].includes(item.status)).length,
       active: executions.filter((item) => ['running', 'preparing'].includes(item.status)).length,
     },
@@ -143,4 +143,3 @@ export function buildQueueDiagnosticSummary(queue, options = {}) {
     },
   }, { ...options, includeContent: false });
 }
-

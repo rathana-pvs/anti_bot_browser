@@ -167,6 +167,10 @@ class BaseTask:
                 screen,
                 region=getattr(self, "LEFT_PUBLICATION_REGION", None),
             )
+            if observation.state == ScreenState.UNKNOWN:
+                direct_gate = getattr(self, "_observe_direct_reel_publish_gate", None)
+                if callable(direct_gate):
+                    observation = direct_gate(screen, (x, y))
         else:
             self.log("WARN", f"Publish gate rejected unknown publish kind: {publish_kind}")
             return False
@@ -798,6 +802,7 @@ class BaseTask:
             ScreenState.PUBLISHING,
             ScreenState.POST_CONFIRMED,
         }
+        navigation_retried = False
         while time.time() < deadline:
             screen = self.client.screenshot()
             # Navigation can still show the previous page after the address bar
@@ -831,6 +836,17 @@ class BaseTask:
                     f"(url={current_url or 'unknown'}, "
                     f"facebook_visual={has_facebook_visual}, signals={observation.signals}).",
                 )
+                if not navigation_retried and not has_facebook_host:
+                    self.log(
+                        "INFO",
+                        "The browser remained outside Facebook after the first navigation; retrying the target URL once.",
+                    )
+                    self.navigate_to(
+                        target_url,
+                        wait_seconds=2.0,
+                        check_leave_dialog=False,
+                    )
+                    navigation_retried = True
                 observation = StateObservation(
                     ScreenState.UNKNOWN,
                     0.0,
@@ -1049,9 +1065,7 @@ class BaseTask:
         candidates = []
         screen = self.client.screenshot() if screen is None and hasattr(self, "client") and self.client else screen
         for item in self.vision.read_text(screen, region=region, min_confidence=0.15):
-            normalized = re.sub(r"[^a-z0-9]+", " ", item["text"].casefold()).strip()
-            words = set(normalized.split())
-            if normalized.startswith("comment as") or "comment as" in normalized or {"write", "comment"}.issubset(words):
+            if VisionEngine.is_comment_input_text(item.get("text", "")):
                 candidates.append(item)
         if not candidates:
             return None
@@ -1090,8 +1104,7 @@ class BaseTask:
             actions = []
             for item in self.vision.read_text(screen, region=region, min_confidence=0.15):
                 normalized = re.sub(r"[^a-z0-9]+", " ", item.get("text", "").casefold()).strip()
-                words = set(normalized.split())
-                if normalized.startswith("comment as") or "comment as" in normalized or {"write", "comment"}.issubset(words):
+                if VisionEngine.is_comment_input_text(item.get("text", "")):
                     inputs.append(item)
                 elif normalized == "comment":
                     actions.append(item)
@@ -1228,7 +1241,7 @@ class BaseTask:
             if item.get("center", (0, max_y + 1))[1] > max_y:
                 continue
             normalized = re.sub(r"[^a-z0-9]+", " ", item.get("text", "").casefold()).strip()
-            if normalized.startswith("comment as") or normalized.startswith("write a comment"):
+            if VisionEngine.is_comment_input_text(normalized):
                 continue
             visible_parts.append(normalized)
 
@@ -1365,7 +1378,11 @@ class BaseTask:
             comment_confidence = self._comment_match_confidence(
                 comment_link,
                 comment_items,
-                max_y=int(screen_h * 0.90),
+                # The submitted comment renders directly above the known
+                # input. Tall Reel cards can place both below 90% of the
+                # viewport, so bind the cutoff to that input instead of a
+                # fixed screen percentage.
+                max_y=min(screen_h - 1, int(comment_box_pos[1]) - 4),
             )
             best_comment_confidence = max(best_comment_confidence, comment_confidence)
             if submission_pending:
@@ -1568,7 +1585,8 @@ class BaseTask:
         if re.fullmatch(r"\d+\s*(m|min|mins|minute|minutes|s|sec|secs|second|seconds)", clean):
             return True
 
-        words = set(clean.split())
+        parts = clean.split()
+        words = set(parts)
         now_like = bool(words & {"now", "n0w"})
         just_like = bool(words & {"just", "jusl", "jusi"})
         ago_like = bool(words & {"ago", "ag0", "a00", "aoo", "ano"})
@@ -1578,11 +1596,19 @@ class BaseTask:
             re.fullmatch(r"\d+(m|min|mins|minute|minutes|s|sec|secs|second|seconds)", word)
             for word in words
         )
+        expanded_recent_time = any(
+            parts[index].isdigit()
+            and int(parts[index]) <= 15
+            and parts[index + 1] in {"m", "min", "mins", "minute", "minutes"}
+            and parts[index + 2] in {"ago", "ag0", "a00", "aoo", "ano"}
+            for index in range(max(0, len(parts) - 2))
+        )
         moment_like = bool(words & {"moment", "mornent"})
         return (
             (just_like and now_like)
             or (seconds_like and (few_like or ago_like))
             or (numeric_time_like and ago_like)
+            or expanded_recent_time
             or (moment_like and ago_like)
         )
 

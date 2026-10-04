@@ -16,7 +16,7 @@ def percent(count: int | float, total: int | float) -> float | None:
 def build_queue_telemetry_summary(executions: list) -> dict:
     terminal = [
         item for item in executions
-        if item.get("status") in ("published", "failed", "failed_before_publish", "uncertain", "needs_review")
+        if item.get("status") in ("published", "failed", "failed_before_publish", "failed_after_publish", "uncertain", "needs_review")
     ]
     measured = [
         item for item in terminal
@@ -102,7 +102,7 @@ def build_queue_telemetry_summary(executions: list) -> dict:
 
     published = len([item for item in terminal if item.get("status") == "published"])
     uncertain = len([item for item in terminal if item.get("status") in ("uncertain", "needs_review")])
-    failed = len([item for item in terminal if item.get("status") in ("failed", "failed_before_publish")])
+    failed = len([item for item in terminal if item.get("status") in ("failed", "failed_before_publish", "failed_after_publish")])
     reviewed = len([item for item in terminal if item.get("status") in ("uncertain", "needs_review") or item.get("review_status")])
 
     return {

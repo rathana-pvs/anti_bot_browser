@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Profile } from '../types/profile';
 import RFB from '@novnc/novnc';
 import { pasteToProfile } from '../services/api';
+import { readHostClipboardText } from '../services/clipboard';
 import {
   Play,
   Pause,
@@ -72,8 +73,7 @@ export const VncViewer: React.FC<VncViewerProps> = ({
         e.stopPropagation();
 
         try {
-          // Read host system clipboard directly
-          const text = await navigator.clipboard.readText();
+          const text = await readHostClipboardText();
           if (text) {
             rfbRef.current?.clipboardPasteFrom(text);
             await pasteToProfile(profile.id, text, 'paste');
@@ -455,7 +455,7 @@ export const VncViewer: React.FC<VncViewerProps> = ({
                         if (!profile) return;
                         setIsInjecting(true);
                         try {
-                          const text = await navigator.clipboard.readText();
+                          const text = await readHostClipboardText();
                           if (!text) {
                             await showAlert('Host clipboard is empty.', { title: 'Nothing to paste' });
                             return;
@@ -466,7 +466,7 @@ export const VncViewer: React.FC<VncViewerProps> = ({
                           setTimeout(() => setClipboardToast(null), 3000);
                           setIsClipboardOpen(false);
                         } catch (err: any) {
-                          await showAlert('Browser clipboard permission denied. Please paste directly into the box below.', { title: 'Clipboard unavailable', variant: 'danger' });
+                          await showAlert('The desktop clipboard could not be read. Please paste directly into the box below.', { title: 'Clipboard unavailable', variant: 'danger' });
                         } finally {
                           setIsInjecting(false);
                         }

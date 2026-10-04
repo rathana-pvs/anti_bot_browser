@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 import cv2
 import numpy as np
 from .container_client import ContainerClient
+from .text_matcher import OcrTextMatcher
 from .ocr_worker_client import (
     SharedOcrUnavailable,
     read_text_with_shared_worker,
@@ -50,6 +51,38 @@ class VisionEngine:
     MAX_CONSECUTIVE_FAILURES = 3
     OCR_CACHE_MAX_ENTRIES = 24
     _ocr_readers: dict[tuple[tuple[str, ...], str], object] = {}
+    COMMENT_INPUT_MATCHER = OcrTextMatcher(default_threshold=0.78)
+
+    @classmethod
+    def is_comment_input_text(cls, text: str) -> bool:
+        """Recognize a comment-input placeholder without matching comment actions.
+
+        The account name after ``Comment as`` is dynamic, so score only its
+        two-word anchor.  Keep the short second word constrained to its normal
+        form or the common OCR substitution ``a5``; this prevents phrases such
+        as ``Comment by`` and ``Comment on`` from becoming input targets.
+        """
+        normalized = cls.COMMENT_INPUT_MATCHER.normalize(text)
+        words = normalized.split()
+        if (
+            len(words) >= 2
+            and words[1] in {"as", "a5"}
+            and cls.COMMENT_INPUT_MATCHER.evaluate(
+                expected="Comment as",
+                received=" ".join(words[:2]),
+                threshold=0.75,
+            ).matched
+        ):
+            return True
+        return any(
+            cls.COMMENT_INPUT_MATCHER.evaluate(
+                expected=expected,
+                received=normalized,
+                threshold=0.78,
+                required_tokens=("write", "comment"),
+            ).matched
+            for expected in ("Write a comment", "Write a public comment")
+        )
 
     def __init__(self, client: ContainerClient):
         self.client = client
@@ -902,13 +935,9 @@ class VisionEngine:
             matches = []
             for item in ocr_items:
                 raw_text = item["text"].casefold().strip()
-                normalized = re.sub(r"[^a-z0-9]+", " ", raw_text).strip()
-                words = set(normalized.split())
 
-                if "comment as" in raw_text or raw_text.startswith("comment as") or {"comment", "as"}.issubset(words):
+                if self.is_comment_input_text(raw_text):
                     matches.append((item, 10))
-                elif any(phrase in raw_text for phrase in ("write a comment", "write a public comment")):
-                    matches.append((item, 8))
 
             if matches:
                 # A profile can expose several post comment pills at once. The

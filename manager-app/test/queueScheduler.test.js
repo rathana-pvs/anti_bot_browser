@@ -159,8 +159,8 @@ test('live-worker silence limits are stage-specific and longer than scheduler le
   assert.equal(workerSilenceTimeoutMs('composing', 5 * 60_000), 15 * 60_000);
 });
 
-test('published and unresolved executions cannot be claimed', () => {
-  for (const status of ['published', 'uncertain', 'needs_review', 'running']) {
+test('published, post-click failures, and unresolved executions cannot be claimed', () => {
+  for (const status of ['published', 'failed_after_publish', 'uncertain', 'needs_review', 'running']) {
     const execution = { execution_id: status, profile_id: 'profile_001', status };
     const result = claimExecutionLease(queueWith(execution), execution, {
       leaseId: `lease-${status}`, ownerId: 'manager-1', nowMs: NOW,

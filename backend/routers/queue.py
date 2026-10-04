@@ -82,7 +82,7 @@ def get_queue():
         "running": len([e for e in all_executions if e.get("status") in ("running", "preparing")]),
         "published": len([e for e in all_executions if e.get("status") == "published"]),
         "completed": len([e for e in all_executions if e.get("status") == "completed"]),
-        "failed": len([e for e in all_executions if e.get("status") in ("failed", "failed_before_publish")]),
+        "failed": len([e for e in all_executions if e.get("status") in ("failed", "failed_before_publish", "failed_after_publish")]),
         "uncertain": len([e for e in all_executions if e.get("status") in ("uncertain", "needs_review")]),
         "skipped": len([e for e in all_executions if e.get("status") and e["status"].startswith("skipped")]),
     }

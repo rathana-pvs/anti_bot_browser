@@ -6,7 +6,7 @@ import os
 import subprocess
 import sys
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -48,6 +48,61 @@ class ChromeWindowDiscoveryTests(unittest.TestCase):
         ]
 
         self.assertEqual(self.client.get_chrome_window(), 303)
+
+
+class ChromeNavigationTests(unittest.TestCase):
+    def test_navigation_clicks_address_bar_and_replaces_the_address(self):
+        client = ContainerClient("test-profile")
+        client.ensure_focus = Mock(return_value=55)
+        client.exec_cmd = Mock(
+            side_effect=[
+                completed(stdout="X=0\nY=0\nWIDTH=1920\nHEIGHT=1080\n"),
+                completed(),
+                completed(),
+                completed(),
+                completed(),
+                completed(),
+            ]
+        )
+
+        with patch("engine.container_client.time.sleep", return_value=None):
+            client.navigate_to("https://www.facebook.com/")
+
+        self.assertEqual(
+            [call.args[0] for call in client.exec_cmd.call_args_list],
+            [
+                ["xdotool", "getwindowgeometry", "--shell", "55"],
+                ["xdotool", "mousemove", "--window", "55", "960", "61"],
+                ["xdotool", "click", "1"],
+                ["xdotool", "key", "--clearmodifiers", "ctrl+a"],
+                ["xdotool", "type", "--clearmodifiers", "https://www.facebook.com/"],
+                ["xdotool", "key", "--clearmodifiers", "Return"],
+            ],
+        )
+
+    def test_url_read_clicks_address_bar_before_copying(self):
+        client = ContainerClient("test-profile")
+        client.ensure_focus = Mock(return_value=55)
+        client.exec_cmd = Mock(
+            side_effect=[
+                completed(stdout="X=0\nY=0\nWIDTH=1920\nHEIGHT=1080\n"),
+                completed(),
+                completed(),
+                completed(stdout="https://www.facebook.com/me"),
+            ]
+        )
+
+        self.assertEqual(client.get_current_url(), "https://www.facebook.com/me")
+
+        calls = [call.args[0] for call in client.exec_cmd.call_args_list]
+        self.assertEqual(
+            calls[1],
+            ["xdotool", "mousemove", "--window", "55", "960", "61"],
+        )
+        script = calls[-1][-1]
+        self.assertIn("xdotool key --clearmodifiers ctrl+a", script)
+        self.assertIn("timeout 3s xclip -o -selection clipboard", script)
+        self.assertNotIn("ctrl+l", script)
 
 
 if __name__ == "__main__":

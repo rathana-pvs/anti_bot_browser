@@ -42,7 +42,7 @@ export interface QueueExecutionItem {
   spun_caption: string;
   first_comment?: string | null;
   scheduled_at: string;
-  status: 'pending' | 'running' | 'published' | 'failed' | 'failed_before_publish' | 'uncertain' | string;
+  status: 'pending' | 'running' | 'published' | 'failed' | 'failed_before_publish' | 'failed_after_publish' | 'uncertain' | string;
   stage?: string | null;
   stage_history?: Array<{
     stage: string;

@@ -12,7 +12,10 @@ from backend.scheduler.background import setup_background_tasks, shutdown_backgr
 from backend.services.automation_service import (
     recover_stale_queue_executions,
     active_automation_tasks,
+    cleanup_orphaned_automation_containers,
 )
+from backend.services import container_lifecycle
+from backend.services.queue_service import load_posting_queue, save_posting_queue
 from backend.services.ocr_worker_service import start_shared_ocr_worker, stop_shared_ocr_worker
 
 from backend.routers import (
@@ -33,19 +36,19 @@ from backend.routers import (
 async def lifespan(app: FastAPI):
     # Startup
     recover_stale_queue_executions("manager_startup_stale_lease")
+    container_lifecycle.SHUTTING_DOWN = False
+    legacy_queue = load_posting_queue()
+    container_lifecycle.import_legacy_owners(legacy_queue)
+    save_posting_queue(legacy_queue)
+    await cleanup_orphaned_automation_containers()
     shared_ocr = start_shared_ocr_worker()
     setup_background_tasks()
     print(f"FastAPI Backend started successfully. Shared OCR: {shared_ocr.get('url') or 'local fallback'}")
     yield
     # Shutdown
+    container_lifecycle.SHUTTING_DOWN = True
     shutdown_background_tasks()
-    for task_record in active_automation_tasks.values():
-        proc = task_record.get("process")
-        if proc:
-            try:
-                proc.terminate()
-            except Exception:
-                pass
+    await cleanup_orphaned_automation_containers(force=True)
     stop_shared_ocr_worker()
     print("FastAPI Backend shutdown complete.")
 

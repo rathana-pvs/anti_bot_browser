@@ -56,6 +56,8 @@ from backend.services.queue_service import (
     apply_interrupted_execution_recovery,
 )
 
+from backend.services import container_lifecycle as lifecycle
+
 # Brain CLI wrapper
 def run_brain_cli(args: list[str]) -> dict:
     try:
@@ -93,6 +95,8 @@ def resolve_brain_pin(brain_id: str, requested_version: str | None = None) -> di
 
 # In-memory tasks registry
 active_automation_tasks: dict[str, dict] = {}
+PREPARATION_HANDOFF_SECONDS = 120.0
+CONTAINER_STOP_RETRY_DELAYS = (0.0, 2.0, 5.0)
 
 def is_task_process_active(record: dict | None) -> bool:
     if not record or record.get("status") != "running":
@@ -173,6 +177,7 @@ def latest_queue_task_state(profile_id: str) -> dict | None:
         "completed": "completed",
         "failed": "failed",
         "failed_before_publish": "failed",
+        "failed_after_publish": "failed",
         "uncertain": "uncertain",
         "needs_review": "uncertain",
         "stopped": "stopped",
@@ -214,8 +219,14 @@ async def run_profile_lifecycle_action(profile_id: str, action: str, timeout_sec
         except Exception:
             pass
         raise TimeoutError(f"Lifecycle action '{action}' on {profile_id} timed out")
+    except asyncio.CancelledError:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+        raise
 
 async def ensure_profile_container_ready(profile_id: str) -> dict:
+    lifecycle.mark_used(profile_id, lifecycle.OWNER_TOKEN.get())
     original_status = get_container_status(profile_id)
     if original_status == "paused":
         await run_profile_lifecycle_action(profile_id, "unpause")
@@ -239,16 +250,69 @@ async def ensure_profile_container_ready(profile_id: str) -> dict:
             window_id = stdout_b.decode("utf-8", errors="replace").strip()
             if window_id:
                 return {"started": original_status != "running", "status": "running"}
+        except asyncio.CancelledError:
+            if 'chk' in locals() and chk.returncode is None:
+                chk.kill()
+                await chk.wait()
+            raise
         except Exception:
-            pass
+            if 'chk' in locals() and chk.returncode is None:
+                chk.kill()
+                await chk.wait()
         await asyncio.sleep(0.75)
     raise RuntimeError(f"Container {container_name} started but Chrome was not ready within 45 seconds")
 
+async def _stop_container_with_retries(profile_id: str) -> dict:
+    last_error = None
+    for attempt, delay in enumerate(CONTAINER_STOP_RETRY_DELAYS, start=1):
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            if get_container_status(profile_id, strict=True) == "stopped":
+                return {"stopped": True, "already_stopped": True, "attempts": attempt}
+            await run_profile_lifecycle_action(profile_id, "stop")
+            if get_container_status(profile_id, strict=True) != "stopped":
+                raise RuntimeError("Container is still running after Stop")
+            return {
+                "stopped": True,
+                "already_stopped": False,
+                "attempts": attempt,
+            }
+        except Exception as error:
+            last_error = error
+    raise RuntimeError(
+        f"Could not stop container for {profile_id} after {len(CONTAINER_STOP_RETRY_DELAYS)} attempts: {last_error}"
+    )
+
+
 async def stop_profile_container_after_report(profile_id: str) -> dict:
-    if get_container_status(profile_id) == "stopped":
-        return {"stopped": True, "already_stopped": True}
-    await run_profile_lifecycle_action(profile_id, "stop")
-    return {"stopped": True, "already_stopped": False}
+    return await lifecycle.release(profile_id, lifecycle.OWNER_TOKEN.get(), _stop_container_with_retries)
+
+
+async def _terminate_owned_worker(profile_id, token):
+    record = active_automation_tasks.get(profile_id)
+    if not record or record.get("container_owner_token") != token:
+        return
+    proc = record.get("process")
+    if proc and proc.returncode is None:
+        try:
+            proc.terminate()
+            await asyncio.wait_for(proc.wait(), timeout=2)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except ProcessLookupError:
+            pass
+    if record.get("status") == "running":
+        record["status"] = "stale"
+        record["error"] = "Container ownership expired or automation was interrupted"
+    record["lifecycle_active"] = False
+
+
+async def cleanup_orphaned_automation_containers(force: bool = False) -> dict:
+    await lifecycle.recover(_stop_container_with_retries, _terminate_owned_worker, force=force)
+    return {"remaining": len(lifecycle.snapshot())}
+
 
 # Task Runner implementations
 async def launch_manual_automation(
@@ -329,13 +393,19 @@ async def launch_manual_automation(
         "brain": brain_pin,
         "last_activity_at": now_iso,
     }
+    token = lifecycle.acquire(profile_id, "manual:" + manual_lease["lease_id"])
+    task_record["container_owner_token"] = token
     active_automation_tasks[profile_id] = task_record
-
-    asyncio.create_task(_run_manual_subprocess(profile_id, args, task_record))
+    context_token = lifecycle.OWNER_TOKEN.set(token)
+    try:
+        asyncio.create_task(_run_manual_subprocess(profile_id, args, task_record))
+    finally:
+        lifecycle.OWNER_TOKEN.reset(context_token)
     return serialize_task_state(task_record)
 
 async def _run_manual_subprocess(profile_id: str, args: list[str], task_record: dict):
     try:
+        lifecycle.mark_used(profile_id, lifecycle.OWNER_TOKEN.get())
         proc = await asyncio.create_subprocess_exec(
             str(AUTOMATION_PYTHON), *args,
             cwd=str(ROOT_DIR),
@@ -407,8 +477,19 @@ async def _run_manual_subprocess(profile_id: str, args: list[str], task_record: 
         task_record["ended_at"] = datetime.now(timezone.utc).isoformat()
         task_record["status"] = "failed"
         task_record["error"] = str(err)
-        task_record["process"] = None
         task_record["scheduler_lease"] = None
+    finally:
+        try:
+            await _terminate_owned_worker(profile_id, task_record["container_owner_token"])
+        except Exception as error:
+            task_record["worker_cleanup_error"] = str(error)
+        task_record["process"] = None
+        try:
+            task_record["container_cleanup"] = await stop_profile_container_after_report(profile_id)
+            task_record["container_stopped_at"] = datetime.now(timezone.utc).isoformat()
+            task_record["container_cleanup_error"] = None
+        except Exception as cleanup_error:
+            task_record["container_cleanup_error"] = str(cleanup_error)
 
 def stop_automation_task(profile_id: str) -> dict:
     record = active_automation_tasks.get(profile_id)
@@ -458,6 +539,11 @@ def claim_queue_execution(execution_id: str, kind: str = "publisher") -> dict:
             err.schedulerReason = "preparation_not_ready"
             raise err
 
+        if target_exec.get("container_cleanup_in_progress"):
+            err = RuntimeError("Container cleanup is in progress")
+            err.schedulerReason = "container_cleanup_in_progress"
+            raise err
+
         if kind == "publisher":
             iteration_check = batch_iteration_availability(
                 target_batch,
@@ -482,6 +568,10 @@ def claim_queue_execution(execution_id: str, kind: str = "publisher") -> dict:
             err.schedulerReason = claim["reason"]
             raise err
 
+        token = lifecycle.OWNER_TOKEN.get()
+        if not token:
+            raise RuntimeError("Missing automation ownership context")
+        lifecycle.acquire(target_exec["profile_id"], execution_id, token)
         now_iso = datetime.now(timezone.utc).isoformat()
         target_exec["status"] = "preparing" if (kind == "preparer" and not standalone_warming) else "running"
         target_exec["started_at"] = now_iso
@@ -503,6 +593,10 @@ def claim_queue_execution(execution_id: str, kind: str = "publisher") -> dict:
             "lease_id": lease_id,
         })
         target_exec["stage_updated_at"] = now_iso
+        target_exec["automation_container_owned"] = True
+        target_exec["container_owner_schema"] = 1
+        target_exec["container_owner_token"] = token
+        target_exec["container_handoff_expires_at"] = None
 
         if not save_posting_queue(queue):
             raise RuntimeError("Failed to persist scheduler claim")
@@ -510,7 +604,7 @@ def claim_queue_execution(execution_id: str, kind: str = "publisher") -> dict:
 
     return with_queue_claim_lock(_claim_fn)
 
-async def execute_queue_preparation(execution_id: str):
+async def _execute_queue_preparation_inner(execution_id: str):
     claim_res = claim_queue_execution(execution_id, "preparer")
     target_exec = claim_res["targetExec"]
     lease_id = claim_res["leaseId"]
@@ -542,6 +636,7 @@ async def execute_queue_preparation(execution_id: str):
         "scheduler_lease": lease,
         "last_activity_at": now_iso,
     }
+    task_record["container_owner_token"] = lifecycle.OWNER_TOKEN.get()
     active_automation_tasks[profile_id] = task_record
 
     try:
@@ -646,6 +741,10 @@ async def execute_queue_preparation(execution_id: str):
             ex["stage"] = "ready"
             ex["preparation_status"] = "ready"
             ex["preparation_ended_at"] = ended_at
+            ex["container_handoff_expires_at"] = datetime.fromtimestamp(
+                time.time() + PREPARATION_HANDOFF_SECONDS,
+                tz=timezone.utc,
+            ).isoformat()
             ex["error"] = None
         else:
             ex["status"] = "failed_before_publish"
@@ -665,7 +764,40 @@ async def execute_queue_preparation(execution_id: str):
         asyncio.create_task(_delayed_dispatch(100))
     return {"success": code == 0, "status": reported_status or "completed", "code": code}
 
-async def execute_queue_item(execution_id: str, scheduler_kind: str = "publisher"):
+
+async def _run_owned_queue(execution_id, action, *args, preparation=False):
+    queue = load_posting_queue()
+    match = find_queue_execution(queue, execution_id)
+    profile_id = match["execution"].get("profile_id") if match else None
+    token = uuid.uuid4().hex
+    context_token = lifecycle.OWNER_TOKEN.set(token)
+    hold = False
+    try:
+        result = await action(execution_id, *args)
+        if preparation and result.get("success") and profile_id:
+            prepared = find_queue_execution(load_posting_queue(), execution_id)
+            if prepared and prepared["execution"].get("status") == "ready":
+                hold = lifecycle.handoff(profile_id, token)
+        return result
+    finally:
+        try:
+            if profile_id and not hold:
+                try:
+                    await _terminate_owned_worker(profile_id, token)
+                except Exception as error:
+                    print(f"Worker termination failed for {profile_id}: {error}")
+                try:
+                    await lifecycle.release(profile_id, token, _stop_container_with_retries)
+                except Exception as error:
+                    print(f"Container cleanup failed for {profile_id}: {error}")
+        finally:
+            lifecycle.OWNER_TOKEN.reset(context_token)
+
+
+async def execute_queue_preparation(execution_id: str):
+    return await _run_owned_queue(execution_id, _execute_queue_preparation_inner, preparation=True)
+
+async def _execute_queue_item_inner(execution_id: str, scheduler_kind: str = "publisher"):
     claim_res = claim_queue_execution(execution_id, scheduler_kind)
     target_exec = claim_res["targetExec"]
     target_post = claim_res["targetPost"]
@@ -714,6 +846,7 @@ async def execute_queue_item(execution_id: str, scheduler_kind: str = "publisher
         "process": None,
         "lifecycle_active": True,
     }
+    task_record["container_owner_token"] = lifecycle.OWNER_TOKEN.get()
     active_automation_tasks[profile_id] = task_record
 
     try:
@@ -800,6 +933,8 @@ async def execute_queue_item(execution_id: str, scheduler_kind: str = "publisher
 
     if reported_status and reported_status.startswith("skipped_"):
         final_status = reported_status
+    elif reported_status == "failed_after_publish":
+        final_status = "failed_after_publish"
     elif reported_status in ("needs_review", "uncertain") or reached_publish:
         final_status = "needs_review" if reported_status == "needs_review" else "uncertain"
     elif code == 0:
@@ -840,6 +975,10 @@ async def execute_queue_item(execution_id: str, scheduler_kind: str = "publisher
                 ex["first_comment_method"] = res.get("first_comment_method")
                 if res["first_comment"] == "submitted_verified":
                     ex["first_comment_verified_at"] = ended_at
+        elif reported_status == "failed_after_publish":
+            ex["status"] = "failed_after_publish"
+            ex["stage"] = "failed_after_publish"
+            ex["error"] = res.get("error") or "Publication was not found during post-result verification"
         elif reported_status in ("needs_review", "uncertain") or code == 2 or reached_publish:
             ex["status"] = "needs_review" if reported_status == "needs_review" else "uncertain"
             ex["error"] = res.get("error") or "Publication requires operator review or could not be visually confirmed"
@@ -873,6 +1012,9 @@ async def execute_queue_item(execution_id: str, scheduler_kind: str = "publisher
             cl_match["execution"]["container_stopped_at"] = datetime.now(timezone.utc).isoformat() if (cleanup and cleanup.get("stopped")) else None
             cl_match["execution"]["container_cleanup"] = cleanup
             cl_match["execution"]["container_cleanup_error"] = cleanup_error
+            if cleanup:
+                cl_match["execution"]["automation_container_owned"] = False
+                cl_match["execution"]["container_handoff_expires_at"] = None
             save_posting_queue(cleanup_q)
 
         asyncio.create_task(_delayed_dispatch(100))
@@ -880,7 +1022,11 @@ async def execute_queue_item(execution_id: str, scheduler_kind: str = "publisher
 
     return {"success": False, "status": "fenced", "code": code}
 
-async def execute_queue_comment_retry(execution_id: str, start_admission_claimed: bool = False):
+
+async def execute_queue_item(execution_id: str, scheduler_kind: str = "publisher"):
+    return await _run_owned_queue(execution_id, _execute_queue_item_inner, scheduler_kind)
+
+async def _execute_queue_comment_retry_inner(execution_id: str, start_admission_claimed: bool = False):
     queue = load_posting_queue()
     match = find_queue_execution(queue, execution_id)
     if not match:
@@ -927,9 +1073,14 @@ async def execute_queue_comment_retry(execution_id: str, start_admission_claimed
         "heartbeat_at": now_iso,
         "expires_at": datetime.fromtimestamp((now_ms + scheduler_cfg["lease_ttl_ms"]) / 1000, tz=timezone.utc).isoformat(),
     }
+    lifecycle.acquire(profile_id, execution_id, lifecycle.OWNER_TOKEN.get())
     match["execution"]["comment_retry_status"] = "running"
     match["execution"]["comment_retry_started_at"] = now_iso
     match["execution"]["first_comment_note"] = None
+    match["execution"]["automation_container_owned"] = True
+    match["execution"]["container_owner_schema"] = 1
+    match["execution"]["container_owner_token"] = lifecycle.OWNER_TOKEN.get()
+    match["execution"]["container_handoff_expires_at"] = None
     save_posting_queue(queue)
 
     task_record = {
@@ -948,6 +1099,7 @@ async def execute_queue_comment_retry(execution_id: str, start_admission_claimed
         "last_activity_at": now_iso,
         "lifecycle_active": True,
     }
+    task_record["container_owner_token"] = lifecycle.OWNER_TOKEN.get()
     active_automation_tasks[profile_id] = task_record
 
     try:
@@ -1045,6 +1197,10 @@ async def execute_queue_comment_retry(execution_id: str, start_admission_claimed
         pass
     return {"success": code == 0, "status": up_m["execution"].get("first_comment_status") if up_m else "failed"}
 
+
+async def execute_queue_comment_retry(execution_id: str, start_admission_claimed: bool = False):
+    return await _run_owned_queue(execution_id, _execute_queue_comment_retry_inner, start_admission_claimed)
+
 async def _delayed_dispatch(delay_ms: int = 100):
     await asyncio.sleep(delay_ms / 1000.0)
     try:
@@ -1095,6 +1251,12 @@ def heartbeat_scheduler_leases():
 
     for record in list(active_automation_tasks.values()):
         if not is_task_process_active(record) or not record.get("scheduler_lease", {}).get("lease_id"):
+            continue
+
+        token = record.get("container_owner_token")
+        if token and not lifecycle.heartbeat(record["profile_id"], token):
+            record["status"] = "stale"
+            record["error"] = "Absolute automation deadline exceeded or ownership lost"
             continue
 
         last_act = record.get("last_activity_at") or record.get("started_at") or ""
@@ -1165,6 +1327,7 @@ async def _run_dispatched_queue_task(execution_id: str, kind: str):
             "Execution does not require passive preparation",
             "Execution not found",
             "queue_claim_in_progress",
+            "Container cleanup is in progress",
         )
         if isinstance(err, RuntimeError) and message.startswith(expected_prefixes):
             print(f"[Queue Dispatcher] Deferred {execution_id}: {message}")
@@ -1204,6 +1367,8 @@ async def dispatch_pending_queue():
             current_q = load_posting_queue()
             match = find_queue_execution(current_q, exec_id)
             if not match or match["execution"].get("status") not in ("pending", "ready"):
+                continue
+            if match["execution"].get("container_cleanup_in_progress"):
                 continue
 
             batch_id = match["batch"].get("batch_id")

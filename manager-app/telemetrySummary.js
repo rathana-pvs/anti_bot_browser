@@ -15,7 +15,7 @@ function percent(count, total) {
 
 export function buildQueueTelemetrySummary(executions) {
   const terminal = executions.filter((item) =>
-    ['published', 'failed', 'failed_before_publish', 'uncertain', 'needs_review'].includes(item.status)
+    ['published', 'failed', 'failed_before_publish', 'failed_after_publish', 'uncertain', 'needs_review'].includes(item.status)
   );
   const measured = terminal.filter((item) => Number(item.telemetry?.total_duration_ms) >= 0);
   const durations = measured.map((item) => Number(item.telemetry.total_duration_ms));
@@ -85,7 +85,7 @@ export function buildQueueTelemetrySummary(executions) {
 
   const published = terminal.filter((item) => item.status === 'published').length;
   const uncertain = terminal.filter((item) => ['uncertain', 'needs_review'].includes(item.status)).length;
-  const failed = terminal.filter((item) => ['failed', 'failed_before_publish'].includes(item.status)).length;
+  const failed = terminal.filter((item) => ['failed', 'failed_before_publish', 'failed_after_publish'].includes(item.status)).length;
   const reviewed = terminal.filter((item) =>
     ['uncertain', 'needs_review'].includes(item.status) || Boolean(item.review_status)
   ).length;

@@ -10,6 +10,7 @@ import re
 import numpy as np
 
 from .vision import VisionEngine
+from .text_matcher import OcrTextMatcher
 
 
 class ScreenState(str, Enum):
@@ -67,6 +68,7 @@ class FacebookStateRecognizer:
         "reel published",
         "reel shared",
     )
+    OCR_TEXT_MATCHER = OcrTextMatcher(default_threshold=0.78)
 
     def __init__(self, vision: VisionEngine):
         self.vision = vision
@@ -128,6 +130,24 @@ class FacebookStateRecognizer:
             re.sub(r"[^a-z0-9]+", " ", text.casefold()).strip()
             for text in texts
         }
+        has_reel_ready_marker = any(
+            self.OCR_TEXT_MATCHER.evaluate(
+                expected="Your reel is safe to publish",
+                received=text,
+                required_tokens=("your", "reel", "safe", "publish"),
+            ).matched
+            for text in normalized_items
+        )
+        has_publish_action = bool(
+            normalized_items.intersection({"post", "publish", "share"})
+        )
+        if has_reel_ready_marker and has_publish_action:
+            return StateObservation(
+                ScreenState.POST_ENABLED,
+                0.99,
+                ["reel safe-to-publish marker", "explicit publish action"],
+                texts,
+            )
         if normalized_items.intersection({
             "publishing",
             "posting",
@@ -203,7 +223,14 @@ class FacebookStateRecognizer:
             "what s on your mind",
             "write something",
         )
-        create_post_title = COMPOSER_PHRASES[0] in blob
+        create_post_title = any(
+            self.OCR_TEXT_MATCHER.evaluate(
+                expected="Create post",
+                received=item.get("text", ""),
+            ).matched
+            and item.get("center", (0, screen.shape[0] + 1))[1] <= screen.shape[0] * 0.6
+            for item in ocr
+        )
         if not create_post_title:
             create_items = [
                 it for it in ocr
@@ -232,16 +259,33 @@ class FacebookStateRecognizer:
             "post audience",
             "scheduling options",
         )
-        review_matches = self._contains(blob, review_phrases)
-        review_open = "post settings" in blob or len(review_matches) >= 2
+        review_matches = [
+            phrase
+            for phrase in review_phrases
+            if any(
+                self.OCR_TEXT_MATCHER.evaluate(
+                    expected=phrase,
+                    received=item.get("text", ""),
+                ).matched
+                for item in ocr
+            )
+        ]
+        review_open = "post settings" in review_matches or len(review_matches) >= 2
         post_button = None
         next_button = None
 
+        has_add_to_post = any(
+            self.OCR_TEXT_MATCHER.evaluate(
+                expected="Add to your post",
+                received=item.get("text", ""),
+                required_tokens=("add", "your", "post"),
+            ).matched
+            for item in ocr
+        )
         has_composer_modal_markers = (
             create_post_title
             or "ai label" in blob
-            or "add to your post" in blob
-            or any("add to your post" in it["text"].casefold() for it in ocr)
+            or has_add_to_post
         )
         composer_open = has_composer_modal_markers
 
@@ -284,11 +328,11 @@ class FacebookStateRecognizer:
             button_region = (x1, y1, x2 - x1, y2 - y1)
             cands = self.vision.read_text(screen, region=button_region, min_confidence=0.15)
             for cand in cands:
-                cand_words = [w for w in re.sub(r"[^a-z0-9]+", " ", cand["text"].casefold()).split() if w]
-                if any(w in ("post", "publish") for w in cand_words):
+                cand_text = re.sub(r"[^a-z0-9]+", " ", cand["text"].casefold()).strip()
+                if cand_text in ("post", "publish"):
                     if post_button is None or cand["confidence"] > post_button["confidence"]:
                         post_button = cand
-                elif any(w == "next" for w in cand_words):
+                elif cand_text == "next":
                     if next_button is None or cand["confidence"] > next_button["confidence"]:
                         next_button = cand
 
@@ -323,7 +367,7 @@ class FacebookStateRecognizer:
                 next_button["center"][1] - blue_button[1],
             ) <= 140
         )
-        if next_is_blue or (post_is_blue and ("edit" in blob or "add to your post" in blob)):
+        if next_is_blue or (post_is_blue and ("edit" in blob or has_add_to_post)):
             composer_open = True
         if (composer_open or review_open) and post_is_blue:
             return StateObservation(

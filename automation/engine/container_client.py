@@ -81,18 +81,56 @@ class ContainerClient:
         """Ensure the main Chrome window has X11 input focus."""
         win_id = self.get_chrome_window()
         if win_id > 0:
-            self.exec_cmd(["xdotool", "windowfocus", str(win_id)])
+            self.exec_cmd(["xdotool", "windowfocus", "--sync", str(win_id)])
         return win_id
 
-    def navigate_to(self, url: str) -> None:
-        """Navigate to a URL via Chrome address bar (Ctrl+L -> Type -> Enter)."""
+    def focus_address_bar(self) -> bool:
+        """Focus Chrome's address field with a real pointer click.
+
+        The lightweight container window manager does not advertise
+        ``_NET_ACTIVE_WINDOW`` and Chrome can ignore synthetic Ctrl+L events.
+        A click at the address-field center is stable across the supported
+        desktop resolutions and uses the same XTEST input path as automation.
+        """
         win_id = self.ensure_focus()
-        target_flag = ["--window", str(win_id)] if win_id > 0 else []
-        self.exec_cmd(["xdotool", "key"] + target_flag + ["ctrl+l"])
-        time.sleep(0.2)
-        self.exec_cmd(["xdotool", "type"] + target_flag + [url])
+        if win_id <= 0:
+            return False
+        geometry = self.exec_cmd(
+            ["xdotool", "getwindowgeometry", "--shell", str(win_id)],
+            check=False,
+        )
+        values = dict(
+            re.findall(r"^(X|Y|WIDTH|HEIGHT)=(\-?\d+)$", geometry.stdout, re.MULTILINE)
+        )
+        if "WIDTH" not in values or "HEIGHT" not in values:
+            return False
+        address_x = max(1, int(values["WIDTH"]) // 2)
+        address_y = min(61, max(1, int(values["HEIGHT"]) - 1))
+        self.exec_cmd(
+            [
+                "xdotool",
+                "mousemove",
+                "--window",
+                str(win_id),
+                str(address_x),
+                str(address_y),
+            ]
+        )
+        self.exec_cmd(["xdotool", "click", "1"])
         time.sleep(0.1)
-        self.exec_cmd(["xdotool", "key"] + target_flag + ["Return"])
+        return True
+
+    def navigate_to(self, url: str) -> None:
+        """Navigate through Chrome's address bar using OS-level input."""
+        clean_modifiers = ["--clearmodifiers"]
+        if not self.focus_address_bar():
+            self.exec_cmd(["xdotool", "key"] + clean_modifiers + ["ctrl+l"])
+            time.sleep(0.2)
+        self.exec_cmd(["xdotool", "key"] + clean_modifiers + ["ctrl+a"])
+        time.sleep(0.1)
+        self.exec_cmd(["xdotool", "type"] + clean_modifiers + [url])
+        time.sleep(0.1)
+        self.exec_cmd(["xdotool", "key"] + clean_modifiers + ["Return"])
 
     def refresh_page(self) -> None:
         """Refresh the active browser tab via F5 keystroke."""
@@ -108,22 +146,20 @@ class ContainerClient:
 
     def get_current_url(self) -> str | None:
         """
-        Read the active URL from Chrome's address bar via OS-level clipboard events
-        (Ctrl+L -> Ctrl+C -> Escape -> xclip). Pure OS-level event, zero CDP required.
+        Read the active URL from Chrome's address bar via OS-level clipboard events.
+        Pure OS-level event, zero CDP required.
         """
         try:
-            win_id = self.ensure_focus()
-            target_flag = f"--window {win_id}" if win_id > 0 else ""
-            focus_cmd = f"xdotool windowfocus --sync {win_id} && " if win_id > 0 else ""
+            clean_modifiers = ["--clearmodifiers"]
+            if not self.focus_address_bar():
+                self.exec_cmd(["xdotool", "key"] + clean_modifiers + ["ctrl+l"])
+                time.sleep(0.2)
             script = (
-                f"echo -n '' | xclip -i -selection clipboard && "
-                f"{focus_cmd}"
-                f"xdotool key {target_flag} ctrl+l && "
+                f"xdotool key --clearmodifiers ctrl+a && "
+                f"xdotool key --clearmodifiers ctrl+c && "
                 f"sleep 0.15 && "
-                f"xdotool key {target_flag} ctrl+c && "
-                f"sleep 0.15 && "
-                f"xdotool key {target_flag} Escape && "
-                f"xclip -o -selection clipboard"
+                f"xdotool key --clearmodifiers Escape && "
+                f"timeout 3s xclip -o -selection clipboard"
             )
             res = self.exec_cmd(["bash", "-c", script], check=False)
             url = res.stdout.strip()

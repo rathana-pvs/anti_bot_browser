@@ -22,6 +22,7 @@ PIPELINE_ORDER = (
     "warming",
     "publish",
     "post_publish_prompt",
+    "publication_result_verifier",
     "comment",
     "finalize",
 )

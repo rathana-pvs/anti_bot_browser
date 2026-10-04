@@ -1165,6 +1165,7 @@ function latestQueueTaskState(profileId) {
     completed: 'completed',
     failed: 'failed',
     failed_before_publish: 'failed',
+    failed_after_publish: 'failed',
     uncertain: 'uncertain',
     needs_review: 'uncertain',
     stopped: 'stopped',
@@ -1937,7 +1938,7 @@ app.get('/api/queue', (req, res) => {
       running: allExecutions.filter((e) => ['running', 'preparing'].includes(e.status)).length,
       published: allExecutions.filter((e) => e.status === 'published').length,
       completed: allExecutions.filter((e) => e.status === 'completed').length,
-      failed: allExecutions.filter((e) => e.status === 'failed' || e.status === 'failed_before_publish').length,
+      failed: allExecutions.filter((e) => ['failed', 'failed_before_publish', 'failed_after_publish'].includes(e.status)).length,
       uncertain: allExecutions.filter((e) => e.status === 'uncertain' || e.status === 'needs_review').length,
       skipped: allExecutions.filter((e) => e.status && e.status.startsWith('skipped')).length,
     };
@@ -2595,6 +2596,8 @@ async function executeQueueItem(executionId, schedulerKind = 'publisher') {
 
       taskRecord.status = reportedStatus?.startsWith('skipped_')
         ? reportedStatus
+        : reportedStatus === 'failed_after_publish'
+          ? 'failed_after_publish'
         : (reportedStatus === 'needs_review' || reportedStatus === 'uncertain' || reachedPublish)
           ? (reportedStatus === 'needs_review' ? 'needs_review' : 'uncertain')
           : (code === 0 ? 'completed' : 'failed');
@@ -2649,6 +2652,10 @@ async function executeQueueItem(executionId, schedulerKind = 'publisher') {
               execInDb.first_comment_verified_at = new Date().toISOString();
             }
           }
+        } else if (reportedStatus === 'failed_after_publish') {
+          // Terminal post-click failure. Keep it non-runnable to prevent duplicate publication.
+          execInDb.status = 'failed_after_publish';
+          execInDb.error = taskRecord.result?.error || 'Published Reel could not be found after bounded verification';
         } else if (reportedStatus === 'needs_review' || reportedStatus === 'uncertain' || code === 2 || reachedPublish) {
           // Never automatically retry after a one-way publish click or gated semantic fallback.
           execInDb.status = reportedStatus === 'needs_review' ? 'needs_review' : 'uncertain';

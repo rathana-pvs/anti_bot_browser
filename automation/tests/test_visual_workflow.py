@@ -140,6 +140,10 @@ class StateRecognizerTests(unittest.TestCase):
         self.assertEqual(disabled.observe().state, ScreenState.COMPOSER_OPEN)
         self.assertEqual(enabled.observe().state, ScreenState.POST_ENABLED)
 
+    def test_composer_does_not_treat_boost_post_as_post_action(self):
+        recognizer = FacebookStateRecognizer(self.make_vision(["Create post", "Boost Post"]))
+        self.assertEqual(recognizer.observe().state, ScreenState.COMPOSER_OPEN)
+
     def test_media_composer_with_next_is_ready(self):
         recognizer = FacebookStateRecognizer(self.make_vision(["Create post", "Next"]))
         self.assertEqual(recognizer.observe().state, ScreenState.MEDIA_READY)
@@ -164,6 +168,12 @@ class StateRecognizerTests(unittest.TestCase):
 
     def test_post_settings_review_with_post_is_enabled(self):
         recognizer = FacebookStateRecognizer(self.make_vision(["Post settings", "Post preview", "Post"]))
+        observation = recognizer.observe()
+        self.assertEqual(observation.state, ScreenState.POST_ENABLED)
+        self.assertIn("post settings review", observation.signals)
+
+    def test_post_settings_review_tolerates_supporting_phrase_ocr_error(self):
+        recognizer = FacebookStateRecognizer(self.make_vision(["Post settlngs", "Post preview", "Post"]))
         observation = recognizer.observe()
         self.assertEqual(observation.state, ScreenState.POST_ENABLED)
         self.assertIn("post settings review", observation.signals)
@@ -250,6 +260,32 @@ class StateRecognizerTests(unittest.TestCase):
             vision.read_text.call_args.kwargs["region"],
             (0.0, 0.50, 0.40, 1.0),
         )
+
+    def test_reel_publication_gate_accepts_safe_marker_and_post_action(self):
+        vision = Mock()
+        vision.capture_screen.return_value = np.zeros((200, 300, 3), dtype=np.uint8)
+        vision.read_text.return_value = [
+            {"text": "Your reel is safe t0 publishl", "confidence": 0.95},
+            {"text": "Save", "confidence": 0.99},
+            {"text": "Post", "confidence": 1.0},
+        ]
+
+        observation = FacebookStateRecognizer(vision).observe_publication_gate()
+
+        self.assertEqual(observation.state, ScreenState.POST_ENABLED)
+        self.assertEqual(observation.confidence, 0.99)
+
+    def test_reel_publication_gate_rejects_post_without_safe_marker(self):
+        vision = Mock()
+        vision.capture_screen.return_value = np.zeros((200, 300, 3), dtype=np.uint8)
+        vision.read_text.return_value = [
+            {"text": "Post", "confidence": 1.0},
+            {"text": "Post audience", "confidence": 0.95},
+        ]
+
+        observation = FacebookStateRecognizer(vision).observe_publication_gate()
+
+        self.assertEqual(observation.state, ScreenState.UNKNOWN)
 
     def test_targeted_session_gate_surfaces_leave_site_dialog(self):
         vision = Mock()
@@ -363,6 +399,23 @@ class LoginGateTests(unittest.TestCase):
         with unittest.mock.patch("tasks.base_task.time.sleep", return_value=None):
             self.assertTrue(task.verify_logged_in())
         self.assertEqual(task.recognizer.observe_session_gate.call_count, 2)
+        self.assertEqual(task.client.navigate_to.call_count, 2)
+
+    def test_login_gate_retries_navigation_when_browser_remains_off_facebook(self):
+        task = self.make_task([
+            StateObservation(ScreenState.FEED_READY, 0.9, ["facebook logo"]),
+            StateObservation(ScreenState.FEED_READY, 0.9, ["what's on your mind"]),
+        ])
+        task.client.get_current_url.side_effect = [
+            "https://www.google.com/",
+            "https://www.google.com/",
+            "https://www.facebook.com/",
+        ]
+
+        with unittest.mock.patch("tasks.base_task.time.sleep", return_value=None):
+            self.assertTrue(task.verify_logged_in())
+
+        self.assertEqual(task.client.navigate_to.call_count, 2)
 
 
 class PostPublishPromptTests(unittest.TestCase):
@@ -619,6 +672,10 @@ class ActionTargetTests(unittest.TestCase):
         task.vision.read_text.return_value = []
         self.assertIsNone(task._stable_blue_text_target(("post", "publish")))
 
+    def test_publish_target_rejects_boost_post_button(self):
+        task = self.make_task("Boost Post")
+        self.assertIsNone(task._stable_blue_text_target(("post", "publish")))
+
 
 class ReelUploadTargetTests(unittest.TestCase):
     def make_task(self):
@@ -719,6 +776,30 @@ class ReelEntryFlowTests(unittest.TestCase):
         ]
         self.assertFalse(task._is_reel_final_composer(screen))
 
+    def test_final_composer_tolerates_common_describe_ocr_prefix_error(self):
+        task = self.make_task()
+        screen = task.client.screenshot()
+        task.vision.read_text.return_value = [
+            {"text": "pescribe your reel:_", "center": (210, 225)},
+            {"text": "Uploaded media", "center": (180, 390)},
+            {"text": "Post audience", "center": (180, 720)},
+        ]
+
+        self.assertTrue(task._is_reel_final_composer(screen))
+
+    def test_final_composer_accepts_split_remixing_setting_from_t1(self):
+        task = self.make_task()
+        screen = task.client.screenshot()
+        task._preferred_reel_sidebar_region = task.LEFT_REEL_SIDEBAR
+        task.vision.read_text.return_value = [
+            {"text": "Describe your reel _.", "center": (325, 255)},
+            {"text": "Remixing and use of original", "center": (295, 665)},
+            {"text": "audio", "center": (209, 685)},
+            {"text": "Post", "center": (377, 981)},
+        ]
+
+        self.assertTrue(task._is_reel_final_composer(screen))
+
     def test_direct_flow_searches_left_sidebar_first(self):
         task = self.make_task()
         task._preferred_reel_sidebar_region = task.LEFT_REEL_SIDEBAR
@@ -807,6 +888,18 @@ class ReelEntryFlowTests(unittest.TestCase):
         ]
         self.assertFalse(task._is_reel_next_share_composer(task.client.screenshot()))
 
+    def test_next_share_flow_scores_long_supporting_markers(self):
+        task = self.make_task()
+        task.vision.read_text.return_value = [
+            {"text": "Create ree1"},
+            {"text": "Uploaded medla"},
+            {"text": "Edit"},
+            {"text": "Audio"},
+            {"text": "Closed captions"},
+        ]
+
+        self.assertTrue(task._is_reel_next_share_composer(task.client.screenshot()))
+
     def test_early_caption_entry_pastes_and_marks_caption_entered(self):
         task = self.make_task()
         task.caption = "Caption while the video processes"
@@ -866,6 +959,18 @@ class ReelEntryFlowTests(unittest.TestCase):
         )
         self.assertEqual(task._reel_description_target, (290, 310))
 
+    def test_direct_media_state_scores_processing_phrase(self):
+        task = self.make_task()
+        task.vision.read_text.return_value = [
+            {"text": "Describe your ree1", "center": (290, 310)},
+            {"text": "Checking for copyrlghted content"},
+        ]
+
+        self.assertEqual(
+            task._direct_reel_media_state(task.client.screenshot()),
+            "attached",
+        )
+
     def test_direct_layout_reattaches_once_when_second_chooser_appears(self):
         task = self.make_task()
         task.log = Mock()
@@ -889,6 +994,35 @@ class ReelEntryFlowTests(unittest.TestCase):
         self.assertEqual(evidence.args[0], "reel_direct_media_attached")
         self.assertTrue(evidence.kwargs["second_attachment"])
 
+    def test_direct_layout_clicks_composer_upload_then_reattaches_same_file(self):
+        task = self.make_task()
+        task.log = Mock()
+        task.click_reversible = Mock()
+        task.find_visible_file_chooser = Mock(
+            side_effect=[None, ("99", "Open File"), None]
+        )
+        task._direct_reel_media_state = Mock(side_effect=["missing", "attached"])
+        task._find_reel_upload_target = Mock(return_value=(177, 790))
+        task.attach_file_gtk = Mock(return_value=True)
+
+        with unittest.mock.patch("tasks.facebook_reel.time.sleep", return_value=None):
+            status, _ = task._ensure_direct_reel_media_attached(
+                "/data/shared_media/video.mp4",
+                timeout=2.0,
+            )
+
+        self.assertEqual(status, "ready")
+        task.click_reversible.assert_called_once_with(
+            (177, 790),
+            label="reel_second_upload",
+            max_offset_px=6,
+        )
+        task.attach_file_gtk.assert_called_once_with(
+            "/data/shared_media/video.mp4",
+            chooser_window=("99", "Open File"),
+        )
+        self.assertTrue(task.capture_evidence.call_args.kwargs["second_attachment"])
+
     def test_description_target_reuses_final_composer_observation(self):
         task = self.make_task()
         task._reel_description_target = (290, 310)
@@ -896,6 +1030,17 @@ class ReelEntryFlowTests(unittest.TestCase):
         self.assertEqual(task._find_reel_description_target(), (290, 310))
         task.vision.find_stable.assert_not_called()
         task.vision.find_text_cascaded.assert_not_called()
+
+    def test_description_target_tolerates_common_ocr_prefix_error(self):
+        task = self.make_task()
+        task.vision.find_text_cascaded.return_value = None
+        task.vision.read_text.return_value = [
+            {"text": "pescribe your reel ..", "center": (324, 255)},
+            {"text": "Post", "center": (377, 981)},
+        ]
+        task.vision.find_stable.side_effect = lambda locator, **_: locator()
+
+        self.assertEqual(task._find_reel_description_target(), (324, 255))
 
     def test_description_target_falls_back_to_left_sidebar_layout(self):
         task = self.make_task()
@@ -961,6 +1106,23 @@ class ReelEntryFlowTests(unittest.TestCase):
         )
         task.vision.read_text.assert_called_once()
 
+    def test_caption_verification_accepts_tail_when_editor_scrolls_to_caret(self):
+        task = self.make_task()
+        task.caption = (
+            "A long caption whose beginning scrolls out of view after paste. "
+            "Indonesia Kuwait Namibia Malaysia Guyana Kenya Source Al Jazeera"
+        )
+        task._reel_description_target = (290, 310)
+        task.vision.read_text.return_value = [
+            {"text": "Indonesia Kuwait Namibia Malaysia Guyana Kenya"},
+            {"text": "Source: Al Jazeera"},
+        ]
+
+        self.assertGreaterEqual(
+            task._reel_caption_match_confidence(task.client.screenshot()),
+            0.6,
+        )
+
     def test_caption_verification_rejects_common_words_outside_empty_editor(self):
         task = self.make_task()
         task.caption = (
@@ -1000,6 +1162,43 @@ class ReelEntryFlowTests(unittest.TestCase):
         self.assertEqual(target, (300, 1046))
         task._is_reel_final_composer.assert_not_called()
 
+    def test_selected_t2b_prioritizes_exact_next_after_long_caption_hides_edit_markers(self):
+        task = self.make_task()
+        task.reel_template_id = "t3"
+        task._reel_template_uses_share_review = Mock(return_value=True)
+        task._is_reel_share_surface = Mock(return_value=False)
+        task._is_reel_next_share_composer = Mock(return_value=False)
+        task._is_reel_final_composer = Mock(return_value=True)
+        task._find_stable_reel_publish_action = Mock(return_value=None)
+        task._find_stable_enabled_action = Mock(return_value=(300, 1046))
+
+        status, target, _ = task._wait_for_reel_post_upload_transition(
+            timeout=1.0,
+            label="reel_next_ready",
+        )
+
+        self.assertEqual(status, "next")
+        self.assertEqual(target, (300, 1046))
+        task._is_reel_final_composer.assert_not_called()
+
+    def test_selected_t2b_recognizes_share_review_after_next(self):
+        task = self.make_task()
+        task.reel_template_id = "t3"
+        task._reel_template_uses_share_review = Mock(return_value=True)
+        task._is_reel_share_surface = Mock(return_value=True)
+        task._find_stable_reel_publish_action = Mock(return_value=(428, 1046))
+        task._find_stable_enabled_action = Mock()
+
+        status, target, _ = task._wait_for_reel_post_upload_transition(
+            timeout=1.0,
+            label="reel_edit_next_ready",
+        )
+
+        self.assertEqual(status, "final_composer")
+        self.assertIsNone(target)
+        self.assertTrue(task._t2b_final_stage_confirmed)
+        task._find_stable_enabled_action.assert_not_called()
+
     def test_existing_direct_final_composer_path_remains_unchanged(self):
         task = self.make_task()
         task._is_reel_next_share_composer = Mock(return_value=False)
@@ -1033,16 +1232,49 @@ class ReelEntryFlowTests(unittest.TestCase):
             task._find_stable_enabled_action.call_args.kwargs["allow_semantic_fallback"]
         )
 
-    def test_video_composer_wait_is_capped_at_two_minutes_total(self):
+    def test_pre_final_composer_wait_is_capped_at_ninety_seconds_total(self):
         task = self.make_task()
+        task.reel_template_id = "t1"
+        task._video_composer_started_at = 1000.0
+
+        with unittest.mock.patch("tasks.facebook_reel.time.monotonic", return_value=1085.0):
+            self.assertEqual(task._remaining_video_composer_wait(), 5.0)
+            self.assertEqual(task._remaining_video_composer_wait(30.0), 5.0)
+
+        with unittest.mock.patch("tasks.facebook_reel.time.monotonic", return_value=1091.0):
+            self.assertEqual(task._remaining_video_composer_wait(), 0.0)
+
+    def test_final_post_button_has_independent_two_minute_budget(self):
+        self.assertEqual(FacebookReelTask.T1_PRE_FINAL_COMPOSER_WAIT_TIMEOUT, 90.0)
+        self.assertEqual(FacebookReelTask.T1_FINAL_POST_BUTTON_WAIT_TIMEOUT, 120.0)
+
+    def test_t1_final_post_wait_returns_immediately_when_button_is_ready(self):
+        task = self.make_task()
+        locator = Mock(return_value=(428, 1046))
+
+        with unittest.mock.patch(
+            "tasks.facebook_reel.time.time",
+            side_effect=[0.0, 0.0],
+        ), unittest.mock.patch("tasks.facebook_reel.time.sleep") as sleep:
+            status, target, _ = task._wait_for_target(
+                locator,
+                timeout=task.T1_FINAL_POST_BUTTON_WAIT_TIMEOUT,
+                label="reel_publish_ready",
+            )
+
+        self.assertEqual(status, "ready")
+        self.assertEqual(target, (428, 1046))
+        locator.assert_called_once_with()
+        sleep.assert_not_called()
+
+    def test_non_t1_templates_keep_shared_two_minute_composer_budget(self):
+        task = self.make_task()
+        task.reel_template_id = "t3"
         task._video_composer_started_at = 1000.0
 
         with unittest.mock.patch("tasks.facebook_reel.time.monotonic", return_value=1115.0):
             self.assertEqual(task._remaining_video_composer_wait(), 5.0)
-            self.assertEqual(task._remaining_video_composer_wait(30.0), 5.0)
-
-        with unittest.mock.patch("tasks.facebook_reel.time.monotonic", return_value=1121.0):
-            self.assertEqual(task._remaining_video_composer_wait(), 0.0)
+            self.assertEqual(task._remaining_video_composer_wait(90.0), 5.0)
 
     def test_share_surface_requires_heading_audience_and_review_option(self):
         task = self.make_task()
@@ -1061,7 +1293,17 @@ class ReelEntryFlowTests(unittest.TestCase):
         ]
         self.assertFalse(task._is_reel_share_surface(task.client.screenshot()))
 
-    def test_publish_action_uses_unique_blue_cta_on_confirmed_share_surface(self):
+    def test_share_surface_scores_long_supporting_phrases(self):
+        task = self.make_task()
+        task.vision.read_text.return_value = [
+            {"text": "Share"},
+            {"text": "Post audlence"},
+            {"text": "Remixing and vse of original"},
+        ]
+
+        self.assertTrue(task._is_reel_share_surface(task.client.screenshot()))
+
+    def test_publish_action_rejects_unlabeled_blue_cta_on_share_surface(self):
         task = self.make_task()
         task.remember_reversible_click_bounds = Mock()
         task._is_reel_share_surface = Mock(return_value=True)
@@ -1072,8 +1314,8 @@ class ReelEntryFlowTests(unittest.TestCase):
         task.vision.find_text_cascaded.return_value = None
         task.vision.find_stable.side_effect = lambda locator, **_: locator()
 
-        self.assertEqual(task._find_stable_reel_publish_action(), (256, 580))
-        task._is_reel_share_surface.assert_called_once()
+        self.assertIsNone(task._find_stable_reel_publish_action())
+        task._is_reel_share_surface.assert_not_called()
         self.assertEqual(
             task.vision.find_blue_action_buttons.call_args.kwargs["region"],
             task.LEFT_PUBLICATION_REGION,
@@ -1096,6 +1338,143 @@ class ReelEntryFlowTests(unittest.TestCase):
 
         self.assertEqual(task._find_stable_reel_publish_action(), (960, 990))
         task._is_reel_share_surface.assert_not_called()
+
+    def test_reel_publish_action_rejects_boost_post_label(self):
+        task = self.make_task()
+        task.remember_reversible_click_bounds = Mock()
+        task._is_reel_share_surface = Mock(return_value=False)
+        task.vision.find_blue_action_buttons.return_value = [{
+            "center": (960, 990),
+            "bounds": (840, 965, 1080, 1015),
+        }]
+        task.vision.find_text_cascaded.return_value = {
+            "text": "Boost Post",
+            "center": (960, 990),
+            "confidence": 0.99,
+        }
+        task.vision.find_stable.side_effect = lambda locator, **_: locator()
+
+        self.assertIsNone(task._find_stable_reel_publish_action())
+        task.remember_reversible_click_bounds.assert_not_called()
+
+    def test_direct_publish_gate_binds_target_to_labeled_blue_cta(self):
+        task = self.make_task()
+        screen = task.client.screenshot()
+        task._is_reel_final_composer = Mock(return_value=True)
+        task.vision.find_blue_action_buttons.return_value = [{
+            "center": (428, 1046),
+            "bounds": (24, 1022, 832, 1070),
+        }]
+        task.vision.find_text_cascaded.return_value = {
+            "text": "Post",
+            "center": (428, 1046),
+            "confidence": 0.99,
+        }
+        task.vision.find_text_cascaded.return_value = {
+            "text": "Post",
+            "center": (428, 1046),
+            "confidence": 0.98,
+        }
+
+        observation = task._observe_direct_reel_publish_gate(screen, (428, 1046))
+
+        self.assertEqual(observation.state, ScreenState.POST_ENABLED)
+        self.assertEqual(observation.confidence, 0.99)
+
+    def test_publish_gate_accepts_labeled_cta_on_t2b_share_review(self):
+        task = self.make_task()
+        screen = task.client.screenshot()
+        task.reel_template_id = "t3"
+        task._t2b_final_stage_confirmed = True
+        task._is_reel_final_composer = Mock(return_value=False)
+        task.vision.find_blue_action_buttons.return_value = [{
+            "center": (428, 1046),
+            "bounds": (272, 1026, 584, 1066),
+        }]
+        task.vision.find_text_cascaded.return_value = {
+            "text": "Post",
+            "center": (428, 1046),
+            "confidence": 0.99,
+        }
+
+        observation = task._observe_direct_reel_publish_gate(screen, (428, 1046))
+
+        self.assertEqual(observation.state, ScreenState.POST_ENABLED)
+        task._is_reel_final_composer.assert_not_called()
+
+    def test_direct_publish_gate_rejects_boost_post_label(self):
+        task = self.make_task()
+        screen = task.client.screenshot()
+        task._is_reel_final_composer = Mock(return_value=True)
+        task.vision.find_blue_action_buttons.return_value = [{
+            "center": (428, 1046),
+            "bounds": (24, 1022, 832, 1070),
+        }]
+        task.vision.find_text_cascaded.return_value = {
+            "text": "Boost Post",
+            "center": (428, 1046),
+            "confidence": 0.99,
+        }
+
+        observation = task._observe_direct_reel_publish_gate(screen, (428, 1046))
+
+        self.assertEqual(observation.state, ScreenState.UNKNOWN)
+
+    def test_direct_publish_gate_accepts_verified_long_caption_scrolled_context(self):
+        task = self.make_task()
+        screen = task.client.screenshot()
+        task.caption = "A long verified caption whose composer controls moved below the fold"
+        task._reel_caption_entered = True
+        task._reel_description_target = (290, 310)
+        task._is_reel_final_composer = Mock(return_value=False)
+        task._reel_caption_match_confidence = Mock(return_value=0.83)
+        task.vision.read_text.return_value = [{"text": "Create reel"}]
+        task.vision.find_blue_action_buttons.return_value = [{
+            "center": (428, 1046),
+            "bounds": (272, 1026, 584, 1066),
+        }]
+        task.vision.find_text_cascaded.return_value = {
+            "text": "Post",
+            "center": (428, 1046),
+            "confidence": 0.99,
+        }
+
+        observation = task._observe_direct_reel_publish_gate(screen, (428, 1046))
+
+        self.assertEqual(observation.state, ScreenState.POST_ENABLED)
+
+    def test_direct_publish_gate_rejects_unverified_scrolled_caption_context(self):
+        task = self.make_task()
+        screen = task.client.screenshot()
+        task.caption = "Expected caption"
+        task._reel_caption_entered = True
+        task._reel_description_target = (290, 310)
+        task._is_reel_final_composer = Mock(return_value=False)
+        task._reel_caption_match_confidence = Mock(return_value=0.40)
+        task.vision.read_text.return_value = [{"text": "Create reel"}]
+
+        observation = task._observe_direct_reel_publish_gate(screen, (428, 1046))
+
+        self.assertEqual(observation.state, ScreenState.UNKNOWN)
+        task.vision.find_blue_action_buttons.assert_not_called()
+
+    def test_direct_publish_gate_rejects_target_that_is_not_same_button(self):
+        task = self.make_task()
+        screen = task.client.screenshot()
+        task._is_reel_final_composer = Mock(return_value=True)
+        task.vision.find_blue_action_buttons.return_value = [{
+            "center": (428, 1046),
+            "bounds": (24, 1022, 832, 1070),
+        }]
+        task.vision.find_text_cascaded.return_value = {
+            "text": "Post",
+            "center": (428, 1046),
+            "confidence": 0.99,
+        }
+
+        observation = task._observe_direct_reel_publish_gate(screen, (900, 1046))
+
+        self.assertEqual(observation.state, ScreenState.UNKNOWN)
 
     def test_publish_action_rejects_unrecognized_surface_when_post_ocr_misses(self):
         task = self.make_task()
@@ -1125,6 +1504,24 @@ class ReelEntryFlowTests(unittest.TestCase):
         self.assertIsNone(task._find_stable_reel_publish_action())
         task._is_reel_share_surface.assert_not_called()
 
+    def test_t2b_publish_action_requires_one_exact_post_cta(self):
+        task = self.make_task()
+        task.reel_template_id = "t3"
+        task.remember_reversible_click_bounds = Mock()
+        task.vision.find_blue_action_buttons.return_value = [
+            {"center": (428, 1046), "bounds": (272, 1026, 584, 1066)},
+            {"center": (130, 1046), "bounds": (24, 1026, 236, 1066)},
+        ]
+        task.vision.find_text_cascaded.return_value = {
+            "text": "Post",
+            "center": (428, 1046),
+            "confidence": 0.99,
+        }
+        task.vision.find_stable.side_effect = lambda locator, **_: locator()
+
+        self.assertIsNone(task._find_stable_reel_publish_action())
+        task.vision.find_text_cascaded.assert_not_called()
+
     def test_legacy_publish_fallback_disables_semantic_guessing(self):
         task = self.make_task()
         task._find_stable_enabled_action = Mock(return_value=(960, 990))
@@ -1140,7 +1537,8 @@ class ReelEntryFlowTests(unittest.TestCase):
     def test_new_share_flow_suppresses_refresh_while_post_is_still_visible(self):
         task = self.make_task()
         screen = task.client.screenshot()
-        task._is_reel_share_surface = Mock(return_value=True)
+        task._t2b_final_stage_confirmed = True
+        task._find_exact_reel_publish_action = Mock(return_value=(428, 1046))
 
         self.assertTrue(task._new_share_post_is_still_pending(screen, True))
         self.assertFalse(task._new_share_post_is_still_pending(screen, False))
@@ -1283,6 +1681,10 @@ class ReelPublicationVerificationTests(unittest.TestCase):
         task.log = Mock()
         return task
 
+    def test_post_click_upload_verification_wait_is_ninety_seconds(self):
+        self.assertEqual(FacebookReelTask.POST_CLICK_VERIFICATION_TIMEOUT, 90.0)
+        self.assertEqual(FacebookReelTask.POST_CONFIRMATION_POPUP_TIMEOUT, 30.0)
+
     def test_feed_without_reel_confirmation_does_not_confirm_publication(self):
         task = self.make_task(
             [
@@ -1298,9 +1700,10 @@ class ReelPublicationVerificationTests(unittest.TestCase):
             status, _ = task._verify_reel_publication(
                 np.zeros((100, 100, 3), dtype=np.uint8),
                 timeout=1.0,
+                popup_timeout=1.0,
             )
 
-        self.assertEqual(status, "uncertain")
+        self.assertEqual(status, "profile_fallback")
 
     def test_reel_confirmation_completes_popup_verification(self):
         task = self.make_task(
@@ -1310,7 +1713,7 @@ class ReelPublicationVerificationTests(unittest.TestCase):
         with unittest.mock.patch(
             "tasks.facebook_reel.time.time",
             side_effect=[0.0, 0.0],
-        ), unittest.mock.patch("tasks.facebook_reel.time.sleep", return_value=None):
+        ), unittest.mock.patch("tasks.facebook_reel.time.sleep", return_value=None) as sleep:
             status, final = task._verify_reel_publication(
                 np.zeros((100, 100, 3), dtype=np.uint8),
                 timeout=1.0,
@@ -1322,9 +1725,10 @@ class ReelPublicationVerificationTests(unittest.TestCase):
             task.client.screenshot(),
             region=task.LEFT_PUBLICATION_REGION,
         )
+        sleep.assert_not_called()
         task.recognizer.observe.assert_not_called()
 
-    def test_reel_confirmation_never_uses_full_screen_before_profile_fallback(self):
+    def test_unknown_screen_uses_broad_state_before_profile_fallback(self):
         task = self.make_task(
             [
                 StateObservation(ScreenState.UNKNOWN, 0.0),
@@ -1340,11 +1744,57 @@ class ReelPublicationVerificationTests(unittest.TestCase):
             status, _ = task._verify_reel_publication(
                 np.zeros((100, 100, 3), dtype=np.uint8),
                 timeout=1.0,
+                popup_timeout=1.0,
             )
 
-        self.assertEqual(status, "uncertain")
+        self.assertEqual(status, "profile_fallback")
         self.assertEqual(task.recognizer.observe_publication_gate.call_count, 3)
+        self.assertEqual(task.recognizer.observe.call_count, 3)
+
+    def test_visibly_active_upload_uses_ninety_second_timeout_without_refresh_fallback(self):
+        task = self.make_task(
+            [StateObservation(ScreenState.PUBLISHING, 0.9)],
+            [0.70],
+        )
+        with unittest.mock.patch(
+            "tasks.facebook_reel.time.time",
+            side_effect=[0.0, 0.0, 91.0],
+        ), unittest.mock.patch("tasks.facebook_reel.time.sleep", return_value=None):
+            status, _ = task._verify_reel_publication(
+                np.zeros((100, 100, 3), dtype=np.uint8),
+                timeout=90.0,
+                popup_timeout=30.0,
+            )
+
+        self.assertEqual(status, "timed_out")
         task.recognizer.observe.assert_not_called()
+
+    def test_upload_then_profile_feed_switches_to_thirty_second_popup_window(self):
+        task = self.make_task(
+            [
+                StateObservation(ScreenState.PUBLISHING, 0.9),
+                StateObservation(ScreenState.UNKNOWN, 0.0),
+            ],
+            [0.70, 0.60],
+        )
+        task.recognizer.observe.return_value = StateObservation(
+            ScreenState.FEED_READY,
+            0.84,
+            ["logged-in dashboard/feed text"],
+        )
+        with unittest.mock.patch(
+            "tasks.facebook_reel.time.time",
+            side_effect=[0.0, 0.0, 10.0, 41.0],
+        ), unittest.mock.patch("tasks.facebook_reel.time.sleep", return_value=None):
+            status, final = task._verify_reel_publication(
+                np.zeros((100, 100, 3), dtype=np.uint8),
+                timeout=90.0,
+                popup_timeout=30.0,
+            )
+
+        self.assertEqual(status, "profile_fallback")
+        self.assertEqual(final[0].state, ScreenState.FEED_READY)
+        task.recognizer.observe.assert_called_once()
 
 
 class FirstCommentTargetTests(unittest.TestCase):
@@ -1688,6 +2138,29 @@ class FirstCommentTargetTests(unittest.TestCase):
             comment_method="profile_first_post",
         )
 
+    def test_comment_verification_accepts_text_above_low_viewport_input(self):
+        task = FacebookReelTask.__new__(FacebookReelTask)
+        task.log = Mock()
+        task.log_decision = Mock()
+        task.capture_evidence = Mock()
+        task.human = Mock()
+        task.client = Mock()
+        screen = np.zeros((100, 100, 3), dtype=np.uint8)
+        task.client.screenshot.return_value = screen
+        task.vision = Mock()
+        task.vision.read_text.return_value = [
+            {"text": "Source: RT", "confidence": 0.99, "center": (70, 94)},
+            {"text": "Comment as World Report", "confidence": 0.99, "center": (70, 98)},
+        ]
+        task.paste_text = Mock()
+        task._open_profile_first_comment_input = Mock(return_value=((70, 98), screen))
+
+        with unittest.mock.patch("time.sleep", return_value=None), \
+             unittest.mock.patch("tasks.base_task.random.uniform", return_value=1.0):
+            result = task.post_first_comment("Source: RT")
+
+        self.assertEqual(result, "submitted_verified")
+
     def test_permalink_is_used_only_when_primary_target_is_missing(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
         task.log = Mock()
@@ -1830,7 +2303,7 @@ class FirstCommentTargetTests(unittest.TestCase):
             warm_down_after_submit=False,
         )
 
-    def test_reel_comment_waits_ten_seconds_and_refreshes_once_more(self):
+    def test_reel_comment_waits_fifteen_seconds_and_refreshes_once_more(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
         task.log = Mock()
         task.navigate_to = Mock()
@@ -1847,12 +2320,15 @@ class FirstCommentTargetTests(unittest.TestCase):
         task.post_first_comment = Mock()
         task.permalink_not_requested = Mock(return_value={"permalink_status": "not_requested"})
 
-        with unittest.mock.patch("tasks.facebook_reel.time.sleep", return_value=None) as sleep:
+        with unittest.mock.patch(
+            "modules.publication_result_verifier.time.sleep",
+            return_value=None,
+        ) as sleep:
             status, _ = task.post_reel_first_comment_after_refresh("https://example.com/link")
 
         self.assertEqual(status, "failed_input_not_found")
         self.assertEqual(task.navigate_to.call_count, 2)
-        sleep.assert_called_once_with(10.0)
+        sleep.assert_called_once_with(15.0)
         task.post_first_comment.assert_not_called()
 
     def test_latest_reel_scan_scrolls_past_profile_header_and_loading_cards(self):
@@ -1870,6 +2346,10 @@ class FirstCommentTargetTests(unittest.TestCase):
         self.assertTrue(visible)
         self.assertIs(final_screen, screen)
         self.assertEqual(task.client.screenshot.call_count, 3)
+        task.client.exec_cmd.assert_any_call(
+            ["xdotool", "key", "ctrl+home"],
+            check=False,
+        )
         self.assertEqual(task.human.scroll.call_count, 2)
         task.human.scroll.assert_called_with("down", notches=2)
 
@@ -1976,6 +2456,35 @@ class FirstCommentTargetTests(unittest.TestCase):
         target = vision.find_comment_input(screen)
         self.assertIsNotNone(target)
         self.assertEqual(target, (660, 960))
+
+    def test_vision_find_comment_input_accepts_scored_ocr_anchor_variants(self):
+        screen = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        for text in ("Cornment as John Doe", "Comrnent as Page", "Comment a5 Creator"):
+            vision = VisionEngine(Mock(profile_id="test"))
+            vision.read_text = Mock(return_value=[
+                {"text": text, "bounds": (600, 950, 750, 970), "center": (675, 960), "confidence": 0.70},
+            ])
+
+            self.assertEqual(vision.find_comment_input(screen), (660, 960), text)
+
+    def test_vision_find_comment_input_scores_write_comment_phrase(self):
+        vision = VisionEngine(Mock(profile_id="test"))
+        vision.read_text = Mock(return_value=[
+            {"text": "Vrite a public comment", "bounds": (600, 950, 750, 970), "center": (675, 960), "confidence": 0.70},
+        ])
+        screen = np.zeros((1080, 1920, 3), dtype=np.uint8)
+
+        self.assertEqual(vision.find_comment_input(screen), (660, 960))
+
+    def test_vision_comment_input_rejects_non_input_comment_phrases(self):
+        screen = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        for text in ("Comment by Page", "Comment on this post", "12 comments", "Boost Post"):
+            vision = VisionEngine(Mock(profile_id="test"))
+            vision.read_text = Mock(return_value=[
+                {"text": text, "bounds": (600, 950, 750, 970), "center": (675, 960), "confidence": 0.99},
+            ])
+
+            self.assertIsNone(vision.find_comment_input(screen), text)
 
     def test_vision_comment_input_prefers_first_post_over_higher_confidence(self):
         vision = VisionEngine(Mock(profile_id="test"))

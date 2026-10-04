@@ -288,6 +288,15 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
             <AlertTriangle className="w-3 h-3 text-red-400" /> Failed
           </span>
         );
+      case 'failed_after_publish':
+        return (
+          <span
+            className="px-2 py-0.5 rounded text-[10px] font-semibold bg-red-950 text-red-300 border border-red-800/80 flex items-center gap-1"
+            title="Post was clicked, but the Reel was not found after final verification. Automatic rerun is blocked."
+          >
+            <AlertTriangle className="w-3 h-3 text-red-400" /> Failed after Post
+          </span>
+        );
       case 'uncertain':
       case 'needs_review':
         return (
@@ -333,7 +342,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
     if (filterBatch !== 'all' && execItem.batch_id !== filterBatch) return false;
     if (filterStatus !== 'all') {
       if (filterStatus === 'failed') {
-        if (execItem.status !== 'failed' && execItem.status !== 'failed_before_publish') return false;
+        if (!['failed', 'failed_before_publish', 'failed_after_publish'].includes(execItem.status)) return false;
       } else if (filterStatus === 'uncertain') {
         if (execItem.status !== 'uncertain' && execItem.status !== 'needs_review') return false;
       } else if (filterStatus === 'pending') {
@@ -360,7 +369,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
   const failedCount = stats.failed || 0;
   const hasAttentionItems = uncertainCount > 0 || failedCount > 0;
   const activeStatuses = new Set(['running', 'preparing', 'ready']);
-  const attentionStatuses = new Set(['failed', 'failed_before_publish', 'uncertain', 'needs_review']);
+  const attentionStatuses = new Set(['failed', 'failed_before_publish', 'failed_after_publish', 'uncertain', 'needs_review']);
   const finishedStatuses = new Set(['published', 'completed']);
   const batchGroups = batches.map((batch) => {
     const batchExecutions = filteredExecutions.filter((item) => item.batch_id === batch.batch_id);

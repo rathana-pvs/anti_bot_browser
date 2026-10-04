@@ -1,6 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
+from engine.fixed_orchestrator import PIPELINE_ORDER
 from modules.publishing_pipeline import build_publishing_pipeline
 
 
@@ -93,6 +94,20 @@ class FakePublishTask:
 
 
 class PublishingPipelineTests(unittest.TestCase):
+    def test_result_verifier_follows_post_publish_prompt(self):
+        self.assertEqual(
+            PIPELINE_ORDER,
+            (
+                "startup",
+                "warming",
+                "publish",
+                "post_publish_prompt",
+                "publication_result_verifier",
+                "comment",
+                "finalize",
+            ),
+        )
+
     def test_successful_publish_runs_startup_once_and_skips_empty_comment(self):
         task = FakePublishTask()
         orchestrator, context = build_publishing_pipeline(

@@ -199,7 +199,7 @@ def get_profile_disk_usage(profile_id: str) -> str | None:
         pass
     return None
 
-def get_container_status(profile_id: str) -> str:
+def get_container_status(profile_id: str, *, strict: bool = False) -> str:
     container_name = f"isolated_{profile_id}"
     try:
         output = subprocess.check_output(
@@ -216,6 +216,8 @@ def get_container_status(profile_id: str) -> str:
             return "running"
         return "stopped"
     except Exception:
+        if strict:
+            raise
         return "stopped"
 
 def count_running_profile_containers() -> int:

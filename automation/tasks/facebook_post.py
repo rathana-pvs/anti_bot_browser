@@ -12,10 +12,12 @@ from composer_templates import (
 )
 from engine.screen_state import ScreenState
 from engine.telemetry import timed_telemetry_step
+from engine.text_matcher import OcrTextMatcher
 from .base_task import BaseTask
 
 
 class FacebookPostTask(BaseTask):
+    OCR_TEXT_MATCHER = OcrTextMatcher(default_threshold=0.78)
     CAPTION_LABELS = (
         "what's on your mind",
         "what’s on your mind",
@@ -144,15 +146,27 @@ class FacebookPostTask(BaseTask):
 
         return self.vision.find_stable(locate, attempts=2, tolerance_px=8.0)
 
-    @staticmethod
-    def _is_caption_prompt(text: str) -> bool:
-        """Recognize the caption prompt while tolerating narrow OCR substitutions."""
-        normalized = re.sub(r"[^a-z0-9]+", " ", text.casefold()).strip()
-        words = set(normalized.split())
-        # EasyOCR commonly reads the final 't' as lowercase 'l' or uppercase 'I'
-        # and may split the apostrophe-s into a separate 5/$ token.
-        has_what = bool(words & {"what", "whats", "what5", "whal", "whai"})
-        return has_what and {"on", "your", "mind"}.issubset(words)
+    @classmethod
+    def _is_caption_prompt(cls, text: str) -> bool:
+        """Recognize the long caption prompt with scored OCR tolerance."""
+        normalized = cls.OCR_TEXT_MATCHER.normalize(text)
+        words = normalized.split()
+        # Facebook may append the profile name after the prompt. Exclude that
+        # dynamic suffix so it cannot reduce an otherwise strong phrase score.
+        if "mind" in words:
+            normalized = " ".join(words[: words.index("mind") + 1])
+        return cls.OCR_TEXT_MATCHER.evaluate(
+            expected="What's on your mind",
+            received=normalized,
+            required_tokens=("on", "your", "mind"),
+        ).matched
+
+    @classmethod
+    def _is_supporting_phrase(cls, expected: str, received: str) -> bool:
+        return cls.OCR_TEXT_MATCHER.evaluate(
+            expected=expected,
+            received=received,
+        ).matched
 
     def _stable_feed_composer_target(self):
         """Locate the profile feed composer using a stable, region-gated phrase."""
@@ -292,14 +306,17 @@ class FacebookPostTask(BaseTask):
                 return None
             button = candidates[0]
             x1, y1, x2, y2 = button["bounds"]
-            wanted = {label.casefold().strip() for label in labels}
+            wanted = {
+                re.sub(r"[^a-z0-9]+", " ", label.casefold()).strip()
+                for label in labels
+            }
             for item in self.vision.read_text(
                 screen,
                 region=(x1, y1, x2 - x1, y2 - y1),
                 min_confidence=0.15,
             ):
-                words = set(re.sub(r"[^a-z0-9]+", " ", item["text"].casefold()).split())
-                if words & wanted:
+                normalized = re.sub(r"[^a-z0-9]+", " ", item["text"].casefold()).strip()
+                if normalized in wanted:
                     self.record_locator_telemetry(
                         "enabled_action:" + "|".join(labels),
                         "enabled_blue_plus_ocr",
@@ -420,14 +437,20 @@ class FacebookPostTask(BaseTask):
             for item in candidates:
                 normalized = re.sub(r"[^a-z0-9]+", " ", item["text"].casefold()).strip()
                 words = set(normalized.split())
-                if {"create", "post"}.issubset(words) and len(words) <= 4:
+                if (
+                    len(words) <= 4
+                    and self._is_supporting_phrase("Create post", normalized)
+                ):
                     title_target = item
                     continue
                 # Requiring the full phrase inside the modal caption region is
                 # strict enough to reject the neighboring AI-label control.
                 if self._is_caption_prompt(item["text"]):
                     caption_target = item
-                if "write something" in normalized or "create a public post" in normalized:
+                if (
+                    self._is_supporting_phrase("Write something", normalized)
+                    or self._is_supporting_phrase("Create a public post", normalized)
+                ):
                     caption_target = item
 
             # Before any caption is entered, Facebook's Next button is disabled

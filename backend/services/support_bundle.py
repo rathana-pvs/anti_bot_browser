@@ -148,7 +148,7 @@ def build_queue_diagnostic_summary(queue: dict, options: dict | None = None) -> 
         "counts": {
             "total": len(executions),
             "published": len([x for x in executions if x.get("status") == "published"]),
-            "failed": len([x for x in executions if x.get("status") in ("failed", "failed_before_publish")]),
+            "failed": len([x for x in executions if x.get("status") in ("failed", "failed_before_publish", "failed_after_publish")]),
             "unresolved": len([x for x in executions if x.get("status") in ("uncertain", "needs_review")]),
             "active": len([x for x in executions if x.get("status") in ("running", "preparing")]),
         },

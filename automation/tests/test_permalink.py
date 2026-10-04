@@ -117,6 +117,8 @@ class PermalinkCorrelationTests(unittest.TestCase):
         self.assertTrue(BaseTask._is_recent_timestamp_text("a tew seconds a00"))
         self.assertTrue(BaseTask._is_recent_timestamp_text("Jusl n0w"))
         self.assertTrue(BaseTask._is_recent_timestamp_text("7Minutes Ano"))
+        self.assertTrue(BaseTask._is_recent_timestamp_text("3 minutes ago"))
+        self.assertFalse(BaseTask._is_recent_timestamp_text("30 minutes ago"))
         self.assertFalse(BaseTask._is_recent_timestamp_text("published last year"))
 
     @patch("time.sleep", return_value=None)

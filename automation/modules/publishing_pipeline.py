@@ -91,7 +91,16 @@ class PublishModule:
             entry.get("stage") == "publish_clicked"
             for entry in getattr(self.task, "stage_history", [])
         )
-        return _task_result(self.task, success_reason="publication_confirmed")
+        status = getattr(self.task, "result_status", "failed_before_publish")
+        if status in {"published", "completed", "pending_profile_verification"}:
+            outputs = {"publish_phase_status": status}
+            if getattr(self.task, "post_template_id", None):
+                outputs["post_template"] = self.task.post_template_id
+            if getattr(self.task, "reel_template_id", None):
+                outputs["reel_template"] = self.task.reel_template_id
+                outputs["reel_template_selection"] = self.task.reel_template_selection
+            return ModuleResult.success("publish_action_completed", **outputs)
+        return _task_result(self.task, success_reason="publish_action_completed")
 
 
 @dataclass
@@ -100,7 +109,11 @@ class PostPublishPromptModule:
     module_id: str = "post_publish_prompt"
 
     def enabled(self, context):
-        return context.outputs.get("publication_status") == "published"
+        return context.outputs.get("publish_phase_status") in {
+            "published",
+            "completed",
+            "pending_profile_verification",
+        }
 
     def run(self, context):
         handler = getattr(self.task, "post_publish_prompt", None)
@@ -117,6 +130,43 @@ class PostPublishPromptModule:
             f"optional_prompt_{status}",
             post_publish_prompt=status,
         )
+
+
+@dataclass
+class PublicationResultVerifierModule:
+    task: object
+    content_type: str
+    module_id: str = "publication_result_verifier"
+
+    def enabled(self, context):
+        return context.publish_attempted
+
+    def run(self, context):
+        status = getattr(self.task, "result_status", "failed_before_publish")
+        if status in {"published", "completed"}:
+            return ModuleResult.success(
+                "publication_already_confirmed",
+                publication_status=status,
+            )
+        if status == "pending_profile_verification" and self.content_type == "reel":
+            if self.task._refresh_until_latest_reel_visible():
+                self.task._latest_reel_confirmed_on_profile = True
+                self.task.result_status = "published"
+                self.task.result_error = None
+                return ModuleResult.success(
+                    "latest_reel_confirmed_on_profile",
+                    publication_status="published",
+                )
+            self.task._failed_after_publish(
+                "reel_publish_not_found_after_verification",
+                "The success popup was absent and the latest Reel was not found after two profile checks separated by 15 seconds.",
+            )
+            return ModuleResult(
+                FAILED_SAFE,
+                "reel_publish_not_found_after_verification",
+                {"publication_status": "failed_after_publish"},
+            )
+        return _task_result(self.task, success_reason="publication_confirmed")
 
 
 @dataclass
@@ -218,6 +268,7 @@ def build_publishing_pipeline(task, *, content_type: str, comment_text: str | No
         "warming": WarmingModule(task),
         "publish": PublishModule(task),
         "post_publish_prompt": PostPublishPromptModule(task),
+        "publication_result_verifier": PublicationResultVerifierModule(task, content_type),
         "comment": CommentModule(task, content_type),
         "finalize": FinalizeModule(task),
     }

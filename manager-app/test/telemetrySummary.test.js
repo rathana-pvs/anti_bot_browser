@@ -68,3 +68,11 @@ test('queue telemetry summary reports null metrics before observations exist', (
   assert.equal(summary.median_execution_duration_ms, null);
   assert.equal(summary.confirmed_publication_rate_pct, null);
 });
+
+test('queue telemetry summary counts failed-after-publish as a terminal failure', () => {
+  const summary = buildQueueTelemetrySummary([
+    { status: 'failed_after_publish', telemetry: { total_duration_ms: 1000 } },
+  ]);
+  assert.equal(summary.terminal_executions, 1);
+  assert.equal(summary.failed_before_publish_rate_pct, 100);
+});

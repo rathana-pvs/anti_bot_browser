@@ -200,6 +200,20 @@ class PublishGateTests(unittest.TestCase):
         task.recognizer.observe_publication_gate.assert_called_once()
         task.human.click.assert_called_once_with(100, 80)
 
+    def test_reel_gate_uses_direct_composer_fallback_when_marker_is_absent(self):
+        task = self.make_task()
+        task.LEFT_PUBLICATION_REGION = (0.0, 0.5, 0.4, 1.0)
+        task.recognizer.observe_publication_gate.return_value = StateObservation(
+            ScreenState.UNKNOWN, 0.0
+        )
+        task._observe_direct_reel_publish_gate = Mock(return_value=StateObservation(
+            ScreenState.POST_ENABLED, 0.99, ["target-bound publish action"]
+        ))
+
+        self.assertTrue(task.execute_publish_gate((100, 80), publish_kind="reel"))
+        task._observe_direct_reel_publish_gate.assert_called_once()
+        task.human.click.assert_called_once_with(100, 80)
+
 
 if __name__ == "__main__":
     unittest.main()
