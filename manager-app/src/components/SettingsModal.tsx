@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { Select } from './ui/Select';
 import { BrainCircuit, Check, Eye, EyeOff, KeyRound, Settings, X } from 'lucide-react';
 
 interface SettingsModalProps {
@@ -10,20 +11,37 @@ interface SettingsModalProps {
 type Section = 'api-keys' | 'tools';
 
 const API_KEY_FIELDS = [
-  { id: 'openai', label: 'OpenAI', placeholder: 'sk-…' },
-  { id: 'anthropic', label: 'Anthropic', placeholder: 'sk-ant-…' },
   { id: 'gemini', label: 'Google Gemini', placeholder: 'API key' },
 ] as const;
 
 type ApiKeyId = typeof API_KEY_FIELDS[number]['id'];
-type ApiKeys = Record<ApiKeyId, string>;
+type ApiKeys = Record<ApiKeyId, string> & { gemini_model: string };
+
+const GEMINI_MODELS = [
+  { value: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash' },
+  { value: 'gemini-3.7-flash', label: 'Gemini 3.7 Flash' },
+  { value: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash' },
+  { value: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash' },
+  { value: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash-Lite' },
+  { value: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash-Lite' },
+  { value: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro (Preview)' },
+  { value: 'gemini-3-flash-preview', label: 'Gemini 3 Flash (Preview)' },
+  { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash (Legacy)' },
+  { value: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash-Lite (Legacy)' },
+  { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro (Legacy)' },
+];
 
 const STORAGE_KEY = 'app_api_keys';
-const EMPTY_KEYS: ApiKeys = { openai: '', anthropic: '', gemini: '' };
+const EMPTY_KEYS: ApiKeys = { gemini: '', gemini_model: 'gemini-3.8-flash' };
 
 function loadApiKeys(): ApiKeys {
   try {
-    return { ...EMPTY_KEYS, ...JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}') };
+    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+    return {
+      gemini: typeof stored?.gemini === 'string' ? stored.gemini : '',
+      gemini_model: GEMINI_MODELS.some((model) => model.value === stored?.gemini_model)
+        ? stored.gemini_model : EMPTY_KEYS.gemini_model,
+    };
   } catch {
     return EMPTY_KEYS;
   }
@@ -38,6 +56,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
   useEffect(() => {
     if (!isOpen) return;
     setApiKeys(loadApiKeys());
+    setVisibleKeys(new Set());
     setSaved(false);
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose();
@@ -82,7 +101,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
           <header className="flex h-14 shrink-0 items-center justify-between border-b border-zinc-800 px-6">
             <div>
               <h3 className="text-sm font-semibold text-zinc-100">{section === 'api-keys' ? 'API keys' : 'Tools'}</h3>
-              <p className="mt-0.5 text-[11px] text-zinc-500">{section === 'api-keys' ? 'Manage AI provider credentials on this computer.' : 'Manage optional features and workflow tools.'}</p>
+              <p className="mt-0.5 text-[11px] text-zinc-500">{section === 'api-keys' ? 'Manage your Gemini API key and model.' : 'Manage optional features and workflow tools.'}</p>
             </div>
             <button type="button" onClick={onClose} aria-label="Close settings" className="rounded-md p-2 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"><X className="h-4 w-4" /></button>
           </header>
@@ -91,7 +110,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
             {section === 'api-keys' ? (
               <div className="max-w-xl space-y-5">
                 <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-xs leading-5 text-amber-200/80">
-                  Keys are stored locally for integrations that need them. Leave a provider blank if you do not use it.
+                  Your Gemini key and model selection are saved on this computer.
                 </div>
                 {API_KEY_FIELDS.map((field) => {
                   const visible = visibleKeys.has(field.id);
@@ -112,9 +131,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                     </div>
                   </label>;
                 })}
+                <div className="space-y-2">
+                  <p className="text-xs font-medium text-zinc-300">Model version</p>
+                  <Select
+                    ariaLabel="Gemini model version"
+                    value={apiKeys.gemini_model}
+                    options={GEMINI_MODELS}
+                    onValueChange={(model) => { setApiKeys((current) => ({ ...current, gemini_model: model })); setSaved(false); }}
+                  />
+                  <p className="text-[11px] text-zinc-500">Model availability depends on your API key. Legacy models require existing access.</p>
+                </div>
                 <div className="flex items-center justify-end gap-3 pt-2">
                   {saved && <span className="flex items-center gap-1.5 text-xs text-emerald-400"><Check className="h-3.5 w-3.5" />Saved</span>}
-                  <button type="button" onClick={saveKeys} className="rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-500">Save API keys</button>
+                  <button type="button" onClick={saveKeys} className="rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-500">Save settings</button>
                 </div>
               </div>
             ) : (

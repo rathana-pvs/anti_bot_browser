@@ -34,13 +34,13 @@ class FacebookWarmingTaskTests(unittest.TestCase):
             self.assertTrue(task.run())
 
         task.set_stage.assert_called_once_with("warming", scroll_count=2)
-        task.set_outcome.assert_called_once_with(
-            "completed",
-            scroll_count=2,
-            warming_surface_requested="profile",
-            warming_surface="profile",
-            warming_surface_fallback=False,
-        )
+        outcome = task.set_outcome.call_args
+        self.assertEqual(outcome.args, ("completed",))
+        self.assertEqual(outcome.kwargs["scroll_count"], 2)
+        self.assertEqual(outcome.kwargs["planned_scroll_count"], 2)
+        self.assertEqual(outcome.kwargs["scroll_actions"], 3)
+        self.assertEqual(outcome.kwargs["warming_surface"], "profile")
+        self.assertFalse(outcome.kwargs["warming_surface_fallback"])
         task.verify_logged_in.assert_called_once_with(
             target_url="https://www.facebook.com/me"
         )
@@ -49,6 +49,42 @@ class FacebookWarmingTaskTests(unittest.TestCase):
             already_open="profile",
         )
         self.assertEqual(task.human.scroll.call_count, 3)
+
+    def test_random_depth_and_passive_extras(self):
+        task = self.make_task()
+        task.warming_options = {
+            "random_scrolls": True, "min_scrolls": 3, "max_scrolls": 3,
+            "surface": "news_feed", "pace": "relaxed", "reread": True,
+            "long_breaks": True, "cursor_movement": False, "return_to_top": False,
+        }
+        task.select_and_open_warming_surface.return_value = ("news_feed", "news_feed", False, None)
+        with patch("tasks.facebook_warming.time.sleep") as sleep, \
+                patch("tasks.facebook_warming.random.random", return_value=0), \
+                patch("tasks.facebook_warming.random.uniform", side_effect=lambda a, b: a):
+            self.assertTrue(task.run())
+        task.verify_logged_in.assert_called_once_with(target_url="https://www.facebook.com/")
+        self.assertEqual(task.set_outcome.call_args.kwargs["planned_scroll_count"], 3)
+        self.assertEqual(task.set_outcome.call_args.kwargs["scroll_actions"], 6)
+        self.assertEqual([c.args[0] for c in task.human.scroll.call_args_list], ["down", "up"] * 3)
+        task.human.move_to.assert_not_called()
+        self.assertIn(unittest.mock.call(8.0), sleep.call_args_list)
+        task.human.click.assert_not_called()
+
+    def test_budget_stops_browsing_and_clips_pause(self):
+        task = self.make_task(scroll_count=10)
+        task.warming_options = {"max_seconds": 15, "cursor_movement": False}
+        elapsed = [0.0]
+        def sleep(seconds):
+            elapsed[0] += seconds
+        with patch("tasks.facebook_warming.time.monotonic", side_effect=lambda: elapsed[0]), \
+                patch("tasks.facebook_warming.time.sleep", side_effect=sleep), \
+                patch("tasks.facebook_warming.random.uniform", return_value=10):
+            self.assertTrue(task.run())
+        result = task.set_outcome.call_args.kwargs
+        self.assertEqual(result["duration_seconds"], 15)
+        self.assertEqual(result["scroll_count"], 2)
+        self.assertEqual(result["scroll_actions"], 2)
+        self.assertTrue(result["time_limit_reached"])
 
     def test_stopped_container_reports_pre_publish_failure(self):
         task = self.make_task(running=False)

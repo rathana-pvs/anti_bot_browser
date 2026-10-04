@@ -1,3 +1,4 @@
+from automation.warming_options import normalize_warming_options
 import asyncio
 import json
 import os
@@ -323,9 +324,13 @@ async def launch_manual_automation(
     comment_link: str | None = None,
     media: str | None = None,
     brain_version: str | None = None,
+    warming_options: dict | None = None,
 ) -> dict:
     if task not in ("warming", "post", "reel", "comment"):
         raise ValueError(f"Invalid task '{task}'. Allowed: warming, post, reel, comment")
+
+    if task == "warming":
+        warming_options = normalize_warming_options(warming_options)
 
     existing = active_automation_tasks.get(profile_id)
     if is_task_process_active(existing):
@@ -370,6 +375,8 @@ async def launch_manual_automation(
     brain_pin = resolve_brain_pin(brain_id, brain_version) if brain_id else None
     if brain_pin:
         args.extend(["--brain-version", brain_pin["directory"]])
+    if task == "warming":
+        args.extend(["--warming-options", json.dumps(warming_options)])
     if scrolls is not None:
         args.extend(["--scrolls", str(scrolls)])
     if caption:
@@ -820,6 +827,7 @@ async def _execute_queue_item_inner(execution_id: str, scheduler_kind: str = "pu
             save_posting_queue(pin_q)
 
     if task_type == "warming":
+        args.extend(["--warming-options", json.dumps(normalize_warming_options(target_post.get("warming_options")))])
         args.extend(["--scrolls", str(target_post.get("scrolls") or 4)])
     if target_exec.get("spun_caption"):
         args.extend(["--caption", target_exec["spun_caption"]])

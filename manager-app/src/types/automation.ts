@@ -1,3 +1,16 @@
+export interface WarmingOptions {
+  random_scrolls: boolean;
+  min_scrolls: number;
+  max_scrolls: number;
+  pace: 'quick' | 'balanced' | 'relaxed';
+  surface: 'random' | 'news_feed' | 'profile';
+  reread: boolean;
+  long_breaks: boolean;
+  cursor_movement: boolean;
+  return_to_top: boolean;
+  max_seconds: number;
+}
+
 export interface AutomationLog {
   timestamp: string;
   profile_id?: string;
@@ -23,6 +36,7 @@ export interface RunAutomationParams {
   profile_id: string;
   task: 'warming' | 'post' | 'reel' | 'comment';
   scrolls?: number;
+  warming_options?: WarmingOptions;
   caption?: string;
   comment_link?: string;
   media?: string;
@@ -37,6 +51,7 @@ export interface QueueExecutionItem {
   profile_id: string;
   post_type?: 'photo' | 'reel' | 'warming';
   scrolls?: number;
+  warming_options?: WarmingOptions;
   media_file?: string;
   base_caption?: string;
   spun_caption: string;
@@ -152,6 +167,7 @@ export interface QueuePostItem {
   media_file: string;
   base_caption: string;
   scrolls?: number;
+  warming_options?: WarmingOptions;
   first_comment?: string | null;
   ai_spin?: boolean;
   executions: QueueExecutionItem[];
@@ -315,6 +331,7 @@ export interface CreateBatchParams {
     media_file: string;
     base_caption: string;
     scrolls?: number;
+  warming_options?: WarmingOptions;
     first_comment?: string;
     ai_spin?: boolean;
   }[];

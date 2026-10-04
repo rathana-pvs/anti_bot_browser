@@ -303,6 +303,16 @@ AUTOMATION_LEASE_TTL_MS=60000
 AUTOMATION_HEARTBEAT_INTERVAL_MS=15000
 ```
 
+Feed Warming settings are available in Campaign → Instant Multi-Runner and in
+single-profile automation. Choose fixed depth or a random cycle range (1–30),
+reading pace, and news feed, own profile, or a random surface. Optional rereading,
+longer pauses, cursor movement, and a final upward scroll vary passive browsing.
+New sessions default to 3–8 cycles with a 180-second browsing limit; existing
+queued sessions keep their fixed depth. The limit excludes authentication and
+page loading, and an input action already in progress can finish after it.
+Sessions report actual scroll actions and browsing duration. Warming does not
+like, comment, or send messages.
+
 Batch session preparation uses a rolling resource-mode pipeline. Brief mode
 browses for 40–55 seconds and Extended mode for 55–70 seconds. Preparation
 starts the next profile only when capacity is available, verifies authentication

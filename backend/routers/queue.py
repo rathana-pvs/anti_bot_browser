@@ -1,3 +1,5 @@
+from automation.warming_options import normalize_warming_options
+
 import asyncio
 import json
 import math
@@ -65,6 +67,7 @@ def get_queue():
                     "base_caption": post.get("base_caption"),
                     "first_comment": post.get("first_comment"),
                     "scrolls": post.get("scrolls"),
+                    "warming_options": post.get("warming_options"),
                 })
 
     def parse_sched(item):
@@ -108,6 +111,15 @@ async def create_batch(payload: dict = Body(...)):
         raise HTTPException(status_code=400, detail="Please select at least one target profile.")
     if not isinstance(posts, list) or len(posts) == 0:
         raise HTTPException(status_code=400, detail="Please provide at least one post item.")
+
+    for post in posts:
+        if not isinstance(post, dict):
+            raise HTTPException(status_code=400, detail="Each post must be an object")
+        if post.get("type") == "warming":
+            try:
+                post["warming_options"] = normalize_warming_options(post.get("warming_options"))
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     queue = load_posting_queue()
     batch_id = f"batch_{int(time.time() * 1000)}"
@@ -244,6 +256,7 @@ async def create_batch(payload: dict = Body(...)):
             "base_caption": post.get("base_caption", ""),
             "first_comment": post.get("first_comment"),
             "scrolls": max(1, int(post.get("scrolls", 4))),
+            "warming_options": post.get("warming_options"),
             "ai_spin": post.get("ai_spin") is not False,
             "executions": executions,
         })

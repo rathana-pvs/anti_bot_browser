@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 DEFAULT_SCHEDULER_CONFIG = {
     "max_publishers": 1,
-    "max_preparers": 1,
+    "max_preparers": 2,
     "max_total_automation_tasks": 2,
     "max_active_profile_containers": 2,
     "lease_ttl_ms": 60000,

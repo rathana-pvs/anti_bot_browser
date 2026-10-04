@@ -98,6 +98,7 @@ test('publisher and preparer can coexist up to total capacity', () => {
 });
 
 test('persisted preparing leases consume the preparer slot', () => {
+  const config = { ...DEFAULT_SCHEDULER_CONFIG, max_preparers: 1 };
   const preparation = {
     execution_id: 'prep', profile_id: 'profile_001', status: 'preparing',
     scheduler_lease: {
@@ -105,11 +106,11 @@ test('persisted preparing leases consume the preparer slot', () => {
       expires_at: new Date(NOW + 60_000).toISOString(),
     },
   };
-  const snapshot = schedulerSnapshot(queueWith(preparation), [], DEFAULT_SCHEDULER_CONFIG, NOW);
+  const snapshot = schedulerSnapshot(queueWith(preparation), [], config, NOW);
 
   assert.deepEqual(snapshot.active, { publishers: 0, preparers: 1, total: 1 });
   assert.equal(
-    canAcquireSchedulerSlot(queueWith(preparation), [], 'preparer', 'profile_002', DEFAULT_SCHEDULER_CONFIG, NOW).reason,
+    canAcquireSchedulerSlot(queueWith(preparation), [], 'preparer', 'profile_002', config, NOW).reason,
     'preparer_capacity_reached',
   );
 });

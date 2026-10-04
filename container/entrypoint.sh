@@ -102,6 +102,11 @@ for i in {1..30}; do
     sleep 0.2
 done
 
+# An idle virtual desktop must remain visible when the viewer reconnects.
+xset s off
+xset s noblank
+xset -dpms 2>/dev/null || true
+
 OPENGL_RENDERER="$(glxinfo -B 2>/dev/null | sed -n 's/^OpenGL renderer string: //p' | head -1 || true)"
 if [ -z "$OPENGL_RENDERER" ]; then
     OPENGL_RENDERER="Not measured"

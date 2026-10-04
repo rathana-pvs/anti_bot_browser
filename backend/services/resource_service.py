@@ -12,19 +12,19 @@ from backend.config import (
 RESOURCE_MODE_LIMITS = {
     "low": {
         "max_publishers": 1,
-        "max_preparers": 1,
+        "max_preparers": 2,
         "max_total_automation_tasks": 2,
         "max_active_profile_containers": 2,
     },
     "medium": {
         "max_publishers": 2,
-        "max_preparers": 2,
+        "max_preparers": 3,
         "max_total_automation_tasks": 4,
         "max_active_profile_containers": 4,
     },
     "high": {
         "max_publishers": 3,
-        "max_preparers": 3,
+        "max_preparers": 5,
         "max_total_automation_tasks": 6,
         "max_active_profile_containers": 6,
     },

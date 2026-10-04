@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Profile } from '../types/profile';
 import RFB from '@novnc/novnc';
+import { startVncConnection } from '../services/vncConnection';
 import { pasteToProfile } from '../services/api';
 import { readHostClipboardText } from '../services/clipboard';
 import {
@@ -20,7 +21,6 @@ import {
   Check,
   X,
   Loader2,
-  ExternalLink,
 } from 'lucide-react';
 import { Checkbox } from './ui/Checkbox';
 import { useAppDialog } from './ui/AppDialogProvider';
@@ -99,11 +99,6 @@ export const VncViewer: React.FC<VncViewerProps> = ({
   const wsPort = profile?.container.ws_port || (profile ? profile.container.vnc_port + 180 : 6081);
 
   useEffect(() => {
-    let isCancelled = false;
-    let retryTimer: ReturnType<typeof setTimeout> | null = null;
-    let attempt = 0;
-    const MAX_RETRIES = 20;
-
     if (!profile || profile.status !== 'running' || !containerRef.current) {
       if (rfbRef.current) {
         try {
@@ -117,68 +112,24 @@ export const VncViewer: React.FC<VncViewerProps> = ({
       return;
     }
 
-    const connect = () => {
-      if (isCancelled || !containerRef.current) return;
-
-      if (rfbRef.current) {
-        try {
-          rfbRef.current.disconnect();
-        } catch (_) {}
-        rfbRef.current = null;
-      }
-      containerRef.current.innerHTML = '';
-      setConnectionStatus('connecting');
-
-      const vncHost = (!window.location.hostname || window.location.hostname === 'tauri.localhost' || window.location.protocol === 'tauri:')
-        ? '127.0.0.1'
-        : window.location.hostname;
-      const wsUrl = `ws://${vncHost}:${wsPort}`;
-
-      try {
-        const rfb = new RFB(containerRef.current, wsUrl, { wsProtocols: ['binary'] });
+    const vncHost = (!window.location.hostname || window.location.hostname === 'tauri.localhost' || window.location.protocol === 'tauri:')
+      ? '127.0.0.1'
+      : window.location.hostname;
+    const stopConnection = startVncConnection({
+      createClient: () => {
+        const container = containerRef.current!;
+        container.innerHTML = '';
+        const rfb = new RFB(container, `ws://${vncHost}:${wsPort}`, { wsProtocols: ['binary'] });
         rfb.scaleViewport = true;
         rfb.resizeSession = false;
-
-        rfb.addEventListener('connect', () => {
-          if (isCancelled) return;
-          attempt = 0;
-          setRetryCount(0);
-          setConnectionStatus('connected');
-        });
-
-        rfb.addEventListener('disconnect', () => {
-          if (isCancelled) return;
-          rfbRef.current = null;
-          if (profile.status === 'running' && attempt < MAX_RETRIES) {
-            attempt++;
-            setRetryCount(attempt);
-            setConnectionStatus('connecting');
-            const delay = Math.min(1500, 600 + attempt * 150);
-            retryTimer = setTimeout(connect, delay);
-          } else {
-            setConnectionStatus('disconnected');
-          }
-        });
-
-        rfb.addEventListener('securityfailure', () => {
-          if (isCancelled) return;
-          setConnectionStatus('disconnected');
-        });
-
-        rfbRef.current = rfb;
-      } catch (err) {
-        if (attempt < MAX_RETRIES) {
-          attempt++;
-          setRetryCount(attempt);
-          const delay = Math.min(1500, 600 + attempt * 150);
-          retryTimer = setTimeout(connect, delay);
-        } else {
-          setConnectionStatus('disconnected');
-        }
-      }
-    };
-
-    connect();
+        return rfb;
+      },
+      onClient: (client) => { rfbRef.current = client; },
+      onStatus: (status, retries) => {
+        setConnectionStatus(status);
+        setRetryCount(retries);
+      },
+    });
 
     const handleContextMenu = (e: MouseEvent) => {
       e.preventDefault();
@@ -190,27 +141,15 @@ export const VncViewer: React.FC<VncViewerProps> = ({
     }
 
     return () => {
-      isCancelled = true;
-      if (retryTimer) clearTimeout(retryTimer);
+      stopConnection();
       if (containerEl) {
         containerEl.removeEventListener('contextmenu', handleContextMenu);
-      }
-      if (rfbRef.current) {
-        try {
-          rfbRef.current.disconnect();
-        } catch (_) {}
-        rfbRef.current = null;
+        containerEl.innerHTML = '';
       }
     };
   }, [profile?.id, profile?.status, wsPort, reconnectTrigger]);
 
   const handleReconnect = () => {
-    if (rfbRef.current) {
-      try {
-        rfbRef.current.disconnect();
-      } catch (_) {}
-      rfbRef.current = null;
-    }
     setRetryCount(0);
     setReconnectTrigger((prev) => prev + 1);
   };
@@ -401,20 +340,6 @@ export const VncViewer: React.FC<VncViewerProps> = ({
                 <Maximize2 className="w-3.5 h-3.5" />
               </button>
 
-              <button
-                onClick={() => {
-                  const vncHost = (!window.location.hostname || window.location.hostname === 'tauri.localhost' || window.location.protocol === 'tauri:')
-                    ? '127.0.0.1'
-                    : window.location.hostname;
-                  window.open(`http://${vncHost}:${wsPort}/vnc.html?autoconnect=1&resize=scale&reconnect=1`, '_blank');
-                }}
-                className="flex items-center gap-1.5 px-2 py-1 rounded bg-zinc-800 border border-zinc-700 text-zinc-300 hover:text-white text-xs transition-colors"
-                title="Open browser session in a full standalone browser tab"
-              >
-                <ExternalLink className="w-3.5 h-3.5 text-zinc-400" />
-                <span className="text-[11px] font-medium hidden sm:inline">Browser Tab</span>
-              </button>
-
               {/* Clipboard Sync Button & Dropdown */}
               <div className="relative">
                 <button
@@ -601,12 +526,12 @@ export const VncViewer: React.FC<VncViewerProps> = ({
       </div>
 
       {/* Main Display Stage */}
-      <div className="flex-1 relative bg-black flex items-center justify-center overflow-hidden">
+      <div className="flex-1 min-h-0 relative bg-black flex items-center justify-center overflow-hidden">
         {/* Direct noVNC RFB canvas container */}
         <div
           ref={containerRef}
           onContextMenu={(e) => e.preventDefault()}
-          className="w-full h-full flex items-center justify-center select-none"
+          className="absolute inset-0 flex items-center justify-center select-none"
         />
 
         {/* State Overlays */}
@@ -653,8 +578,14 @@ export const VncViewer: React.FC<VncViewerProps> = ({
             <RotateCcw className="w-6 h-6 text-emerald-400 animate-spin mb-2" />
             <p className="text-xs text-zinc-300 font-medium">Connecting to browser display...</p>
             <p className="text-[11px] text-zinc-500 mt-1 font-mono">
-              Port {wsPort} {retryCount > 0 ? `· Initializing noVNC (attempt ${retryCount + 1})...` : '· Connecting WebSocket...'}
+              Port {wsPort} {retryCount > 0 ? `· Retrying display (attempt ${retryCount + 1})...` : '· Connecting WebSocket...'}
             </p>
+            <button
+              onClick={handleReconnect}
+              className="mt-4 px-3 py-1.5 rounded border border-zinc-700 text-xs text-zinc-300 hover:bg-zinc-800"
+            >
+              Reconnect Display
+            </button>
           </div>
         )}
 

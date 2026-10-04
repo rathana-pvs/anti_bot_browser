@@ -3,7 +3,7 @@ import { groupProfiles } from '../utils/profileGroups';
 import React, { useState } from 'react';
 import { Profile } from '../types/profile';
 import { ProfileCard } from './ProfileCard';
-import { Plus, Search, Layers, Globe, PanelLeftClose, Sparkles, Folder, ChevronDown, ChevronRight, FolderPlus, Settings } from 'lucide-react';
+import { Plus, Layers, Globe, PanelLeftClose, Sparkles, Folder, ChevronDown, ChevronRight, FolderPlus, Settings } from 'lucide-react';
 
 interface SidebarProps {
   profiles: Profile[];
@@ -36,21 +36,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const [showGroupModal, setShowGroupModal] = useState(false);
   const [filter, setFilter] = useState<'all' | 'running' | 'paused' | 'stopped'>('all');
-  const [search, setSearch] = useState('');
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
-  const filteredProfiles = profiles.filter((p) => {
-    const matchesFilter = filter === 'all' || p.status === filter;
-    const matchesSearch =
-      p.name.toLowerCase().includes(search.toLowerCase()) ||
-      p.id.toLowerCase().includes(search.toLowerCase()) ||
-      (p.group || "Ungrouped").toLowerCase().includes(search.toLowerCase()) ||
-      p.network.proxy_host.includes(search);
-    return matchesFilter && matchesSearch;
-  });
+  const filteredProfiles = profiles.filter((p) => filter === 'all' || p.status === filter);
 
-  const visibleGroups = groupProfiles(filteredProfiles, groups.filter((name) =>
-    filter === 'all' && name.toLowerCase().includes(search.toLowerCase())));
+  const visibleGroups = groupProfiles(filteredProfiles, filter === 'all' ? groups : []);
 
   const runningCount = profiles.filter((p) => p.status === 'running').length;
   const pausedCount = profiles.filter((p) => p.status === 'paused').length;
@@ -97,7 +87,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
         </div>
 
-      {/* Main Mode Navigation (Profiles vs Proxy Pool vs Campaigns) */}
+      {/* Main Mode Navigation (Profiles, Campaigns, Proxy Pool) */}
       <div className="p-2 border-b border-border/80 bg-zinc-950/60 grid grid-cols-3 gap-1 text-[10px]">
         <button
           onClick={() => onTabChange('profiles')}
@@ -106,22 +96,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
               ? 'bg-zinc-800 text-zinc-100 border border-zinc-700 shadow-sm'
               : 'text-zinc-400 hover:text-zinc-200'
           }`}
-          title="Profiles"
+          title="Screen"
         >
           <Layers className="w-3 h-3" />
-          <span>Profiles</span>
-        </button>
-        <button
-          onClick={() => onTabChange('proxies')}
-          className={`flex items-center justify-center gap-1 py-1.5 rounded-md font-medium transition-colors ${
-            activeTab === 'proxies'
-              ? 'bg-zinc-800 text-zinc-100 border border-zinc-700 shadow-sm'
-              : 'text-zinc-400 hover:text-zinc-200'
-          }`}
-          title="Proxy Pool"
-        >
-          <Globe className="w-3 h-3" />
-          <span>Proxies ({proxyCount})</span>
+          <span>Screen</span>
         </button>
         <button
           onClick={() => onTabChange('campaigns')}
@@ -135,23 +113,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <Sparkles className="w-3 h-3 text-emerald-400" />
           <span>Campaign</span>
         </button>
+        <button
+          onClick={() => onTabChange('proxies')}
+          className={`flex items-center justify-center gap-1 py-1.5 rounded-md font-medium transition-colors ${
+            activeTab === 'proxies'
+              ? 'bg-zinc-800 text-zinc-100 border border-zinc-700 shadow-sm'
+              : 'text-zinc-400 hover:text-zinc-200'
+          }`}
+          title="Proxy Pool"
+        >
+          <Globe className="w-3 h-3" />
+          <span>Proxies ({proxyCount})</span>
+        </button>
       </div>
 
-      {/* Search Input */}
+      {/* Filter Pills */}
       <div className="p-3 border-b border-border/60">
-        <div className="relative">
-          <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500" />
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search profiles, groups or proxy..."
-            className="w-full bg-zinc-950 border border-zinc-800 rounded-md pl-8 pr-3 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:border-zinc-700"
-          />
-        </div>
-
-        {/* Filter Pills */}
-        <div className="flex items-center gap-1 mt-2.5">
+        <div className="flex items-center gap-1">
           <button
             onClick={() => setFilter('all')}
             className={`px-2 py-1 rounded text-[11px] font-medium transition-colors ${
@@ -213,9 +191,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
         ) : (
           visibleGroups.map((group) => {
-            const collapsed = collapsedGroups.has(group.name) && !search;
-            return <section key={group.name} className="mb-3 overflow-hidden rounded-xl border border-zinc-800/70 bg-zinc-950/30">
-              <button type="button" aria-expanded={!collapsed} onClick={() => setCollapsedGroups((prev) => {
+            const collapsed = !expandedGroups.has(group.name);
+            return <section key={group.name} className="overflow-hidden rounded-xl border border-zinc-800/70 bg-zinc-950/30">
+              <button type="button" aria-expanded={!collapsed} onClick={() => setExpandedGroups((prev) => {
                 const next = new Set(prev);
                 if (next.has(group.name)) next.delete(group.name); else next.add(group.name);
                 return next;

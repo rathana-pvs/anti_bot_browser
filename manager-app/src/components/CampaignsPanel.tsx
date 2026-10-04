@@ -1,11 +1,12 @@
 import React, { useState, useCallback, useEffect } from 'react';
+import { WarmingSettings, defaultWarmingOptions } from './WarmingSettings';
 import { Profile } from '../types/profile';
 import { AutomationTaskState, CreateBatchParams } from '../types/automation';
 import { createBatch, fetchAutomationTasks, stopAutomation, uploadMediaFiles, getSharedMediaUrl } from '../services/api';
 import { BatchPostCreator } from './BatchPostCreator';
 import { PostingQueuePanel } from './PostingQueuePanel';
 import { ResourceModeControl } from './ResourceModeControl';
-import { Checkbox } from './ui/Checkbox';
+import { GroupedProfileSelector } from './GroupedProfileSelector';
 import { useAppDialog } from './ui/AppDialogProvider';
 import {
   Flame,
@@ -16,7 +17,6 @@ import {
   CheckCircle2,
   AlertTriangle,
   Terminal,
-  ShieldCheck,
   RefreshCw,
   Layers,
   PanelLeftClose,
@@ -47,6 +47,7 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
   const [taskType, setTaskType] = useState<'warming' | 'post'>('warming');
   const [selectedProfileIds, setSelectedProfileIds] = useState<string[]>([]);
   const [scrolls, setScrolls] = useState<number>(4);
+  const [warmingOptions, setWarmingOptions] = useState(defaultWarmingOptions);
   const [caption, setCaption] = useState<string>('');
   const [commentLink, setCommentLink] = useState<string>('');
   const [attachedMedia, setAttachedMedia] = useState<{
@@ -86,12 +87,6 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
     } else {
       setSelectedProfileIds(profiles.map((p) => p.id));
     }
-  };
-
-  const toggleProfileSelection = (id: string) => {
-    setSelectedProfileIds((prev) =>
-      prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id]
-    );
   };
 
   const handleMediaUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -160,6 +155,7 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
               media_file: '',
               base_caption: '',
               scrolls: Math.max(1, scrolls),
+              warming_options: warmingOptions,
               ai_spin: false,
             }]
           : [{
@@ -218,17 +214,9 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
           <div className="p-2 rounded-lg bg-zinc-900 border border-zinc-800 text-emerald-400">
             <Sparkles className="w-4 h-4" />
           </div>
-          <div>
-            <h2 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
-              Zero-CDP Facebook Campaign Center
-              <span className="flex items-center gap-1 text-[11px] font-normal text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/30">
-                <ShieldCheck className="w-3 h-3" /> 0% Bot Detection
-              </span>
-            </h2>
-            <p className="text-xs text-zinc-400">
-              Host-driven X11 input dispatch with Bezier curve easing, micro-jitter, and visual verification.
-            </p>
-          </div>
+          <h2 className="text-sm font-semibold text-zinc-100">
+            Zero-CDP Facebook Campaign Center
+          </h2>
         </div>
 
         <button
@@ -319,7 +307,7 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
                   <span className="font-semibold text-xs text-zinc-100">Feed Warming</span>
                 </div>
                 <p className="text-[11px] text-zinc-400 leading-snug">
-                  Organic newsfeed navigation with random reading pauses and Bezier mouse wheel scrolls.
+                  Feed and profile browsing with varied scroll depth, reading pace, rereading, and occasional breaks.
                 </p>
               </button>
 
@@ -345,21 +333,7 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
             {/* Task Configuration Fields */}
             {taskType === 'warming' ? (
               <div className="p-3 rounded-lg bg-zinc-950 border border-zinc-800 space-y-2 text-xs">
-                <div className="flex justify-between items-center text-zinc-300">
-                  <span>Feed Scroll Depth:</span>
-                  <span className="font-mono text-amber-400 font-bold">{scrolls} cycles</span>
-                </div>
-                <input
-                  type="range"
-                  min="2"
-                  max="10"
-                  value={scrolls}
-                  onChange={(e) => setScrolls(parseInt(e.target.value))}
-                  className="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-amber-500"
-                />
-                <span className="text-[11px] text-zinc-500 block">
-                  Each cycle scrolls 4-8 wheel notches and pauses organically (2-5s) to emulate real human consumption.
-                </span>
+                <WarmingSettings scrolls={scrolls} onScrollsChange={setScrolls} value={warmingOptions} onChange={setWarmingOptions} />
               </div>
             ) : (
               <div className="space-y-3">
@@ -526,64 +500,13 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
               </button>
             </div>
 
-            {profiles.length === 0 ? (
-              <div className="p-6 rounded-lg bg-zinc-950 border border-zinc-800 text-center text-xs text-zinc-500 my-auto">
-                No profiles configured yet.
-              </div>
-            ) : (
-              <div className="space-y-1.5 overflow-y-auto max-h-56 pr-1">
-                {profiles.map((p) => {
-                  const isRunning = p.status === 'running';
-                  const isSelected = selectedProfileIds.includes(p.id);
-                  const isTaskRunning = activeTasks[p.id]?.status === 'running';
-
-                  return (
-                    <label
-                      htmlFor={`instant-profile-${p.id}`}
-                      key={p.id}
-                      className={`flex items-center justify-between p-2.5 rounded-lg border text-xs cursor-pointer transition-colors ${
-                        isSelected
-                          ? 'bg-zinc-850 border-emerald-500/50 text-white'
-                          : 'bg-zinc-950 border-zinc-800/80 text-zinc-400 hover:border-zinc-700'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2.5 truncate">
-                        <Checkbox
-                          id={`instant-profile-${p.id}`}
-                          checked={isSelected}
-                          onCheckedChange={() => toggleProfileSelection(p.id)}
-                          className="data-[state=checked]:border-emerald-500 data-[state=checked]:bg-emerald-600"
-                        />
-                        <div className="truncate">
-                          <span className="font-medium text-zinc-200 block truncate">{p.name}</span>
-                          <span className="text-[10px] text-zinc-500 font-mono">
-                            {p.id} · {p.network.proxy_host || 'Direct'}
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-2 shrink-0">
-                        {isTaskRunning && (
-                          <span className="flex items-center gap-1 text-[10px] font-mono text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded-full border border-amber-500/30 animate-pulse">
-                            <Loader2 className="w-2.5 h-2.5 animate-spin" />
-                            Busy
-                          </span>
-                        )}
-                        <span
-                          className={`text-[10px] px-1.5 py-0.5 rounded uppercase font-mono font-medium ${
-                            isRunning
-                              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                              : 'bg-zinc-900 text-zinc-500'
-                          }`}
-                        >
-                          {p.status}
-                        </span>
-                      </div>
-                    </label>
-                  );
-                })}
-              </div>
-            )}
+            <GroupedProfileSelector
+              profiles={profiles}
+              selectedIds={selectedProfileIds}
+              onChange={setSelectedProfileIds}
+              busyProfileIds={Object.keys(activeTasks).filter((id) => activeTasks[id]?.status === 'running')}
+              maxHeightClass="max-h-64"
+            />
 
             {/* Launch Button */}
             <div className="pt-2">

@@ -30,6 +30,7 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
   const total = proxies.length;
   const assigned = proxies.filter((p) => p.assigned).length;
   const available = total - assigned;
+  const orderedProxies = [...proxies].sort((a, b) => Number(b.assigned) - Number(a.assigned));
 
   const handleImport = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -158,7 +159,7 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
 
       {/* Proxies Table */}
       <div className="flex-1 rounded-xl bg-surface border border-border overflow-hidden flex flex-col">
-        <div className="px-4 py-3 border-b border-border bg-zinc-900/50 flex items-center justify-between text-xs font-semibold text-zinc-400 uppercase tracking-wider">
+        <div className="px-4 py-3 border-b border-border bg-zinc-900/50 grid grid-cols-[minmax(0,2fr)_minmax(0,1.5fr)_minmax(0,1fr)_80px] items-center gap-4 text-left text-xs font-semibold text-zinc-400 uppercase tracking-wider">
           <span>Host & Port</span>
           <span>Status</span>
           <span>Latency</span>
@@ -171,17 +172,17 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
               No proxies in pool. Click "Import Proxies" to upload a list.
             </div>
           ) : (
-            proxies.map((proxy) => (
+            orderedProxies.map((proxy) => (
               <div
                 key={proxy.id}
-                className="px-4 py-3 flex items-center justify-between text-xs hover:bg-zinc-800/40 transition-colors"
+                className="px-4 py-3 grid grid-cols-[minmax(0,2fr)_minmax(0,1.5fr)_minmax(0,1fr)_80px] items-center gap-4 text-left text-xs hover:bg-zinc-800/40 transition-colors"
               >
                 {/* Host & Port */}
-                <div className="flex items-center gap-3">
+                <div className="flex min-w-0 items-center gap-3">
                   <span
-                    className={`w-2 h-2 rounded-full ${proxy.reachable === true ? 'bg-green-500' : proxy.reachable === false ? 'bg-red-500' : 'bg-zinc-500'}`}
+                    className={`w-2 h-2 shrink-0 rounded-full ${proxy.reachable === true ? 'bg-green-500' : proxy.reachable === false ? 'bg-red-500' : 'bg-zinc-500'}`}
                   />
-                  <div>
+                  <div className="min-w-0 break-words">
                     <span className="font-mono text-zinc-200 font-medium">
                       {proxy.host}:{proxy.port}
                     </span>
@@ -198,7 +199,7 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
                   {proxy.assigned ? (
                     <button
                       onClick={() => proxy.profile_id && onSelectProfile?.(proxy.profile_id)}
-                      className="px-2 py-0.5 rounded bg-zinc-800 border border-green-800/40 text-green-400 font-mono text-[11px] hover:border-green-700 transition-colors"
+                      className="max-w-full break-words text-left px-2 py-0.5 rounded bg-zinc-800 border border-green-800/40 text-green-400 font-mono text-[11px] hover:border-green-700 transition-colors"
                     >
                       Assigned → {proxy.profile_id}
                     </button>

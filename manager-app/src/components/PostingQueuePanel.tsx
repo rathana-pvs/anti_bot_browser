@@ -3,7 +3,6 @@ import { DailyBatch, QueueDataResponse, QueueExecutionItem } from '../types/auto
 import { Profile } from '../types/profile';
 import { AppendBatchPostsDialog } from './AppendBatchPostsDialog';
 import { Checkbox } from './ui/Checkbox';
-import { Select } from './ui/Select';
 import { useAppDialog } from './ui/AppDialogProvider';
 import {
   backfillExecutionPermalink,
@@ -61,10 +60,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
   const { showConfirm, showPrompt, showToast } = useAppDialog();
   const [queueData, setQueueData] = useState<QueueDataResponse | null>(null);
   const [loading, setLoading] = useState(false);
-  const [filterProfile, setFilterProfile] = useState<string>('all');
   const [filterStatus, setFilterStatus] = useState<string>('all');
-  const [filterBatch, setFilterBatch] = useState<string>('all');
-  const [searchQuery, setSearchQuery] = useState<string>('');
   const setActionError = useCallback((message: string | null) => {
     if (message) showToast(message, 'error');
   }, [showToast]);
@@ -90,7 +86,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
     setBatchPage(1);
     setProfilePage(1);
     setExecutionPage(1);
-  }, [filterProfile, filterStatus, filterBatch, searchQuery]);
+  }, [filterStatus]);
   const [appendBatch, setAppendBatch] = useState<DailyBatch | null>(null);
 
   // Phase 0 Safety Gate: Review & Resolve Uncertain State
@@ -353,8 +349,6 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
 
   // Filter executions
   const filteredExecutions = executions.filter((execItem) => {
-    if (filterProfile !== 'all' && execItem.profile_id !== filterProfile) return false;
-    if (filterBatch !== 'all' && execItem.batch_id !== filterBatch) return false;
     if (filterStatus !== 'all') {
       if (filterStatus === 'failed') {
         if (!['failed', 'failed_before_publish', 'failed_after_publish'].includes(execItem.status)) return false;
@@ -365,15 +359,6 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
       } else if (filterStatus === 'running') {
         if (execItem.status !== 'running' && execItem.status !== 'preparing') return false;
       } else if (execItem.status !== filterStatus) {
-        return false;
-      }
-    }
-    if (searchQuery.trim()) {
-      const q = searchQuery.trim().toLowerCase();
-      const profileName = getProfileName(execItem.profile_id).toLowerCase();
-      const caption = (execItem.spun_caption || execItem.base_caption || '').toLowerCase();
-      const media = (execItem.media_file || '').toLowerCase();
-      if (!profileName.includes(q) && !caption.includes(q) && !media.includes(q) && !(execItem.batch_name || '').toLowerCase().includes(q)) {
         return false;
       }
     }
@@ -442,7 +427,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
       );
       return rank(left) - rank(right);
     });
-  }, [queueData, filterProfile, filterStatus, filterBatch, searchQuery, profiles]);
+  }, [queueData, filterStatus, profiles]);
   const visibleBatchPage = Math.min(batchPage, Math.max(1, Math.ceil(batchGroups.length / 12)));
 
   return (
@@ -603,66 +588,6 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
       </div>
 
       {/* ============================================================
-          ZONE 3: SINGLE-ROW FILTER BAR
-          ============================================================ */}
-      <div className="px-3.5 py-2.5 rounded-2xl bg-zinc-900/60 border border-zinc-800/80 flex flex-wrap items-center gap-3">
-        {/* Account filter */}
-        <div className="flex items-center gap-1.5 text-xs">
-          <span className="text-zinc-500 font-medium">Account:</span>
-          <Select
-            value={filterProfile}
-            onValueChange={setFilterProfile}
-            ariaLabel="Filter by account"
-            className="min-h-8 w-[232px] rounded-xl py-1.5"
-            options={[
-              { value: 'all', label: `All Accounts (${profiles.length})` },
-              ...profiles.map((profile) => ({ value: profile.id, label: profile.name })),
-            ]}
-          />
-        </div>
-
-        {/* Batch filter with inline delete */}
-        {batches.length > 0 && (
-          <div className="flex items-center gap-1.5 text-xs">
-            <span className="text-zinc-500 font-medium">Batch:</span>
-            <Select
-              value={filterBatch}
-              onValueChange={setFilterBatch}
-              ariaLabel="Filter by batch"
-              className="min-h-8 w-[250px] max-w-[250px] rounded-xl py-1.5"
-              options={[
-                { value: 'all', label: `All Batches (${batches.length})` },
-                ...batches.map((batch) => ({ value: batch.batch_id, label: batch.name })),
-              ]}
-            />
-            {filterBatch !== 'all' && (
-              <button
-                type="button"
-                onClick={() => handleDeleteBatch(filterBatch)}
-                className="p-1.5 rounded-lg text-zinc-500 hover:text-red-400 hover:bg-zinc-800 transition-colors"
-                title="Remove this batch and cancel remaining executions"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
-        )}
-
-        {/* Search box — pushed to the right */}
-        <div className="relative flex-1 min-w-[180px]">
-          <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            aria-label="Search queue"
-            placeholder="Search accounts, captions, media…"
-            className="w-full pl-8 pr-3 py-1.5 text-xs rounded-xl bg-zinc-950 border border-zinc-800 text-white placeholder-zinc-500 focus:outline-none focus:border-blue-500"
-          />
-        </div>
-      </div>
-
-      {/* ============================================================
           ZONE 4: BATCHES -> PROFILE LANES -> EXECUTION DETAILS
           ============================================================ */}
       <div className="p-3 rounded-2xl bg-zinc-900/60 border border-zinc-800/80 space-y-3">
@@ -672,14 +597,11 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
             {batchGroups.length} batches <span className="text-zinc-500 font-normal normal-case tracking-normal">· {filteredExecutions.length} matching posts</span>
           </h4>
 
-          {filterStatus !== 'all' || filterProfile !== 'all' || filterBatch !== 'all' || searchQuery ? (
+          {filterStatus !== 'all' ? (
             <button
               type="button"
               onClick={() => {
                 setFilterStatus('all');
-                setFilterProfile('all');
-                setFilterBatch('all');
-                setSearchQuery('');
               }}
               className="text-xs text-blue-400 hover:text-blue-300 font-medium"
             >
@@ -702,9 +624,6 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
               const batchId = group.batch.batch_id;
               const batchExpanded = expandedBatchId === batchId;
               const visibleProfilePage = Math.min(profilePage, Math.max(1, Math.ceil(group.profileGroups.length / 12)));
-              const progress = group.executions.length
-                ? Math.round((group.published / group.total) * 100)
-                : 0;
               const batchStatus = group.attention > 0
                 ? 'Needs attention'
                 : group.active > 0
@@ -752,9 +671,6 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                           </span>
                         </div>
                         <div className="sm:hidden mt-1 text-[10px] text-zinc-500">{group.published}/{group.total} done · {group.profileGroups.length} accounts{group.active > 0 ? ` · ${group.active} active` : ''}</div>
-                        <div className="mt-2 h-1 rounded-full bg-zinc-800 overflow-hidden max-w-sm" role="progressbar" aria-label="Batch completion" aria-valuenow={progress} aria-valuemin={0} aria-valuemax={100}>
-                          <div className="h-full bg-emerald-500 transition-all" style={{ width: `${progress}%` }} />
-                        </div>
                       </div>
                       <div className="hidden sm:flex items-center gap-4 text-[11px] text-zinc-400 shrink-0">
                         <span className="flex items-center gap-1"><Users className="w-3.5 h-3.5" /> {group.profileGroups.length}</span>
@@ -932,7 +848,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
 
                     <div className="text-xs text-zinc-400 truncate mt-0.5">
                       {item.post_type === 'warming'
-                        ? `${item.warming_surface === 'profile' ? 'Profile' : 'News Feed'} · ${item.warming_scroll_actions ?? item.scrolls ?? 4} scrolls`
+                        ? `${item.warming_surface ? (item.warming_surface === 'profile' ? 'Profile' : 'News Feed') : (item.warming_options?.surface === 'profile' ? 'Profile' : item.warming_options?.surface === 'news_feed' ? 'News Feed' : 'Feed / Profile')} · ${item.warming_scroll_actions != null ? `${item.warming_scroll_actions} scrolls` : item.warming_options?.random_scrolls ? `${item.warming_options.min_scrolls}–${item.warming_options.max_scrolls} cycles` : `${item.scrolls ?? 4} cycles`}`
                         : (item.spun_caption || item.base_caption || 'No caption')}
                     </div>
 

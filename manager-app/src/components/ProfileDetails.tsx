@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
+import * as Dialog from '@radix-ui/react-dialog';
 import { Profile } from '../types/profile';
-import { Shield, Trash2, HardDrive, Network, PanelRightClose, Activity, Loader2, Sparkles, AlertTriangle } from 'lucide-react';
+import { Shield, Trash2, HardDrive, Network, PanelRightClose, Activity, Loader2, Sparkles, AlertTriangle, Info, X } from 'lucide-react';
 import { cleanProfileEvidence } from '../services/api';
 import { useAppDialog } from './ui/AppDialogProvider';
 
@@ -22,12 +23,14 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
   onRefresh,
 }) => {
   const { showConfirm } = useAppDialog();
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [isCleaning, setIsCleaning] = useState(false);
   const [cleanupMessage, setCleanupMessage] = useState<string | null>(null);
   const [cleanupError, setCleanupError] = useState<string | null>(null);
   const [localDiskUsage, setLocalDiskUsage] = useState<string | null>(null);
 
   useEffect(() => {
+    setDetailsOpen(false);
     setCleanupMessage(null);
     setCleanupError(null);
     setLocalDiskUsage(null);
@@ -74,50 +77,8 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
   const resources = profile.resources || { cpu_limit: 4, memory_mb: 4096 };
   const effectiveResources = profile.effective_resources;
 
-  return (
-    <aside
-      className={`h-full bg-surface border-l border-border shrink-0 select-none overflow-hidden transition-all duration-200 ease-in-out ${
-        isOpen ? 'w-72 opacity-100' : 'w-0 border-l-0 opacity-0 pointer-events-none'
-      }`}
-    >
-      <div className="w-72 h-full p-4 flex flex-col justify-between overflow-y-auto">
-        <div className="space-y-5">
-          {profile.restart_required && (
-            <div className="flex gap-2 rounded-lg border border-amber-800/50 bg-amber-950/20 p-2.5 text-[11px] text-amber-300">
-              <AlertTriangle className="h-4 w-4 shrink-0" />
-              <span>Requested runtime settings are not active. {profile.status === 'running' ? 'Stop and start' : 'Start'} this profile to apply them.</span>
-            </div>
-          )}
-          {/* Header */}
-          <div className="flex items-start justify-between">
-            <div>
-              <h2 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
-                Profile Inspector
-              </h2>
-              <p className="text-sm font-medium text-zinc-100 mt-1 truncate">{profile.name}</p>
-              <p className="text-xs text-zinc-500 font-mono">{profile.id}</p>
-            </div>
-            <div className="flex items-center gap-1.5">
-              {onEdit && (
-                <button
-                  onClick={onEdit}
-                  className="px-2.5 py-1 rounded bg-zinc-800 border border-zinc-700 text-zinc-300 hover:text-white hover:bg-zinc-700 text-xs font-medium transition-colors"
-                >
-                  Edit
-                </button>
-              )}
-              {onToggle && (
-                <button
-                  onClick={onToggle}
-                  className="p-1 rounded text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
-                  title="Collapse Inspector"
-                >
-                  <PanelRightClose className="w-4 h-4" />
-                </button>
-              )}
-            </div>
-          </div>
-
+  const fullDetails = (
+    <>
           {/* Live Container Telemetry (When Running) */}
           {profile.status === 'running' && (
             <div className="space-y-2">
@@ -182,9 +143,9 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
               </span>
             </div>
             {profile.network.proxy_host && (
-              <div className="flex justify-between gap-2">
+              <div className="flex justify-between gap-2 min-w-0">
                 <span className="text-zinc-500">Endpoint</span>
-                <span className="truncate text-zinc-300 font-mono text-[11px]">
+                <span className="break-all text-zinc-300 font-mono text-[11px] text-right">
                   {profile.network.proxy_host}:{profile.network.proxy_port}
                 </span>
               </div>
@@ -205,15 +166,15 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
             Browser Environment
           </h3>
           <div className="p-2.5 rounded-lg bg-zinc-950 border border-zinc-800 space-y-2 text-xs">
-            <div className="grid grid-cols-[62px_1fr] gap-x-2 gap-y-1 text-[10px]">
+            <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-x-2 gap-y-1 text-[10px]">
               <span className="text-zinc-600">Requested</span>
-              <span className="truncate text-zinc-300 font-mono">{requested.screen_resolution} · {requested.timezone}</span>
+              <span className="break-words text-zinc-300 font-mono">{requested.screen_resolution} · {requested.timezone}</span>
               <span className="text-zinc-600">Effective</span>
-              <span className="truncate text-blue-300 font-mono">
+              <span className="break-words text-blue-300 font-mono">
                 {effective ? `${effective.screen_resolution} · ${effective.timezone}` : 'Not applied yet'}
               </span>
               <span className="text-zinc-600">Observed</span>
-              <span className="truncate text-emerald-300 font-mono">
+              <span className="break-words text-emerald-300 font-mono">
                 {observed ? `${observed.screen_resolution || 'unknown'} · ${observed.timezone || 'unknown'}` : 'Not measured'}
               </span>
             </div>
@@ -230,7 +191,7 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
             </div>
             <div>
               <span className="block text-[11px] text-zinc-500">Observed renderer</span>
-              <span className="block truncate text-[11px] text-zinc-300 font-mono" title={observed?.webgl_renderer || undefined}>
+              <span className="block break-words text-[11px] text-zinc-300 font-mono" title={observed?.webgl_renderer || undefined}>
                 {observed?.webgl_renderer || 'Not measured'}
               </span>
               {observed?.rendering && (
@@ -241,14 +202,14 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
                 </span>
               )}
             </div>
-            {observed?.browser_version && <div className="truncate text-[10px] text-zinc-500">{observed.browser_version}</div>}
+            {observed?.browser_version && <div className="break-words text-[10px] text-zinc-500">{observed.browser_version}</div>}
             {observed?.user_agent && (
-              <div className="truncate text-[10px] text-zinc-500" title={observed.user_agent}>
+              <div className="break-words text-[10px] text-zinc-500" title={observed.user_agent}>
                 {observed.platform || 'unknown platform'} · {observed.hardware_concurrency || '?'} CPU · {observed.device_memory || '?'} GiB
               </div>
             )}
             {effective?.network_preflight && (
-              <div className={`truncate text-[10px] ${effective.network_preflight.startsWith('passed:') ? 'text-emerald-400' : 'text-red-400'}`}>
+              <div className={`break-words text-[10px] ${effective.network_preflight.startsWith('passed:') ? 'text-emerald-400' : 'text-red-400'}`}>
                 Network: {effective.network_preflight}
               </div>
             )}
@@ -269,7 +230,7 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
               </span>
             )}
           </div>
-          <p className="text-[11px] text-zinc-400 font-mono bg-zinc-950 p-2 rounded border border-zinc-800 truncate">
+          <p className="text-[11px] text-zinc-400 font-mono bg-zinc-950 p-2 rounded border border-zinc-800 break-words">
             {profile.container.volume_path}
           </p>
 
@@ -319,6 +280,115 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
             )}
           </div>
         </div>
+    </>
+  );
+
+  return (
+    <aside
+      className={`h-full bg-surface border-l border-border shrink-0 select-none overflow-hidden transition-all duration-200 ease-in-out ${
+        isOpen ? 'w-72 opacity-100' : 'w-0 border-l-0 opacity-0 pointer-events-none'
+      }`}
+    >
+      <div className="w-72 h-full p-4 flex flex-col justify-between overflow-y-auto">
+        <div className="space-y-5">
+          {profile.restart_required && (
+            <div className="flex gap-2 rounded-lg border border-amber-800/50 bg-amber-950/20 p-2.5 text-[11px] text-amber-300">
+              <AlertTriangle className="h-4 w-4 shrink-0" />
+              <span>Requested runtime settings are not active. {profile.status === 'running' ? 'Stop and start' : 'Start'} this profile to apply them.</span>
+            </div>
+          )}
+          {/* Header */}
+          <div className="flex items-start justify-between">
+            <div>
+              <h2 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
+                Profile Inspector
+              </h2>
+              <p className="text-sm font-medium text-zinc-100 mt-1 truncate">{profile.name}</p>
+              <p className="text-xs text-zinc-500 font-mono">{profile.id}</p>
+            </div>
+            <div className="flex items-center gap-1.5">
+              {onEdit && (
+                <button
+                  onClick={onEdit}
+                  className="px-2.5 py-1 rounded bg-zinc-800 border border-zinc-700 text-zinc-300 hover:text-white hover:bg-zinc-700 text-xs font-medium transition-colors"
+                >
+                  Edit
+                </button>
+              )}
+              {onToggle && (
+                <button
+                  onClick={onToggle}
+                  className="p-1 rounded text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
+                  title="Collapse Inspector"
+                >
+                  <PanelRightClose className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-zinc-800 bg-zinc-950 p-3 space-y-3 text-xs">
+            <div className="flex items-center justify-between">
+              <span className="text-zinc-500">Status</span>
+              <span className={`capitalize font-medium ${profile.status === 'running' ? 'text-emerald-400' : 'text-zinc-300'}`}>{profile.status}</span>
+            </div>
+            {profile.status === 'running' && (
+              <>
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500">CPU</span>
+                  <span className="font-mono text-zinc-300">{profile.cpu_usage || '0.0%'}</span>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-zinc-500">Memory</span>
+                  <span className="font-mono text-zinc-300 text-right">{profile.ram_usage || 'Not measured'}</span>
+                </div>
+              </>
+            )}
+            <div className="border-t border-zinc-800 pt-3 flex items-center justify-between gap-2">
+              <span className="text-zinc-500">Connection</span>
+              <span className="text-zinc-300">{profile.network.proxy_host ? 'Proxy' : 'Direct'}</span>
+            </div>
+            {effective?.network_preflight && (
+              <div className="flex items-center justify-between">
+                <span className="text-zinc-500">Network check</span>
+                <span className={effective.network_preflight.startsWith('passed:') ? 'text-emerald-400' : 'text-red-400'}>
+                  {effective.network_preflight.startsWith('passed:') ? 'Passed' : 'Needs attention'}
+                </span>
+              </div>
+            )}
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-zinc-500">Timezone</span>
+              <span className="text-zinc-300 text-right break-words min-w-0">{effective?.timezone || requested.timezone}</span>
+            </div>
+          </div>
+
+          <Dialog.Root open={detailsOpen} onOpenChange={setDetailsOpen}>
+            <Dialog.Trigger asChild>
+              <button className="w-full flex items-center justify-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-xs font-medium text-zinc-300 hover:bg-zinc-800 hover:text-white transition-colors">
+                <Info className="h-3.5 w-3.5" />
+                View details
+              </button>
+            </Dialog.Trigger>
+            <Dialog.Portal>
+              <Dialog.Overlay className="fixed inset-0 z-[200] bg-black/70 backdrop-blur-sm" />
+              <Dialog.Content className="fixed left-1/2 top-1/2 z-[201] flex max-h-[85vh] w-[calc(100vw-2rem)] max-w-xl -translate-x-1/2 -translate-y-1/2 flex-col rounded-xl border border-zinc-700 bg-surface shadow-2xl focus:outline-none">
+                <div className="flex items-start justify-between gap-3 border-b border-border p-5">
+                  <div className="min-w-0">
+                    <Dialog.Title className="text-sm font-semibold text-zinc-100">{profile.name} · Details</Dialog.Title>
+                    <Dialog.Description className="mt-1 text-xs text-zinc-500">Resources, connection, browser environment, and storage.</Dialog.Description>
+                  </div>
+                  <Dialog.Close asChild>
+                    <button aria-label="Close profile details" className="rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-white">
+                      <X className="h-4 w-4" />
+                    </button>
+                  </Dialog.Close>
+                </div>
+                <div className="overflow-y-auto p-5 space-y-5">
+                  {fullDetails}
+                </div>
+              </Dialog.Content>
+            </Dialog.Portal>
+          </Dialog.Root>
       </div>
 
       {/* Delete Action */}

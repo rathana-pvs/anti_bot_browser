@@ -23,7 +23,7 @@ test('explicit modes expose limits and hardware support', () => {
   assert.equal(medium.supported, true);
   assert.deepEqual(medium.limits, {
     max_publishers: 2,
-    max_preparers: 2,
+    max_preparers: 3,
     max_total_automation_tasks: 4,
     max_active_profile_containers: 4,
   });

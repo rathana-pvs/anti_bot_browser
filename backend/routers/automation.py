@@ -21,6 +21,7 @@ async def run_automation(payload: dict = Body(...)):
             profile_id=profile_id,
             task=task,
             scrolls=payload.get("scrolls"),
+            warming_options=payload.get("warming_options"),
             caption=payload.get("caption"),
             comment_link=payload.get("comment_link"),
             media=payload.get("media"),

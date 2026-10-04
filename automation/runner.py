@@ -38,6 +38,7 @@ def main():
     parser.add_argument("--post-url", default=None, help="Target post URL for standalone comment task")
     parser.add_argument("--media", default=None, help="Path to media file")
     parser.add_argument("--scrolls", type=int, default=4, help="Scroll count for warming task")
+    parser.add_argument("--warming-options", default=None, help="JSON passive browsing preferences")
     parser.add_argument("--preparation-mode", choices=["brief", "extended"], default="brief")
     parser.add_argument(
         "--brain-version",
@@ -63,7 +64,8 @@ def main():
             result["success"] = success
             result["logs"] = task.logs
         elif args.task == "warming":
-            task = FacebookWarmingTask(profile_id=args.profile, scroll_count=args.scrolls)
+            task = FacebookWarmingTask(profile_id=args.profile, scroll_count=args.scrolls,
+                                       warming_options=json.loads(args.warming_options) if args.warming_options else None)
             success = task.run()
             result["success"] = success
             result["logs"] = task.logs

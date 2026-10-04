@@ -1,3 +1,4 @@
+import { WarmingSettings, defaultWarmingOptions } from './WarmingSettings';
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Profile } from '../types/profile';
 import { AutomationTaskState, RunAutomationParams } from '../types/automation';
@@ -36,6 +37,7 @@ export const AutomationControl: React.FC<AutomationControlProps> = ({ profile, o
   const [commentLink, setCommentLink] = useState('');
   const [testComment, setTestComment] = useState('');
   const [scrolls, setScrolls] = useState(4);
+  const [warmingOptions, setWarmingOptions] = useState(defaultWarmingOptions);
   const [isStarting, setIsStarting] = useState(false);
   const [isLogsExpanded, setIsLogsExpanded] = useState(true);
   const setActionError = useCallback((message: string | null) => {
@@ -95,6 +97,7 @@ export const AutomationControl: React.FC<AutomationControlProps> = ({ profile, o
         profile_id: profile.id,
         task: 'warming',
         scrolls,
+        warming_options: warmingOptions,
       });
       setTaskState(res.state);
       setShowWarmingForm(false);
@@ -321,18 +324,7 @@ export const AutomationControl: React.FC<AutomationControlProps> = ({ profile, o
           {/* Warming Configuration Sub-form */}
           {showWarmingForm && (
             <div className="p-2.5 rounded bg-zinc-900/90 border border-amber-900/30 space-y-2 text-xs">
-              <div className="flex justify-between items-center text-[11px]">
-                <span className="text-zinc-400">Scroll Iterations:</span>
-                <span className="font-mono text-amber-400 font-medium">{scrolls}</span>
-              </div>
-              <input
-                type="range"
-                min="1"
-                max="10"
-                value={scrolls}
-                onChange={(e) => setScrolls(parseInt(e.target.value))}
-                className="w-full h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-amber-500"
-              />
+              <WarmingSettings scrolls={scrolls} onScrollsChange={setScrolls} value={warmingOptions} onChange={setWarmingOptions} />
               <button
                 onClick={handleStartWarming}
                 disabled={isStarting}
