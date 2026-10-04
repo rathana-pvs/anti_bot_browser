@@ -13,6 +13,7 @@ from composer_templates import (
 from engine.screen_state import ScreenState
 from engine.telemetry import timed_telemetry_step
 from engine.text_matcher import OcrTextMatcher
+from modules.publication_result_verifier import ImagePublicationResultVerifier
 from .base_task import BaseTask
 
 
@@ -129,6 +130,14 @@ class FacebookPostTask(BaseTask):
         self.log("WARN", message)
         self.capture_evidence(code, screen, error_code=code, message=message)
         return self.set_outcome("uncertain", code, message=message)
+
+    def _verify_latest_image_post(self) -> bool:
+        return ImagePublicationResultVerifier(self).verify_latest_image()
+
+    def _image_post_not_found(self) -> bool:
+        message = "The new image post was not found after scrolling and one profile refresh."
+        self.log("ERROR", message)
+        return self.set_outcome("failed_after_publish", "image_publish_not_found_after_verification", message=message)
 
     def _needs_review(self, code: str, message: str, screen=None) -> bool:
         self.log("WARN", message)
@@ -837,6 +846,12 @@ class FacebookPostTask(BaseTask):
             final_screen = None
 
         if publication_status == "failed":
+            if getattr(getattr(self, "post_publish_prompt", None), "last_status", None) == "failed":
+                message = "Not now prompt remained open after 3 click attempts; publication could not be confirmed."
+                self.log("ERROR", message)
+                return self.set_outcome(
+                    "failed_after_publish", "known_post_publish_prompt_did_not_close", message=message,
+                )
             return self._fail("publish_rejected", "Facebook displayed an error after the publish action.", final_screen)
         if publication_status != "published":
             return self._uncertain(
@@ -848,11 +863,14 @@ class FacebookPostTask(BaseTask):
         if self.defer_comment:
             self.log("INFO", "Publication confirmed; deferring first comment to the Comment module.")
             return self.set_outcome(
-                "published",
+                "pending_profile_verification" if self.media_path and self.comment_link else "published",
                 None,
                 post_template=self.post_template_id,
                 first_comment="deferred",
             )
+
+        if self.media_path and self.comment_link and not self._verify_latest_image_post():
+            return self._image_post_not_found()
 
         if self.comment_link:
             comment_status, permalink_info = self.post_first_comment_with_page_reuse(

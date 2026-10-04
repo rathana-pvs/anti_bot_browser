@@ -121,8 +121,10 @@ class PostPublishPromptModule:
         if status not in {"dismissed", "failed"}:
             status = self.task.handle_post_publish_prompt()
         if status == "failed":
+            self.task.result_status = "failed_after_publish"
+            self.task.result_error = "known_post_publish_prompt_did_not_close"
             return ModuleResult(
-                UNCERTAIN,
+                FAILED_SAFE,
                 "known_post_publish_prompt_did_not_close",
                 {"post_publish_prompt": status},
             )
@@ -143,6 +145,13 @@ class PublicationResultVerifierModule:
 
     def run(self, context):
         status = getattr(self.task, "result_status", "failed_before_publish")
+        if self.content_type != "reel" and context.inputs.get("comment_text") and getattr(self.task, "media_path", None) and status in {"published", "pending_profile_verification"}:
+            if not self.task._verify_latest_image_post():
+                self.task._image_post_not_found()
+                return _task_result(self.task, success_reason="image_publication_verified")
+            self.task.result_status = "published"
+            self.task.result_error = None
+            return ModuleResult.success("latest_image_confirmed_on_profile", publication_status="published")
         if status in {"published", "completed"}:
             return ModuleResult.success(
                 "publication_already_confirmed",

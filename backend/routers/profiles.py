@@ -5,6 +5,8 @@ from copy import deepcopy
 from pathlib import Path
 
 from fastapi import APIRouter, Body, HTTPException, Query
+from pydantic import BaseModel, ConfigDict, Field
+from backend.services.profile_groups import list_groups, create_group
 
 from backend.config import CPU_THREADS, PROFILES_DIR, TOTAL_MEMORY_GB
 from backend.models.profile import ProfileCreateRequest, ProfileUpdateRequest
@@ -77,6 +79,24 @@ def _network_from_intent(profile_id: str, intent: dict) -> tuple[dict, str | Non
     }, None
 
 
+class GroupCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    name: str = Field(min_length=1, max_length=80)
+
+
+@router.get("/groups")
+def get_profile_groups():
+    return list_groups()
+
+
+@router.post("/groups", status_code=201)
+def add_profile_group(request: GroupCreateRequest):
+    try:
+        return {"name": create_group(request.name)}
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.get("/defaults")
 def get_profile_defaults():
     return profile_defaults()
@@ -132,7 +152,7 @@ def create_profile(request: ProfileCreateRequest):
             )
             profile = {
                 "schema_version": PROFILE_SCHEMA_VERSION, "configuration_revision": 1,
-                "id": profile_id, "name": request.name.strip(), "status": "stopped",
+                "id": profile_id, "name": request.name.strip(), "group": request.group, "status": "stopped",
                 "created_at": utc_now(), "updated_at": utc_now(),
                 "network": network, "requested_environment": requested,
                 "effective_environment": None, "observed_environment": None,
@@ -174,6 +194,8 @@ def update_profile(profile_id: str, request: ProfileUpdateRequest):
     existing, _ = migrate_profile(existing, profile_dir)
     original = deepcopy(existing)
     try:
+        if request.group is not None:
+            existing["group"] = request.group
         if request.name is not None:
             existing["name"] = request.name.strip()
         proxy_timezone = None

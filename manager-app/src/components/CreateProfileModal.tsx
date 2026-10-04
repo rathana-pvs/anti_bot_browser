@@ -1,3 +1,4 @@
+import { ProfileGroupField } from './ProfileGroupField';
 import React, { useEffect, useState } from 'react';
 import { Cpu, Globe, Monitor, Shield, X } from 'lucide-react';
 import { fetchProfileDefaults } from '../services/api';
@@ -12,6 +13,7 @@ interface CreateProfileModalProps {
   onCreate: (request: ProfileCreateRequest) => Promise<void>;
   existingCount: number;
   proxies?: ProxyItem[];
+  groups?: string[];
 }
 
 const fallbackEnvironment = (): RequestedEnvironment => ({
@@ -25,9 +27,10 @@ const fallbackEnvironment = (): RequestedEnvironment => ({
 });
 
 export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
-  isOpen, onClose, onCreate, existingCount, proxies = [],
+  isOpen, onClose, onCreate, existingCount, proxies = [], groups = [],
 }) => {
   const [name, setName] = useState('');
+  const [group, setGroup] = useState('');
   const [environment, setEnvironment] = useState<RequestedEnvironment>(fallbackEnvironment);
   const [resources, setResources] = useState<ResourceLimits>({ cpu_limit: 4, memory_mb: 4096 });
   const [behaviorMode, setBehaviorMode] = useState<BehaviorMode>('medium');
@@ -48,6 +51,7 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
   useEffect(() => {
     if (!isOpen) return;
     setName(`Account ${existingCount + 1}`);
+    setGroup('');
     setNetworkChoice('direct');
     setCustomHost('');
     setCustomPort('1080');
@@ -112,7 +116,7 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
             }
           : { mode: 'pool', proxy_id: networkChoice };
       await onCreate({
-        name: name.trim(), network, requested_environment: environment, resources,
+        name: name.trim(), group: group.trim(), network, requested_environment: environment, resources,
         behavior_mode: behaviorMode,
         automation: { reel_template: reelTemplate },
       });
@@ -143,6 +147,7 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
                 className="w-full rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2 text-zinc-100 focus:border-zinc-600 focus:outline-none" />
             </label>
 
+            <ProfileGroupField value={group} onChange={setGroup} groups={groups} />
             <div className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
               <div className="font-medium text-zinc-300">Automation behavior</div>
               <div className="grid grid-cols-2 gap-2">

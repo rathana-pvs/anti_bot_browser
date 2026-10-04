@@ -28,7 +28,13 @@ async def run_automation(payload: dict = Body(...)):
         )
         if isinstance(res, dict) and res.get("status_code") == 409:
             raise HTTPException(status_code=409, detail=res)
-        return res
+        return {
+            "success": True,
+            "message": f'Started "{task}" task for profile "{profile_id}"',
+            "state": res,
+        }
+    except HTTPException:
+        raise
     except ValueError as err:
         raise HTTPException(status_code=400, detail=str(err))
     except FileNotFoundError as err:

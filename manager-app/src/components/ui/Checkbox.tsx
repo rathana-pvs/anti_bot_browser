@@ -1,10 +1,10 @@
 import * as CheckboxPrimitive from '@radix-ui/react-checkbox';
-import { Check } from 'lucide-react';
+import { Check, Minus } from 'lucide-react';
 import { twMerge } from 'tailwind-merge';
 
 interface CheckboxProps {
   id?: string;
-  checked: boolean;
+  checked: boolean | 'indeterminate';
   onCheckedChange: (checked: boolean) => void;
   ariaLabel?: string;
   disabled?: boolean;
@@ -25,7 +25,7 @@ export function Checkbox({ id, checked, onCheckedChange, ariaLabel, disabled, cl
       )}
     >
       <CheckboxPrimitive.Indicator>
-        <Check className="h-3 w-3" strokeWidth={3} />
+        {checked === 'indeterminate' ? <Minus className="h-3 w-3" strokeWidth={3} /> : <Check className="h-3 w-3" strokeWidth={3} />}
       </CheckboxPrimitive.Indicator>
     </CheckboxPrimitive.Root>
   );

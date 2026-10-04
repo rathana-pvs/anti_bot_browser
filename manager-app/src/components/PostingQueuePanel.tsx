@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { DailyBatch, QueueDataResponse, QueueExecutionItem } from '../types/automation';
 import { Profile } from '../types/profile';
 import { AppendBatchPostsDialog } from './AppendBatchPostsDialog';
@@ -58,14 +58,16 @@ interface LightboxMedia {
 }
 
 export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }) => {
-  const { showConfirm, showPrompt } = useAppDialog();
+  const { showConfirm, showPrompt, showToast } = useAppDialog();
   const [queueData, setQueueData] = useState<QueueDataResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [filterProfile, setFilterProfile] = useState<string>('all');
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [filterBatch, setFilterBatch] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [actionError, setActionError] = useState<string | null>(null);
+  const setActionError = useCallback((message: string | null) => {
+    if (message) showToast(message, 'error');
+  }, [showToast]);
   const [lightboxMedia, setLightboxMedia] = useState<LightboxMedia | null>(null);
   const [retryingCommentId, setRetryingCommentId] = useState<string | null>(null);
   const [reportDialogOpen, setReportDialogOpen] = useState(false);
@@ -74,9 +76,21 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
   const [reportIncludeEvidence, setReportIncludeEvidence] = useState(false);
   const [reportIncludeContent, setReportIncludeContent] = useState(false);
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
-  const [reportSuccess, setReportSuccess] = useState<string | null>(null);
-  const [batchExpansionOverrides, setBatchExpansionOverrides] = useState<Record<string, boolean>>({});
-  const [profileExpansionOverrides, setProfileExpansionOverrides] = useState<Record<string, boolean>>({});
+  const setReportSuccess = useCallback((message: string | null) => {
+    if (message) showToast(message, 'success');
+  }, [showToast]);
+  const [expandedBatchId, setExpandedBatchId] = useState<string | null>(null);
+  const [expandedProfileKey, setExpandedProfileKey] = useState<string | null>(null);
+  const [expandedExecutionId, setExpandedExecutionId] = useState<string | null>(null);
+  const [batchPage, setBatchPage] = useState(1);
+  const [profilePage, setProfilePage] = useState(1);
+  const [executionPage, setExecutionPage] = useState(1);
+
+  useEffect(() => {
+    setBatchPage(1);
+    setProfilePage(1);
+    setExecutionPage(1);
+  }, [filterProfile, filterStatus, filterBatch, searchQuery]);
   const [appendBatch, setAppendBatch] = useState<DailyBatch | null>(null);
 
   // Phase 0 Safety Gate: Review & Resolve Uncertain State
@@ -92,6 +106,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
       setQueueData(data);
     } catch (err: any) {
       console.error('Failed to load queue:', err);
+      setActionError(err.message || 'Could not refresh the queue.');
     } finally {
       setLoading(false);
     }
@@ -354,11 +369,11 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
       }
     }
     if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
+      const q = searchQuery.trim().toLowerCase();
       const profileName = getProfileName(execItem.profile_id).toLowerCase();
       const caption = (execItem.spun_caption || execItem.base_caption || '').toLowerCase();
       const media = (execItem.media_file || '').toLowerCase();
-      if (!profileName.includes(q) && !caption.includes(q) && !media.includes(q)) {
+      if (!profileName.includes(q) && !caption.includes(q) && !media.includes(q) && !(execItem.batch_name || '').toLowerCase().includes(q)) {
         return false;
       }
     }
@@ -367,71 +382,72 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
 
   const uncertainCount = stats.uncertain || 0;
   const failedCount = stats.failed || 0;
-  const hasAttentionItems = uncertainCount > 0 || failedCount > 0;
-  const activeStatuses = new Set(['running', 'preparing', 'ready']);
+  useEffect(() => {
+    if (uncertainCount > 0 || failedCount > 0) {
+      showToast([
+        uncertainCount > 0 ? `${uncertainCount} item(s) need outcome review.` : '',
+        failedCount > 0 ? `${failedCount} item(s) failed. Open their details to check the outcome.` : '',
+      ].filter(Boolean).join(' '), 'warning');
+    }
+  }, [uncertainCount, failedCount, showToast]);
+  const activeStatuses = new Set(['running', 'preparing']);
   const attentionStatuses = new Set(['failed', 'failed_before_publish', 'failed_after_publish', 'uncertain', 'needs_review']);
   const finishedStatuses = new Set(['published', 'completed']);
-  const batchGroups = batches.map((batch) => {
-    const batchExecutions = filteredExecutions.filter((item) => item.batch_id === batch.batch_id);
-    const profileOrder = batch.profile_execution_order || batch.target_profiles || [];
-    const profileIds = [
-      ...profileOrder,
-      ...batchExecutions.map((item) => item.profile_id).filter((id) => !profileOrder.includes(id)),
-    ];
-    const profileGroups = profileIds
-      .map((profileId) => ({
+  // Index once so large queues do not repeatedly scan every execution for each account.
+  const batchGroups = useMemo(() => {
+    const allByBatch = new Map<string, QueueExecutionItem[]>();
+    for (const item of executions) {
+      const key = item.batch_id || '';
+      const items = allByBatch.get(key) || [];
+      items.push(item);
+      allByBatch.set(key, items);
+    }
+    const byBatch = new Map<string, QueueExecutionItem[]>();
+    for (const item of filteredExecutions) {
+      const key = item.batch_id || '';
+      const items = byBatch.get(key) || [];
+      items.push(item);
+      byBatch.set(key, items);
+    }
+    return batches.map((batch) => {
+      const batchExecutions = byBatch.get(batch.batch_id) || [];
+      const allBatchExecutions = allByBatch.get(batch.batch_id) || [];
+      const byProfile = new Map<string, QueueExecutionItem[]>();
+      for (const item of batchExecutions) {
+        const items = byProfile.get(item.profile_id) || [];
+        items.push(item);
+        byProfile.set(item.profile_id, items);
+      }
+      const profileIds = [...new Set([
+        ...(batch.profile_execution_order || batch.target_profiles || []),
+        ...byProfile.keys(),
+      ])];
+      const profileGroups = profileIds.map((profileId) => ({
         profileId,
-        executions: batchExecutions.filter((item) => item.profile_id === profileId),
-      }))
-      .filter((group) => group.executions.length > 0);
-    const published = batchExecutions.filter((item) => finishedStatuses.has(item.status)).length;
-    const active = batchExecutions.filter((item) => activeStatuses.has(item.status)).length;
-    const attention = batchExecutions.filter((item) => attentionStatuses.has(item.status)).length;
-    const pending = batchExecutions.filter((item) => item.status === 'pending').length;
-    return {
-      batch,
-      executions: batchExecutions,
-      profileGroups,
-      published,
-      active,
-      attention,
-      pending,
-      defaultExpanded: attention > 0,
-    };
-  }).filter((group) => group.executions.length > 0).sort((left, right) => {
-    const rank = (group: typeof left) => (
-      group.attention > 0 ? 0 : group.active > 0 ? 1 : group.pending > 0 ? 2 : 3
-    );
-    return rank(left) - rank(right);
-  });
+        executions: byProfile.get(profileId) || [],
+      })).filter((group) => group.executions.length > 0);
+      return {
+        batch,
+        executions: batchExecutions,
+        total: allBatchExecutions.length,
+        profileGroups,
+        published: allBatchExecutions.filter((item) => finishedStatuses.has(item.status)).length,
+        active: allBatchExecutions.filter((item) => activeStatuses.has(item.status)).length,
+        attention: allBatchExecutions.filter((item) => attentionStatuses.has(item.status)).length,
+        pending: allBatchExecutions.filter((item) => item.status === 'pending' || item.status === 'ready').length,
+      };
+    }).filter((group) => group.executions.length > 0).sort((left, right) => {
+      const rank = (group: typeof left) => (
+        group.active > 0 ? 0 : group.attention > 0 ? 1 : group.pending > 0 ? 2 : 3
+      );
+      return rank(left) - rank(right);
+    });
+  }, [queueData, filterProfile, filterStatus, filterBatch, searchQuery, profiles]);
+  const visibleBatchPage = Math.min(batchPage, Math.max(1, Math.ceil(batchGroups.length / 12)));
 
   return (
-    <div className="space-y-4 max-w-7xl mx-auto">
+    <div className="space-y-3 max-w-7xl mx-auto min-w-0">
       {/* Top Action Error Alert */}
-      {actionError && (
-        <div className="p-3 bg-red-950/70 border border-red-800 text-red-200 text-xs rounded-xl flex items-center justify-between gap-2 shadow-sm animate-in fade-in duration-150">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
-            <span>{actionError}</span>
-          </div>
-          <button onClick={() => setActionError(null)} className="text-red-400 hover:text-white font-bold ml-2">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
-
-      {reportSuccess && (
-        <div className="p-3 bg-emerald-950/70 border border-emerald-800 text-emerald-200 text-xs rounded-xl flex items-center justify-between gap-2 shadow-sm animate-in fade-in duration-150">
-          <div className="flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-            <span>{reportSuccess}</span>
-          </div>
-          <button onClick={() => setReportSuccess(null)} className="text-emerald-400 hover:text-white font-bold ml-2">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
-
       {/* ============================================================
           ZONE 1: COMPACT STATUS BAR (Clickable Filters)
           ============================================================ */}
@@ -463,7 +479,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                 : 'text-blue-400 hover:bg-blue-950/40'
             }`}
           >
-            <span className="w-2 h-2 rounded-full bg-blue-500 animate-ping" />
+            <span className="w-2 h-2 rounded-full bg-blue-500 " />
             <span>Running</span>
             <span className="font-mono text-[11px] px-1.5 py-0.2 rounded bg-blue-950/90 text-blue-300">
               {stats.running}
@@ -547,7 +563,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
             <button
               type="button"
               onClick={() => setFilterStatus(filterStatus === 'uncertain' ? 'all' : 'uncertain')}
-              className={`px-3 py-1.5 rounded-xl font-medium transition-all flex items-center gap-1.5 animate-pulse ${
+              className={`px-3 py-1.5 rounded-xl font-medium transition-all flex items-center gap-1.5 ${
                 filterStatus === 'uncertain'
                   ? 'bg-amber-950 text-amber-200 border border-amber-600 font-semibold shadow-sm'
                   : 'text-amber-400 hover:bg-amber-950/40'
@@ -585,52 +601,6 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
           </button>
         </div>
       </div>
-
-      {/* ============================================================
-          ZONE 2: ATTENTION REQUIRED BANNER (Conditional)
-          ============================================================ */}
-      {hasAttentionItems && (
-        <div className="p-3.5 rounded-2xl bg-amber-950/30 border border-amber-700/60 flex flex-wrap items-center justify-between gap-3 shadow-md animate-in fade-in duration-150">
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded-xl bg-amber-500/20 text-amber-400 shrink-0">
-              <ShieldAlert className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="text-xs font-bold text-amber-200 flex items-center gap-2">
-                <span>Attention Required</span>
-                <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-amber-900/60 text-amber-300">
-                  {uncertainCount + failedCount} items
-                </span>
-              </div>
-              <div className="text-[11px] text-amber-300/80 mt-0.5 leading-snug">
-                {uncertainCount > 0 && `${uncertainCount} post(s) has an unverified outcome and can be reviewed or re-run. `}
-                {failedCount > 0 && `${failedCount} post(s) failed pre-publish and can be retried safely.`}
-              </div>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2 text-xs">
-            {uncertainCount > 0 && (
-              <button
-                type="button"
-                onClick={() => setFilterStatus('uncertain')}
-                className="px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-semibold transition-colors shadow-sm"
-              >
-                Review Uncertain ({uncertainCount})
-              </button>
-            )}
-            {failedCount > 0 && (
-              <button
-                type="button"
-                onClick={() => setFilterStatus('failed')}
-                className="px-3 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-red-300 border border-red-800/60 font-medium transition-colors"
-              >
-                View Failed ({failedCount})
-              </button>
-            )}
-          </div>
-        </div>
-      )}
 
       {/* ============================================================
           ZONE 3: SINGLE-ROW FILTER BAR
@@ -679,13 +649,14 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
         )}
 
         {/* Search box — pushed to the right */}
-        <div className="relative ml-auto min-w-[200px]">
+        <div className="relative flex-1 min-w-[180px]">
           <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2" />
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search captions or accounts..."
+            aria-label="Search queue"
+            placeholder="Search accounts, captions, media…"
             className="w-full pl-8 pr-3 py-1.5 text-xs rounded-xl bg-zinc-950 border border-zinc-800 text-white placeholder-zinc-500 focus:outline-none focus:border-blue-500"
           />
         </div>
@@ -698,7 +669,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
         <div className="flex items-center justify-between">
           <h4 className="text-xs font-semibold text-zinc-200 uppercase tracking-wider flex items-center gap-2">
             <Layers3 className="w-4 h-4 text-emerald-400" />
-            Batch Operations ({batchGroups.length} batches · {filteredExecutions.length} executions)
+            {batchGroups.length} batches <span className="text-zinc-500 font-normal normal-case tracking-normal">· {filteredExecutions.length} matching posts</span>
           </h4>
 
           {filterStatus !== 'all' || filterProfile !== 'all' || filterBatch !== 'all' || searchQuery ? (
@@ -719,15 +690,20 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
 
         {filteredExecutions.length === 0 ? (
           <div className="p-12 text-center text-xs text-zinc-500 border border-dashed border-zinc-800/80 rounded-xl">
-            No executions match the selected filters. Use the Daily Batch Creator tab to schedule posts.
+            {loading && !queueData
+              ? 'Loading queue…'
+              : executions.length === 0
+                ? 'Your queue is empty. Create a daily batch to schedule posts.'
+                : 'No posts match these filters. Try a different search or reset the filters.'}
           </div>
         ) : (
-          <div className="grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3 gap-3 max-h-[720px] overflow-y-auto pr-1">
-            {batchGroups.map((group) => {
+          <div className="space-y-2">
+            {batchGroups.slice((visibleBatchPage - 1) * 12, visibleBatchPage * 12).map((group) => {
               const batchId = group.batch.batch_id;
-              const batchExpanded = batchExpansionOverrides[batchId] ?? group.defaultExpanded;
+              const batchExpanded = expandedBatchId === batchId;
+              const visibleProfilePage = Math.min(profilePage, Math.max(1, Math.ceil(group.profileGroups.length / 12)));
               const progress = group.executions.length
-                ? Math.round((group.published / group.executions.length) * 100)
+                ? Math.round((group.published / group.total) * 100)
                 : 0;
               const batchStatus = group.attention > 0
                 ? 'Needs attention'
@@ -741,25 +717,27 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
               return (
                 <section
                   key={batchId}
-                  className={`rounded-xl bg-zinc-950/55 border border-zinc-800/90 overflow-hidden ${
-                    batchExpanded ? 'xl:col-span-2 2xl:col-span-3' : ''
-                  }`}
+                  className={`rounded-xl bg-zinc-950/55 border overflow-hidden ${batchExpanded ? 'border-blue-800/60' : 'border-zinc-800/90'}`}
                 >
                   <div className="flex items-center gap-2.5 px-3 py-2.5 bg-zinc-900/70">
                     <button
                       type="button"
-                      onClick={() => setBatchExpansionOverrides((current) => ({
-                        ...current,
-                        [batchId]: !batchExpanded,
-                      }))}
+                      aria-expanded={batchExpanded}
+                      onClick={() => {
+                        setExpandedBatchId(batchExpanded ? null : batchId);
+                        setExpandedProfileKey(null);
+                        setExpandedExecutionId(null);
+                        setProfilePage(1);
+                        setExecutionPage(1);
+                      }}
                       className="flex-1 min-w-0 text-left flex items-center gap-3"
                     >
                       {batchExpanded
                         ? <ChevronDown className="w-4 h-4 text-zinc-400 shrink-0" />
                         : <ChevronRight className="w-4 h-4 text-zinc-400 shrink-0" />}
                       <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-sm font-semibold text-white truncate">{group.batch.name}</span>
+                        <div className="flex flex-wrap items-center gap-2 min-w-0">
+                          <span className="text-sm font-semibold text-white truncate max-w-[240px] sm:max-w-[360px]" title={group.batch.name}>{group.batch.name}</span>
                           <span className={`px-2 py-0.5 rounded text-[10px] font-semibold border ${
                             group.attention > 0
                               ? 'bg-amber-950 text-amber-300 border-amber-800'
@@ -773,13 +751,14 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                             {group.batch.schedule_window?.start_now ? 'Sequential · now' : 'Sequential · scheduled'}
                           </span>
                         </div>
-                        <div className="mt-2 h-1.5 rounded-full bg-zinc-800 overflow-hidden">
+                        <div className="sm:hidden mt-1 text-[10px] text-zinc-500">{group.published}/{group.total} done · {group.profileGroups.length} accounts{group.active > 0 ? ` · ${group.active} active` : ''}</div>
+                        <div className="mt-2 h-1 rounded-full bg-zinc-800 overflow-hidden max-w-sm" role="progressbar" aria-label="Batch completion" aria-valuenow={progress} aria-valuemin={0} aria-valuemax={100}>
                           <div className="h-full bg-emerald-500 transition-all" style={{ width: `${progress}%` }} />
                         </div>
                       </div>
                       <div className="hidden sm:flex items-center gap-4 text-[11px] text-zinc-400 shrink-0">
                         <span className="flex items-center gap-1"><Users className="w-3.5 h-3.5" /> {group.profileGroups.length}</span>
-                        <span>{group.published}/{group.executions.length} done</span>
+                        <span>{group.published}/{group.total} done</span>
                         {group.active > 0 && <span className="text-blue-300">{group.active} active</span>}
                         {group.attention > 0 && <span className="text-amber-300">{group.attention} attention</span>}
                       </div>
@@ -793,7 +772,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                         title="Append posts to the end of this running batch"
                       >
                         <Plus className="w-3.5 h-3.5" />
-                        <span className="hidden 2xl:inline">Add posts</span>
+                        <span className="hidden sm:inline">Add posts</span>
                       </button>
                     )}
                     <button
@@ -807,27 +786,32 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                   </div>
 
                   {batchExpanded && (
-                    <div className="p-2.5 grid grid-cols-1 xl:grid-cols-2 gap-2">
-                      {group.profileGroups.map((profileGroup) => {
+                    <div className="border-t border-zinc-800/70 p-3 space-y-2">
+                      <div className="flex items-center justify-between gap-2 text-[11px] text-zinc-500 px-1">
+                        <span>Accounts in execution order</span>
+                        <span>{group.published} done · {group.pending} pending · {group.total} total · {group.executions.length} matching</span>
+                      </div>
+                      {group.profileGroups.slice((visibleProfilePage - 1) * 12, visibleProfilePage * 12).map((profileGroup) => {
                         const profileKey = `${batchId}:${profileGroup.profileId}`;
                         const profileActive = profileGroup.executions.filter((item) => activeStatuses.has(item.status)).length;
+                        const profileReady = profileGroup.executions.filter((item) => item.status === 'ready').length;
                         const profileAttention = profileGroup.executions.filter((item) => attentionStatuses.has(item.status)).length;
                         const profileDone = profileGroup.executions.filter((item) => finishedStatuses.has(item.status)).length;
-                        const profileExpanded = profileExpansionOverrides[profileKey]
-                          ?? (profileAttention > 0);
+                        const profileExpanded = expandedProfileKey === profileKey;
+                        const visibleExecutionPage = Math.min(executionPage, Math.max(1, Math.ceil(profileGroup.executions.length / 20)));
                         return (
                           <div
                             key={profileKey}
-                            className={`rounded-xl border border-zinc-800/80 bg-black/20 overflow-hidden ${
-                              profileExpanded ? 'xl:col-span-2' : ''
-                            }`}
+                            className="rounded-lg border border-zinc-800/80 bg-black/20 overflow-hidden"
                           >
                             <button
                               type="button"
-                              onClick={() => setProfileExpansionOverrides((current) => ({
-                                ...current,
-                                [profileKey]: !profileExpanded,
-                              }))}
+                              aria-expanded={profileExpanded}
+                              onClick={() => {
+                                setExpandedProfileKey(profileExpanded ? null : profileKey);
+                                setExpandedExecutionId(null);
+                                setExecutionPage(1);
+                              }}
                               className="w-full px-3 py-2.5 flex items-center gap-2.5 text-left hover:bg-zinc-900/70 transition-colors"
                             >
                               {profileExpanded
@@ -844,6 +828,11 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                                   {profileActive} active
                                 </span>
                               )}
+                              {profileReady > 0 && (
+                                <span className="px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800 text-[10px] font-semibold" title="Preparation completed; waiting for a publishing slot. The profile may be stopped until publishing starts.">
+                                  {profileReady} ready · waiting
+                                </span>
+                              )}
                               {profileAttention > 0 && (
                                 <span className="px-2 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-800 text-[10px] font-semibold">
                                   {profileAttention} attention
@@ -852,17 +841,17 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                             </button>
 
                             {profileExpanded && (
-                              <div className="p-2 grid grid-cols-1 2xl:grid-cols-2 gap-2 border-t border-zinc-800/70">
-                                {profileGroup.executions.map((item) => (
+                              <div className="border-t border-zinc-800/70 divide-y divide-zinc-800/60">
+                                {profileGroup.executions.slice((visibleExecutionPage - 1) * 20, visibleExecutionPage * 20).map((item) => (
               <div
                 key={item.execution_id}
-                className="p-2.5 rounded-lg bg-zinc-950/70 border border-zinc-800/80 hover:border-zinc-700 transition-all flex flex-wrap items-center justify-between gap-2.5 group"
+                className="px-3 py-3 bg-zinc-950/40 hover:bg-zinc-900/40 grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_auto] items-center gap-3 group"
               >
                 {/* Left group: Time, Media Thumbnail, Details */}
-                <div className="flex items-center gap-3 min-w-[240px]">
+                <div className="flex items-center gap-3 min-w-0">
                   {/* Scheduled Time Stamp */}
                   <div className="text-center font-mono shrink-0 w-14">
-                    <div className="text-xs font-bold text-white">
+                    <div className="text-xs font-bold text-white whitespace-nowrap">
                       {formatScheduledTime(item.scheduled_at)}
                     </div>
                     <div className="text-[10px] text-zinc-500">
@@ -892,7 +881,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                           <video
                             src={getSharedMediaUrl(item.media_file)}
                             className="w-full h-full object-cover opacity-80"
-                            preload="metadata"
+                            preload="none"
                           />
                           <div className="absolute inset-0 flex items-center justify-center bg-black/40 group-hover/thumb:bg-black/20">
                             <Play className="w-4 h-4 text-white fill-white drop-shadow" />
@@ -902,6 +891,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                         <img
                           src={getSharedMediaUrl(item.media_file)}
                           alt="preview"
+                          loading="lazy"
                           className="w-full h-full object-cover"
                           onError={(e) => {
                             (e.target as HTMLElement).style.display = 'none';
@@ -920,7 +910,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                   )}
 
                   {/* Text Details: Profile, Type, Caption, 1st Comment */}
-                  <div className="min-w-0">
+                  <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <span className="text-xs font-semibold text-zinc-200 truncate">
                         {getProfileName(item.profile_id)}
@@ -940,13 +930,13 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                       )}
                     </div>
 
-                    <div className="text-[11px] text-zinc-400 line-clamp-1 max-w-[380px] mt-0.5">
+                    <div className="text-xs text-zinc-400 truncate mt-0.5">
                       {item.post_type === 'warming'
                         ? `${item.warming_surface === 'profile' ? 'Profile' : 'News Feed'} · ${item.warming_scroll_actions ?? item.scrolls ?? 4} scrolls`
                         : (item.spun_caption || item.base_caption || 'No caption')}
                     </div>
 
-                    {item.first_comment && (
+                    {expandedExecutionId === item.execution_id && item.first_comment && (
                       <div className="text-[10px] text-zinc-500 truncate max-w-[340px]">
                         💬 {item.first_comment}
                       </div>
@@ -955,8 +945,18 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                 </div>
 
                 {/* Right group: Badges & Action Buttons */}
-                <div className="flex items-center gap-2 sm:gap-2.5">
-                  {getStatusBadge(item.status, item.execution_id)}
+                <div className="flex flex-wrap items-center gap-2 ml-auto">
+                  {getStatusBadge(item.status)}
+                  <button
+                    type="button"
+                    aria-expanded={expandedExecutionId === item.execution_id}
+                    onClick={() => setExpandedExecutionId(expandedExecutionId === item.execution_id ? null : item.execution_id)}
+                    className="px-2 py-1 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-800 flex items-center gap-1"
+                  >
+                    {expandedExecutionId === item.execution_id ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                    Details
+                  </button>
+                  {expandedExecutionId === item.execution_id && <>
 
                   {item.warming_surface && (
                     <span
@@ -1062,6 +1062,8 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                     </button>
                   )}
 
+                  </>}
+
                   {/* Run Now button for pending items */}
                   {item.status === 'pending' && (
                     <button
@@ -1105,6 +1107,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                     </button>
                   )}
 
+                  {expandedExecutionId === item.execution_id && <>
                   <button
                     type="button"
                     onClick={() => openReportDialog(item)}
@@ -1132,19 +1135,35 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                       <Lock className="w-3.5 h-3.5" />
                     </span>
                   )}
+                  </>}
                 </div>
+                {expandedExecutionId === item.execution_id && (
+                  <div className="col-span-full w-full rounded-lg bg-zinc-900/70 p-3 text-xs space-y-2 text-zinc-400 break-words">
+                    <div className="flex flex-wrap gap-x-6 gap-y-1">
+                      <span>Stage: <span className="text-zinc-200">{item.stage || 'Not started'}</span></span>
+                      <span>Retries: <span className="text-zinc-200">{item.retry_count || 0}</span></span>
+                    </div>
+                    {item.media_file && <p>Media: <span className="text-zinc-200">{item.media_file}</span></p>}
+                    {(item.spun_caption || item.base_caption) && <p className="whitespace-pre-wrap text-zinc-200">{item.spun_caption || item.base_caption}</p>}
+                    {item.error && <p className="text-red-300">{item.error}</p>}
+                    <p className="text-[10px] font-mono text-zinc-600">{item.execution_id}</p>
+                  </div>
+                )}
                                   </div>
                                 ))}
+                                <QueuePagination page={visibleExecutionPage} total={profileGroup.executions.length} pageSize={20} label="posts" onChange={(page) => { setExecutionPage(page); setExpandedExecutionId(null); }} />
                               </div>
                             )}
                           </div>
                         );
                       })}
+                      <QueuePagination page={visibleProfilePage} total={group.profileGroups.length} pageSize={12} label="accounts" onChange={(page) => { setProfilePage(page); setExpandedProfileKey(null); }} />
                     </div>
                   )}
                 </section>
               );
             })}
+            <QueuePagination page={visibleBatchPage} total={batchGroups.length} pageSize={12} label="batches" onChange={(page) => { setBatchPage(page); setExpandedBatchId(null); }} />
           </div>
         )}
       </div>
@@ -1574,3 +1593,20 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
     </div>
   );
 };
+
+function QueuePagination({ page, total, pageSize, label, onChange }: {
+  page: number; total: number; pageSize: number; label: string; onChange: (page: number) => void;
+}) {
+  const pages = Math.ceil(total / pageSize);
+  if (pages <= 1) return null;
+  return (
+    <nav aria-label={`${label} pagination`} className="flex flex-wrap items-center justify-between gap-2 px-3 py-3 text-xs text-zinc-500">
+      <span>{(page - 1) * pageSize + 1}–{Math.min(page * pageSize, total)} of {total} {label}</span>
+      <div className="flex items-center gap-3">
+        <button type="button" disabled={page === 1} onClick={() => onChange(page - 1)} className="px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-300 hover:bg-zinc-800 disabled:opacity-30 disabled:cursor-not-allowed">Previous</button>
+        <span>{page} / {pages}</span>
+        <button type="button" disabled={page === pages} onClick={() => onChange(page + 1)} className="px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-300 hover:bg-zinc-800 disabled:opacity-30 disabled:cursor-not-allowed">Next</button>
+      </div>
+    </nav>
+  );
+}

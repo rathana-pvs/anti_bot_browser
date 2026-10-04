@@ -32,6 +32,41 @@ class PostPublishPromptHandlerTests(unittest.TestCase):
             bounds=(80, 180, 120, 220), max_offset_px=4,
         )
 
+    def test_retries_with_buffer_and_fresh_target_then_confirms_closed(self):
+        first = {"center": (100, 200)}
+        second = {"center": (110, 210)}
+        third = {"center": (120, 220)}
+        task = self.make_task([first, second, third, None])
+        events = []
+        task.click_reversible.side_effect = lambda *a, **k: events.append("click")
+        task.client.screenshot.side_effect = lambda: events.append("verify") or object()
+        handler = PostPublishPromptHandler(task, close_timeout=0)
+        with patch("engine.post_publish_prompt.time.sleep", side_effect=lambda s: events.append(("buffer", s))):
+            self.assertEqual(handler.handle(object()), "dismissed")
+        self.assertEqual(events, ["click", ("buffer", 5.0), "verify"] * 3)
+        self.assertEqual([c.args[0] for c in task.click_reversible.call_args_list],
+                         [(100, 200), (110, 210), (120, 220)])
+
+    def test_persistent_prompt_fails_after_exactly_three_attempts(self):
+        match = {"center": (100, 200)}
+        task = self.make_task([match] * 4)
+        handler = PostPublishPromptHandler(task, close_timeout=0)
+        with patch("engine.post_publish_prompt.time.sleep") as sleep:
+            self.assertEqual(handler.handle(object()), "failed")
+        self.assertEqual(task.click_reversible.call_count, 3)
+        self.assertEqual(task.client.screenshot.call_count, 3)
+        self.assertEqual(sleep.call_count, 3)
+        self.assertFalse(handler.dismissed)
+        self.assertEqual(handler.last_status, "failed")
+
+    def test_stops_retrying_after_second_attempt_succeeds(self):
+        match = {"center": (100, 200)}
+        task = self.make_task([match, match, None])
+        handler = PostPublishPromptHandler(task, close_timeout=0)
+        with patch("engine.post_publish_prompt.time.sleep"):
+            self.assertEqual(handler.handle(object()), "dismissed")
+        self.assertEqual(task.click_reversible.call_count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

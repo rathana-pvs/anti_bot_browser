@@ -3,6 +3,8 @@ import { Profile, ProfileCreateRequest, ProfileUpdateRequest, SystemStats } from
 import { ProxyItem } from './types/proxy';
 import {
   fetchProfiles,
+  fetchProfileGroups,
+  createProfileGroup,
   createProfile,
   updateProfile,
   executeProfileAction,
@@ -21,6 +23,7 @@ import { TelemetryFooter } from './components/TelemetryFooter';
 import { BrainPanel } from './components/BrainPanel';
 import { ProfileActionErrorModal } from './components/ProfileActionErrorModal';
 import { SetupCenter } from './components/SetupCenter';
+import { SettingsModal } from './components/SettingsModal';
 import { fetchSetupStatus, isDesktopApp, SetupSnapshot } from './services/setup';
 import { useAppDialog } from './components/ui/AppDialogProvider';
 
@@ -38,12 +41,14 @@ export const App: React.FC = () => {
   const [setupStatus, setSetupStatus] = useState<SetupSnapshot | null | undefined>(
     () => isDesktopApp() ? undefined : null,
   );
+  const [profileGroups, setProfileGroups] = useState<string[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [proxies, setProxies] = useState<ProxyItem[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'profiles' | 'proxies' | 'campaigns' | 'brains'>('profiles');
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [profileActionError, setProfileActionError] = useState<ProfileActionError | null>(null);
   const [isInspectorOpen, setIsInspectorOpen] = useState<boolean>(() => {
     const saved = localStorage.getItem('inspector_open');
@@ -82,12 +87,14 @@ export const App: React.FC = () => {
 
   const loadData = async () => {
     try {
-      const [profilesData, statsData, proxiesData] = await Promise.all([
+      const [profilesData, statsData, proxiesData, groupsData] = await Promise.all([
         fetchProfiles(),
         fetchSystemStats(),
         fetchProxies(),
+        fetchProfileGroups(),
       ]);
       setProfiles(profilesData);
+      setProfileGroups(groupsData);
       setSystemStats(statsData);
       setProxies(proxiesData);
 
@@ -216,12 +223,18 @@ export const App: React.FC = () => {
         {/* Left: Profiles Sidebar with Tab Switcher */}
         <Sidebar
           profiles={profiles}
+          groups={profileGroups}
+          onCreateGroup={async (name) => {
+            await createProfileGroup(name);
+            await loadData();
+          }}
           selectedProfileId={selectedProfileId}
           activeTab={activeTab}
           onTabChange={setActiveTab}
           proxyCount={proxies.length}
           onSelectProfile={(p) => setSelectedProfileId(p.id)}
           onOpenCreateModal={() => setIsCreateModalOpen(true)}
+          onOpenSettings={() => setIsSettingsOpen(true)}
           onAction={handleAction}
           isOpen={isSidebarOpen}
           onToggle={toggleSidebar}
@@ -293,6 +306,7 @@ export const App: React.FC = () => {
         onCreate={handleCreate}
         existingCount={profiles.length}
         proxies={proxies}
+        groups={profileGroups}
       />
 
       {/* Edit Profile Modal */}
@@ -302,6 +316,13 @@ export const App: React.FC = () => {
         onClose={() => setIsEditModalOpen(false)}
         onSave={handleUpdate}
         proxies={proxies}
+        groups={profileGroups}
+      />
+
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        onOpenBrains={() => setActiveTab('brains')}
       />
 
       {profileActionError && (

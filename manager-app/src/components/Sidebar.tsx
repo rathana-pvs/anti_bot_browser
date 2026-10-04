@@ -1,44 +1,56 @@
+import { CreateGroupModal } from './CreateGroupModal';
+import { groupProfiles } from '../utils/profileGroups';
 import React, { useState } from 'react';
 import { Profile } from '../types/profile';
 import { ProfileCard } from './ProfileCard';
-import { Plus, Search, Layers, Globe, PanelLeftClose, Sparkles, BrainCircuit } from 'lucide-react';
+import { Plus, Search, Layers, Globe, PanelLeftClose, Sparkles, Folder, ChevronDown, ChevronRight, FolderPlus, Settings } from 'lucide-react';
 
 interface SidebarProps {
   profiles: Profile[];
+  groups: string[];
+  onCreateGroup: (name: string) => Promise<void>;
   selectedProfileId: string | null;
   activeTab: 'profiles' | 'proxies' | 'campaigns' | 'brains';
   onTabChange: (tab: 'profiles' | 'proxies' | 'campaigns' | 'brains') => void;
   proxyCount?: number;
   onSelectProfile: (profile: Profile) => void;
   onOpenCreateModal: () => void;
+  onOpenSettings: () => void;
   onAction: (profileId: string, action: 'start' | 'stop' | 'pause' | 'unpause', e: React.MouseEvent) => void;
   isOpen?: boolean;
   onToggle?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
-  profiles,
+  profiles, groups, onCreateGroup,
   selectedProfileId,
   activeTab,
   onTabChange,
   proxyCount = 0,
   onSelectProfile,
   onOpenCreateModal,
+  onOpenSettings,
   onAction,
   isOpen = true,
   onToggle,
 }) => {
+  const [showGroupModal, setShowGroupModal] = useState(false);
   const [filter, setFilter] = useState<'all' | 'running' | 'paused' | 'stopped'>('all');
   const [search, setSearch] = useState('');
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
 
   const filteredProfiles = profiles.filter((p) => {
     const matchesFilter = filter === 'all' || p.status === filter;
     const matchesSearch =
       p.name.toLowerCase().includes(search.toLowerCase()) ||
       p.id.toLowerCase().includes(search.toLowerCase()) ||
+      (p.group || "Ungrouped").toLowerCase().includes(search.toLowerCase()) ||
       p.network.proxy_host.includes(search);
     return matchesFilter && matchesSearch;
   });
+
+  const visibleGroups = groupProfiles(filteredProfiles, groups.filter((name) =>
+    filter === 'all' && name.toLowerCase().includes(search.toLowerCase())));
 
   const runningCount = profiles.filter((p) => p.status === 'running').length;
   const pausedCount = profiles.filter((p) => p.status === 'paused').length;
@@ -53,10 +65,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className="w-80 h-full flex flex-col">
         {/* Top Header */}
         <div className="p-4 border-b border-border flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Layers className="w-4 h-4 text-zinc-400" />
-            <h1 className="font-semibold text-sm tracking-tight text-zinc-100">Isolated Browser</h1>
-          </div>
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            className={`flex items-center gap-2 rounded-md px-2 py-1.5 text-xs font-medium transition-colors ${
+              activeTab === 'brains'
+                ? 'bg-zinc-800 text-zinc-100'
+                : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'
+            }`}
+          >
+            <Settings className="h-4 w-4" />
+            <span>Settings</span>
+          </button>
           <div className="flex items-center gap-1.5">
             <button
               onClick={onOpenCreateModal}
@@ -78,7 +98,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
 
       {/* Main Mode Navigation (Profiles vs Proxy Pool vs Campaigns) */}
-      <div className="p-2 border-b border-border/80 bg-zinc-950/60 grid grid-cols-4 gap-1 text-[10px]">
+      <div className="p-2 border-b border-border/80 bg-zinc-950/60 grid grid-cols-3 gap-1 text-[10px]">
         <button
           onClick={() => onTabChange('profiles')}
           className={`flex items-center justify-center gap-1 py-1.5 rounded-md font-medium transition-colors ${
@@ -115,18 +135,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <Sparkles className="w-3 h-3 text-emerald-400" />
           <span>Campaign</span>
         </button>
-        <button
-          onClick={() => onTabChange('brains')}
-          className={`flex items-center justify-center gap-1 py-1.5 rounded-md font-medium transition-colors ${
-            activeTab === 'brains'
-              ? 'bg-zinc-800 text-violet-300 border border-violet-500/30 shadow-sm'
-              : 'text-zinc-400 hover:text-zinc-200'
-          }`}
-          title="Workflow Brains"
-        >
-          <BrainCircuit className="w-3 h-3 text-violet-400" />
-          <span>Brains</span>
-        </button>
       </div>
 
       {/* Search Input */}
@@ -137,7 +145,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search profiles or proxy..."
+            placeholder="Search profiles, groups or proxy..."
             className="w-full bg-zinc-950 border border-zinc-800 rounded-md pl-8 pr-3 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:border-zinc-700"
           />
         </div>
@@ -190,32 +198,46 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* Profiles Subheader: Count */}
       <div className="px-3 py-1.5 border-b border-border/40 flex items-center justify-between text-[11px] text-zinc-400 bg-zinc-950/40">
         <span className="font-medium text-zinc-400">
-          {filteredProfiles.length} {filteredProfiles.length === 1 ? 'profile' : 'profiles'}
+          {filteredProfiles.length} profiles · {groups.length} groups
         </span>
+        <button type="button" onClick={() => setShowGroupModal(true)} className="flex items-center gap-1 py-1 text-blue-400 hover:text-blue-300">
+          <FolderPlus className="h-3.5 w-3.5" />New group
+        </button>
       </div>
 
       {/* Profiles Scroll Area */}
       <div className="flex-1 overflow-y-auto p-2 space-y-1">
-        {filteredProfiles.length === 0 ? (
+        {visibleGroups.length === 0 ? (
           <div className="text-center py-10 px-4">
             <p className="text-xs text-zinc-500">No profiles found</p>
           </div>
         ) : (
-          filteredProfiles.map((profile) => (
-            <ProfileCard
-              key={profile.id}
-              profile={profile}
-              isSelected={profile.id === selectedProfileId && activeTab === 'profiles'}
-              onSelect={(p) => {
-                onTabChange('profiles');
-                onSelectProfile(p);
-              }}
-              onAction={onAction}
-            />
-          ))
+          visibleGroups.map((group) => {
+            const collapsed = collapsedGroups.has(group.name) && !search;
+            return <section key={group.name} className="mb-3 overflow-hidden rounded-xl border border-zinc-800/70 bg-zinc-950/30">
+              <button type="button" aria-expanded={!collapsed} onClick={() => setCollapsedGroups((prev) => {
+                const next = new Set(prev);
+                if (next.has(group.name)) next.delete(group.name); else next.add(group.name);
+                return next;
+              })} className="flex w-full items-center gap-2 bg-zinc-900/60 px-3 py-3 text-xs text-zinc-300 hover:bg-zinc-800/50">
+                {collapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                <Folder className="h-3.5 w-3.5 text-blue-400" />
+                <span className="min-w-0 flex-1 truncate text-left font-semibold">{group.label}</span>
+                <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-400">{group.members.length}</span>
+              </button>
+              {!collapsed && group.members.length === 0 && <p className="px-3 py-4 text-[11px] text-zinc-500">No profiles yet. Choose this group when creating or editing a profile.</p>}
+              {!collapsed && <div className="space-y-1 p-1.5">{group.members.map((profile) => (
+                <ProfileCard key={profile.id} profile={profile}
+                  isSelected={profile.id === selectedProfileId && activeTab === 'profiles'}
+                  onSelect={(p) => { onTabChange('profiles'); onSelectProfile(p); }} onAction={onAction} />
+              ))}</div>}
+            </section>;
+          })
         )}
       </div>
+
       </div>
+      {showGroupModal && <CreateGroupModal onCreate={onCreateGroup} onClose={() => setShowGroupModal(false)} />}
     </aside>
   );
 };

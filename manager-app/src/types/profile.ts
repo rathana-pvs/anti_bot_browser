@@ -136,6 +136,7 @@ export interface ProfileAccount {
 }
 
 export interface Profile {
+  group?: string;
   schema_version?: number;
   configuration_revision?: number;
   id: string;
@@ -160,6 +161,7 @@ export interface Profile {
 }
 
 export interface ProfileCreateRequest {
+  group?: string;
   name: string;
   network: NetworkIntent;
   requested_environment: RequestedEnvironment;
@@ -170,6 +172,7 @@ export interface ProfileCreateRequest {
 }
 
 export interface ProfileUpdateRequest {
+  group?: string;
   name?: string;
   network?: NetworkIntent;
   requested_environment?: RequestedEnvironment;

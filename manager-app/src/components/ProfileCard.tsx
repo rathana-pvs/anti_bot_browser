@@ -51,7 +51,7 @@ export const ProfileCard: React.FC<ProfileCardProps> = ({
   return (
     <div
       onClick={() => onSelect(profile)}
-      className={`group relative h-9 px-2.5 rounded-md border transition-all cursor-pointer flex items-center justify-between gap-2 ${
+      className={`group relative min-h-12 py-2 px-2.5 rounded-md border transition-all cursor-pointer flex items-center justify-between gap-2 ${
         isSelected
           ? 'bg-zinc-800/90 border-zinc-500 shadow-sm'
           : 'bg-zinc-900/90 border-zinc-800/80 hover:bg-zinc-800/50 hover:border-zinc-700'
@@ -66,9 +66,7 @@ export const ProfileCard: React.FC<ProfileCardProps> = ({
           }`}
           title={`Status: ${getStatusText()}`}
         />
-        <span className="font-medium text-xs text-zinc-100 truncate" title={profile.name}>
-          {profile.name}
-        </span>
+        <div className="min-w-0"><div className="truncate text-xs font-medium text-zinc-100">{profile.name}</div><div className="text-[10px] text-zinc-500">{profile.id} · {getStatusText()}</div></div>
       </div>
 
       {/* Right: Proxy & Action Buttons */}

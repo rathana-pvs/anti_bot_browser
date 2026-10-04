@@ -640,8 +640,8 @@ async def _execute_queue_preparation_inner(execution_id: str):
     active_automation_tasks[profile_id] = task_record
 
     try:
-        lifecycle = await ensure_profile_container_ready(profile_id)
-        task_record["container_started_by_queue"] = lifecycle["started"]
+        container_readiness = await ensure_profile_container_ready(profile_id)
+        task_record["container_started_by_queue"] = container_readiness["started"]
         task_record["last_activity_at"] = datetime.now(timezone.utc).isoformat()
         task_record["lifecycle_active"] = False
     except Exception as error:
@@ -850,8 +850,8 @@ async def _execute_queue_item_inner(execution_id: str, scheduler_kind: str = "pu
     active_automation_tasks[profile_id] = task_record
 
     try:
-        lifecycle = await ensure_profile_container_ready(profile_id)
-        task_record["container_started_by_queue"] = lifecycle["started"]
+        container_readiness = await ensure_profile_container_ready(profile_id)
+        task_record["container_started_by_queue"] = container_readiness["started"]
         task_record["last_activity_at"] = datetime.now(timezone.utc).isoformat()
         task_record["lifecycle_active"] = False
     except Exception as error:
@@ -1316,7 +1316,11 @@ async def _run_dispatched_queue_task(execution_id: str, kind: str):
     """Consume claim races as normal scheduler deferrals instead of orphan errors."""
     try:
         if kind == "preparer":
-            return await execute_queue_preparation(execution_id)
+            match = find_queue_execution(load_posting_queue(), execution_id)
+            if not match:
+                raise RuntimeError("Execution not found")
+            if match["post"].get("type") != "warming":
+                return await execute_queue_preparation(execution_id)
         return await execute_queue_item(execution_id, kind)
     except Exception as err:
         message = str(err)

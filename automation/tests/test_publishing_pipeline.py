@@ -71,6 +71,14 @@ class FakePublishTask:
     def handle_post_publish_prompt(self, screen=None):
         return self.post_publish_prompt.handle()
 
+    def _verify_latest_image_post(self):
+        return True
+
+    def _image_post_not_found(self):
+        self.result_status = "failed_after_publish"
+        self.result_error = "image_publish_not_found_after_verification"
+        return False
+
     def permalink_not_requested(self):
         return {
             "post_url": None,
@@ -94,6 +102,25 @@ class FakePublishTask:
 
 
 class PublishingPipelineTests(unittest.TestCase):
+    def test_image_verification_failure_skips_comment(self):
+        task = FakePublishTask()
+        task._verify_latest_image_post = lambda: False
+        orchestrator, context = build_publishing_pipeline(task, content_type="image", comment_text="comment")
+        result = orchestrator.run(context)
+        self.assertEqual(result.stopped_at, "publication_result_verifier")
+        self.assertEqual(task.result_status, "failed_after_publish")
+        self.assertEqual(result.module_results["comment"].outcome, "skipped")
+
+    def test_image_without_comment_uses_completed_publish_verification(self):
+        from unittest.mock import Mock
+        task = FakePublishTask()
+        task.result_status = "pending_profile_verification"
+        task._verify_latest_image_post = Mock(return_value=True)
+        orchestrator, context = build_publishing_pipeline(task, content_type="image", comment_text=None)
+        result = orchestrator.run(context)
+        task._verify_latest_image_post.assert_not_called()
+        self.assertEqual(task.result_status, "published")
+        self.assertEqual(result.module_results["comment"].outcome, "skipped")
     def test_result_verifier_follows_post_publish_prompt(self):
         self.assertEqual(
             PIPELINE_ORDER,
@@ -143,7 +170,7 @@ class PublishingPipelineTests(unittest.TestCase):
         self.assertEqual(task.result_extra["first_comment"], "failed_input_not_found")
         self.assertEqual(len(task.finalize_calls), 1)
 
-    def test_prompt_failure_stops_comment_but_preserves_publication(self):
+    def test_prompt_failure_reports_failed_and_stops_comment(self):
         task = FakePublishTask(prompt_status="failed")
         orchestrator, context = build_publishing_pipeline(
             task,
@@ -153,10 +180,11 @@ class PublishingPipelineTests(unittest.TestCase):
 
         result = orchestrator.run(context)
 
-        self.assertEqual(result.outcome, "uncertain")
+        self.assertEqual(result.outcome, "failed_safe")
         self.assertEqual(result.stopped_at, "post_publish_prompt")
         self.assertEqual(result.module_results["comment"].outcome, "skipped")
-        self.assertEqual(task.result_status, "published")
+        self.assertEqual(task.result_status, "failed_after_publish")
+        self.assertEqual(task.result_error, "known_post_publish_prompt_did_not_close")
         self.assertEqual(task.result_extra["first_comment"], "not_attempted")
         self.assertEqual(len(task.finalize_calls), 1)
 

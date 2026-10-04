@@ -56,6 +56,7 @@ class AutomationPreferencesInput(BaseModel):
 class ProfileCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
+    group: str = Field(default="", max_length=80)
     name: str = Field(min_length=1, max_length=120)
     network: NetworkIntent = Field(default_factory=NetworkIntent)
     requested_environment: RequestedEnvironmentInput = Field(default_factory=RequestedEnvironmentInput)
@@ -68,6 +69,7 @@ class ProfileCreateRequest(BaseModel):
 class ProfileUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
+    group: str | None = Field(default=None, max_length=80)
     name: str | None = Field(default=None, min_length=1, max_length=120)
     network: NetworkIntent | None = None
     requested_environment: RequestedEnvironmentInput | None = None

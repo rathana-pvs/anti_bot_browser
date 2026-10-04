@@ -85,6 +85,20 @@ async function apiError(res: Response, fallback: string): Promise<Error> {
   }
 }
 
+export async function fetchProfileGroups(): Promise<string[]> {
+  const res = await fetch(`${API_BASE}/profiles/groups`);
+  if (!res.ok) throw await apiError(res, 'Failed to fetch profile groups');
+  return res.json();
+}
+
+export async function createProfileGroup(name: string): Promise<{ name: string }> {
+  const res = await fetch(`${API_BASE}/profiles/groups`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
+  });
+  if (!res.ok) throw await apiError(res, 'Failed to create profile group');
+  return res.json();
+}
+
 export async function fetchProfileDefaults(): Promise<ProfileDefaults> {
   const res = await fetch(`${API_BASE}/profiles/defaults`);
   if (!res.ok) throw await apiError(res, 'Failed to fetch profile defaults');

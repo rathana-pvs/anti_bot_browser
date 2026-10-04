@@ -1,3 +1,4 @@
+import { ProfileGroupField } from './ProfileGroupField';
 import React, { useEffect, useState } from 'react';
 import { AlertTriangle, Cpu, Globe, Monitor, X } from 'lucide-react';
 import { BehaviorMode, Profile, ProfileUpdateRequest, ReelTemplateSelection, RequestedEnvironment, ResourceLimits, reelTemplateLabel } from '../types/profile';
@@ -13,6 +14,7 @@ interface EditProfileModalProps {
   onClose: () => void;
   onSave: (profileId: string, updates: ProfileUpdateRequest) => Promise<void>;
   proxies?: ProxyItem[];
+  groups?: string[];
 }
 
 function environmentFor(profile: Profile): RequestedEnvironment {
@@ -28,9 +30,10 @@ function environmentFor(profile: Profile): RequestedEnvironment {
 }
 
 export const EditProfileModal: React.FC<EditProfileModalProps> = ({
-  profile, isOpen, onClose, onSave, proxies = [],
+  profile, isOpen, onClose, onSave, proxies = [], groups = [],
 }) => {
   const [name, setName] = useState('');
+  const [group, setGroup] = useState('');
   const [environment, setEnvironment] = useState<RequestedEnvironment | null>(null);
   const [resources, setResources] = useState<ResourceLimits>({ cpu_limit: 4, memory_mb: 4096 });
   const [behaviorMode, setBehaviorMode] = useState<BehaviorMode>('medium');
@@ -53,6 +56,7 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
   useEffect(() => {
     if (!isOpen || !profile) return;
     setName(profile.name);
+    setGroup(profile.group || '');
     setEnvironment(environmentFor(profile));
     setResources(profile.resources || { cpu_limit: 4, memory_mb: 4096 });
     setBehaviorMode(profile.behavior_mode || 'medium');
@@ -114,7 +118,7 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
           ? { mode: 'custom', host: customHost.trim(), port: Number(customPort), username: customUser.trim(), password: customPassword }
           : { mode: 'pool', proxy_id: networkChoice };
       await onSave(profile.id, {
-        name: name.trim(), network, requested_environment: environment, resources,
+        name: name.trim(), group: group.trim(), network, requested_environment: environment, resources,
         behavior_mode: behaviorMode,
         automation: { reel_template: reelTemplate },
         account: { warming_week: warmingWeek, warming_complete: warmingComplete, notes: notes.trim() },
@@ -143,6 +147,7 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
           <label className="block text-zinc-400">Profile name
             <input required value={name} onChange={(e) => setName(e.target.value)} className="mt-1.5 w-full rounded border border-zinc-800 bg-zinc-950 px-3 py-2 text-zinc-100" />
           </label>
+          <ProfileGroupField value={group} onChange={setGroup} groups={groups} />
           <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
             <div className="font-medium text-zinc-300">Automation behavior</div>
             <div className="grid grid-cols-2 gap-2">

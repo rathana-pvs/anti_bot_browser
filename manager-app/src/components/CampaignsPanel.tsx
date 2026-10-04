@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { Profile } from '../types/profile';
 import { AutomationTaskState, CreateBatchParams } from '../types/automation';
 import { createBatch, fetchAutomationTasks, stopAutomation, uploadMediaFiles, getSharedMediaUrl } from '../services/api';
@@ -42,7 +42,7 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
   isSidebarOpen,
   onToggleSidebar,
 }) => {
-  const { showAlert } = useAppDialog();
+  const { showAlert, showToast } = useAppDialog();
   const [activeMainTab, setActiveMainTab] = useState<'batch_creator' | 'queue_monitor' | 'instant'>('batch_creator');
   const [taskType, setTaskType] = useState<'warming' | 'post'>('warming');
   const [selectedProfileIds, setSelectedProfileIds] = useState<string[]>([]);
@@ -59,8 +59,12 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
   const [isLaunching, setIsLaunching] = useState<boolean>(false);
   const [activeTasks, setActiveTasks] = useState<Record<string, AutomationTaskState>>({});
   const [selectedTaskProfileId, setSelectedTaskProfileId] = useState<string | null>(null);
-  const [errorBanner, setErrorBanner] = useState<string | null>(null);
-  const [successBanner, setSuccessBanner] = useState<string | null>(null);
+  const setErrorBanner = useCallback((message: string | null) => {
+    if (message) showToast(message, 'error');
+  }, [showToast]);
+  const setSuccessBanner = useCallback((message: string | null) => {
+    if (message) showToast(message, 'success');
+  }, [showToast]);
 
   // Load active tasks periodically
   const loadTasks = async () => {
@@ -236,35 +240,23 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
         </button>
       </header>
 
-      {/* Notification Banners */}
-      {errorBanner && (
-        <div className="mx-6 mt-4 p-3 rounded-lg bg-rose-950/60 border border-rose-800/80 text-rose-300 text-xs flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
-            <span>{errorBanner}</span>
-          </div>
-          <button onClick={() => setErrorBanner(null)} className="text-rose-400 hover:text-white font-bold ml-4">
-            ×
-          </button>
-        </div>
-      )}
-
-      {successBanner && (
-        <div className="mx-6 mt-4 p-3 rounded-lg bg-emerald-950/60 border border-emerald-800/80 text-emerald-300 text-xs flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-            <span>{successBanner}</span>
-          </div>
-          <button onClick={() => setSuccessBanner(null)} className="text-emerald-400 hover:text-white font-bold ml-4">
-            ×
-          </button>
-        </div>
-      )}
-
       <ResourceModeControl />
 
       {/* Sub-Tab Navigation Bar */}
       <div className="flex items-center gap-2 border-b border-border px-6 pt-2 bg-surface/40 shrink-0">
+        <button
+          type="button"
+          onClick={() => setActiveMainTab('instant')}
+          className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition-all flex items-center gap-2 ${
+            activeMainTab === 'instant'
+              ? 'border-amber-500 text-amber-400 bg-amber-950/20'
+              : 'border-transparent text-zinc-400 hover:text-zinc-200'
+          }`}
+        >
+          <Flame className="w-3.5 h-3.5 text-amber-400" />
+          <span>⚡ Instant Multi-Runner</span>
+        </button>
+
         <button
           type="button"
           onClick={() => setActiveMainTab('batch_creator')}
@@ -289,19 +281,6 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
         >
           <Clock className="w-3.5 h-3.5 text-emerald-400" />
           <span>⏳ Posting Queue & Schedule</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveMainTab('instant')}
-          className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition-all flex items-center gap-2 ${
-            activeMainTab === 'instant'
-              ? 'border-amber-500 text-amber-400 bg-amber-950/20'
-              : 'border-transparent text-zinc-400 hover:text-zinc-200'
-          }`}
-        >
-          <Flame className="w-3.5 h-3.5 text-amber-400" />
-          <span>⚡ Instant Multi-Runner</span>
         </button>
       </div>
 

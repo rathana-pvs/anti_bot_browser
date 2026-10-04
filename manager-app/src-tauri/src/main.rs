@@ -84,6 +84,8 @@ fn command_succeeds(program: &str, args: &[&str]) -> bool {
     let mut command = Command::new(program);
     suppress_console_window(&mut command);
     command
+        .env_remove("PYTHONHOME")
+        .env_remove("PYTHONPATH")
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -97,6 +99,8 @@ fn command_output(program: &str, args: &[&str]) -> Option<String> {
     let mut command = Command::new(program);
     suppress_console_window(&mut command);
     let output = command
+        .env_remove("PYTHONHOME")
+        .env_remove("PYTHONPATH")
         .args(args)
         .stdin(Stdio::null())
         .stderr(Stdio::null())
@@ -1309,6 +1313,12 @@ fn run_setup_process(app: &AppHandle, repair: bool) -> Result<SetupRunResult, St
         let script = root.join("install.sh");
         let mode_arg = format!("--{mode}");
         let mut command = Command::new("bash");
+        // AppImage/PyInstaller launchers can set these to their bundled Python
+        // runtime. The setup script intentionally uses the host's `python3`
+        // to create a persistent venv, so inheriting the bundle paths makes
+        // that interpreter fail before startup (for example, it cannot import
+        // the standard `encodings` module).
+        command.env_remove("PYTHONHOME").env_remove("PYTHONPATH");
         command.args([
             script.to_string_lossy().as_ref(),
             &mode_arg,

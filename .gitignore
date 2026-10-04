@@ -46,3 +46,6 @@ android-standalone/data/
 build/
 *.exe
 current.png
+
+# Personal profile group names
+data/profile_groups.json

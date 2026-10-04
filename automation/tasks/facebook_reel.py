@@ -1949,6 +1949,12 @@ class FacebookReelTask(BaseTask):
             final_screen = None
 
         if result == "failed":
+            if getattr(getattr(self, "post_publish_prompt", None), "last_status", None) == "failed":
+                return self._failed_after_publish(
+                    "known_post_publish_prompt_did_not_close",
+                    "Not now prompt remained open after 3 click attempts; publication could not be confirmed.",
+                    final_screen,
+                )
             return self._fail("reel_publish_rejected", "Facebook displayed an error after Reel publication.", final_screen)
         if result == "timed_out":
             return self._uncertain(

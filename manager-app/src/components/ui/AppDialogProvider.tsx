@@ -1,9 +1,11 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import { AlertTriangle, Info, X } from 'lucide-react';
 import React, { createContext, useCallback, useContext, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { Toast, ToastVariant } from './Toast';
 
 type DialogKind = 'alert' | 'confirm' | 'prompt';
-type DialogVariant = 'default' | 'danger';
+type DialogVariant = 'default' | 'danger' | 'warning' | 'success';
 
 interface DialogOptions {
   title?: string;
@@ -22,6 +24,7 @@ interface DialogRequest {
 }
 
 interface AppDialogContextValue {
+  showToast: (message: string, variant?: ToastVariant) => void;
   showAlert: (message: string, options?: DialogOptions) => Promise<void>;
   showConfirm: (message: string, options?: DialogOptions) => Promise<boolean>;
   showPrompt: (message: string, options?: DialogOptions) => Promise<string | null>;
@@ -33,6 +36,12 @@ export function AppDialogProvider({ children }: { children: React.ReactNode }) {
   const [request, setRequest] = useState<DialogRequest | null>(null);
   const [promptValue, setPromptValue] = useState('');
   const queue = useRef<DialogRequest[]>([]);
+  const toastId = useRef(0);
+  const [toasts, setToasts] = useState<{ id: number; message: string; variant: ToastVariant }[]>([]);
+  const showToast = useCallback((message: string, variant: ToastVariant = 'info') => {
+    const id = ++toastId.current;
+    setToasts((current) => [...current.slice(-3), { id, message, variant }]);
+  }, []);
 
   const present = useCallback((next: DialogRequest) => {
     setRequest((current) => {
@@ -54,14 +63,12 @@ export function AppDialogProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
-  const showAlert = useCallback((message: string, options: DialogOptions = {}) => (
-    new Promise<void>((resolve) => present({
-      kind: 'alert',
-      message,
-      options,
-      resolve: () => resolve(),
-    }))
-  ), [present]);
+  const showAlert = useCallback(async (message: string, options: DialogOptions = {}) => {
+    const variant = options.variant === 'danger' ? 'error'
+      : options.variant === 'warning' ? 'warning'
+      : options.variant === 'success' ? 'success' : 'info';
+    showToast(options.title ? `${options.title}: ${message}` : message, variant);
+  }, [showToast]);
 
   const showConfirm = useCallback((message: string, options: DialogOptions = {}) => (
     new Promise<boolean>((resolve) => present({
@@ -80,8 +87,21 @@ export function AppDialogProvider({ children }: { children: React.ReactNode }) {
   const isDanger = variant === 'danger';
 
   return (
-    <AppDialogContext.Provider value={{ showAlert, showConfirm, showPrompt }}>
+    <AppDialogContext.Provider value={{ showAlert, showConfirm, showPrompt, showToast }}>
       {children}
+      {createPortal(
+        <div className="pointer-events-none fixed bottom-6 right-6 z-[400] flex w-[28rem] max-w-[calc(100vw-3rem)] flex-col gap-2">
+          {toasts.map((toast) => (
+            <Toast
+              key={toast.id}
+              message={toast.message}
+              variant={toast.variant}
+              onDismiss={() => setToasts((current) => current.filter((item) => item.id !== toast.id))}
+            />
+          ))}
+        </div>,
+        document.body,
+      )}
       <Dialog.Root
         open={Boolean(request)}
         onOpenChange={(open) => {

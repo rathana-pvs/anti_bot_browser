@@ -457,7 +457,7 @@ export const VncViewer: React.FC<VncViewerProps> = ({
                         try {
                           const text = await readHostClipboardText();
                           if (!text) {
-                            await showAlert('Host clipboard is empty.', { title: 'Nothing to paste' });
+                            await showAlert('Host clipboard is empty.', { title: 'Nothing to paste', variant: 'warning' });
                             return;
                           }
                           rfbRef.current?.clipboardPasteFrom(text);

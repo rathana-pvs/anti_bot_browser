@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Profile } from '../types/profile';
 import { AutomationTaskState, RunAutomationParams } from '../types/automation';
 import { runAutomation, fetchAutomationStatus, stopAutomation } from '../services/api';
@@ -23,7 +23,7 @@ interface AutomationControlProps {
 }
 
 export const AutomationControl: React.FC<AutomationControlProps> = ({ profile, onRefreshProfile }) => {
-  const { showConfirm } = useAppDialog();
+  const { showConfirm, showToast } = useAppDialog();
   const [taskState, setTaskState] = useState<AutomationTaskState>({
     profile_id: profile.id,
     status: 'idle',
@@ -38,7 +38,9 @@ export const AutomationControl: React.FC<AutomationControlProps> = ({ profile, o
   const [scrolls, setScrolls] = useState(4);
   const [isStarting, setIsStarting] = useState(false);
   const [isLogsExpanded, setIsLogsExpanded] = useState(true);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const setActionError = useCallback((message: string | null) => {
+    if (message) showToast(message, 'error');
+  }, [showToast]);
 
   const logsEndRef = useRef<HTMLDivElement>(null);
 
@@ -230,12 +232,6 @@ export const AutomationControl: React.FC<AutomationControlProps> = ({ profile, o
         </span>
         {getStatusBadge()}
       </div>
-
-      {actionError && (
-        <div className="p-2 rounded bg-rose-950/40 border border-rose-800/60 text-[11px] text-rose-300">
-          {actionError}
-        </div>
-      )}
 
       {taskState.error && (
         <div className="p-2 rounded bg-rose-950/40 border border-rose-800/60 text-[11px] text-rose-300 break-words">

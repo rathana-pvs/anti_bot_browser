@@ -1,3 +1,4 @@
+import { GroupedProfileSelector } from './GroupedProfileSelector';
 import React, { useState, useEffect } from 'react';
 import { Profile } from '../types/profile';
 import { CreateBatchParams } from '../types/automation';
@@ -64,15 +65,15 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
   const [isEditingName, setIsEditingName] = useState(false);
 
   // Selected Target Profiles
-  const [selectedProfileIds, setSelectedProfileIds] = useState<string[]>(() => {
+  const [savedProfileIds, setSelectedProfileIds] = useState<string[]>(() => {
     try {
       const saved = localStorage.getItem('batch_creator_profiles');
-      if (saved) return JSON.parse(saved);
+      if (saved) { const ids = JSON.parse(saved); if (Array.isArray(ids)) return ids.filter((id): id is string => typeof id === "string"); }
     } catch (_) {}
     return profiles.filter((p) => p.status === 'running').map((p) => p.id);
   });
+  const selectedProfileIds = savedProfileIds.filter((id) => profiles.some((p) => p.id === id));
   const [showProfileModal, setShowProfileModal] = useState(false);
-  const [profileSearchQuery, setProfileSearchQuery] = useState('');
 
   // Execution & Timing Settings
   const [executionMode, setExecutionMode] = useState<'now' | 'scheduled'>(() => {
@@ -147,8 +148,8 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
   }, [batchName]);
 
   useEffect(() => {
-    localStorage.setItem('batch_creator_profiles', JSON.stringify(selectedProfileIds));
-  }, [selectedProfileIds]);
+    localStorage.setItem('batch_creator_profiles', JSON.stringify(savedProfileIds));
+  }, [savedProfileIds]);
 
   useEffect(() => {
     localStorage.setItem('batch_creator_start_time', startTime);
@@ -159,25 +160,6 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
     localStorage.setItem('batch_creator_start_now', String(executionMode === 'now'));
     localStorage.setItem('batch_creator_preparation_mode', preparationMode);
   }, [startTime, endTime, staggerSeconds, iterationDelaySeconds, aiSpinAll, executionMode, preparationMode]);
-
-  // Profile Selection Helpers
-  const toggleProfile = (id: string) => {
-    setSelectedProfileIds((prev) =>
-      prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id]
-    );
-  };
-
-  const handleSelectRunningOnly = () => {
-    setSelectedProfileIds(profiles.filter((p) => p.status === 'running').map((p) => p.id));
-  };
-
-  const handleSelectAll = () => {
-    setSelectedProfileIds(profiles.map((p) => p.id));
-  };
-
-  const handleClearSelection = () => {
-    setSelectedProfileIds([]);
-  };
 
   // Bulk Media Upload Handler
   const handleBulkMediaUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -391,10 +373,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
 
   const totalExecutions = selectedProfileIds.length * posts.length;
   const runningProfilesCount = profiles.filter((p) => p.status === 'running').length;
-  const filteredProfiles = profiles.filter((p) =>
-    p.name.toLowerCase().includes(profileSearchQuery.toLowerCase()) ||
-    (p.network?.proxy_host && p.network.proxy_host.toLowerCase().includes(profileSearchQuery.toLowerCase()))
-  );
+
 
   return (
     <div className="space-y-4 max-w-7xl mx-auto">
@@ -962,6 +941,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
           onClick={() => setShowProfileModal(false)}
         >
           <div
+            role="dialog" aria-modal="true" aria-label="Choose batch profiles"
             className="bg-zinc-950 border border-zinc-800 rounded-2xl w-full max-w-xl max-h-[85vh] flex flex-col shadow-2xl animate-in fade-in zoom-in-95 duration-150"
             onClick={(e) => e.stopPropagation()}
           >
@@ -970,7 +950,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
               <div>
                 <h3 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
                   <ShieldCheck className="w-4 h-4 text-blue-400" />
-                  Target Profiles Matrix
+                  Choose batch profiles
                 </h3>
                 <p className="text-xs text-zinc-400 mt-0.5">
                   Select which accounts will publish this daily batch.
@@ -980,99 +960,15 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
               <button
                 type="button"
                 onClick={() => setShowProfileModal(false)}
+                aria-label="Close batch profiles"
                 className="p-1 rounded text-zinc-400 hover:text-white"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            {/* Quick Actions Bar */}
-            <div className="p-3 border-b border-zinc-800/80 bg-zinc-900/40 flex flex-wrap items-center justify-between gap-2">
-              <input
-                type="text"
-                value={profileSearchQuery}
-                onChange={(e) => setProfileSearchQuery(e.target.value)}
-                placeholder="Search profiles or proxies..."
-                className="px-3 py-1.5 text-xs rounded-lg bg-zinc-950 border border-zinc-800 text-white placeholder-zinc-500 focus:outline-none focus:border-blue-500 flex-1 min-w-[160px]"
-              />
-
-              <div className="flex items-center gap-1.5 text-xs">
-                <button
-                  type="button"
-                  onClick={handleSelectRunningOnly}
-                  className="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-medium transition-colors"
-                >
-                  Running ({runningProfilesCount})
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSelectAll}
-                  className="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-medium transition-colors"
-                >
-                  All ({profiles.length})
-                </button>
-                <button
-                  type="button"
-                  onClick={handleClearSelection}
-                  className="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-400 transition-colors"
-                >
-                  Clear
-                </button>
-              </div>
-            </div>
-
-            {/* Profile Items List */}
-            <div className="p-4 overflow-y-auto space-y-2 flex-1 max-h-[50vh]">
-              {filteredProfiles.length > 0 ? (
-                filteredProfiles.map((profile) => {
-                  const isSelected = selectedProfileIds.includes(profile.id);
-                  const isRunning = profile.status === 'running';
-
-                  return (
-                    <label
-                      htmlFor={`batch-profile-${profile.id}`}
-                      key={profile.id}
-                      className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition-all ${
-                        isSelected
-                          ? 'bg-blue-950/30 border-blue-600/70 text-white'
-                          : 'bg-zinc-900/40 border-zinc-800/80 text-zinc-400 hover:border-zinc-700'
-                      }`}
-                    >
-                      <div className="flex items-center gap-3 min-w-0">
-                        <Checkbox
-                          id={`batch-profile-${profile.id}`}
-                          checked={isSelected}
-                          onCheckedChange={() => toggleProfile(profile.id)}
-                        />
-                        <div className="truncate">
-                          <div className="text-xs font-semibold text-zinc-200 truncate">
-                            {profile.name}
-                          </div>
-                          <div className="text-[10px] text-zinc-500 font-mono">
-                            {profile.network?.proxy_host
-                              ? `Proxy: ${profile.network.proxy_host}`
-                              : 'Direct Network'}
-                          </div>
-                        </div>
-                      </div>
-
-                      <span
-                        className={`text-[10px] font-mono px-2 py-0.5 rounded capitalize shrink-0 ${
-                          isRunning
-                            ? 'bg-emerald-950 text-emerald-400 border border-emerald-800/60 font-medium'
-                            : 'bg-zinc-900 text-zinc-500'
-                        }`}
-                      >
-                        {profile.status}
-                      </span>
-                    </label>
-                  );
-                })
-              ) : (
-                <div className="py-6 text-center text-xs text-zinc-500">
-                  No profiles match "{profileSearchQuery}"
-                </div>
-              )}
+            <div className="overflow-y-auto p-4">
+              <GroupedProfileSelector profiles={profiles} selectedIds={selectedProfileIds} onChange={setSelectedProfileIds} />
             </div>
 
             {/* Modal Footer */}
