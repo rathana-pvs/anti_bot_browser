@@ -29,7 +29,9 @@ from engine.brain_runtime import (  # noqa: E402
 )
 
 
-DEFAULT_BRAINS_ROOT = AUTOMATION_ROOT / "brains"
+from engine.runtime_paths import automation_dir  # noqa: E402
+
+DEFAULT_BRAINS_ROOT = automation_dir() / "brains"
 MAX_ARCHIVE_BYTES = 20 * 1024 * 1024
 MAX_EXTRACTED_BYTES = 50 * 1024 * 1024
 MAX_ARCHIVE_FILES = 250

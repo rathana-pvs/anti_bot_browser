@@ -16,6 +16,7 @@ interface SelectProps {
   ariaLabel?: string;
   disabled?: boolean;
   className?: string;
+  contentClassName?: string;
 }
 
 export function Select({
@@ -26,6 +27,7 @@ export function Select({
   ariaLabel,
   disabled,
   className,
+  contentClassName,
 }: SelectProps) {
   return (
     <SelectPrimitive.Root value={value} onValueChange={onValueChange} disabled={disabled}>
@@ -47,7 +49,10 @@ export function Select({
           position="popper"
           sideOffset={5}
           collisionPadding={12}
-          className="z-[200] max-h-72 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-lg border border-zinc-700 bg-zinc-950 p-1 text-xs text-zinc-200 shadow-2xl shadow-black/60"
+          className={twMerge(
+            'z-[200] max-h-72 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-lg border border-zinc-700 bg-zinc-950 p-1 text-xs text-zinc-200 shadow-2xl shadow-black/60',
+            contentClassName,
+          )}
         >
           <SelectPrimitive.Viewport>
             {options.map((option) => (

@@ -29,6 +29,7 @@ def test_worker_uses_parent_watchdog_and_keeps_token_out_of_command_line(tmp_pat
         assert "--token" not in command
         assert "private-token" not in command
         assert child_env["AUTOMATION_OCR_WORKER_TOKEN"] == "private-token"
+        assert child_env["AUTOMAT_FB_ROOT"] == "/runtime"
 
     if ocr_worker_service._log_handle is not None:
         ocr_worker_service._log_handle.close()

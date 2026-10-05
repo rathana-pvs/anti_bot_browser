@@ -8,8 +8,8 @@ from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 from backend.services.profile_groups import list_groups, create_group
 
-from backend.config import CPU_THREADS, PROFILES_DIR, TOTAL_MEMORY_GB
-from backend.models.profile import ProfileCreateRequest, ProfileUpdateRequest
+from backend.config import CPU_THREADS, PROFILES_DIR, TOTAL_MEMORY_GB, FALLBACK_TIMEZONE
+from backend.models.profile import NetworkIntent, ProfileCreateRequest, ProfileUpdateRequest
 from backend.services.docker_service import (
     get_container_stats, get_container_status, get_profile_disk_usage,
     paste_text_to_container, remove_container, run_profile_action,
@@ -18,9 +18,9 @@ from backend.services.evidence_cleanup import clean_profile_evidence
 from backend.services.profile_service import (
     PROFILE_ID_RE, PROFILE_SCHEMA_VERSION, allocate_profile_identity, atomic_write_json,
     compatibility_fingerprint, creation_lock, migrate_profile,
-    profile_defaults, resolve_requested_environment, utc_now,
+    profile_defaults, resolve_requested_environment, utc_now, validate_timezone,
 )
-from backend.services.proxy_service import assign_proxy_by_id, release_proxy
+from backend.services.proxy_service import assign_proxy_by_id, release_proxy, load_proxy_pool, lookup_proxy_geography
 
 
 router = APIRouter(prefix="/api/profiles", tags=["profiles"])
@@ -53,6 +53,18 @@ def _validated_resources(resources: dict) -> dict:
     return {"cpu_limit": cpu_limit, "memory_mb": memory_mb}
 
 
+def _proxy_timezone(network: dict) -> str | None:
+    """Use the exit IP, never cached geography or the proxy endpoint's IP."""
+    try:
+        geo = lookup_proxy_geography({
+            "host": network.get("proxy_host"), "port": network.get("proxy_port"),
+            "username": network.get("proxy_user"), "password": network.get("proxy_pass"),
+        })
+        return validate_timezone(geo["timezone"])
+    except Exception:
+        return None
+
+
 def _network_from_intent(profile_id: str, intent: dict) -> tuple[dict, str | None]:
     mode = intent["mode"]
     if mode == "direct":
@@ -63,20 +75,33 @@ def _network_from_intent(profile_id: str, intent: dict) -> tuple[dict, str | Non
         }, None
     if mode == "pool":
         proxy = assign_proxy_by_id(profile_id, str(intent["proxy_id"]))
-        return {
+        network = {
             "mode": "pool", "proxy_id": proxy["id"],
             "proxy_type": proxy.get("type") or "socks5",
             "proxy_host": proxy["host"], "proxy_port": int(proxy["port"]),
             "proxy_user": proxy.get("username") or "",
             "proxy_pass": proxy.get("password") or "",
-        }, proxy.get("timezone")
-    release_proxy(profile_id)
-    return {
-        "mode": "custom", "proxy_id": None, "proxy_type": "socks5",
-        "proxy_host": str(intent["host"]).strip(), "proxy_port": int(intent["port"]),
-        "proxy_user": str(intent.get("username") or "").strip(),
-        "proxy_pass": str(intent.get("password") or ""),
-    }, None
+        }
+    else:
+        release_proxy(profile_id)
+        network = {
+            "mode": "custom", "proxy_id": None, "proxy_type": "socks5",
+            "proxy_host": str(intent["host"]).strip(), "proxy_port": int(intent["port"]),
+            "proxy_user": str(intent.get("username") or "").strip(),
+            "proxy_pass": str(intent.get("password") or ""),
+        }
+    return network, _proxy_timezone(network)
+
+
+def _environment_for_network(requested: dict, network: dict, proxy_timezone: str | None) -> dict:
+    value = deepcopy(requested)
+    if network["mode"] != "direct":
+        if proxy_timezone:
+            value.update(timezone_policy="proxy", timezone=proxy_timezone)
+        elif value.get("timezone_policy") != "manual":
+            # An unavailable lookup must require an explicit manual confirmation.
+            value.update(timezone_policy="proxy", timezone=None)
+    return value
 
 
 class GroupCreateRequest(BaseModel):
@@ -95,6 +120,29 @@ def add_profile_group(request: GroupCreateRequest):
         return {"name": create_group(request.name)}
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/detect-timezone")
+def detect_network_timezone(intent: NetworkIntent):
+    defaults = profile_defaults()
+    if intent.mode == "direct":
+        return {"detected": defaults["host_timezone_detected"],
+                "timezone": defaults["default_environment"]["timezone"],
+                "source": "host", "timezone_options": defaults["timezone_options"]}
+    if intent.mode == "pool":
+        proxy = next((p for p in load_proxy_pool() if p["id"] == intent.proxy_id), None)
+        if not proxy:
+            raise HTTPException(status_code=404, detail="Selected proxy does not exist")
+        network = {"proxy_host": proxy["host"], "proxy_port": proxy["port"],
+                   "proxy_user": proxy.get("username"), "proxy_pass": proxy.get("password")}
+    else:
+        network = {"proxy_host": intent.host, "proxy_port": intent.port,
+                   "proxy_user": intent.username, "proxy_pass": intent.password}
+    timezone_name = _proxy_timezone(network)
+    return {"detected": timezone_name is not None,
+            "timezone": timezone_name or FALLBACK_TIMEZONE,
+            "source": "proxy", "timezone_options": defaults["timezone_options"],
+            "fallback_timezone": FALLBACK_TIMEZONE}
 
 
 @router.get("/defaults")
@@ -147,7 +195,7 @@ def create_profile(request: ProfileCreateRequest):
             network, proxy_timezone = _network_from_intent(profile_id, request.network.model_dump())
             proxy_reserved = network["mode"] == "pool"
             requested = resolve_requested_environment(
-                request.requested_environment.model_dump(),
+                _environment_for_network(request.requested_environment.model_dump(), network, proxy_timezone),
                 network_mode=network["mode"], proxy_timezone=proxy_timezone,
             )
             profile = {
@@ -209,8 +257,10 @@ def update_profile(profile_id: str, request: ProfileUpdateRequest):
                 if request.requested_environment is not None
                 else deepcopy(existing["requested_environment"])
             )
+            if request.network is None and existing["network"]["mode"] != "direct":
+                proxy_timezone = _proxy_timezone(existing["network"])
             existing["requested_environment"] = resolve_requested_environment(
-                requested_input, network_mode=existing["network"]["mode"],
+                _environment_for_network(requested_input, existing["network"], proxy_timezone), network_mode=existing["network"]["mode"],
                 proxy_timezone=proxy_timezone,
             )
             existing["fingerprint"] = compatibility_fingerprint(

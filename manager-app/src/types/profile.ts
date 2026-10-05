@@ -183,6 +183,8 @@ export interface ProfileUpdateRequest {
 }
 
 export interface ProfileDefaults {
+  host_timezone_detected: boolean;
+  timezone_options: string[];
   schema_version: number;
   supported_resolutions: string[];
   default_environment: RequestedEnvironment;

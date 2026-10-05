@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 import cv2
 import numpy as np
 from .container_client import ContainerClient
+from .runtime_paths import profiles_dir, automation_dir
 from .text_matcher import OcrTextMatcher
 from .ocr_worker_client import (
     SharedOcrUnavailable,
@@ -28,9 +29,7 @@ except ImportError:  # Optional until dependencies are installed.
     structural_similarity = None
 
 
-TEMPLATE_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "templates")
-)
+TEMPLATE_DIR = str(automation_dir() / "templates")
 
 # Canonical normalized regions: (x1_norm, y1_norm, x2_norm, y2_norm)
 NORMALIZED_REGIONS = {
@@ -86,9 +85,7 @@ class VisionEngine:
 
     def __init__(self, client: ContainerClient):
         self.client = client
-        self.cache_dir = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), "..", "..", "profiles", client.profile_id)
-        )
+        self.cache_dir = str(profiles_dir() / client.profile_id)
         self.cache_file = os.path.join(self.cache_dir, "element_cache.json")
         self._cache = self._load_cache()
         self.telemetry = None
@@ -253,9 +250,7 @@ class VisionEngine:
                 configured_threads = int(os.environ.get("AUTOMATION_OCR_THREADS", "4"))
                 torch.set_num_threads(max(1, min(4, configured_threads)))
 
-            model_dir = os.path.abspath(
-                os.path.join(os.path.dirname(__file__), "..", "models", "easyocr")
-            )
+            model_dir = os.environ.get("AUTOMATION_OCR_MODEL_DIR") or str(automation_dir() / "models" / "easyocr")
             os.makedirs(model_dir, exist_ok=True)
             reader = easyocr.Reader(
                 list(languages),

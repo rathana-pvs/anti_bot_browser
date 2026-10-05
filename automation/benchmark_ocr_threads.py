@@ -60,7 +60,8 @@ def main() -> None:
     torch.set_num_threads(args.threads)
     import easyocr
 
-    model_dir = Path(__file__).resolve().parent / "models" / "easyocr"
+    from engine.runtime_paths import automation_dir
+    model_dir = automation_dir() / "models" / "easyocr"
     started = time.perf_counter()
     reader = easyocr.Reader(
         ["en"],

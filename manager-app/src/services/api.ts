@@ -1,18 +1,10 @@
 import {
-  Profile, ProfileCreateRequest, ProfileDefaults, ProfileUpdateRequest, SystemStats,
+  NetworkIntent, Profile, ProfileCreateRequest, ProfileDefaults, ProfileUpdateRequest, SystemStats,
 } from '../types/profile';
 import { ProxyItem } from '../types/proxy';
 import { BrainActionResponse, BrainCatalogResponse, BrainUploadResponse } from '../types/brain';
 import { invoke } from '@tauri-apps/api/core';
-
-const isTauriEnv = typeof window !== 'undefined' && (
-  '__TAURI_INTERNALS__' in window ||
-  '__TAURI__' in window ||
-  window.location.protocol === 'tauri:' ||
-  window.location.hostname === 'tauri.localhost' ||
-  (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') ||
-  (window.location.port !== '5173' && window.location.port !== '3001')
-);
+import { isDesktopApp } from './desktopEnvironment';
 
 export let BACKEND_BASE = '';
 export let API_BASE = '/api';
@@ -25,7 +17,7 @@ interface ApiSessionInfo {
 }
 
 export async function initializeBackendSession(): Promise<void> {
-  if (!isTauriEnv) return;
+  if (!isDesktopApp()) return;
 
   const session = await invoke<ApiSessionInfo>('get_api_session');
   BACKEND_BASE = session.baseUrl;
@@ -98,6 +90,53 @@ export async function createProfileGroup(name: string): Promise<{ name: string }
   if (!res.ok) throw await apiError(res, 'Failed to create profile group');
   return res.json();
 }
+
+export interface TimezoneDetection {
+  detected: boolean;
+  timezone: string;
+  source: 'host' | 'proxy';
+  timezone_options: string[];
+}
+
+export async function detectNetworkTimezone(network: NetworkIntent): Promise<TimezoneDetection> {
+  if (network.mode === 'direct') {
+    const defaults = await fetchProfileDefaults();
+    return {
+      // Older backends cannot distinguish detection from a guessed default.
+      // Require confirmation rather than silently trusting that timezone.
+      detected: defaults.host_timezone_detected === true,
+      timezone: defaults.host_timezone_detected === true
+        ? defaults.default_environment.timezone!
+        : 'America/Guatemala',
+      source: 'host',
+      timezone_options: defaults.timezone_options || FALLBACK_TIMEZONE_OPTIONS,
+    };
+  }
+  const res = await fetch(`${API_BASE}/profiles/detect-timezone`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(network),
+  });
+  if (res.status === 404 || res.status === 405) {
+    throw new Error('The running backend does not support proxy timezone detection. Restart the manager to load the updated backend, then try again.');
+  }
+  if (!res.ok) throw await apiError(res, 'Could not detect timezone');
+  return res.json();
+}
+
+// Compatibility for a frontend loaded while the previous backend is still running.
+const FALLBACK_TIMEZONE_OPTIONS = [
+  'America/Guatemala', 'Asia/Phnom_Penh',
+  'America/New_York', 'America/Detroit', 'America/Kentucky/Louisville',
+  'America/Kentucky/Monticello', 'America/Indiana/Indianapolis',
+  'America/Indiana/Vincennes', 'America/Indiana/Winamac', 'America/Indiana/Marengo',
+  'America/Indiana/Petersburg', 'America/Indiana/Vevay', 'America/Chicago',
+  'America/Indiana/Tell_City', 'America/Indiana/Knox', 'America/Menominee',
+  'America/North_Dakota/Center', 'America/North_Dakota/New_Salem',
+  'America/North_Dakota/Beulah', 'America/Denver', 'America/Boise', 'America/Phoenix',
+  'America/Los_Angeles', 'America/Anchorage', 'America/Juneau', 'America/Sitka',
+  'America/Metlakatla', 'America/Yakutat', 'America/Nome', 'America/Adak',
+  'Pacific/Honolulu', 'America/Puerto_Rico', 'America/St_Thomas', 'Pacific/Guam',
+  'Pacific/Saipan', 'Pacific/Pago_Pago', 'Pacific/Midway', 'Pacific/Wake',
+];
 
 export async function fetchProfileDefaults(): Promise<ProfileDefaults> {
   const res = await fetch(`${API_BASE}/profiles/defaults`);
@@ -381,7 +420,7 @@ export async function downloadSupportBundle(options: SupportBundleOptions = {}):
   const filenameMatch = disposition.match(/filename="?([^";]+)"?/i);
   const filename = filenameMatch?.[1] || 'automat_fb_support.zip';
   const blob = await res.blob();
-  if (isTauriEnv) {
+  if (isDesktopApp()) {
     const bytes = Array.from(new Uint8Array(await blob.arrayBuffer()));
     return invoke<string>('save_support_bundle', { filename, bytes });
   }

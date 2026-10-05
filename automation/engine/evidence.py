@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 import cv2
 import numpy as np
+from .runtime_paths import profiles_dir
 
 
 class EvidenceRecorder:
@@ -17,16 +18,7 @@ class EvidenceRecorder:
     def __init__(self, profile_id: str, task_name: str):
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
         safe_task = re.sub(r"[^a-zA-Z0-9_-]+", "_", task_name).strip("_") or "task"
-        root = os.path.abspath(
-            os.path.join(
-                os.path.dirname(__file__),
-                "..",
-                "..",
-                "profiles",
-                profile_id,
-                "automation_evidence",
-            )
-        )
+        root = profiles_dir() / profile_id / "automation_evidence"
         self.run_id = f"{stamp}_{safe_task}"
         self.directory = os.path.join(root, self.run_id)
         os.makedirs(self.directory, exist_ok=True)

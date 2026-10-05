@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from backend.config import CPU_THREADS, PROFILES_DIR, TOTAL_MEMORY_GB, get_host_timezone
+from backend.config import CPU_THREADS, PROFILES_DIR, TOTAL_MEMORY_GB, FALLBACK_TIMEZONE, detect_host_timezone, get_host_timezone
 from backend.services.proxy_service import load_proxy_pool
 
 
@@ -26,6 +26,48 @@ SUPPORTED_RESOLUTIONS = (
     "1440x900",
     "1366x768",
     "2560x1440",
+)
+# Curated picker scope: Guatemala (default), Cambodia, and US states/territories.
+# US state entries follow the IANA zone.tab country-code US list.
+TIMEZONE_OPTIONS = (
+    FALLBACK_TIMEZONE,
+    "Asia/Phnom_Penh",
+    "America/Adak",
+    "America/Anchorage",
+    "America/Boise",
+    "America/Chicago",
+    "America/Denver",
+    "America/Detroit",
+    "America/Indiana/Indianapolis",
+    "America/Indiana/Knox",
+    "America/Indiana/Marengo",
+    "America/Indiana/Petersburg",
+    "America/Indiana/Tell_City",
+    "America/Indiana/Vevay",
+    "America/Indiana/Vincennes",
+    "America/Indiana/Winamac",
+    "America/Juneau",
+    "America/Kentucky/Louisville",
+    "America/Kentucky/Monticello",
+    "America/Los_Angeles",
+    "America/Menominee",
+    "America/Metlakatla",
+    "America/New_York",
+    "America/Nome",
+    "America/North_Dakota/Beulah",
+    "America/North_Dakota/Center",
+    "America/North_Dakota/New_Salem",
+    "America/Phoenix",
+    "America/Puerto_Rico",
+    "America/Sitka",
+    "America/St_Thomas",
+    "America/Yakutat",
+    "Pacific/Guam",
+    "Pacific/Honolulu",
+    "Pacific/Midway",
+    "Pacific/Pago_Pago",
+    "Pacific/Saipan",
+    "Pacific/Wake",
 )
 PROFILE_ID_RE = re.compile(r"^profile_(\d+)$")
 _profile_creation_lock = threading.Lock()
@@ -51,13 +93,16 @@ def validate_timezone(value: str) -> str:
 
 
 def profile_defaults() -> dict[str, Any]:
+    host_timezone = detect_host_timezone()
     return {
+        "host_timezone_detected": host_timezone is not None,
+        "timezone_options": list(TIMEZONE_OPTIONS),
         "schema_version": PROFILE_SCHEMA_VERSION,
         "supported_resolutions": list(SUPPORTED_RESOLUTIONS),
         "default_environment": {
             "screen_resolution": "1920x1080",
             "timezone_policy": "host",
-            "timezone": get_host_timezone(),
+            "timezone": host_timezone or FALLBACK_TIMEZONE,
             "language": "en-US",
             "user_agent_policy": "browser_default",
             "user_agent": None,
@@ -146,6 +191,7 @@ def resolve_requested_environment(
     *,
     network_mode: str,
     proxy_timezone: str | None = None,
+    require_timezone_confirmation: bool = True,
 ) -> dict[str, Any]:
     value = deepcopy(requested)
     resolution = value.get("screen_resolution") or "1920x1080"
@@ -159,7 +205,12 @@ def resolve_requested_environment(
         if not timezone_name:
             raise ValueError("The selected proxy has no timezone")
     elif policy == "host":
-        timezone_name = get_host_timezone()
+        timezone_name = detect_host_timezone()
+        if timezone_name is None:
+            if require_timezone_confirmation:
+                raise ValueError("Host timezone could not be detected. Confirm a timezone using manual timezone policy.")
+            # Preserve existing profile values during migration.
+            timezone_name = value.get("timezone") or FALLBACK_TIMEZONE
     else:
         timezone_name = value.get("timezone")
     value["screen_resolution"] = resolution
@@ -293,6 +344,7 @@ def migrate_profile(profile: dict[str, Any], profile_dir: Path, *, persist: bool
                 "rendering_mode": previous_requested.get("rendering_mode") or "host_gpu",
             },
             network_mode=(migrated.get("network") or {}).get("mode", "direct"),
+            require_timezone_confirmation=False,
         )
         migrated["requested_environment"] = requested
         migrated["fingerprint"] = compatibility_fingerprint(
@@ -329,6 +381,7 @@ def migrate_profile(profile: dict[str, Any], profile_dir: Path, *, persist: bool
         },
         network_mode=network["mode"],
         proxy_timezone=proxy_tz,
+        require_timezone_confirmation=False,
     )
     migrated.update(
         {

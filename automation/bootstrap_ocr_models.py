@@ -1,12 +1,12 @@
 """Install the EasyOCR weights used by the visual automation engine."""
 
-from pathlib import Path
+from engine.runtime_paths import automation_dir
 
 import easyocr
 
 
 def main() -> None:
-    model_dir = Path(__file__).resolve().parent / "models" / "easyocr"
+    model_dir = automation_dir() / "models" / "easyocr"
     model_dir.mkdir(parents=True, exist_ok=True)
     easyocr.Reader(
         ["en"],

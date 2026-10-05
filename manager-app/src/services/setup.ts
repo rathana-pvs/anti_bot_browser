@@ -43,13 +43,7 @@ export interface SetupLogEvent {
   message: string;
 }
 
-export const isDesktopApp = (): boolean =>
-  typeof window !== 'undefined' && (
-    '__TAURI_INTERNALS__' in window ||
-    '__TAURI__' in window ||
-    window.location.protocol === 'tauri:' ||
-    window.location.hostname === 'tauri.localhost'
-  );
+export { isDesktopApp } from './desktopEnvironment';
 
 export async function fetchSetupStatus(): Promise<SetupSnapshot> {
   return invoke<SetupSnapshot>('get_setup_status');

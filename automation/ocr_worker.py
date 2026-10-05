@@ -10,6 +10,7 @@ import time
 from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from engine.runtime_paths import automation_dir
 
 import cv2
 import numpy as np
@@ -42,7 +43,7 @@ class OcrRuntime:
             model_dir = Path(
                 os.environ.get(
                     "AUTOMATION_OCR_MODEL_DIR",
-                    str(Path(__file__).resolve().parent / "models" / "easyocr"),
+                    str(automation_dir() / "models" / "easyocr"),
                 )
             )
             self.reader = easyocr.Reader(

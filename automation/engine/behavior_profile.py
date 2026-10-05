@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import random
 from typing import Any
+from .runtime_paths import profiles_dir
 
 
 BEHAVIOR_VERSION = 1
@@ -82,7 +83,7 @@ def load_behavior_session(
     *,
     profiles_root: Path | None = None,
 ) -> BehaviorSession:
-    root = profiles_root or Path(__file__).resolve().parents[2] / "profiles"
+    root = profiles_root if profiles_root is not None else profiles_dir()
     config_path = root / profile_id / "config.json"
     mode = "medium"
     seed = int.from_bytes(sha256(profile_id.encode("utf-8")).digest()[:8], "big")

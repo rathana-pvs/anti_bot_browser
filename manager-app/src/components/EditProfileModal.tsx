@@ -7,6 +7,7 @@ import { SCREEN_RESOLUTIONS, getHostTimezone } from '../services/fingerprintPool
 import { fetchProfileDefaults } from '../services/api';
 import { Checkbox } from './ui/Checkbox';
 import { Select } from './ui/Select';
+import { useTimezoneConfirmation } from './TimezoneConfirmationDialog';
 
 interface EditProfileModalProps {
   profile: Profile | null;
@@ -32,6 +33,7 @@ function environmentFor(profile: Profile): RequestedEnvironment {
 export const EditProfileModal: React.FC<EditProfileModalProps> = ({
   profile, isOpen, onClose, onSave, proxies = [], groups = [],
 }) => {
+  const { confirmTimezone, timezoneDialog } = useTimezoneConfirmation();
   const [name, setName] = useState('');
   const [group, setGroup] = useState('');
   const [environment, setEnvironment] = useState<RequestedEnvironment | null>(null);
@@ -100,7 +102,7 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
       setCustomPort('1080');
       setCustomUser('');
       setCustomPassword('');
-      setEnvironment((current) => current && ({ ...current, timezone_policy: 'manual', timezone: getHostTimezone() }));
+      setEnvironment((current) => current && ({ ...current, timezone_policy: 'proxy', timezone: null }));
     } else {
       const proxy = poolChoices.find((item) => item.id === choice);
       setEnvironment((current) => current && ({ ...current, timezone_policy: 'proxy', timezone: proxy?.timezone || null }));
@@ -117,8 +119,11 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
         : networkChoice === 'custom'
           ? { mode: 'custom', host: customHost.trim(), port: Number(customPort), username: customUser.trim(), password: customPassword }
           : { mode: 'pool', proxy_id: networkChoice };
+      const confirmedEnvironment = await confirmTimezone(environment, network);
+      if (!confirmedEnvironment) return;
+      setEnvironment(confirmedEnvironment);
       await onSave(profile.id, {
-        name: name.trim(), group: group.trim(), network, requested_environment: environment, resources,
+        name: name.trim(), group: group.trim(), network, requested_environment: confirmedEnvironment, resources,
         behavior_mode: behaviorMode,
         automation: { reel_template: reelTemplate },
         account: { warming_week: warmingWeek, warming_complete: warmingComplete, notes: notes.trim() },
@@ -132,6 +137,8 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
   };
 
   return (
+    <>
+    {timezoneDialog}
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
       <div className="max-h-[90vh] w-full max-w-lg overflow-hidden rounded-xl border border-border bg-surface shadow-2xl">
         <div className="flex items-center justify-between border-b border-border px-5 py-4">
@@ -173,20 +180,12 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
                 { value: 'custom', label: 'Custom proxy' },
               ]} />
             {selectedPoolProxy && <p className="text-[11px] text-zinc-400">{formatProxyGeography(selectedPoolProxy)}</p>}
-            {selectedPoolProxy && !selectedPoolProxy.timezone && (
-              <label className="block text-amber-300">Timezone required because this proxy has no location metadata
-                <input required value={environment.timezone || ''} onChange={(e) => setEnvironment({ ...environment, timezone: e.target.value })}
-                  placeholder="IANA timezone, e.g. America/Guatemala"
-                  className="mt-1 w-full rounded border border-amber-800/60 bg-zinc-900 px-2 py-1.5 text-zinc-200" />
-              </label>
-            )}
             {networkChoice === 'custom' && (
               <div className="grid grid-cols-3 gap-2">
                 <input required value={customHost} onChange={(e) => setCustomHost(e.target.value)} placeholder="Proxy host" className="col-span-2 rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-200" />
                 <input required type="number" min={1} max={65535} value={customPort} onChange={(e) => setCustomPort(e.target.value)} className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-200" />
                 <input value={customUser} onChange={(e) => setCustomUser(e.target.value)} placeholder="Username" className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-200" />
                 <input type="password" value={customPassword} onChange={(e) => setCustomPassword(e.target.value)} placeholder="Password" className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-200" />
-                <input required value={environment.timezone || ''} onChange={(e) => setEnvironment({ ...environment, timezone: e.target.value })} placeholder="IANA timezone" className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-200" />
               </div>
             )}
           </div>
@@ -206,6 +205,13 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
             </div>
             <p className="text-[10px] text-zinc-500">These are ceilings, not reserved CPU or memory. Changes apply after restart.</p>
           </div>
+          {networkChoice === 'direct' && environment.timezone_policy === 'manual' && (
+            <label className="block text-xs text-zinc-400">Confirmed timezone
+              <input required value={environment.timezone || ''}
+                onChange={(event) => setEnvironment({ ...environment, timezone: event.target.value })}
+                className="mt-1 w-full rounded border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-zinc-100" />
+            </label>
+          )}
           <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
             <div className="flex items-center gap-1.5 font-medium text-zinc-300"><Monitor className="h-3.5 w-3.5" />Requested browser environment</div>
             <div className="grid grid-cols-2 gap-2">
@@ -234,5 +240,6 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
         </form>
       </div>
     </div>
+    </>
   );
 };

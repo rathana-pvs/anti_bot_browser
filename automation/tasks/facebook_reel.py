@@ -16,6 +16,7 @@ from composer_templates import (
 )
 from engine.screen_state import ScreenState, StateObservation
 from engine.telemetry import timed_telemetry_step
+from engine.runtime_paths import automation_dir
 from engine.text_matcher import OcrTextMatcher
 from engine.vision import VisionEngine
 from modules.publication_result_verifier import ReelPublicationResultVerifier
@@ -68,7 +69,7 @@ class FacebookReelTask(BaseTask):
         self.reel_template_id = None
         self.template_selection_details = None
         package_root = Path(brain_package.root) if brain_package is not None else (
-            Path(__file__).resolve().parents[1]
+            automation_dir()
             / "brains" / "facebook_reel" / "bundled_default"
         )
         self.reel_templates = ComposerTemplateRegistry(package_root).load("reel")

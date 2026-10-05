@@ -1,11 +1,12 @@
 import { ProfileGroupField } from './ProfileGroupField';
 import React, { useEffect, useState } from 'react';
-import { Cpu, Globe, Monitor, Shield, X } from 'lucide-react';
+import { Cpu, Globe, Loader2, Monitor, Shield, X } from 'lucide-react';
 import { fetchProfileDefaults } from '../services/api';
 import { BehaviorMode, ProfileCreateRequest, ReelTemplateSelection, RequestedEnvironment, ResourceLimits, reelTemplateLabel } from '../types/profile';
 import { formatProxyGeography, ProxyItem } from '../types/proxy';
 import { RESOLUTION_OPTIONS, getHostTimezone } from '../services/fingerprintPool';
 import { Select } from './ui/Select';
+import { useTimezoneConfirmation } from './TimezoneConfirmationDialog';
 
 interface CreateProfileModalProps {
   isOpen: boolean;
@@ -29,6 +30,7 @@ const fallbackEnvironment = (): RequestedEnvironment => ({
 export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
   isOpen, onClose, onCreate, existingCount, proxies = [], groups = [],
 }) => {
+  const { confirmTimezone, timezoneDialog, awaitingTimezoneConfirmation } = useTimezoneConfirmation();
   const [name, setName] = useState('');
   const [group, setGroup] = useState('');
   const [environment, setEnvironment] = useState<RequestedEnvironment>(fallbackEnvironment);
@@ -46,6 +48,7 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
   const [customUser, setCustomUser] = useState('');
   const [customPassword, setCustomPassword] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const [creationStage, setCreationStage] = useState<'timezone' | 'saving'>('timezone');
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -88,7 +91,7 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
       }));
     } else if (choice === 'custom') {
       setEnvironment((current) => ({
-        ...current, timezone_policy: 'manual', timezone: getHostTimezone(),
+        ...current, timezone_policy: 'proxy', timezone: null,
       }));
       setCustomHost('');
       setCustomPort('1080');
@@ -104,7 +107,9 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (isSaving) return;
     setError(null);
+    setCreationStage('timezone');
     setIsSaving(true);
     try {
       const network: ProfileCreateRequest['network'] = networkChoice === 'direct'
@@ -115,8 +120,12 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
               username: customUser.trim(), password: customPassword,
             }
           : { mode: 'pool', proxy_id: networkChoice };
+      const confirmedEnvironment = await confirmTimezone(environment, network);
+      if (!confirmedEnvironment) return;
+      setEnvironment(confirmedEnvironment);
+      setCreationStage('saving');
       await onCreate({
-        name: name.trim(), group: group.trim(), network, requested_environment: environment, resources,
+        name: name.trim(), group: group.trim(), network, requested_environment: confirmedEnvironment, resources,
         behavior_mode: behaviorMode,
         automation: { reel_template: reelTemplate },
       });
@@ -128,7 +137,15 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
     }
   };
 
+  const progressMessage = awaitingTimezoneConfirmation
+    ? 'Waiting for timezone confirmation…'
+    : creationStage === 'timezone'
+      ? networkChoice === 'direct' ? 'Detecting your computer’s timezone…' : 'Detecting timezone from the proxy’s exit IP…'
+      : networkChoice === 'direct' ? 'Creating profile…' : 'Checking the proxy and creating profile…';
+
   return (
+    <>
+    {timezoneDialog}
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
       <div className="flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-2xl">
         <div className="flex items-center justify-between border-b border-border px-5 py-4">
@@ -136,11 +153,12 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
             <h2 className="text-sm font-semibold text-zinc-100">Create Isolated Profile</h2>
             <p className="mt-0.5 text-[11px] text-zinc-500">Identity and ports are allocated safely by the manager.</p>
           </div>
-          <button type="button" onClick={onClose} className="text-zinc-400 hover:text-white"><X className="h-4 w-4" /></button>
+          <button type="button" disabled={isSaving} onClick={onClose} aria-label="Close create profile" className="text-zinc-400 hover:text-white disabled:opacity-40"><X className="h-4 w-4" /></button>
         </div>
 
-        <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
+        <form onSubmit={submit} aria-busy={isSaving && !awaitingTimezoneConfirmation} className="flex min-h-0 flex-1 flex-col">
           <div className="flex-1 space-y-4 overflow-y-auto p-5 text-xs">
+            <fieldset disabled={isSaving} className="contents space-y-4">
             <label className="block text-zinc-400">
               <span className="mb-1.5 block font-medium">Profile name</span>
               <input required value={name} onChange={(e) => setName(e.target.value)}
@@ -148,6 +166,13 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
             </label>
 
             <ProfileGroupField value={group} onChange={setGroup} groups={groups} />
+          {networkChoice === 'direct' && environment.timezone_policy === 'manual' && (
+            <label className="block text-xs text-zinc-400">Confirmed timezone
+              <input required value={environment.timezone || ''}
+                onChange={(event) => setEnvironment({ ...environment, timezone: event.target.value })}
+                className="mt-1 w-full rounded border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-zinc-100" />
+            </label>
+          )}
             <div className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
               <div className="font-medium text-zinc-300">Automation behavior</div>
               <div className="grid grid-cols-2 gap-2">
@@ -177,14 +202,6 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
               {selectedProxy && (
                 <p className="text-[11px] text-zinc-400">{formatProxyGeography(selectedProxy)}</p>
               )}
-              {selectedProxy && !selectedProxy.timezone && (
-                <label className="block text-amber-300">Timezone required because this proxy has no location metadata
-                  <input required value={environment.timezone || ''}
-                    onChange={(e) => setEnvironment((current) => ({ ...current, timezone: e.target.value }))}
-                    placeholder="IANA timezone, e.g. America/Guatemala"
-                    className="mt-1 w-full rounded border border-amber-800/60 bg-zinc-900 px-2.5 py-2 text-zinc-100" />
-                </label>
-              )}
               {networkChoice === 'custom' && (
                 <div className="grid grid-cols-3 gap-2">
                   <input required value={customHost} onChange={(e) => setCustomHost(e.target.value)} placeholder="Proxy host"
@@ -195,9 +212,6 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
                     className="rounded border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-zinc-100" />
                   <input type="password" value={customPassword} onChange={(e) => setCustomPassword(e.target.value)} placeholder="Password"
                     className="rounded border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-zinc-100" />
-                  <input required value={environment.timezone || ''}
-                    onChange={(e) => setEnvironment((current) => ({ ...current, timezone: e.target.value }))}
-                    placeholder="IANA timezone" className="rounded border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-zinc-100" />
                 </div>
               )}
             </div>
@@ -248,15 +262,29 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
               </p>
             </div>
             {error && <p className="rounded border border-red-900/50 bg-red-950/30 p-2 text-red-300">{error}</p>}
+            </fieldset>
           </div>
-          <div className="flex justify-end gap-2 border-t border-border px-5 py-3">
-            <button type="button" onClick={onClose} className="rounded border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-zinc-300">Cancel</button>
-            <button disabled={isSaving} type="submit" className="rounded bg-white px-4 py-1.5 font-semibold text-zinc-950 disabled:opacity-50">
-              {isSaving ? 'Creating…' : 'Create profile'}
-            </button>
+          <div className="space-y-3 border-t border-border px-5 py-3">
+            {isSaving && (
+              <div role="status" aria-live="polite" className="flex items-start gap-2 rounded-lg border border-blue-900/60 bg-blue-950/30 p-3 text-xs text-blue-200">
+                {!awaitingTimezoneConfirmation && <Loader2 aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />}
+                <div>
+                  <p className="font-medium">{progressMessage}</p>
+                  {!awaitingTimezoneConfirmation && <p className="mt-1 text-[11px] text-blue-200/70">{networkChoice === 'direct' ? 'Please wait while the profile is prepared.' : 'Please wait. Proxy checks may take a few moments.'}</p>}
+                </div>
+              </div>
+            )}
+            <div className="flex justify-end gap-2">
+              <button type="button" disabled={isSaving} onClick={onClose} className="rounded border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-zinc-300 disabled:opacity-40">Cancel</button>
+              <button disabled={isSaving} type="submit" className="flex items-center gap-2 rounded bg-white px-4 py-1.5 font-semibold text-zinc-950 disabled:opacity-50">
+                {isSaving && !awaitingTimezoneConfirmation && <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />}
+                {isSaving ? awaitingTimezoneConfirmation ? 'Confirm timezone…' : creationStage === 'timezone' ? 'Checking timezone…' : 'Creating…' : 'Create profile'}
+              </button>
+            </div>
           </div>
         </form>
       </div>
     </div>
+    </>
   );
 };

@@ -12,6 +12,7 @@ from composer_templates import (
 )
 from engine.screen_state import ScreenState
 from engine.telemetry import timed_telemetry_step
+from engine.runtime_paths import automation_dir
 from engine.text_matcher import OcrTextMatcher
 from modules.publication_result_verifier import ImagePublicationResultVerifier
 from .base_task import BaseTask
@@ -55,7 +56,7 @@ class FacebookPostTask(BaseTask):
             except (OSError, json.JSONDecodeError) as exc:
                 self.log("WARN", f"Brain target configuration could not be loaded: {exc}")
         package_root = Path(brain_package.root) if brain_package is not None else (
-            Path(__file__).resolve().parents[1]
+            automation_dir()
             / "brains" / "facebook_post" / "bundled_default"
         )
         self.post_templates = ComposerTemplateRegistry(package_root).load("post")

@@ -5,15 +5,12 @@ import sys
 import uuid
 import psutil
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from automation.engine.runtime_paths import runtime_root
 
 # Paths
 BACKEND_DIR = Path(__file__).resolve().parent
-_configured_root = os.environ.get("AUTOMAT_FB_ROOT", "").strip()
-ROOT_DIR = (
-    Path(_configured_root).expanduser().resolve()
-    if _configured_root
-    else BACKEND_DIR.parent
-)
+ROOT_DIR = runtime_root(BACKEND_DIR.parent)
 PROFILES_DIR = ROOT_DIR / "profiles"
 SCRIPTS_DIR = ROOT_DIR / "scripts"
 DATA_DIR = ROOT_DIR / "data"
@@ -54,12 +51,23 @@ TOTAL_MEMORY_BYTES = psutil.virtual_memory().total
 TOTAL_MEMORY_GB = detect_total_memory_gb()
 CPU_THREADS = os.cpu_count() or 4
 
-def get_host_timezone() -> str:
+FALLBACK_TIMEZONE = "America/Guatemala"
+
+
+def detect_host_timezone() -> str | None:
+    """Return a validated host timezone, or None when detection fails."""
+    def validated(value: str) -> str | None:
+        try:
+            ZoneInfo(value)
+            return value
+        except (ZoneInfoNotFoundError, ValueError):
+            return None
+
     try:
         tz_path = Path("/etc/timezone")
         if tz_path.exists():
             val = tz_path.read_text(encoding="utf-8").strip()
-            if val:
+            if val and validated(val):
                 return val
     except Exception:
         pass
@@ -68,7 +76,9 @@ def get_host_timezone() -> str:
         if localtime.is_symlink():
             target = os.readlink(str(localtime))
             if "zoneinfo/" in target:
-                return target.split("zoneinfo/")[-1].strip()
+                value = target.split("zoneinfo/")[-1].strip()
+                if validated(value):
+                    return value
     except Exception:
         pass
     try:
@@ -79,11 +89,16 @@ def get_host_timezone() -> str:
             stderr=subprocess.DEVNULL,
             timeout=2,
         ).strip()
-        if out:
+        if out and validated(out):
             return out
     except Exception:
         pass
-    return "America/Guatemala" if Path("/etc/timezone").exists() else "UTC"
+    return None
+
+
+def get_host_timezone() -> str:
+    """Compatibility default; new profile writes must confirm a fallback."""
+    return detect_host_timezone() or FALLBACK_TIMEZONE
 
 # OCR Runtime Detection
 def detect_nvidia_gpu() -> tuple[bool, str | None]:

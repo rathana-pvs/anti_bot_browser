@@ -9,7 +9,6 @@ import json
 import os
 import sys
 import warnings
-from pathlib import Path
 
 warnings.filterwarnings("ignore", message=".*pin_memory.*")
 warnings.filterwarnings("ignore", message=".*torch.quantize_per_tensor.*")
@@ -23,10 +22,11 @@ from tasks.facebook_reel import FacebookReelTask
 from tasks.facebook_comment import FacebookCommentTask
 from tasks.facebook_preparation import FacebookPreparationTask
 from engine.brain_runtime import BrainRegistry
+from engine.runtime_paths import automation_dir
 from modules import build_publishing_pipeline
 
 
-BRAINS_ROOT = Path(__file__).resolve().parent / "brains"
+BRAINS_ROOT = automation_dir() / "brains"
 
 
 def main():

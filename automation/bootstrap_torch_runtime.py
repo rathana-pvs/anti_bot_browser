@@ -8,13 +8,14 @@ import subprocess
 import sys
 import json
 from pathlib import Path
+from engine.runtime_paths import runtime_root
 
 
 TORCH_VERSION = "2.14.0"
 VISION_VERSION = "0.29.0"
 CUDA_TAG = "cu130"
 CPU_TAG = "cpu"
-STATUS_FILE = Path(__file__).resolve().parents[1] / "data" / "torch_runtime.json"
+STATUS_FILE = runtime_root() / "data" / "torch_runtime.json"
 
 
 def probe_runtime() -> dict:

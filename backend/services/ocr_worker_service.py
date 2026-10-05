@@ -65,6 +65,7 @@ def start_shared_ocr_worker() -> dict:
     try:
         _log_handle = open(log_path, "a", encoding="utf-8")
         env = os.environ.copy()
+        env["AUTOMAT_FB_ROOT"] = str(ROOT_DIR)
         env["PYTHONUNBUFFERED"] = "1"
         env["AUTOMATION_OCR_DEVICE"] = OCR_RUNTIME["device"]
         env["AUTOMATION_OCR_THREADS"] = str(threads)

@@ -11,6 +11,7 @@ import uuid
 import numpy as np
 from datetime import datetime, timezone
 from engine.container_client import ContainerClient
+from engine.runtime_paths import profiles_dir
 from engine.evidence import EvidenceRecorder
 from engine.human_input import HumanInput
 from engine.behavior_profile import load_behavior_session
@@ -76,9 +77,7 @@ class BaseTask:
 
     def _load_environment_context(self) -> None:
         """Load stable profile context; runtime screen observations fill the remaining fields."""
-        config_path = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), "..", "..", "profiles", self.profile_id, "config.json")
-        )
+        config_path = profiles_dir() / self.profile_id / "config.json"
         try:
             with open(config_path, "r", encoding="utf-8") as handle:
                 config = json.load(handle)

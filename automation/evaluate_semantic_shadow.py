@@ -310,7 +310,8 @@ def main() -> int:
     parser.add_argument("--output", default="automation/reports/semantic_shadow_latest.json")
     args = parser.parse_args()
 
-    repo_root = Path(__file__).resolve().parent.parent
+    from engine.runtime_paths import runtime_root
+    repo_root = runtime_root()
     samples = discover_samples(repo_root, args.profiles)
     selected = select_samples(samples, max(1, args.max_per_scenario))
     results = [evaluate_sample(sample, args.tolerance_px) for sample in selected]
