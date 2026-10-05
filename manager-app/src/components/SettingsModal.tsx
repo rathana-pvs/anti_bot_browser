@@ -1,14 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { Select } from './ui/Select';
+import { BrainPanel } from './BrainPanel';
 import { BrainCircuit, Check, Eye, EyeOff, KeyRound, Settings, X } from 'lucide-react';
 
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onOpenBrains: () => void;
 }
 
-type Section = 'api-keys' | 'tools';
+type Section = 'api-keys' | 'brains';
 
 const API_KEY_FIELDS = [
   { id: 'gemini', label: 'Google Gemini', placeholder: 'API key' },
@@ -47,7 +47,7 @@ function loadApiKeys(): ApiKeys {
   }
 }
 
-export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, onOpenBrains }) => {
+export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
   const [section, setSection] = useState<Section>('api-keys');
   const [apiKeys, setApiKeys] = useState<ApiKeys>(loadApiKeys);
   const [visibleKeys, setVisibleKeys] = useState<Set<ApiKeyId>>(new Set());
@@ -80,7 +80,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
         aria-modal="true"
         aria-labelledby="settings-title"
         onMouseDown={(event) => event.stopPropagation()}
-        className="flex h-[min(620px,88vh)] w-full max-w-3xl overflow-hidden rounded-2xl border border-zinc-800 bg-[#0b0c0f] shadow-2xl"
+        className={`flex h-[min(640px,88vh)] w-full ${section === 'brains' ? 'max-w-5xl' : 'max-w-3xl'} overflow-hidden rounded-2xl border border-zinc-800 bg-[#0b0c0f] shadow-2xl`}
       >
         <aside className="w-52 shrink-0 border-r border-zinc-800 bg-zinc-950/80 p-3">
           <div className="mb-5 flex items-center gap-2 px-2 pt-2">
@@ -91,8 +91,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
             <button type="button" onClick={() => setSection('api-keys')} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition-colors ${section === 'api-keys' ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'}`}>
               <KeyRound className="h-4 w-4" /> API keys
             </button>
-            <button type="button" onClick={() => setSection('tools')} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition-colors ${section === 'tools' ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'}`}>
-              <BrainCircuit className="h-4 w-4" /> Tools
+            <button type="button" onClick={() => setSection('brains')} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition-colors ${section === 'brains' ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'}`}>
+              <BrainCircuit className="h-4 w-4" /> Brains
             </button>
           </nav>
         </aside>
@@ -100,13 +100,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
         <section className="flex min-w-0 flex-1 flex-col">
           <header className="flex h-14 shrink-0 items-center justify-between border-b border-zinc-800 px-6">
             <div>
-              <h3 className="text-sm font-semibold text-zinc-100">{section === 'api-keys' ? 'API keys' : 'Tools'}</h3>
-              <p className="mt-0.5 text-[11px] text-zinc-500">{section === 'api-keys' ? 'Manage your Gemini API key and model.' : 'Manage optional features and workflow tools.'}</p>
+              <h3 className="text-sm font-semibold text-zinc-100">{section === 'api-keys' ? 'API keys' : 'Brains'}</h3>
+              <p className="mt-0.5 text-[11px] text-zinc-500">{section === 'api-keys' ? 'Manage your Gemini API key and model.' : 'Manage installed brains, versions, and activation.'}</p>
             </div>
             <button type="button" onClick={onClose} aria-label="Close settings" className="rounded-md p-2 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"><X className="h-4 w-4" /></button>
           </header>
 
-          <div className="flex-1 overflow-y-auto p-6">
+          <div className={`min-h-0 flex-1 ${section === 'brains' ? 'flex overflow-hidden' : 'overflow-y-auto p-6'}`}>
             {section === 'api-keys' ? (
               <div className="max-w-xl space-y-5">
                 <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-xs leading-5 text-amber-200/80">
@@ -147,17 +147,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                 </div>
               </div>
             ) : (
-              <div className="max-w-xl">
-                <button type="button" onClick={() => { onClose(); onOpenBrains(); }} className="flex w-full items-center gap-4 rounded-xl border border-zinc-800 bg-zinc-950/70 p-4 text-left hover:border-violet-500/40 hover:bg-violet-500/5">
-                  <div className="rounded-xl bg-violet-500/10 p-3 text-violet-400"><BrainCircuit className="h-5 w-5" /></div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-semibold text-zinc-100">Workflow Brains</p>
-                    <p className="mt-1 text-xs leading-5 text-zinc-500">Install, validate, activate, or roll back workflow Brain packages.</p>
-                  </div>
-                  <span className="text-xs font-medium text-violet-400">Open</span>
-                </button>
-                <p className="mt-5 text-xs text-zinc-600">More application settings can be added here later.</p>
-              </div>
+              <BrainPanel embedded />
             )}
           </div>
         </section>

@@ -1,10 +1,12 @@
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Body
+from pydantic import BaseModel, Field
 from backend.services.proxy_service import (
     load_proxy_pool,
     save_proxy_pool,
     import_proxies_from_text,
     delete_proxy,
+    delete_proxies,
     refresh_proxy_geographies,
     refresh_proxy_geography,
     refresh_proxy_statuses,
@@ -12,6 +14,15 @@ from backend.services.proxy_service import (
 )
 
 router = APIRouter(prefix="/api/proxies", tags=["proxies"])
+
+
+class ProxySelection(BaseModel):
+    proxy_ids: list[str] = Field(min_length=1, max_length=10000)
+
+
+@router.post("/delete-selected")
+def remove_selected_proxies(request: ProxySelection):
+    return delete_proxies(request.proxy_ids)
 
 @router.get("")
 def get_proxies():
@@ -75,5 +86,10 @@ def geo_check_all_proxies():
 
 @router.delete("/{proxy_id}")
 def remove_proxy(proxy_id: str):
-    delete_proxy(proxy_id)
+    try:
+        deleted = delete_proxy(proxy_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Proxy not found")
     return {"success": True}

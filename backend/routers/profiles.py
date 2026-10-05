@@ -3,6 +3,7 @@ import secrets
 import shutil
 from copy import deepcopy
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
@@ -20,7 +21,7 @@ from backend.services.profile_service import (
     compatibility_fingerprint, creation_lock, migrate_profile,
     profile_defaults, resolve_requested_environment, utc_now, validate_timezone,
 )
-from backend.services.proxy_service import assign_proxy_by_id, release_proxy, load_proxy_pool, lookup_proxy_geography
+from backend.services.proxy_service import assign_proxy_by_id, release_proxy, load_proxy_pool, lookup_proxy_geography, test_proxy_ping, check_facebook_response, check_proxy_speed
 
 
 router = APIRouter(prefix="/api/profiles", tags=["profiles"])
@@ -293,6 +294,43 @@ def update_profile(profile_id: str, request: ProfileUpdateRequest):
                 assign_proxy_by_id(profile_id, previous["proxy_id"])
             except Exception:
                 pass
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/{profile_id}/proxy-latency")
+def check_profile_proxy_latency(profile_id: str):
+    config_path = _profile_dir(profile_id) / "config.json"
+    if not config_path.exists():
+        raise HTTPException(status_code=404, detail="Profile not found")
+    network = json.loads(config_path.read_text()).get("network") or {}
+    host, port = network.get("proxy_host"), network.get("proxy_port")
+    if not host or not port or network.get("mode") == "direct":
+        raise HTTPException(status_code=400, detail="This profile uses a direct connection")
+    result = test_proxy_ping(host, port)
+    return {**result, "last_checked": utc_now()}
+
+
+@router.post("/{profile_id}/facebook-response")
+def check_profile_facebook_response(profile_id: str):
+    config_path = _profile_dir(profile_id) / "config.json"
+    if not config_path.exists():
+        raise HTTPException(status_code=404, detail="Profile not found")
+    network = json.loads(config_path.read_text(encoding="utf-8")).get("network") or {}
+    try:
+        return {**check_facebook_response(network), "last_checked": utc_now()}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/{profile_id}/proxy-speed")
+def check_profile_proxy_speed(profile_id: str, direction: Literal["download", "upload"] = Query(...)):
+    config_path = _profile_dir(profile_id) / "config.json"
+    if not config_path.exists():
+        raise HTTPException(status_code=404, detail="Profile not found")
+    network = json.loads(config_path.read_text(encoding="utf-8")).get("network") or {}
+    try:
+        return {**check_proxy_speed(network, direction), "last_checked": utc_now()}
+    except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 

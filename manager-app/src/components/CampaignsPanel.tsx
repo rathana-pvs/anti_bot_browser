@@ -215,7 +215,7 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
             <Sparkles className="w-4 h-4" />
           </div>
           <h2 className="text-sm font-semibold text-zinc-100">
-            Zero-CDP Facebook Campaign Center
+            Studio Center
           </h2>
         </div>
 

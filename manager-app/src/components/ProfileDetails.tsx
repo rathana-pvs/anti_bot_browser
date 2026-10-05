@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Profile } from '../types/profile';
-import { Shield, Trash2, HardDrive, Network, PanelRightClose, Activity, Loader2, Sparkles, AlertTriangle, Info, X } from 'lucide-react';
-import { cleanProfileEvidence } from '../services/api';
+import { Shield, Trash2, HardDrive, Network, PanelRightClose, Activity, Loader2, Sparkles, AlertTriangle, Info, X, RefreshCw } from 'lucide-react';
+import { cleanProfileEvidence, checkProfileFacebookResponse, FacebookResponseResult, checkProfileProxySpeed, ProxySpeedResult } from '../services/api';
 import { useAppDialog } from './ui/AppDialogProvider';
 
 interface ProfileDetailsProps {
@@ -28,6 +28,72 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
   const [cleanupMessage, setCleanupMessage] = useState<string | null>(null);
   const [cleanupError, setCleanupError] = useState<string | null>(null);
   const [localDiskUsage, setLocalDiskUsage] = useState<string | null>(null);
+  const [facebookResponse, setFacebookResponse] = useState<FacebookResponseResult | null>(null);
+  const [isCheckingFacebook, setIsCheckingFacebook] = useState(false);
+  const [facebookError, setFacebookError] = useState<string | null>(null);
+  const facebookRequest = useRef(0);
+
+  const [download, setDownload] = useState<ProxySpeedResult | null>(null);
+  const [upload, setUpload] = useState<ProxySpeedResult | null>(null);
+  const [speedPhase, setSpeedPhase] = useState<'download' | 'upload' | null>(null);
+  const [speedError, setSpeedError] = useState<string | null>(null);
+  const speedRequest = useRef(0);
+
+  useEffect(() => {
+    speedRequest.current += 1;
+    setDownload(null);
+    setUpload(null);
+    setSpeedPhase(null);
+    setSpeedError(null);
+    return () => { speedRequest.current += 1; };
+  }, [profile?.id, profile?.network.proxy_host, profile?.network.proxy_port,
+    profile?.network.proxy_type, profile?.network.proxy_user, profile?.network.proxy_pass]);
+
+  const handleCheckSpeed = async () => {
+    if (!profile || speedPhase) return;
+    const request = ++speedRequest.current;
+    setSpeedPhase('download');
+    setSpeedError(null);
+    setDownload(null);
+    setUpload(null);
+    try {
+      const down = await checkProfileProxySpeed(profile.id, 'download');
+      if (request !== speedRequest.current) return;
+      setDownload(down);
+      setSpeedPhase('upload');
+      const up = await checkProfileProxySpeed(profile.id, 'upload');
+      if (request !== speedRequest.current) return;
+      setUpload(up);
+    } catch (error) {
+      if (request === speedRequest.current) setSpeedError(error instanceof Error ? error.message : 'Speed test failed');
+    } finally {
+      if (request === speedRequest.current) setSpeedPhase(null);
+    }
+  };
+
+  useEffect(() => {
+    facebookRequest.current += 1;
+    setFacebookResponse(null);
+    setFacebookError(null);
+    setIsCheckingFacebook(false);
+    return () => { facebookRequest.current += 1; };
+  }, [profile?.id, profile?.network.proxy_host, profile?.network.proxy_port,
+    profile?.network.proxy_type, profile?.network.proxy_user, profile?.network.proxy_pass]);
+
+  const handleCheckFacebook = async () => {
+    if (!profile || isCheckingFacebook) return;
+    const request = ++facebookRequest.current;
+    setIsCheckingFacebook(true);
+    setFacebookError(null);
+    try {
+      const result = await checkProfileFacebookResponse(profile.id);
+      if (request === facebookRequest.current) setFacebookResponse(result);
+    } catch (error) {
+      if (request === facebookRequest.current) setFacebookError(error instanceof Error ? error.message : 'Failed to check Facebook response');
+    } finally {
+      if (request === facebookRequest.current) setIsCheckingFacebook(false);
+    }
+  };
 
   useEffect(() => {
     setDetailsOpen(false);
@@ -156,6 +222,45 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
                 {profile.network.proxy_host ? 'Fail-Closed (iptables)' : 'Disabled'}
               </span>
             </div>
+            {profile.network.proxy_host && (
+              <div className="border-t border-zinc-800/70 pt-2 space-y-1.5">
+                <div className="flex items-center justify-between gap-2 pt-1">
+                  <span className="text-zinc-500" title="Time to the first response byte from Facebook through this proxy">Facebook response time</span>
+                  <div className="flex items-center gap-2">
+                    <span aria-live="polite" className={`font-mono text-[11px] ${facebookResponse && !facebookResponse.success ? 'text-red-400' : 'text-zinc-300'}`}>
+                      {isCheckingFacebook ? 'Checking…' : facebookResponse?.response_ms != null ? `${facebookResponse.response_ms} ms` : facebookResponse ? 'Failed' : 'Not measured'}
+                    </span>
+                    <button type="button" onClick={handleCheckFacebook} disabled={isCheckingFacebook || Boolean(speedPhase)}
+                      aria-label="Check Facebook response time" title="Check Facebook response through this proxy"
+                      className="rounded border border-zinc-700 p-1 text-zinc-400 hover:bg-zinc-800 hover:text-white disabled:opacity-50 disabled:cursor-not-allowed">
+                      {isCheckingFacebook ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                    </button>
+                  </div>
+                </div>
+                {facebookResponse?.last_checked && <p className="text-[10px] text-zinc-600">Last checked {new Date(facebookResponse.last_checked).toLocaleString()}</p>}
+                {(facebookError || facebookResponse?.error) && <p role="alert" className="break-words text-[11px] text-red-400">{facebookError || facebookResponse?.error}</p>}
+                <div className="border-t border-zinc-800/70 pt-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-zinc-500">Proxy speed · Cloudflare</span>
+                    <button type="button" onClick={handleCheckSpeed} disabled={Boolean(speedPhase) || isCheckingFacebook}
+                      title="Estimated transfer speed through this proxy. Uses up to 7 MB of test data."
+                      className="flex items-center gap-1 rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-400 hover:bg-zinc-800 hover:text-white disabled:opacity-50 disabled:cursor-not-allowed">
+                      {speedPhase && <Loader2 className="h-3 w-3 animate-spin" />}
+                      {speedPhase ? `Testing ${speedPhase}…` : 'Test speed'}
+                    </button>
+                  </div>
+                  <div aria-live="polite" className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
+                    <div><span className="text-zinc-500">↓ Download</span><p className="mt-0.5 font-mono text-zinc-300">{speedPhase === 'download' ? 'Checking…' : download?.mbps != null ? `${download.mbps} Mbps` : download ? 'Failed' : 'Not measured'}</p></div>
+                    <div><span className="text-zinc-500">↑ Upload</span><p className="mt-0.5 font-mono text-zinc-300">{speedPhase === 'upload' ? 'Checking…' : upload?.mbps != null ? `${upload.mbps} Mbps` : upload ? 'Failed' : 'Not measured'}</p></div>
+                  </div>
+                  <p className="mt-1 text-[10px] text-zinc-600">Estimate · up to 7 MB per test</p>
+                  {(upload?.last_checked || download?.last_checked) && <p className="text-[10px] text-zinc-600">Last tested {new Date(upload?.last_checked || download!.last_checked).toLocaleString()}</p>}
+                  {download?.error && <p role="alert" className="mt-1 break-words text-[11px] text-red-400">Download: {download.error}</p>}
+                  {upload?.error && <p role="alert" className="mt-1 break-words text-[11px] text-red-400">Upload: {upload.error}</p>}
+                  {speedError && <p role="alert" className="mt-1 break-words text-[11px] text-red-400">{speedError}</p>}
+                </div>
+              </div>
+            )}
           </div>
         </div>
 

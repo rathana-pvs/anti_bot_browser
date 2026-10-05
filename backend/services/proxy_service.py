@@ -1,4 +1,7 @@
 import json
+import os
+import tempfile
+import math
 import time
 import socket
 import ipaddress
@@ -13,7 +16,7 @@ PROXY_POOL_FILE = ROOT_DIR / "proxies" / "proxy_pool.json"
 _proxy_assignment_lock = threading.Lock()
 GEO_LOOKUP_URL = "https://ipwho.is/"
 
-def load_proxy_pool() -> list:
+def load_proxy_pool(*, raise_errors: bool = False) -> list:
     try:
         if not PROXY_POOL_FILE.exists():
             PROXY_POOL_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -43,13 +46,18 @@ def load_proxy_pool() -> list:
                     p["geo_source"] = "stored" if has_geo else "unknown"
                     needs_save = True
             if needs_save:
-                save_proxy_pool(data)
+                if raise_errors:
+                    save_proxy_pool(data, raise_errors=True)
+                else:
+                    save_proxy_pool(data)
             return data
     except Exception as err:
+        if raise_errors:
+            raise
         print(f"Error loading proxy pool: {err}")
         return []
 
-def save_proxy_pool(pool: list):
+def save_proxy_pool(pool: list, *, raise_errors: bool = False):
     try:
         PROXY_POOL_FILE.parent.mkdir(parents=True, exist_ok=True)
         tmp = f"{PROXY_POOL_FILE}.tmp"
@@ -57,6 +65,8 @@ def save_proxy_pool(pool: list):
             json.dump(pool, f, indent=2)
         Path(tmp).replace(PROXY_POOL_FILE)
     except Exception as err:
+        if raise_errors:
+            raise
         print(f"Error saving proxy pool: {err}")
 
 def import_proxies_from_text(text: str) -> dict:
@@ -179,15 +189,130 @@ def sync_proxy_assignment(profile_id: str, host: str, port: int | str | None) ->
     return matched
 
 def delete_proxy(proxy_id: str) -> bool:
-    pool = load_proxy_pool()
-    filtered = [p for p in pool if p.get("id") != proxy_id]
-    save_proxy_pool(filtered)
-    return True
+    result = delete_proxies([proxy_id])
+    if result["blocked_ids"]:
+        raise ValueError("Assigned proxies cannot be removed. Unassign the proxy first.")
+    return bool(result["deleted_ids"])
+
+
+def delete_proxies(proxy_ids: list[str]) -> dict:
+    """Remove a selection in one write while protecting profile assignments."""
+    wanted = set(proxy_ids)
+    with _proxy_assignment_lock:
+        pool = load_proxy_pool(raise_errors=True)
+        deleted = []
+        blocked = []
+        kept = []
+        found = set()
+        for proxy in pool:
+            proxy_id = proxy.get("id")
+            if proxy_id not in wanted:
+                kept.append(proxy)
+                continue
+            found.add(proxy_id)
+            if proxy.get("assigned") or proxy.get("profile_id"):
+                blocked.append(proxy_id)
+                kept.append(proxy)
+            else:
+                deleted.append(proxy_id)
+        if deleted:
+            save_proxy_pool(kept, raise_errors=True)
+        return {"deleted_ids": deleted, "blocked_ids": blocked, "missing_ids": sorted(wanted - found)}
 
 def _curl_config_value(value: str) -> str:
     if "\n" in value or "\r" in value:
         raise ValueError("Proxy credentials contain unsupported line breaks")
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _proxy_test_config(network: dict) -> list[str]:
+    host = str(network.get("proxy_host") or "").strip()
+    port = int(network.get("proxy_port") or 0)
+    if not host or not 1 <= port <= 65535 or network.get("mode") == "direct":
+        raise ValueError("A configured proxy is required")
+    schemes = {"socks5": "socks5h", "socks5h": "socks5h", "socks4": "socks4a", "socks4a": "socks4a", "http": "http", "https": "https"}
+    scheme = schemes.get(str(network.get("proxy_type") or "socks5").lower())
+    if not scheme:
+        raise ValueError("Unsupported proxy type")
+    endpoint = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    lines = [f"proxy = {_curl_config_value(f'{scheme}://{endpoint}:{port}')}", 'noproxy = ""',
+             "silent", "connect-timeout = 6", "max-time = 20", f"output = {_curl_config_value(os.devnull)}"]
+    username = str(network.get("proxy_user") or "")
+    password = str(network.get("proxy_pass") or "")
+    if username or password:
+        lines.append(f"proxy-user = {_curl_config_value(f'{username}:{password}')}")
+    return lines
+
+
+def check_facebook_response(network: dict) -> dict:
+    """Measure time to Facebook's first response byte through the saved proxy."""
+    lines = _proxy_test_config(network) + ['url = "https://www.facebook.com/"', "head",
+                                         "max-time = 15", 'write-out = "%{http_code} %{time_starttransfer}"']
+    try:
+        result = subprocess.run(["curl", "--disable", "--config", "-"], input="\n".join(lines) + "\n",
+                                capture_output=True, text=True, timeout=18, check=False)
+    except subprocess.TimeoutExpired:
+        return {"success": False, "response_ms": None, "http_status": None, "error": "Facebook connection timed out"}
+    except OSError:
+        return {"success": False, "response_ms": None, "http_status": None, "error": "Facebook connection check could not start"}
+    if result.returncode:
+        error = "Facebook connection timed out" if result.returncode == 28 else "Could not reach Facebook through this proxy"
+        return {"success": False, "response_ms": None, "http_status": None, "error": error}
+    try:
+        status_text, seconds = result.stdout.strip().split()
+        status = int(status_text)
+        milliseconds = round(float(seconds) * 1000)
+        if status < 100 or status > 599 or milliseconds < 0:
+            raise ValueError("Invalid response")
+    except (ValueError, OverflowError):
+        return {"success": False, "response_ms": None, "http_status": None, "error": "Invalid connection test result"}
+    success = 200 <= status < 400
+    return {"success": success, "response_ms": milliseconds, "http_status": status,
+            "error": None if success else f"Facebook check returned HTTP {status}"}
+
+
+def check_proxy_speed(network: dict, direction: str) -> dict:
+    """Bounded, single-transfer throughput estimate through the configured proxy."""
+    if direction not in {"download", "upload"}:
+        raise ValueError("Invalid speed test direction")
+    lines = _proxy_test_config(network)
+    size = 5_000_000 if direction == "download" else 2_000_000
+    metric = "size_download" if direction == "download" else "size_upload"
+    lines += [f'write-out = "%{{http_code}} %{{{metric}}} %{{time_total}}"',
+              'header = "Cache-Control: no-cache"']
+    with tempfile.TemporaryDirectory(prefix="proxy-speed-") as folder:
+        if direction == "download":
+            lines += [f'url = "https://speed.cloudflare.com/__down?bytes={size}"']
+        else:
+            payload = Path(folder) / "payload.bin"
+            payload.write_bytes(os.urandom(size))
+            lines += ['url = "https://speed.cloudflare.com/__up"',
+                      f"data-binary = {_curl_config_value('@' + str(payload))}",
+                      'header = "Content-Type: application/octet-stream"']
+        failure = {"success": False, "mbps": None, "bytes": 0, "provider": "Cloudflare"}
+        try:
+            result = subprocess.run(["curl", "--disable", "--config", "-"], input="\n".join(lines) + "\n",
+                                    capture_output=True, text=True, timeout=23, check=False)
+        except subprocess.TimeoutExpired:
+            return {**failure, "error": f"{direction.capitalize()} test timed out"}
+        except OSError:
+            return {**failure, "error": "Speed test could not start"}
+        if result.returncode:
+            error = "Speed test timed out" if result.returncode == 28 else "Speed test failed through this proxy"
+            return {**failure, "error": error}
+        try:
+            status, transferred, seconds = result.stdout.strip().split()
+            status, transferred, seconds = int(status), int(transferred), float(seconds)
+            if not 200 <= status < 300:
+                return {**failure, "error": f"Cloudflare returned HTTP {status}"}
+            if transferred != size or seconds <= 0:
+                raise ValueError("Incomplete transfer")
+            mbps = round(transferred * 8 / seconds / 1_000_000, 2)
+            if not math.isfinite(mbps):
+                raise ValueError("Invalid timing")
+            return {"success": True, "mbps": mbps, "bytes": transferred, "provider": "Cloudflare", "error": None}
+        except (ValueError, OverflowError):
+            return {**failure, "error": "Speed test returned an incomplete measurement"}
 
 
 def lookup_proxy_geography(proxy: dict) -> dict:

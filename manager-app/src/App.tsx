@@ -20,7 +20,6 @@ import { CampaignsPanel } from './components/CampaignsPanel';
 import { CreateProfileModal } from './components/CreateProfileModal';
 import { EditProfileModal } from './components/EditProfileModal';
 import { TelemetryFooter } from './components/TelemetryFooter';
-import { BrainPanel } from './components/BrainPanel';
 import { ProfileActionErrorModal } from './components/ProfileActionErrorModal';
 import { SetupCenter } from './components/SetupCenter';
 import { SettingsModal } from './components/SettingsModal';
@@ -45,7 +44,7 @@ export const App: React.FC = () => {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [proxies, setProxies] = useState<ProxyItem[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'profiles' | 'proxies' | 'campaigns' | 'brains'>('profiles');
+  const [activeTab, setActiveTab] = useState<'profiles' | 'proxies' | 'campaigns'>('profiles');
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -266,13 +265,6 @@ export const App: React.FC = () => {
           />
         </div>
 
-        <div className={`flex-1 flex overflow-hidden ${activeTab === 'brains' ? '' : 'hidden'}`}>
-          <BrainPanel
-            isSidebarOpen={isSidebarOpen}
-            onToggleSidebar={toggleSidebar}
-          />
-        </div>
-
         <div className={`flex-1 flex overflow-hidden ${activeTab === 'profiles' ? '' : 'hidden'}`}>
           {/* Center: Interactive noVNC Viewer */}
           <VncViewer
@@ -322,7 +314,6 @@ export const App: React.FC = () => {
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
-        onOpenBrains={() => setActiveTab('brains')}
       />
 
       {profileActionError && (

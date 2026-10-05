@@ -333,11 +333,68 @@ export async function testProxyPing(proxyId: string): Promise<ProxyItem> {
   return res.json();
 }
 
+export interface ProxyLatencyResult {
+  success: boolean;
+  latency_ms: number | null;
+  last_checked: string;
+  error?: string;
+}
+
+export interface FacebookResponseResult {
+  success: boolean;
+  response_ms: number | null;
+  http_status: number | null;
+  last_checked: string;
+  error?: string | null;
+}
+
+export interface ProxySpeedResult {
+  success: boolean;
+  mbps: number | null;
+  bytes: number;
+  provider: string;
+  last_checked: string;
+  error?: string | null;
+}
+
+export async function checkProfileProxySpeed(profileId: string, direction: 'download' | 'upload'): Promise<ProxySpeedResult> {
+  const res = await fetch(`${API_BASE}/profiles/${encodeURIComponent(profileId)}/proxy-speed?direction=${direction}`, { method: 'POST' });
+  if (!res.ok) throw await apiError(res, 'Failed to check proxy speed');
+  return res.json();
+}
+
+export async function checkProfileFacebookResponse(profileId: string): Promise<FacebookResponseResult> {
+  const res = await fetch(`${API_BASE}/profiles/${encodeURIComponent(profileId)}/facebook-response`, { method: 'POST' });
+  if (!res.ok) throw await apiError(res, 'Failed to check Facebook response');
+  return res.json();
+}
+
+export async function checkProfileProxyLatency(profileId: string): Promise<ProxyLatencyResult> {
+  const res = await fetch(`${API_BASE}/profiles/${encodeURIComponent(profileId)}/proxy-latency`, { method: 'POST' });
+  if (!res.ok) throw await apiError(res, 'Failed to check proxy latency');
+  return res.json();
+}
+
 export async function deleteProxy(proxyId: string): Promise<{ success: boolean }> {
   const res = await fetch(`${API_BASE}/proxies/${proxyId}`, {
     method: 'DELETE',
   });
-  if (!res.ok) throw new Error('Failed to delete proxy');
+  if (!res.ok) throw await apiError(res, 'Failed to delete proxy');
+  return res.json();
+}
+
+export interface ProxyDeletionResult {
+  deleted_ids: string[];
+  blocked_ids: string[];
+  missing_ids: string[];
+}
+
+export async function deleteSelectedProxies(proxyIds: string[]): Promise<ProxyDeletionResult> {
+  const res = await fetch(`${API_BASE}/proxies/delete-selected`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ proxy_ids: proxyIds }),
+  });
+  if (!res.ok) throw await apiError(res, 'Failed to delete selected proxies');
   return res.json();
 }
 

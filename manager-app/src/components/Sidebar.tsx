@@ -10,8 +10,8 @@ interface SidebarProps {
   groups: string[];
   onCreateGroup: (name: string) => Promise<void>;
   selectedProfileId: string | null;
-  activeTab: 'profiles' | 'proxies' | 'campaigns' | 'brains';
-  onTabChange: (tab: 'profiles' | 'proxies' | 'campaigns' | 'brains') => void;
+  activeTab: 'profiles' | 'proxies' | 'campaigns';
+  onTabChange: (tab: 'profiles' | 'proxies' | 'campaigns') => void;
   proxyCount?: number;
   onSelectProfile: (profile: Profile) => void;
   onOpenCreateModal: () => void;
@@ -58,11 +58,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <button
             type="button"
             onClick={onOpenSettings}
-            className={`flex items-center gap-2 rounded-md px-2 py-1.5 text-xs font-medium transition-colors ${
-              activeTab === 'brains'
-                ? 'bg-zinc-800 text-zinc-100'
-                : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'
-            }`}
+            className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs font-medium text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200 transition-colors"
           >
             <Settings className="h-4 w-4" />
             <span>Settings</span>

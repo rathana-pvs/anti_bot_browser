@@ -1,6 +1,6 @@
 import { ProfileGroupField } from './ProfileGroupField';
 import React, { useEffect, useState } from 'react';
-import { AlertTriangle, Cpu, Globe, Monitor, X } from 'lucide-react';
+import { AlertTriangle, ChevronDown, Cpu, Globe, Monitor, X } from 'lucide-react';
 import { BehaviorMode, Profile, ProfileUpdateRequest, ReelTemplateSelection, RequestedEnvironment, ResourceLimits, reelTemplateLabel } from '../types/profile';
 import { formatProxyGeography, ProxyItem } from '../types/proxy';
 import { SCREEN_RESOLUTIONS, getHostTimezone } from '../services/fingerprintPool';
@@ -52,11 +52,13 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
   const [warmingWeek, setWarmingWeek] = useState(1);
   const [warmingComplete, setWarmingComplete] = useState(false);
   const [notes, setNotes] = useState('');
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isOpen || !profile) return;
+    setAdvancedOpen(false);
     setName(profile.name);
     setGroup(profile.group || '');
     setEnvironment(environmentFor(profile));
@@ -189,22 +191,6 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
               </div>
             )}
           </div>
-          <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
-            <div className="flex items-center gap-1.5 font-medium text-zinc-300"><Cpu className="h-3.5 w-3.5" />Container resource limits</div>
-            <div className="grid grid-cols-2 gap-2">
-              <label className="text-zinc-500">CPU quota
-                <Select value={String(resources.cpu_limit)} onValueChange={(value) => setResources((current) => ({ ...current, cpu_limit: Number(value) }))}
-                  ariaLabel="CPU quota" className="mt-1 min-h-8 py-1.5"
-                  options={cpuOptions.map((value) => ({ value: String(value), label: `${value} vCPU` }))} />
-              </label>
-              <label className="text-zinc-500">Memory ceiling
-                <Select value={String(resources.memory_mb)} onValueChange={(value) => setResources((current) => ({ ...current, memory_mb: Number(value) }))}
-                  ariaLabel="Memory ceiling" className="mt-1 min-h-8 py-1.5"
-                  options={memoryOptions.map((value) => ({ value: String(value), label: `${value / 1024} GiB` }))} />
-              </label>
-            </div>
-            <p className="text-[10px] text-zinc-500">These are ceilings, not reserved CPU or memory. Changes apply after restart.</p>
-          </div>
           {networkChoice === 'direct' && environment.timezone_policy === 'manual' && (
             <label className="block text-xs text-zinc-400">Confirmed timezone
               <input required value={environment.timezone || ''}
@@ -212,17 +198,46 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
                 className="mt-1 w-full rounded border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-zinc-100" />
             </label>
           )}
-          <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
-            <div className="flex items-center gap-1.5 font-medium text-zinc-300"><Monitor className="h-3.5 w-3.5" />Requested browser environment</div>
-            <div className="grid grid-cols-2 gap-2">
-              <Select value={environment.screen_resolution} onValueChange={(value) => setEnvironment({ ...environment, screen_resolution: value })}
-                ariaLabel="Display resolution" className="min-h-8 py-1.5"
-                options={SCREEN_RESOLUTIONS.map((resolution) => ({ value: resolution, label: resolution }))} />
-              <input value={environment.language} onChange={(e) => setEnvironment({ ...environment, language: e.target.value })} className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-200" />
-              <div className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-300">Browser-managed UA</div>
-              <Select value={environment.rendering_mode} onValueChange={(value) => setEnvironment({ ...environment, rendering_mode: value as RequestedEnvironment['rendering_mode'] })}
-                ariaLabel="Rendering mode" className="min-h-8 py-1.5"
-                options={[{ value: 'host_gpu', label: 'Host GPU' }, { value: 'software', label: 'Software renderer' }]} />
+          <div className="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950">
+            <button type="button" onClick={() => setAdvancedOpen((open) => !open)}
+              aria-expanded={advancedOpen} aria-controls="edit-profile-advanced"
+              className="flex w-full items-center justify-between gap-3 px-3 py-3 text-left text-zinc-300 hover:bg-zinc-900 disabled:opacity-50">
+              <span>
+                <span className="block font-medium">Advanced settings</span>
+                <span className="mt-1 block text-[11px] text-zinc-500">Resources and browser environment</span>
+              </span>
+              <ChevronDown aria-hidden="true" className={`h-4 w-4 shrink-0 transition-transform ${advancedOpen ? 'rotate-180' : ''}`} />
+            </button>
+            <div id="edit-profile-advanced" hidden={!advancedOpen} className="space-y-3 border-t border-zinc-800 p-3">
+              <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
+                <div className="flex items-center gap-1.5 font-medium text-zinc-300"><Cpu className="h-3.5 w-3.5" />Container resource limits</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="text-zinc-500">CPU quota
+                    <Select value={String(resources.cpu_limit)} onValueChange={(value) => setResources((current) => ({ ...current, cpu_limit: Number(value) }))}
+                      ariaLabel="CPU quota" className="mt-1 min-h-8 py-1.5"
+                      options={cpuOptions.map((value) => ({ value: String(value), label: `${value} vCPU` }))} />
+                  </label>
+                  <label className="text-zinc-500">Memory ceiling
+                    <Select value={String(resources.memory_mb)} onValueChange={(value) => setResources((current) => ({ ...current, memory_mb: Number(value) }))}
+                      ariaLabel="Memory ceiling" className="mt-1 min-h-8 py-1.5"
+                      options={memoryOptions.map((value) => ({ value: String(value), label: `${value / 1024} GiB` }))} />
+                  </label>
+                </div>
+                <p className="text-[10px] text-zinc-500">These are ceilings, not reserved CPU or memory. Changes apply after restart.</p>
+              </div>
+              <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
+                <div className="flex items-center gap-1.5 font-medium text-zinc-300"><Monitor className="h-3.5 w-3.5" />Requested browser environment</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <Select value={environment.screen_resolution} onValueChange={(value) => setEnvironment({ ...environment, screen_resolution: value })}
+                    ariaLabel="Display resolution" className="min-h-8 py-1.5"
+                    options={SCREEN_RESOLUTIONS.map((resolution) => ({ value: resolution, label: resolution }))} />
+                  <input value={environment.language} onChange={(e) => setEnvironment({ ...environment, language: e.target.value })} className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-200" />
+                  <div className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-300">Browser-managed UA</div>
+                  <Select value={environment.rendering_mode} onValueChange={(value) => setEnvironment({ ...environment, rendering_mode: value as RequestedEnvironment['rendering_mode'] })}
+                    ariaLabel="Rendering mode" className="min-h-8 py-1.5"
+                    options={[{ value: 'host_gpu', label: 'Host GPU' }, { value: 'software', label: 'Software renderer' }]} />
+                </div>
+              </div>
             </div>
           </div>
           <div className="grid grid-cols-2 gap-2">

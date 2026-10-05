@@ -1,6 +1,6 @@
 import { ProfileGroupField } from './ProfileGroupField';
-import React, { useEffect, useState } from 'react';
-import { Cpu, Globe, Loader2, Monitor, Shield, X } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { ChevronDown, Cpu, Globe, Loader2, Monitor, Shield, X } from 'lucide-react';
 import { fetchProfileDefaults } from '../services/api';
 import { BehaviorMode, ProfileCreateRequest, ReelTemplateSelection, RequestedEnvironment, ResourceLimits, reelTemplateLabel } from '../types/profile';
 import { formatProxyGeography, ProxyItem } from '../types/proxy';
@@ -42,7 +42,14 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
   const [cpuOptions, setCpuOptions] = useState([1, 2, 4, 6, 8]);
   const [memoryOptions, setMemoryOptions] = useState([1024, 2048, 3072, 4096, 6144, 8192]);
   const [resolutions, setResolutions] = useState(RESOLUTION_OPTIONS.map((item) => item.value));
-  const [networkChoice, setNetworkChoice] = useState('direct');
+  const [networkChoice, setNetworkChoice] = useState(() => proxies.find((proxy) => !proxy.assigned)?.id || 'direct');
+  const networkChoiceRef = useRef(networkChoice);
+  const networkTouched = useRef(false);
+  const proxiesRef = useRef(proxies);
+  proxiesRef.current = proxies;
+  const existingCountRef = useRef(existingCount);
+  existingCountRef.current = existingCount;
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [customHost, setCustomHost] = useState('');
   const [customPort, setCustomPort] = useState('1080');
   const [customUser, setCustomUser] = useState('');
@@ -53,9 +60,13 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
 
   useEffect(() => {
     if (!isOpen) return;
-    setName(`Account ${existingCount + 1}`);
+    setName(`Account ${existingCountRef.current + 1}`);
     setGroup('');
-    setNetworkChoice('direct');
+    networkTouched.current = false;
+    const defaultChoice = proxiesRef.current.find((proxy) => !proxy.assigned)?.id || 'direct';
+    networkChoiceRef.current = defaultChoice;
+    setNetworkChoice(defaultChoice);
+    setAdvancedOpen(false);
     setCustomHost('');
     setCustomPort('1080');
     setCustomUser('');
@@ -63,9 +74,15 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
     setBehaviorMode('medium');
     setReelTemplate('auto');
     setError(null);
+    let cancelled = false;
     fetchProfileDefaults()
       .then((defaults) => {
-        setEnvironment(defaults.default_environment);
+        if (cancelled) return;
+        const choice = networkChoiceRef.current;
+        const proxy = proxiesRef.current.find((item) => item.id === choice);
+        setEnvironment(choice === 'direct' ? defaults.default_environment : {
+          ...defaults.default_environment, timezone_policy: 'proxy', timezone: proxy?.timezone || null,
+        });
         setResources(defaults.default_resources);
         setBehaviorMode(defaults.default_behavior_mode);
         setReelTemplate(defaults.default_automation.reel_template);
@@ -75,8 +92,29 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
         setMemoryOptions(defaults.resource_options.memory_mb.filter((value) => value <= defaults.resource_options.host_memory_mb));
         setResolutions(defaults.supported_resolutions);
       })
-      .catch(() => setEnvironment(fallbackEnvironment()));
-  }, [isOpen, existingCount]);
+      .catch(() => {
+        if (cancelled) return;
+        setEnvironment({
+          ...fallbackEnvironment(),
+          ...(networkChoiceRef.current !== 'direct' ? { timezone_policy: 'proxy' as const, timezone: null } : {}),
+        });
+      });
+    return () => { cancelled = true; };
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || isSaving || networkTouched.current) return;
+    const firstAvailable = proxies.find((proxy) => !proxy.assigned);
+    const choice = firstAvailable?.id || 'direct';
+    if (choice === networkChoiceRef.current) return;
+    networkChoiceRef.current = choice;
+    setNetworkChoice(choice);
+    setEnvironment((current) => ({
+      ...current,
+      timezone_policy: choice === 'direct' ? 'host' : 'proxy',
+      timezone: choice === 'direct' ? getHostTimezone() : firstAvailable?.timezone || null,
+    }));
+  }, [isOpen, proxies, isSaving]);
 
   if (!isOpen) return null;
 
@@ -84,6 +122,8 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
   const selectedProxy = availableProxies.find((proxy) => proxy.id === networkChoice);
 
   const handleNetworkChange = (choice: string) => {
+    networkTouched.current = true;
+    networkChoiceRef.current = choice;
     setNetworkChoice(choice);
     if (choice === 'direct') {
       setEnvironment((current) => ({
@@ -174,30 +214,13 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
             </label>
           )}
             <div className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
-              <div className="font-medium text-zinc-300">Automation behavior</div>
-              <div className="grid grid-cols-2 gap-2">
-                <label className="text-zinc-500">Behavior mode
-                  <Select value={behaviorMode} onValueChange={(value) => setBehaviorMode(value as BehaviorMode)}
-                    ariaLabel="Behavior mode" className="mt-1 min-h-8 py-1.5"
-                    options={behaviorOptions.map((value) => ({ value, label: value[0].toUpperCase() + value.slice(1) }))} />
-                </label>
-                <label className="text-zinc-500">Reel template
-                  <Select value={reelTemplate} onValueChange={(value) => setReelTemplate(value as ReelTemplateSelection)}
-                    ariaLabel="Reel template" className="mt-1 min-h-8 py-1.5"
-                    options={reelTemplateOptions.map((value) => ({ value, label: reelTemplateLabel(value) }))} />
-                </label>
-              </div>
-              <p className="text-[10px] leading-relaxed text-zinc-500">Auto first detects Studio or Direct upload, then distinguishes Direct from Next / Share. A selected template bypasses selection and validates its expected screens.</p>
-            </div>
-
-            <div className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
               <div className="flex items-center gap-1.5 font-medium text-zinc-300"><Globe className="h-3.5 w-3.5" />Network</div>
               <Select value={networkChoice} onValueChange={handleNetworkChange}
                 ariaLabel="Network connection"
                 options={[
-                  { value: 'direct', label: 'Direct connection' },
                   ...availableProxies.map((proxy) => ({ value: proxy.id, label: `${proxy.host}:${proxy.port} — ${formatProxyGeography(proxy)}` })),
                   { value: 'custom', label: 'Custom proxy' },
+                  { value: 'direct', label: 'Direct connection' },
                 ]} />
               {selectedProxy && (
                 <p className="text-[11px] text-zinc-400">{formatProxyGeography(selectedProxy)}</p>
@@ -217,49 +240,79 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
             </div>
 
             <div className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
-              <div className="flex items-center gap-1.5 font-medium text-zinc-300"><Cpu className="h-3.5 w-3.5" />Container resource limits</div>
+              <div className="font-medium text-zinc-300">Automation behavior</div>
               <div className="grid grid-cols-2 gap-2">
-                <label className="text-zinc-500">CPU quota
-                  <Select value={String(resources.cpu_limit)} onValueChange={(value) => setResources((current) => ({ ...current, cpu_limit: Number(value) }))}
-                    ariaLabel="CPU quota" className="mt-1 min-h-8 py-1.5"
-                    options={cpuOptions.map((value) => ({ value: String(value), label: `${value} vCPU` }))} />
+                <label className="text-zinc-500">Behavior mode
+                  <Select value={behaviorMode} onValueChange={(value) => setBehaviorMode(value as BehaviorMode)}
+                    ariaLabel="Behavior mode" className="mt-1 min-h-8 py-1.5"
+                    options={behaviorOptions.map((value) => ({ value, label: value[0].toUpperCase() + value.slice(1) }))} />
                 </label>
-                <label className="text-zinc-500">Memory ceiling
-                  <Select value={String(resources.memory_mb)} onValueChange={(value) => setResources((current) => ({ ...current, memory_mb: Number(value) }))}
-                    ariaLabel="Memory ceiling" className="mt-1 min-h-8 py-1.5"
-                    options={memoryOptions.map((value) => ({ value: String(value), label: `${value / 1024} GiB` }))} />
+                <label className="text-zinc-500">Reel template
+                  <Select value={reelTemplate} onValueChange={(value) => setReelTemplate(value as ReelTemplateSelection)}
+                    ariaLabel="Reel template" className="mt-1 min-h-8 py-1.5"
+                    options={reelTemplateOptions.map((value) => ({ value, label: reelTemplateLabel(value) }))} />
                 </label>
               </div>
-              <p className="text-[10px] leading-relaxed text-zinc-500">Limits are maximums, not reserved resources. Default: 4 vCPU and 4 GiB.</p>
+              <p className="text-[10px] leading-relaxed text-zinc-500">Auto first detects Studio or Direct upload, then distinguishes Direct from Next / Share. A selected template bypasses selection and validates its expected screens.</p>
             </div>
 
-            <div className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
-              <div className="flex items-center gap-1.5 font-medium text-zinc-300"><Monitor className="h-3.5 w-3.5" />Browser environment</div>
-              <div className="grid grid-cols-2 gap-2">
-                <label className="text-zinc-500">Display resolution
-                  <Select value={environment.screen_resolution}
-                    onValueChange={(value) => setEnvironment((current) => ({ ...current, screen_resolution: value }))}
-                    ariaLabel="Display resolution" className="mt-1 min-h-8 py-1.5"
-                    options={resolutions.map((resolution) => ({ value: resolution, label: resolution }))} />
-                </label>
-                <label className="text-zinc-500">Language
-                  <input value={environment.language}
-                    onChange={(e) => setEnvironment((current) => ({ ...current, language: e.target.value }))}
-                    className="mt-1 w-full rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-200" />
-                </label>
-                <label className="text-zinc-500">User agent
-                  <div className="mt-1 rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-300">Browser managed</div>
-                </label>
-                <label className="text-zinc-500">Rendering
-                  <Select value={environment.rendering_mode}
-                    onValueChange={(value) => setEnvironment((current) => ({ ...current, rendering_mode: value as RequestedEnvironment['rendering_mode'] }))}
-                    ariaLabel="Rendering mode" className="mt-1 min-h-8 py-1.5"
-                    options={[{ value: 'host_gpu', label: 'Host GPU' }, { value: 'software', label: 'Software rendering' }]} />
-                </label>
+            <div className="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950">
+              <button type="button" onClick={() => setAdvancedOpen((open) => !open)}
+                aria-expanded={advancedOpen} aria-controls="create-profile-advanced"
+                className="flex w-full items-center justify-between gap-3 px-3 py-3 text-left text-zinc-300 hover:bg-zinc-900 disabled:opacity-50">
+                <span>
+                  <span className="block font-medium">Advanced settings</span>
+                  <span className="mt-1 block text-[11px] text-zinc-500">Resources and browser environment</span>
+                </span>
+                <ChevronDown aria-hidden="true" className={`h-4 w-4 shrink-0 transition-transform ${advancedOpen ? 'rotate-180' : ''}`} />
+              </button>
+              <div id="create-profile-advanced" hidden={!advancedOpen} className="space-y-3 border-t border-zinc-800 p-3">
+                <div className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
+                  <div className="flex items-center gap-1.5 font-medium text-zinc-300"><Cpu className="h-3.5 w-3.5" />Container resource limits</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="text-zinc-500">CPU quota
+                      <Select value={String(resources.cpu_limit)} onValueChange={(value) => setResources((current) => ({ ...current, cpu_limit: Number(value) }))}
+                        ariaLabel="CPU quota" className="mt-1 min-h-8 py-1.5"
+                        options={cpuOptions.map((value) => ({ value: String(value), label: `${value} vCPU` }))} />
+                    </label>
+                    <label className="text-zinc-500">Memory ceiling
+                      <Select value={String(resources.memory_mb)} onValueChange={(value) => setResources((current) => ({ ...current, memory_mb: Number(value) }))}
+                        ariaLabel="Memory ceiling" className="mt-1 min-h-8 py-1.5"
+                        options={memoryOptions.map((value) => ({ value: String(value), label: `${value / 1024} GiB` }))} />
+                    </label>
+                  </div>
+                  <p className="text-[10px] leading-relaxed text-zinc-500">Limits are maximums, not reserved resources. Default: 4 vCPU and 4 GiB.</p>
+                </div>
+
+                <div className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
+                  <div className="flex items-center gap-1.5 font-medium text-zinc-300"><Monitor className="h-3.5 w-3.5" />Browser environment</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="text-zinc-500">Display resolution
+                      <Select value={environment.screen_resolution}
+                        onValueChange={(value) => setEnvironment((current) => ({ ...current, screen_resolution: value }))}
+                        ariaLabel="Display resolution" className="mt-1 min-h-8 py-1.5"
+                        options={resolutions.map((resolution) => ({ value: resolution, label: resolution }))} />
+                    </label>
+                    <label className="text-zinc-500">Language
+                      <input value={environment.language}
+                        onChange={(e) => setEnvironment((current) => ({ ...current, language: e.target.value }))}
+                        className="mt-1 w-full rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-200" />
+                    </label>
+                    <label className="text-zinc-500">User agent
+                      <div className="mt-1 rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-300">Browser managed</div>
+                    </label>
+                    <label className="text-zinc-500">Rendering
+                      <Select value={environment.rendering_mode}
+                        onValueChange={(value) => setEnvironment((current) => ({ ...current, rendering_mode: value as RequestedEnvironment['rendering_mode'] }))}
+                        ariaLabel="Rendering mode" className="mt-1 min-h-8 py-1.5"
+                        options={[{ value: 'host_gpu', label: 'Host GPU' }, { value: 'software', label: 'Software rendering' }]} />
+                    </label>
+                  </div>
+                  <p className="flex gap-1.5 text-[10px] leading-relaxed text-zinc-500">
+                    <Shield className="mt-0.5 h-3 w-3 shrink-0" />Only settings applied at container startup are configurable here. Runtime measurements appear separately in the inspector.
+                  </p>
+                </div>
               </div>
-              <p className="flex gap-1.5 text-[10px] leading-relaxed text-zinc-500">
-                <Shield className="mt-0.5 h-3 w-3 shrink-0" />Only settings applied at container startup are configurable here. Runtime measurements appear separately in the inspector.
-              </p>
             </div>
             {error && <p className="rounded border border-red-900/50 bg-red-950/30 p-2 text-red-300">{error}</p>}
             </fieldset>
