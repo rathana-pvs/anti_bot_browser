@@ -123,6 +123,8 @@ class ReelPublicationResultVerifier:
 
     def verify_latest_reel(self) -> bool:
         for attempt in range(1, self.attempts + 1):
+            if not self.task._allow_reel_profile_navigation():
+                return False
             self.task.log(
                 "INFO",
                 f"Refreshing the profile to check for the latest Reel (attempt {attempt}/{self.attempts}).",

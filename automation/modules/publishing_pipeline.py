@@ -166,6 +166,8 @@ class PublicationResultVerifierModule:
                     "latest_reel_confirmed_on_profile",
                     publication_status="published",
                 )
+            if self.task.result_status == "uncertain":
+                return _task_result(self.task, success_reason="publication_unconfirmed")
             self.task._failed_after_publish(
                 "reel_publish_not_found_after_verification",
                 "The success popup was absent and the latest Reel was not found after two profile checks separated by 15 seconds.",

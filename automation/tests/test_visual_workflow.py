@@ -1667,15 +1667,28 @@ class PublicationVerificationTests(unittest.TestCase):
 
 
 class ReelPublicationVerificationTests(unittest.TestCase):
+    def test_all_templates_stop_when_the_shared_prompt_phase_fails(self):
+        from modules.reel_post_click_verifier import ReelPostClickVerifier
+        for template in ("t1", "t2", "t3"):
+            with self.subTest(template=template):
+                task = self.make_task([], [])
+                task.reel_template_id = template
+                task.handle_post_publish_prompt = Mock(return_value="failed")
+                status, _ = ReelPostClickVerifier(task).verify(task.client.screenshot())
+                self.assertEqual(status, "failed")
+                task.recognizer.observe_publication_gate.assert_not_called()
+                task.client.navigate_to.assert_not_called()
+
     def make_task(self, observations, similarities):
         task = FacebookReelTask.__new__(FacebookReelTask)
         task.client = Mock()
         task.client.screenshot.return_value = np.zeros((100, 100, 3), dtype=np.uint8)
         task.recognizer = Mock()
-        task.recognizer.observe_publication_gate.side_effect = observations
+        task.recognizer.observe_publication_gate.side_effect = observations + observations[-1:]
         task.recognizer.observe.return_value = StateObservation(ScreenState.UNKNOWN, 0.0)
         task.vision = Mock()
-        task.vision.similarity.side_effect = similarities
+        task.vision.read_text.return_value = [{"text": "Manage Page"}]
+        task.vision.similarity.side_effect = similarities + similarities[-1:]
         task._handle_remix_audio_dialog = Mock(return_value="absent")
         task.check_and_dismiss_post_prompt = Mock(return_value=False)
         task.log = Mock()
@@ -1694,9 +1707,9 @@ class ReelPublicationVerificationTests(unittest.TestCase):
             [0.70, 0.70],
         )
         with unittest.mock.patch(
-            "tasks.facebook_reel.time.time",
+            "modules.reel_post_click_verifier.time.time",
             side_effect=[0.0, 0.0, 0.2, 2.0],
-        ), unittest.mock.patch("tasks.facebook_reel.time.sleep", return_value=None):
+        ), unittest.mock.patch("modules.reel_post_click_verifier.time.sleep", return_value=None):
             status, _ = task._verify_reel_publication(
                 np.zeros((100, 100, 3), dtype=np.uint8),
                 timeout=1.0,
@@ -1711,9 +1724,9 @@ class ReelPublicationVerificationTests(unittest.TestCase):
             [0.70],
         )
         with unittest.mock.patch(
-            "tasks.facebook_reel.time.time",
+            "modules.reel_post_click_verifier.time.time",
             side_effect=[0.0, 0.0],
-        ), unittest.mock.patch("tasks.facebook_reel.time.sleep", return_value=None) as sleep:
+        ), unittest.mock.patch("modules.reel_post_click_verifier.time.sleep", return_value=None) as sleep:
             status, final = task._verify_reel_publication(
                 np.zeros((100, 100, 3), dtype=np.uint8),
                 timeout=1.0,
@@ -1728,7 +1741,7 @@ class ReelPublicationVerificationTests(unittest.TestCase):
         sleep.assert_not_called()
         task.recognizer.observe.assert_not_called()
 
-    def test_unknown_screen_uses_broad_state_before_profile_fallback(self):
+    def test_unknown_screen_times_out_without_profile_fallback(self):
         task = self.make_task(
             [
                 StateObservation(ScreenState.UNKNOWN, 0.0),
@@ -1738,18 +1751,18 @@ class ReelPublicationVerificationTests(unittest.TestCase):
             [0.70, 0.70, 0.70],
         )
         with unittest.mock.patch(
-            "tasks.facebook_reel.time.time",
+            "modules.reel_post_click_verifier.time.time",
             side_effect=[0.0, 0.0, 0.1, 0.2, 2.0],
-        ), unittest.mock.patch("tasks.facebook_reel.time.sleep", return_value=None):
+        ), unittest.mock.patch("modules.reel_post_click_verifier.time.sleep", return_value=None):
             status, _ = task._verify_reel_publication(
                 np.zeros((100, 100, 3), dtype=np.uint8),
                 timeout=1.0,
                 popup_timeout=1.0,
             )
 
-        self.assertEqual(status, "profile_fallback")
-        self.assertEqual(task.recognizer.observe_publication_gate.call_count, 3)
-        self.assertEqual(task.recognizer.observe.call_count, 3)
+        self.assertEqual(status, "timed_out")
+        self.assertEqual(task.recognizer.observe_publication_gate.call_count, 4)
+        self.assertEqual(task.recognizer.observe.call_count, 4)
 
     def test_visibly_active_upload_uses_ninety_second_timeout_without_refresh_fallback(self):
         task = self.make_task(
@@ -1757,9 +1770,9 @@ class ReelPublicationVerificationTests(unittest.TestCase):
             [0.70],
         )
         with unittest.mock.patch(
-            "tasks.facebook_reel.time.time",
+            "modules.reel_post_click_verifier.time.time",
             side_effect=[0.0, 0.0, 91.0],
-        ), unittest.mock.patch("tasks.facebook_reel.time.sleep", return_value=None):
+        ), unittest.mock.patch("modules.reel_post_click_verifier.time.sleep", return_value=None):
             status, _ = task._verify_reel_publication(
                 np.zeros((100, 100, 3), dtype=np.uint8),
                 timeout=90.0,
@@ -1783,9 +1796,9 @@ class ReelPublicationVerificationTests(unittest.TestCase):
             ["logged-in dashboard/feed text"],
         )
         with unittest.mock.patch(
-            "tasks.facebook_reel.time.time",
+            "modules.reel_post_click_verifier.time.time",
             side_effect=[0.0, 0.0, 10.0, 41.0],
-        ), unittest.mock.patch("tasks.facebook_reel.time.sleep", return_value=None):
+        ), unittest.mock.patch("modules.reel_post_click_verifier.time.sleep", return_value=None):
             status, final = task._verify_reel_publication(
                 np.zeros((100, 100, 3), dtype=np.uint8),
                 timeout=90.0,
@@ -1794,7 +1807,66 @@ class ReelPublicationVerificationTests(unittest.TestCase):
 
         self.assertEqual(status, "profile_fallback")
         self.assertEqual(final[0].state, ScreenState.FEED_READY)
-        task.recognizer.observe.assert_called_once()
+        self.assertEqual(task.recognizer.observe.call_count, 2)
+
+
+    def test_prompt_is_handled_first_and_its_time_does_not_consume_upload_budget(self):
+        task = self.make_task([StateObservation(ScreenState.PUBLISHING, 0.9)] * 3, [0.7] * 3)
+        task.handle_post_publish_prompt = Mock(return_value="dismissed")
+        old = np.zeros((100, 100, 3), dtype=np.uint8)
+        fresh = np.ones((100, 100, 3), dtype=np.uint8)
+        task.client.screenshot.side_effect = [old, fresh, fresh, fresh]
+        def observe(screen, **kwargs):
+            task.handle_post_publish_prompt.assert_called_once_with(old)
+            self.assertIs(screen, fresh)
+            return StateObservation(ScreenState.PUBLISHING, 0.9)
+        task.recognizer.observe_publication_gate.side_effect = observe
+        with unittest.mock.patch("modules.reel_post_click_verifier.time.time", side_effect=[0, 0, 50, 130, 141]), \
+             unittest.mock.patch("modules.reel_post_click_verifier.time.sleep"):
+            status, final = task._verify_reel_publication(old, timeout=90)
+        self.assertEqual(status, "timed_out")
+        self.assertEqual(task.recognizer.observe_publication_gate.call_count, 3)
+        self.assertIs(final[1], fresh)
+
+    def test_late_prompt_dismissal_starts_a_fresh_ninety_second_upload_wait(self):
+        task = self.make_task([StateObservation(ScreenState.PUBLISHING, 0.9)] * 4, [0.7] * 4)
+        task.handle_post_publish_prompt = Mock(side_effect=["absent", "dismissed"])
+        with unittest.mock.patch("modules.reel_post_click_verifier.time.time", side_effect=[0, 0, 80, 100, 189, 190]), \
+             unittest.mock.patch("modules.reel_post_click_verifier.time.sleep"):
+            status, _ = task._verify_reel_publication(task.client.screenshot(), timeout=90)
+        self.assertEqual(status, "timed_out")
+        self.assertEqual(task.recognizer.observe_publication_gate.call_count, 4)
+        self.assertEqual(task.handle_post_publish_prompt.call_count, 2)
+        task.client.navigate_to.assert_not_called()
+
+    def test_logo_feed_detection_with_visible_composer_never_falls_back(self):
+        task = self.make_task([
+            StateObservation(ScreenState.FEED_READY, 0.68, ["facebook logo"]),
+        ], [0.7])
+        task.vision.read_text.return_value = [
+            {"text": "Create reel"}, {"text": "Uploading 95%"},
+            {"text": "Make it easier to contact you"},
+        ]
+        with unittest.mock.patch("modules.reel_post_click_verifier.time.time", side_effect=[0, 0, 91]), \
+             unittest.mock.patch("modules.reel_post_click_verifier.time.sleep"):
+            status, _ = task._verify_reel_publication(task.client.screenshot())
+        self.assertEqual(status, "timed_out")
+        task.client.navigate_to.assert_not_called()
+
+    def test_logo_alone_does_not_prove_composer_closure(self):
+        task = self.make_task([], [])
+        task.vision.read_text.return_value = [{"text": "Facebook"}]
+        self.assertFalse(task._reel_composer_has_closed(
+            task.client.screenshot(), StateObservation(ScreenState.FEED_READY, 0.68)))
+
+    def test_composer_blocks_navigation_even_when_feed_text_is_visible(self):
+        task = self.make_task([], [])
+        task.recognizer.observe.return_value = StateObservation(ScreenState.FEED_READY, 0.8)
+        task.vision.read_text.return_value = [{"text": "Manage Page"}, {"text": "Uploaded media"}]
+        task._uncertain = Mock()
+        self.assertFalse(task._allow_reel_profile_navigation())
+        task._uncertain.assert_called_once()
+        task.client.navigate_to.assert_not_called()
 
 
 class FirstCommentTargetTests(unittest.TestCase):
@@ -2256,6 +2328,7 @@ class FirstCommentTargetTests(unittest.TestCase):
         task = FacebookReelTask.__new__(FacebookReelTask)
         task.log = Mock()
         task.navigate_to = Mock()
+        task._allow_reel_profile_navigation = Mock(return_value=True)
         task.client = Mock()
         task.client.screenshot.return_value = np.zeros((100, 100, 3), dtype=np.uint8)
         task.human = Mock()
@@ -2284,6 +2357,7 @@ class FirstCommentTargetTests(unittest.TestCase):
         task = FacebookReelTask.__new__(FacebookReelTask)
         task.log = Mock()
         task.navigate_to = Mock()
+        task._allow_reel_profile_navigation = Mock(return_value=True)
         task.client = Mock()
         task.client.screenshot.return_value = np.zeros((100, 100, 3), dtype=np.uint8)
         task.human = Mock()
@@ -2307,6 +2381,7 @@ class FirstCommentTargetTests(unittest.TestCase):
         task = FacebookReelTask.__new__(FacebookReelTask)
         task.log = Mock()
         task.navigate_to = Mock()
+        task._allow_reel_profile_navigation = Mock(return_value=True)
         task.client = Mock()
         task.client.screenshot.return_value = np.zeros((100, 100, 3), dtype=np.uint8)
         task.human = Mock()

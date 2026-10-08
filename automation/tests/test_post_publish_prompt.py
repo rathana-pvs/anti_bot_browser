@@ -5,6 +5,13 @@ from engine.post_publish_prompt import PostPublishPromptHandler
 
 
 class PostPublishPromptHandlerTests(unittest.TestCase):
+    def test_own_phase_timeout_stops_without_clicking_again(self):
+        task = self.make_task([{"center": (100, 200)}])
+        with patch("engine.post_publish_prompt.time.monotonic", return_value=10):
+            self.assertEqual(PostPublishPromptHandler(task, timeout=0).handle(object()), "failed")
+        task.click_reversible.assert_not_called()
+        task.telemetry.record_step.assert_called_once()
+
     def make_task(self, matches):
         task = Mock()
         task.client.screenshot.return_value = object()

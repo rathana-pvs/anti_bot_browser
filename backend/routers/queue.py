@@ -483,6 +483,7 @@ async def run_execution_now(execution_id: str):
     is_manual_retry = current_status.startswith("skipped_") or current_status in (
         "failed",
         "failed_before_publish",
+        "failed_after_publish",
         "uncertain",
         "needs_review",
     )
@@ -501,18 +502,18 @@ async def run_execution_now(execution_id: str):
 
     target_batch = match.get("batch") or {}
     deferred_reason = None
-    if not needs_prep and target_batch:
+    if target_batch:
         iteration_check = batch_iteration_availability(
             target_batch,
             target_execution=target_exec,
         )
         if not iteration_check["allowed"]:
             if is_manual_retry:
-                deferred_reason = "waiting for the previous batch iteration"
+                deferred_reason = "waiting for this profile's previous iteration and delay"
             else:
                 raise HTTPException(
                     status_code=409,
-                    detail="The previous batch iteration is still running or its delay has not finished.",
+                    detail="This profile's previous iteration is still running or its delay has not finished.",
                 )
 
     scheduler_cfg = get_scheduler_config()

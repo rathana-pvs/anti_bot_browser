@@ -779,8 +779,8 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
 
               <p className="text-[11px] text-zinc-500 mt-2 leading-relaxed">
                 {executionMode === 'now'
-                  ? 'Posts run in order: one finishes, then the batch iteration delay begins before the next starts.'
-                  : `The batch starts at ${startTime}, then every post runs sequentially with the iteration delay.`}
+                  ? 'Each account runs independently: finish, close its container, wait its iteration delay, then start the next iteration.'
+                  : `The batch starts at ${startTime}. Each account advances independently after its own iteration delay, within Resource Mode limits.`}
               </p>
             </div>
 
@@ -859,7 +859,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
 
                   <div>
                     <label className="block text-zinc-400 mb-1">
-                      Batch Iteration Delay (Seconds)
+                      Per-account Iteration Delay (Seconds)
                     </label>
                     <input
                       type="number"
@@ -874,7 +874,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                       className="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-white focus:outline-none focus:border-blue-500"
                     />
                     <p className="text-[10px] text-zinc-500 mt-1">
-                      Minimum pause after one publishing execution finishes before the next starts in this batch.
+                      Pause after each account's task finishes before preparing or running its next iteration.
                     </p>
                   </div>
 

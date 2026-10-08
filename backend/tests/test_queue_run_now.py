@@ -96,7 +96,7 @@ def test_failed_retry_reuses_ready_preparation(monkeypatch):
     save_queue.assert_called_once_with(queue)
 
 
-@pytest.mark.parametrize("status", ["uncertain", "needs_review"])
+@pytest.mark.parametrize("status", ["uncertain", "needs_review", "failed_after_publish"])
 def test_unverified_outcome_can_be_retried_directly(monkeypatch, status):
     execution = {
         "execution_id": f"exec-{status}",
@@ -141,3 +141,28 @@ def test_unverified_outcome_can_be_retried_directly(monkeypatch, status):
     assert execution["stage_history"][-1]["reason"] == "manual_retry"
     assert started == [(execution["execution_id"], "publisher")]
     save_queue.assert_called_once_with(queue)
+
+
+
+def test_run_now_cannot_prepare_next_iteration_during_profile_delay(monkeypatch):
+    execution = {
+        "execution_id": "next", "profile_id": "p1", "status": "pending",
+        "preparation_mode": "brief", "preparation_status": "pending",
+    }
+    from datetime import datetime, timezone
+    previous = {
+        "execution_id": "previous", "profile_id": "p1", "status": "published",
+        "ended_at": datetime.now(timezone.utc).isoformat(),
+    }
+    batch = {
+        "schedule_window": {"batch_iteration_delay_seconds": 1600},
+        "posts": [{"type": "reel", "executions": [previous]},
+                  {"type": "reel", "executions": [execution]}],
+    }
+    queue = {"daily_batches": [batch]}
+    monkeypatch.setattr(queue_router, "load_posting_queue", lambda: queue)
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(queue_router.run_execution_now("next"))
+    assert error.value.status_code == 409
+    assert "this profile" in error.value.detail.lower()
+    assert execution["status"] == "pending"

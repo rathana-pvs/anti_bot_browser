@@ -551,15 +551,14 @@ def claim_queue_execution(execution_id: str, kind: str = "publisher") -> dict:
             err.schedulerReason = "container_cleanup_in_progress"
             raise err
 
-        if kind == "publisher":
-            iteration_check = batch_iteration_availability(
-                target_batch,
-                target_execution=target_exec,
-            )
-            if not iteration_check["allowed"]:
-                err = RuntimeError(f"Batch iteration is not ready: {iteration_check['reason']}")
-                err.schedulerReason = iteration_check["reason"]
-                raise err
+        iteration_check = batch_iteration_availability(
+            target_batch,
+            target_execution=target_exec,
+        )
+        if not iteration_check["allowed"]:
+            err = RuntimeError(f"Batch iteration is not ready: {iteration_check['reason']}")
+            err.schedulerReason = iteration_check["reason"]
+            raise err
 
         lease_id = str(uuid.uuid4())
         claim = claim_execution_lease(
@@ -1372,7 +1371,6 @@ async def dispatch_pending_queue():
             "total": initial_slots["total"],
         }
 
-        publisher_batches_claimed = set()
         cooldown_retry_ms = None
         for execution in due_executions:
             exec_id = execution["execution_id"]
@@ -1383,7 +1381,6 @@ async def dispatch_pending_queue():
             if match["execution"].get("container_cleanup_in_progress"):
                 continue
 
-            batch_id = match["batch"].get("batch_id")
             pid = match["execution"]["profile_id"]
             standalone_warming = match["post"].get("type") == "warming"
             prep_mode = match["execution"].get("preparation_mode") or "off"
@@ -1394,6 +1391,20 @@ async def dispatch_pending_queue():
                 and match["execution"].get("preparation_status") == "pending"
             )
 
+            iteration_check = batch_iteration_availability(
+                match["batch"],
+                target_execution=match["execution"],
+            )
+            if not iteration_check["allowed"]:
+                retry_after_ms = iteration_check.get("retry_after_ms")
+                if retry_after_ms is not None:
+                    cooldown_retry_ms = (
+                        retry_after_ms
+                        if cooldown_retry_ms is None
+                        else min(cooldown_retry_ms, retry_after_ms)
+                    )
+                continue
+
             if needs_prep and count_buffered_preparations(current_q, exec_id) >= scheduler_cfg["max_preparers"]:
                 continue
 
@@ -1401,23 +1412,6 @@ async def dispatch_pending_queue():
                 continue
 
             slot_kind = "preparer" if (needs_prep or standalone_warming) else "publisher"
-            if slot_kind == "publisher":
-                batch_id = batch_id or f"batch:{id(match['batch'])}"
-                if batch_id in publisher_batches_claimed:
-                    continue
-                iteration_check = batch_iteration_availability(
-                    match["batch"],
-                    target_execution=match["execution"],
-                )
-                if not iteration_check["allowed"]:
-                    retry_after_ms = iteration_check.get("retry_after_ms")
-                    if retry_after_ms is not None:
-                        cooldown_retry_ms = (
-                            retry_after_ms
-                            if cooldown_retry_ms is None
-                            else min(cooldown_retry_ms, retry_after_ms)
-                        )
-                    continue
             availability = can_acquire_scheduler_slot(
                 current_q, active_in_memory_scheduler_leases(), slot_kind, pid, scheduler_cfg
             )
@@ -1438,8 +1432,6 @@ async def dispatch_pending_queue():
                     continue
 
             print(f"[Queue Dispatcher] Claiming {slot_kind} slot for {exec_id} on profile {pid}...")
-            if slot_kind == "publisher":
-                publisher_batches_claimed.add(batch_id)
             asyncio.create_task(_run_dispatched_queue_task(exec_id, slot_kind))
         if cooldown_retry_ms is not None:
             asyncio.create_task(_delayed_dispatch(cooldown_retry_ms + 100))

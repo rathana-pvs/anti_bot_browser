@@ -55,7 +55,7 @@ def compute_execution_schedule(
     if is_start_now:
         return now_ms + profile_index * stagger_ms
     # Scheduled time gates the batch itself. Once that gate opens, the
-    # completion-based iteration delay serializes every post in order.
+    # completion-based iteration delay serializes each profile's posts in order.
     return max(now_ms + 60000, window_start_ms + profile_index * stagger_ms)
 
 def is_lease_active(lease: dict | None, now_ms: float | None = None) -> bool:

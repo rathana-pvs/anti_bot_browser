@@ -85,6 +85,15 @@ flowchart TD
 | **Organic 1st Comment Link** | Navigates to user profile (`/me`), identifies top post card, and submits destination link as comment. | OCR `"Comment as"` field detection + single-submission lock. |
 | **Feed Warming** | Simulates natural human browsing, feed reading, and randomized scrolling. | Randomized Bézier cursor movement and scroll deltas. |
 
+All Reel templates hand off their final Post click to the shared
+`automation/modules/reel_post_click_verifier.py` module. It handles optional
+“Not now” dismissal with its own 60-second budget, starts a fresh 90-second
+composer/upload wait after dismissal, and waits up to 30 seconds for a success
+popup after confirmed composer closure. Without the prompt, the upload wait
+starts after Post. Unconfirmed closure stops as uncertain without refreshing;
+every profile verification navigation rechecks closure. The module never
+clicks Post again.
+
 ---
 
 ## 📁 Repository Structure
@@ -296,7 +305,18 @@ and CPU: Low uses 1 publisher + 1 preparer (2 containers), Medium uses 2 + 2
 (4 containers), and High uses 3 + 3 (6 containers). New container starts pause
 at 80% RAM until usage falls below 70%, pause at 85% sustained CPU, and are
 spaced by at least 10 seconds. Mode changes affect only new claims and never
-interrupt active tasks. Lease timing remains configurable when needed:
+interrupt active tasks.
+
+Accounts publishing the same batch post may run concurrently within the selected
+mode's publisher limit (Low: 1, Medium: 2, High: 3). Each account holds at most
+one automation lease and advances through its iterations independently. After
+its current task finishes, its container closes and its iteration delay must
+finish before preparation or publishing starts for its next post. Other accounts
+can continue while it waits; uncertain outcomes hold that account's later posts
+for review. Container admission continues
+to enforce memory, CPU, container-count, and start-spacing limits.
+
+Lease timing remains configurable when needed:
 
 ```bash
 AUTOMATION_LEASE_TTL_MS=60000

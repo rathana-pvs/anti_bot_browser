@@ -20,6 +20,7 @@ from engine.runtime_paths import automation_dir
 from engine.text_matcher import OcrTextMatcher
 from engine.vision import VisionEngine
 from modules.publication_result_verifier import ReelPublicationResultVerifier
+from modules.reel_post_click_verifier import ReelPostClickVerifier
 from .base_task import BaseTask
 
 
@@ -1455,6 +1456,12 @@ class FacebookReelTask(BaseTask):
         )
         return "waiting"
 
+    def _reel_composer_has_closed(self, screen, observation) -> bool:
+        return ReelPostClickVerifier(self).composer_has_closed(screen, observation)
+
+    def _allow_reel_profile_navigation(self) -> bool:
+        return ReelPostClickVerifier(self).allow_profile_navigation()
+
     @timed_telemetry_step("publication_verification")
     def _verify_reel_publication(
         self,
@@ -1462,102 +1469,9 @@ class FacebookReelTask(BaseTask):
         timeout: float = POST_CLICK_VERIFICATION_TIMEOUT,
         popup_timeout: float = POST_CONFIRMATION_POPUP_TIMEOUT,
     ):
-        upload_deadline = time.time() + timeout
-        popup_deadline = None
-        active_upload_seen = False
-        last = None
-        prompt_dismissed = False
-        unconfirmed_feed_logged = False
-        audio_policy_saved = False
-        local_misses = 0
-        while True:
-            now = time.time()
-            if active_upload_seen and now >= upload_deadline:
-                self.log(
-                    "WARN",
-                    f"Reel upload remained visibly active for {timeout:g} seconds; stopping without refreshing it.",
-                )
-                return "timed_out", last
-            if popup_deadline is not None and now >= popup_deadline:
-                self.log(
-                    "WARN",
-                    f"Reel success popup was not detected within {popup_timeout:g} seconds after the loading composer closed; checking the profile feed.",
-                )
-                return "profile_fallback", last
-
-            screen = self.client.screenshot()
-
-            observation = self.recognizer.observe_publication_gate(
-                screen,
-                region=self.LEFT_PUBLICATION_REGION,
-            )
-            if observation.state == ScreenState.UNKNOWN:
-                broad_observation = self.recognizer.observe(screen)
-                if broad_observation.state != ScreenState.UNKNOWN:
-                    observation = broad_observation
-            similarity = self.vision.similarity(before_publish, screen)
-            last = (observation, screen, similarity)
-            if observation.state == ScreenState.ERROR_DIALOG:
-                return "failed", last
-            if observation.state == ScreenState.POST_CONFIRMED:
-                self.log("INFO", "Facebook showed Reel publication confirmation.")
-                return "published", last
-
-            # Facebook can insert this settings step after the final Post click.
-            # It is part of the same publication attempt, so confirm the current
-            # selection once and continue verification without clicking Post again.
-            should_check_audio_policy = local_misses in {1, 4}
-            if not audio_policy_saved and should_check_audio_policy:
-                audio_policy_status = self._handle_remix_audio_dialog(
-                    screen,
-                    region="composer_modal",
-                )
-                if audio_policy_status == "saved":
-                    audio_policy_saved = True
-                    active_upload_seen = True
-                    time.sleep(2.0)
-                    continue
-                if audio_policy_status == "waiting":
-                    active_upload_seen = True
-                    time.sleep(2.0)
-                    continue
-
-            # Dismiss post-publish prompts first (e.g. "Speak With People Directly" -> "Not now")
-            should_check_prompt = local_misses in {2, 5}
-            prompt_status = "absent"
-            if not prompt_dismissed and should_check_prompt:
-                prompt_status = self.handle_post_publish_prompt(screen)
-            if prompt_status == "failed":
-                return "failed", last
-            if not prompt_dismissed and prompt_status == "dismissed":
-                prompt_dismissed = True
-                self.log("INFO", "Dismissed post-publish prompt ('Not now').")
-                continue
-
-            local_misses += 1
-            if observation.state in {
-                ScreenState.PUBLISHING,
-                ScreenState.POST_ENABLED,
-                ScreenState.COMPOSER_OPEN,
-                ScreenState.MEDIA_UPLOADING,
-                ScreenState.MEDIA_READY,
-            }:
-                active_upload_seen = True
-                popup_deadline = None
-                time.sleep(2.0)
-                continue
-            if observation.state == ScreenState.FEED_READY:
-                if not unconfirmed_feed_logged:
-                    self.log(
-                        "INFO",
-                        f"The loading composer closed and the profile feed is visible; waiting up to {popup_timeout:g} seconds for the Reel success popup.",
-                    )
-                    unconfirmed_feed_logged = True
-                if popup_deadline is None:
-                    popup_deadline = now + popup_timeout
-            elif not active_upload_seen and popup_deadline is None:
-                popup_deadline = now + popup_timeout
-            time.sleep(2.0)
+        return ReelPostClickVerifier(self).verify(
+            before_publish, timeout=timeout, popup_timeout=popup_timeout,
+        )
 
     def _latest_reel_is_visible(self, screen) -> bool:
         """Check the top profile feed for this Reel's caption or a fresh timestamp."""
@@ -1960,7 +1874,7 @@ class FacebookReelTask(BaseTask):
         if result == "timed_out":
             return self._uncertain(
                 "reel_publish_loading_timeout",
-                f"Facebook did not finish the visibly active Reel upload within {upload_timeout:g} seconds. The run was stopped without refreshing it.",
+                f"The Reel composer was not confirmed closed within {upload_timeout:g} seconds. The run was stopped without refreshing it.",
                 final_screen,
             )
         if result != "published" and self._new_share_post_is_still_pending(
@@ -1997,6 +1911,8 @@ class FacebookReelTask(BaseTask):
             comment_status, permalink_info = self.post_reel_first_comment_after_refresh(
                 self.comment_link,
             )
+            if self.result_status == "uncertain":
+                return False
             if result != "published" and comment_status == "failed_input_not_found":
                 return self._failed_after_publish(
                     "reel_publish_not_found_after_verification",
@@ -2016,6 +1932,8 @@ class FacebookReelTask(BaseTask):
             )
 
         if result != "published" and not self._refresh_until_latest_reel_visible():
+            if self.result_status == "uncertain":
+                return False
             return self._failed_after_publish(
                 "reel_publish_not_found_after_verification",
                 "The success popup was absent and the latest Reel was not found after two profile checks separated by 15 seconds.",

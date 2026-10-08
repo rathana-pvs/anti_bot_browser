@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from backend.services.profile_pipeline import active_batch_id, batch_iteration_availability, ordered_due_executions
 from backend.services.queue_scheduler import compute_execution_schedule
 
@@ -8,10 +10,11 @@ def _timestamp_ms(value: str) -> float:
     return datetime.fromisoformat(value).replace(tzinfo=timezone.utc).timestamp() * 1000
 
 
-def _execution(execution_id, status="pending", ended_at=None):
+def _execution(execution_id, status="pending", ended_at=None, profile_id="profile-1"):
     execution = {
         "execution_id": execution_id,
         "status": status,
+        "profile_id": profile_id,
     }
     if ended_at:
         execution["ended_at"] = ended_at
@@ -31,7 +34,7 @@ def test_batch_iteration_delay_waits_from_publisher_completion():
     batch = _batch(posts=[
         {"executions": [
             _execution("post-1-profile-1", "published", "2026-09-28T11:59:50+00:00"),
-            _execution("post-1-profile-2", "published", "2026-09-28T12:00:00+00:00"),
+            _execution("post-1-profile-2", "published", "2026-09-28T12:00:00+00:00", "profile-2"),
         ]},
         {"executions": [target]},
     ])
@@ -49,7 +52,7 @@ def test_batch_iteration_delay_waits_from_publisher_completion():
 
     assert waiting["allowed"] is False
     assert waiting["reason"] == "batch_iteration_delay"
-    assert waiting["retry_after_ms"] == 30_000
+    assert waiting["retry_after_ms"] == 20_000
     assert ready["allowed"] is True
 
 
@@ -73,12 +76,12 @@ def test_profiles_within_same_post_handoff_without_iteration_delay():
     }
 
 
-def test_next_post_waits_until_all_profiles_finish_previous_post():
+def test_next_post_does_not_wait_for_other_profiles():
     target = _execution("post-2-profile-1")
     batch = _batch(posts=[
         {"executions": [
             _execution("post-1-profile-1", "published", "2026-09-28T12:00:00+00:00"),
-            _execution("post-1-profile-2", "ready"),
+            _execution("post-1-profile-2", "ready", profile_id="profile-2"),
         ]},
         {"executions": [target]},
     ])
@@ -90,19 +93,52 @@ def test_next_post_waits_until_all_profiles_finish_previous_post():
     )
 
     assert result == {
-        "allowed": False,
-        "reason": "batch_iteration_waiting_for_profiles",
-        "retry_after_ms": None,
+        "allowed": True,
+        "reason": "batch_iteration_ready",
+        "retry_after_ms": 0,
     }
 
 
-def test_batch_iteration_delay_blocks_parallel_publisher_in_same_batch():
+@pytest.mark.parametrize("status", ["running", "uncertain", "needs_review"])
+def test_other_profiles_do_not_hold_this_profiles_next_iteration(status):
+    target = _execution("next")
+    batch = _batch(posts=[{"executions": [
+        _execution("previous", "published", "2026-09-28T12:00:00+00:00"),
+        _execution("other", status, profile_id="profile-2"),
+    ]}, {"executions": [target]}])
+    assert batch_iteration_availability(
+        batch, _timestamp_ms("2026-09-28T12:01:00"), target)["allowed"]
+
+
+def test_profile_delay_uses_its_last_execution_when_absent_from_previous_post():
+    target = _execution("third")
+    batch = _batch(posts=[
+        {"executions": [_execution("first", "published", "2026-09-28T12:00:00+00:00")]},
+        {"executions": [_execution("other", "running", profile_id="profile-2")]},
+        {"executions": [target]},
+    ])
+    result = batch_iteration_availability(batch, _timestamp_ms("2026-09-28T12:00:30"), target)
+    assert result["reason"] == "batch_iteration_delay"
+    assert result["retry_after_ms"] == 30_000
+
+
+def test_terminal_preparation_failure_still_starts_profile_delay():
+    previous = _execution("previous", "failed_before_publish", "2026-09-28T12:00:00+00:00")
+    previous["last_scheduler_lease"] = {"kind": "preparer"}
+    target = _execution("next")
+    batch = _batch(posts=[{"executions": [previous]}, {"executions": [target]}])
+    result = batch_iteration_availability(batch, _timestamp_ms("2026-09-28T12:00:30"), target)
+    assert result["reason"] == "batch_iteration_delay"
+    assert result["retry_after_ms"] == 30_000
+
+
+def test_same_post_allows_another_profile_while_publisher_is_running():
+    target = _execution("second-profile")
     batch = _batch(executions=[{
         "status": "running",
         "scheduler_lease": {"kind": "publisher"},
-    }])
+    }, target])
 
-    target = batch["posts"][0]["executions"][0]
     result = batch_iteration_availability(
         batch,
         _timestamp_ms("2026-09-28T12:00:00"),
@@ -110,10 +146,23 @@ def test_batch_iteration_delay_blocks_parallel_publisher_in_same_batch():
     )
 
     assert result == {
-        "allowed": False,
-        "reason": "batch_publisher_active",
-        "retry_after_ms": None,
+        "allowed": True,
+        "reason": "batch_iteration_ready",
+        "retry_after_ms": 0,
     }
+
+
+@pytest.mark.parametrize("status", ["pending", "ready", "running", "preparing", "uncertain", "needs_review"])
+def test_later_posts_wait_for_unfinished_or_unverified_earlier_posts(status):
+    target = _execution("post-3")
+    batch = _batch(delay_seconds=0, posts=[
+        {"executions": [_execution("post-1", status)]},
+        {"executions": [_execution("post-2", "published")]},
+        {"executions": [target]},
+    ])
+    result = batch_iteration_availability(batch, target_execution=target)
+    assert result["allowed"] is False
+    assert result["reason"] == "batch_iteration_waiting_for_profiles"
 
 
 def test_legacy_batch_without_iteration_delay_remains_ready():
@@ -227,7 +276,7 @@ def test_started_batch_keeps_queue_ownership_until_its_pending_work_finishes():
 
 if __name__ == "__main__":
     test_batch_iteration_delay_waits_from_publisher_completion()
-    test_batch_iteration_delay_blocks_parallel_publisher_in_same_batch()
+    test_same_post_allows_another_profile_while_publisher_is_running()
     test_legacy_batch_without_iteration_delay_remains_ready()
     test_start_now_uses_completion_pacing_instead_of_post_window_slots()
     test_scheduled_batch_releases_all_iterations_at_its_start_gate()

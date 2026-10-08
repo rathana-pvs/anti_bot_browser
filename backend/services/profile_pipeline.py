@@ -28,7 +28,7 @@ def batch_iteration_availability(
     now_ms: float | None = None,
     target_execution: dict | None = None,
 ) -> dict:
-    """Gate publishers and pause only when advancing to the next post."""
+    """Gate each profile's post order and delay before preparation or publishing."""
     if now_ms is None:
         now_ms = time.time() * 1000
     batch = batch or {}
@@ -39,16 +39,6 @@ def batch_iteration_availability(
         delay_seconds = 0
 
     posts = batch.get("posts", [])
-    for post in posts:
-        for execution in post.get("executions", []):
-            lease = execution.get("scheduler_lease") or {}
-            if execution.get("status") == "running" and lease.get("kind") == "publisher":
-                return {
-                    "allowed": False,
-                    "reason": "batch_publisher_active",
-                    "retry_after_ms": None,
-                }
-
     target_post_index = None
     target_execution_id = (target_execution or {}).get("execution_id")
     for post_index, post in enumerate(posts):
@@ -63,15 +53,18 @@ def batch_iteration_availability(
             target_post_index = post_index
             break
 
-    # The first post has no preceding iteration. Profiles publishing that
-    # same post hand off immediately once the single publisher slot is free.
     if target_post_index in (None, 0):
         return {"allowed": True, "reason": "batch_iteration_ready", "retry_after_ms": 0}
 
-    previous_post = posts[target_post_index - 1]
-    previous_executions = previous_post.get("executions", [])
+    profile_id = (target_execution or {}).get("profile_id")
+    previous_executions = [
+        execution
+        for earlier_post in posts[:target_post_index]
+        for execution in earlier_post.get("executions", [])
+        if execution.get("profile_id") == profile_id
+    ]
     if any(
-        execution.get("status") in ("pending", "ready", "running", "preparing")
+        execution.get("status") in ("pending", "ready", "running", "preparing", "uncertain", "needs_review")
         for execution in previous_executions
     ):
         return {
@@ -80,18 +73,15 @@ def batch_iteration_availability(
             "retry_after_ms": None,
         }
 
-    latest_publisher_end_ms = 0.0
-    for execution in previous_executions:
-        last_lease = execution.get("last_scheduler_lease") or {}
-        if last_lease.get("kind") != "publisher":
-            continue
-        latest_publisher_end_ms = max(
-            latest_publisher_end_ms,
-            parse_iso_time(execution.get("ended_at")),
-        )
+    # Terminal preparation failures/skips also finish an iteration. Do not use
+    # another account's completion time, or a preparation time for unfinished work.
+    latest_end_ms = max(
+        (parse_iso_time(execution.get("ended_at")) for execution in previous_executions),
+        default=0.0,
+    )
 
-    ready_at_ms = latest_publisher_end_ms + delay_seconds * 1000
-    if latest_publisher_end_ms and now_ms < ready_at_ms:
+    ready_at_ms = latest_end_ms + delay_seconds * 1000
+    if latest_end_ms and now_ms < ready_at_ms:
         return {
             "allowed": False,
             "reason": "batch_iteration_delay",
