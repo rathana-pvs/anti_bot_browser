@@ -1,0 +1,18 @@
+# Copy to ~/.config/systemd/user/anti-bot-worker.service after replacing paths.
+[Unit]
+Description=Anti-Bot Browser local backend and cloud worker
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/USER/Desktop/anti_bot_browser
+Environment=PYTHONPATH=/home/USER/Desktop/anti_bot_browser
+EnvironmentFile=/home/USER/.config/anti-bot-worker/credentials.env
+ExecStart=/home/USER/Desktop/anti_bot_browser/automation/venv/bin/python -m backend.worker --config /home/USER/.config/anti-bot-worker/worker.json
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=120
+UMask=0077
+
+[Install]
+WantedBy=default.target

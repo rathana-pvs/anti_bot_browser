@@ -1,6 +1,6 @@
 FROM ubuntu:22.04
 
-LABEL org.automat-fb.browser-image-version="2"
+LABEL org.automat-fb.browser-image-version="3"
 
 # Prevent interactive prompts during build
 ENV DEBIAN_FRONTEND=noninteractive

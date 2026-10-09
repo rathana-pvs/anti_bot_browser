@@ -1,0 +1,13 @@
+{
+  "server_url": "wss://server.example.com/ws/workers",
+  "worker_id": "worker-01",
+  "credential": "REPLACE_WITH_SERVER_ISSUED_CREDENTIAL_OR_USE_WORKER_CREDENTIAL_ENV",
+  "account_profiles": {
+    "cloud-account-01": "local-profile-01"
+  },
+  "transfer_hosts": ["storage.example.com"],
+  "heartbeat_seconds": 15,
+  "acknowledgement_timeout": 45,
+  "max_accepted_jobs": 1,
+  "allow_loopback_development": false
+}

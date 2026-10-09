@@ -16,7 +16,22 @@ const environmentUrl = `data:text/javascript;base64,${Buffer.from(environmentJs)
 const browserModule = outputText
   .replace(/import \{ invoke \} from '@tauri-apps\/api\/core';/, 'const invoke = () => { throw new Error("Unexpected desktop call"); };')
   .replace(/import \{ isDesktopApp \} from '\.\/desktopEnvironment';/, `import { isDesktopApp } from '${environmentUrl}';`);
-const { detectNetworkTimezone } = await import(`data:text/javascript;base64,${Buffer.from(browserModule).toString('base64')}`);
+const { detectNetworkTimezone, testNetworkSpeed } = await import(`data:text/javascript;base64,${Buffer.from(browserModule).toString('base64')}`);
+
+test('speed tests explain stale independent backends', async (t) => {
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    assert.equal(url, '/api/proxies/speed-test');
+    assert.equal(init.method, 'POST');
+    return Response.json({ detail: 'Method Not Allowed' }, { status: 405 });
+  });
+  await assert.rejects(testNetworkSpeed({ mode: 'pool', proxy_id: 'p1' }), /independent worker service/);
+});
+
+test('speed tests preserve a missing proxy error', async (t) => {
+  t.mock.method(globalThis, 'fetch', async () =>
+    Response.json({ detail: 'Selected proxy does not exist' }, { status: 404 }));
+  await assert.rejects(testNetworkSpeed({ mode: 'pool', proxy_id: 'missing' }), /Selected proxy does not exist/);
+});
 
 test('direct profiles use the existing defaults endpoint', async (t) => {
   t.mock.method(globalThis, 'fetch', async (url, init) => {

@@ -1,0 +1,13 @@
+schema_version: 1
+template_id: broadcast_ended
+content_family: live
+recognition:
+  minimum_score: 0.7
+  required:
+  - ended_surface
+  - ended_control
+  forbidden:
+  - live_notice
+steps:
+- capability: verify_publication
+  state: ended

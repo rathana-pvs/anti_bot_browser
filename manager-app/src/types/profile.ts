@@ -136,6 +136,7 @@ export interface ProfileAccount {
 }
 
 export interface Profile {
+  live?: { configured: boolean };
   group?: string;
   schema_version?: number;
   configuration_revision?: number;

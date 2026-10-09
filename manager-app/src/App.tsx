@@ -256,6 +256,7 @@ export const App: React.FC = () => {
         <div className={`flex-1 flex overflow-hidden ${activeTab === 'campaigns' ? '' : 'hidden'}`}>
           <CampaignsPanel
             profiles={profiles}
+            onEditProfile={(profileId) => { setSelectedProfileId(profileId); setIsEditModalOpen(true); }}
             onSelectProfile={(profileId) => {
               setSelectedProfileId(profileId);
               setActiveTab('profiles');
@@ -314,6 +315,12 @@ export const App: React.FC = () => {
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
+        onOpenSetup={isDesktopApp() ? () => {
+          void fetchSetupStatus().then(status => {
+            setIsSettingsOpen(false);
+            setSetupStatus(status);
+          }).catch(error => window.alert(`Could not open setup: ${String(error)}`));
+        } : undefined}
       />
 
       {profileActionError && (

@@ -1,0 +1,15 @@
+schema_version: 1
+template_id: setup_center
+content_family: live
+recognition:
+  minimum_score: 0.7
+  required:
+  - center_setup
+  - details_saved
+  forbidden:
+  - go_live_enabled
+  - active_surface
+  - ended_surface
+steps:
+- capability: wait_for_state
+  state: prepared

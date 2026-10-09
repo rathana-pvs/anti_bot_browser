@@ -20,8 +20,8 @@ export interface AutomationLog {
 
 export interface AutomationTaskState {
   profile_id: string;
-  task?: 'warming' | 'post' | 'reel' | 'comment';
-  status: 'idle' | 'running' | 'completed' | 'failed' | 'uncertain' | 'stopped';
+  task?: 'warming' | 'post' | 'reel' | 'comment' | 'live';
+  status: 'idle' | 'running' | 'completed' | 'failed' | 'uncertain' | 'needs_review' | 'stopped';
   started_at?: string;
   ended_at?: string | null;
   logs: AutomationLog[];
@@ -44,15 +44,20 @@ export interface RunAutomationParams {
 }
 
 export interface QueueExecutionItem {
+  elapsed_seconds?: number;
+  duration_seconds?: number;
+  broadcast_confirmed?: boolean;
   execution_id: string;
   batch_id?: string;
   batch_name?: string;
   post_id?: string;
   profile_id: string;
-  post_type?: 'photo' | 'reel' | 'warming';
+  post_type?: 'photo' | 'reel' | 'live' | 'warming';
   scrolls?: number;
   warming_options?: WarmingOptions;
   media_file?: string;
+  title?: string;
+  pinned_comment?: string | null;
   base_caption?: string;
   spun_caption: string;
   first_comment?: string | null;
@@ -163,8 +168,10 @@ export interface QueueExecutionItem {
 
 export interface QueuePostItem {
   post_id: string;
-  type: 'photo' | 'reel' | 'warming';
+  type: 'photo' | 'reel' | 'live' | 'warming';
   media_file: string;
+  title?: string;
+  pinned_comment?: string | null;
   base_caption: string;
   scrolls?: number;
   warming_options?: WarmingOptions;
@@ -327,8 +334,13 @@ export interface CreateBatchParams {
     start_now?: boolean;
   };
   posts: {
-    type: 'photo' | 'reel' | 'warming';
+    muted?: boolean;
+    loop?: boolean;
+    max_duration_seconds?: number;
+    type: 'photo' | 'reel' | 'live' | 'warming';
     media_file: string;
+    title?: string;
+    pinned_comment?: string | null;
     base_caption: string;
     scrolls?: number;
   warming_options?: WarmingOptions;

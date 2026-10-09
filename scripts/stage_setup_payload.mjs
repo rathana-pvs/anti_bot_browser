@@ -39,6 +39,7 @@ const entries = [
   'backend',
   'container',
   'scripts/build_container.sh',
+  'scripts/copy_runtime_payload.sh',
   'scripts/run_profile.sh',
 ];
 

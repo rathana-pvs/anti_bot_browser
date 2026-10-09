@@ -49,3 +49,17 @@ current.png
 
 # Personal profile group names
 data/profile_groups.json
+
+# Local cloud-worker secrets and recovery state
+data/worker/
+data/worker-service-session.json
+data/backend-service.lock
+data/worker.json
+
+# Private Facebook Live keys and durable broadcast state
+data/live/
+
+# Local compiler cache and container ownership state
+.build-cargo/
+data/container_owners.json
+data/container_owners.lock

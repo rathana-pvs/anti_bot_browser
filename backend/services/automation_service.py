@@ -10,6 +10,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from backend.worker.service import cloud_execution_allowed
+
 from backend.config import (
     ROOT_DIR,
     PROFILES_DIR,
@@ -17,6 +19,7 @@ from backend.config import (
     BRAINS_DIR,
     BRAIN_CLI,
     AUTOMATION_PYTHON,
+    AUTOMATION_RUNNER,
     MANAGER_INSTANCE_ID,
 )
 from backend.services.docker_service import (
@@ -100,6 +103,10 @@ PREPARATION_HANDOFF_SECONDS = 120.0
 CONTAINER_STOP_RETRY_DELAYS = (0.0, 2.0, 5.0)
 
 def is_task_process_active(record: dict | None) -> bool:
+    # Live owns its publisher slot until encoder/container cleanup completes,
+    # including the interval after a terminal result has been persisted.
+    if record and record.get("task") == "live" and record.get("lifecycle_active") is True:
+        return True
     if not record or record.get("status") != "running":
         return False
     if record.get("lifecycle_active") is True:
@@ -368,7 +375,7 @@ async def launch_manual_automation(
         "expires_at": datetime.fromtimestamp((now_ms + scheduler_cfg["lease_ttl_ms"]) / 1000, tz=timezone.utc).isoformat(),
     }
 
-    runner_script = ROOT_DIR / "automation" / "runner.py"
+    runner_script = AUTOMATION_RUNNER
     args = ["-u", str(runner_script), "--profile", profile_id, "--task", task]
 
     brain_id = "facebook_post" if task == "post" else ("facebook_reel" if task == "reel" else None)
@@ -500,6 +507,9 @@ async def _run_manual_subprocess(profile_id: str, args: list[str], task_record: 
 
 def stop_automation_task(profile_id: str) -> dict:
     record = active_automation_tasks.get(profile_id)
+    if record and record.get("task") == "live":
+        from backend.services.live_service import stop_live
+        return stop_live(profile_id)
     if not record or not is_task_process_active(record):
         raise RuntimeError(f"No active automation running for profile '{profile_id}'")
 
@@ -532,6 +542,9 @@ def claim_queue_execution(execution_id: str, kind: str = "publisher") -> dict:
         target_exec = match["execution"]
         target_post = match["post"]
         target_batch = match["batch"]
+
+        if not cloud_execution_allowed(target_exec):
+            raise RuntimeError("Cloud attempt is not authorized for dispatch")
 
         standalone_warming = target_post.get("type") == "warming"
         prep_mode = target_exec.get("preparation_mode") or "off"
@@ -577,7 +590,10 @@ def claim_queue_execution(execution_id: str, kind: str = "publisher") -> dict:
         token = lifecycle.OWNER_TOKEN.get()
         if not token:
             raise RuntimeError("Missing automation ownership context")
-        lifecycle.acquire(target_exec["profile_id"], execution_id, token)
+        if target_post.get("type") == "live":
+            lifecycle.acquire(target_exec["profile_id"], execution_id, token, deadline_seconds=4 * 60 * 60 + 600)
+        else:
+            lifecycle.acquire(target_exec["profile_id"], execution_id, token)
         now_iso = datetime.now(timezone.utc).isoformat()
         target_exec["status"] = "preparing" if (kind == "preparer" and not standalone_warming) else "running"
         target_exec["started_at"] = now_iso
@@ -617,7 +633,7 @@ async def _execute_queue_preparation_inner(execution_id: str):
     lease = claim_res["lease"]
     profile_id = target_exec["profile_id"]
 
-    runner_script = ROOT_DIR / "automation" / "runner.py"
+    runner_script = AUTOMATION_RUNNER
     args = [
         "-u", str(runner_script),
         "--profile", profile_id,
@@ -811,7 +827,11 @@ async def _execute_queue_item_inner(execution_id: str, scheduler_kind: str = "pu
     lease = claim_res["lease"]
     profile_id = target_exec["profile_id"]
 
-    runner_script = ROOT_DIR / "automation" / "runner.py"
+    if target_post.get("type") == "live":
+        from backend.services.live_service import execute_queue_live
+        return await execute_queue_live(claim_res)
+
+    runner_script = AUTOMATION_RUNNER
     task_type = "warming" if target_post.get("type") == "warming" else ("reel" if target_post.get("type") == "reel" else "post")
     args = ["-u", str(runner_script), "--profile", profile_id, "--task", task_type]
 
@@ -884,10 +904,15 @@ async def _execute_queue_item_inner(execution_id: str, scheduler_kind: str = "pu
         asyncio.create_task(_delayed_dispatch(100))
         return {"success": False, "status": "failed_before_publish", "error": str(error)}
 
+    worker_env = automation_worker_env()
+    if target_exec.get("cloud_attempt_id"):
+        worker_env["CLOUD_EXECUTION_ID"] = execution_id
+    else:
+        worker_env.pop("CLOUD_EXECUTION_ID", None)
     proc = await asyncio.create_subprocess_exec(
         str(AUTOMATION_PYTHON), *args,
         cwd=str(ROOT_DIR),
-        env=automation_worker_env(),
+        env=worker_env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -1129,7 +1154,7 @@ async def _execute_queue_comment_retry_inner(execution_id: str, start_admission_
             pass
         raise error
 
-    runner_script = ROOT_DIR / "automation" / "runner.py"
+    runner_script = AUTOMATION_RUNNER
     args = [
         "-u", str(runner_script),
         "--profile", profile_id,
@@ -1238,6 +1263,11 @@ def recover_stale_queue_executions(reason: str = "expired_scheduler_lease"):
 
         for exec_item in find_stale_running_executions(queue, live_lease_ids):
             stale_lease = exec_item.get("scheduler_lease")
+            if exec_item.get("cloud_attempt_id"):
+                from backend.config import DATA_DIR
+                marker = DATA_DIR / "worker" / "publish-intents" / (exec_item["execution_id"] + ".json")
+                if marker.exists():
+                    exec_item["stage"] = "publish_clicked"
             apply_interrupted_execution_recovery(exec_item)
             exec_item["scheduler_recovery_reason"] = reason
             exec_item["last_scheduler_lease"] = stale_lease
@@ -1377,6 +1407,8 @@ async def dispatch_pending_queue():
             current_q = load_posting_queue()
             match = find_queue_execution(current_q, exec_id)
             if not match or match["execution"].get("status") not in ("pending", "ready"):
+                continue
+            if not cloud_execution_allowed(match["execution"]):
                 continue
             if match["execution"].get("container_cleanup_in_progress"):
                 continue

@@ -3,12 +3,14 @@ import { WarmingSettings, defaultWarmingOptions } from './WarmingSettings';
 import { Profile } from '../types/profile';
 import { AutomationTaskState, CreateBatchParams } from '../types/automation';
 import { createBatch, fetchAutomationTasks, stopAutomation, uploadMediaFiles, getSharedMediaUrl } from '../services/api';
+import { LivePage } from './LivePage';
 import { BatchPostCreator } from './BatchPostCreator';
 import { PostingQueuePanel } from './PostingQueuePanel';
 import { ResourceModeControl } from './ResourceModeControl';
 import { GroupedProfileSelector } from './GroupedProfileSelector';
 import { useAppDialog } from './ui/AppDialogProvider';
 import {
+  Radio,
   Flame,
   Send,
   Square,
@@ -32,6 +34,7 @@ import {
 interface CampaignsPanelProps {
   profiles: Profile[];
   onSelectProfile: (profileId: string) => void;
+  onEditProfile: (profileId: string) => void;
   isSidebarOpen?: boolean;
   onToggleSidebar?: () => void;
 }
@@ -39,11 +42,12 @@ interface CampaignsPanelProps {
 export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
   profiles,
   onSelectProfile,
+  onEditProfile,
   isSidebarOpen,
   onToggleSidebar,
 }) => {
   const { showAlert, showToast } = useAppDialog();
-  const [activeMainTab, setActiveMainTab] = useState<'batch_creator' | 'queue_monitor' | 'instant'>('batch_creator');
+  const [activeMainTab, setActiveMainTab] = useState<'batch_creator' | 'queue_monitor' | 'instant' | 'live'>('batch_creator');
   const [taskType, setTaskType] = useState<'warming' | 'post'>('warming');
   const [selectedProfileIds, setSelectedProfileIds] = useState<string[]>([]);
   const [scrolls, setScrolls] = useState<number>(4);
@@ -196,7 +200,7 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
   return (
     <div className="flex-1 flex flex-col h-full bg-background overflow-hidden">
       {/* Top Header */}
-      <header className="h-14 border-b border-border px-6 flex items-center justify-between shrink-0 bg-surface/50">
+      <header className="min-h-14 flex flex-wrap items-center justify-between gap-3 border-b border-border bg-surface/50 px-6 py-2 shrink-0">
         <div className="flex items-center gap-3">
           {onToggleSidebar && (
             <button
@@ -219,19 +223,20 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
           </h2>
         </div>
 
-        <button
-          onClick={loadTasks}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-zinc-900 border border-zinc-800 text-zinc-300 hover:text-white text-xs font-medium transition-colors"
-        >
-          <RefreshCw className="w-3.5 h-3.5" />
-          <span>Refresh</span>
-        </button>
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-3">
+          <ResourceModeControl />
+          <button
+            onClick={loadTasks}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-zinc-900 border border-zinc-800 text-zinc-300 hover:text-white text-xs font-medium transition-colors"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>Refresh</span>
+          </button>
+        </div>
       </header>
 
-      <ResourceModeControl />
-
       {/* Sub-Tab Navigation Bar */}
-      <div className="flex items-center gap-2 border-b border-border px-6 pt-2 bg-surface/40 shrink-0">
+      <div className="flex items-center gap-2 overflow-x-auto border-b border-border px-6 pt-2 bg-surface/40 shrink-0">
         <button
           type="button"
           onClick={() => setActiveMainTab('instant')}
@@ -258,6 +263,12 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
           <span>📅 Daily Batch Creator</span>
         </button>
 
+        <button type="button" onClick={() => setActiveMainTab('live')}
+          aria-current={activeMainTab === 'live' ? 'page' : undefined}
+          className={`flex shrink-0 items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-semibold transition-all ${activeMainTab === 'live' ? 'border-rose-500 bg-rose-950/20 text-rose-400' : 'border-transparent text-zinc-400 hover:text-zinc-200'}`}>
+          <Radio className="h-3.5 w-3.5 text-rose-400" /><span>Facebook Live</span>
+        </button>
+
         <button
           type="button"
           onClick={() => setActiveMainTab('queue_monitor')}
@@ -281,6 +292,10 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
 
       <div className={`flex-1 overflow-y-auto p-6 ${activeMainTab === 'queue_monitor' ? '' : 'hidden'}`}>
         <PostingQueuePanel profiles={profiles} />
+      </div>
+
+      <div className={`flex min-h-0 flex-1 overflow-hidden ${activeMainTab === 'live' ? '' : 'hidden'}`}>
+        <LivePage profiles={profiles} onEditProfile={onEditProfile} onSelectProfile={onSelectProfile} />
       </div>
 
       <div className={`flex-1 grid grid-cols-12 gap-6 p-6 overflow-hidden ${activeMainTab === 'instant' ? '' : 'hidden'}`}>

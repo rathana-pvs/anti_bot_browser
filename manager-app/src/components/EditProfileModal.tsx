@@ -1,10 +1,12 @@
 import { ProfileGroupField } from './ProfileGroupField';
+import { ProxySpeedTest } from './ProxySpeedTest';
 import React, { useEffect, useState } from 'react';
 import { AlertTriangle, ChevronDown, Cpu, Globe, Monitor, X } from 'lucide-react';
 import { BehaviorMode, Profile, ProfileUpdateRequest, ReelTemplateSelection, RequestedEnvironment, ResourceLimits, reelTemplateLabel } from '../types/profile';
 import { formatProxyGeography, ProxyItem } from '../types/proxy';
 import { SCREEN_RESOLUTIONS, getHostTimezone } from '../services/fingerprintPool';
 import { fetchProfileDefaults } from '../services/api';
+import { fetchLiveSettings, saveLiveSettings, LiveSettings } from '../services/live';
 import { Checkbox } from './ui/Checkbox';
 import { Select } from './ui/Select';
 import { useTimezoneConfirmation } from './TimezoneConfirmationDialog';
@@ -34,6 +36,11 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
   profile, isOpen, onClose, onSave, proxies = [], groups = [],
 }) => {
   const { confirmTimezone, timezoneDialog } = useTimezoneConfirmation();
+  const [liveSettings, setLiveSettings] = useState<LiveSettings>({server_url: 'rtmps://live-api-s.facebook.com:443/rtmp/', producer_url: 'https://www.facebook.com/live/producer/', key_saved: false});
+  const [liveLoading, setLiveLoading] = useState(false);
+  const [liveKey, setLiveKey] = useState('');
+  const [liveDirty, setLiveDirty] = useState(false);
+  const [liveError, setLiveError] = useState('');
   const [name, setName] = useState('');
   const [group, setGroup] = useState('');
   const [environment, setEnvironment] = useState<RequestedEnvironment | null>(null);
@@ -58,6 +65,12 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
 
   useEffect(() => {
     if (!isOpen || !profile) return;
+    let disposed = false;
+    setLiveSettings({server_url: 'rtmps://live-api-s.facebook.com:443/rtmp/', producer_url: 'https://www.facebook.com/live/producer/', key_saved: false});
+    setLiveLoading(true); setLiveKey(''); setLiveDirty(false); setLiveError('');
+    fetchLiveSettings(profile.id).then(value => { if (!disposed) setLiveSettings(value); })
+      .catch(reason => { if (!disposed) setLiveError(reason.message || 'Could not load Live settings'); })
+      .finally(() => { if (!disposed) setLiveLoading(false); });
     setAdvancedOpen(false);
     setName(profile.name);
     setGroup(profile.group || '');
@@ -86,6 +99,7 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
       setBehaviorOptions(defaults.behavior_modes);
       setReelTemplateOptions(defaults.reel_template_options);
     }).catch(() => undefined);
+    return () => { disposed = true; };
   }, [isOpen, profile?.id]);
 
   if (!isOpen || !profile || !environment) return null;
@@ -94,6 +108,19 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
     (proxy) => !proxy.assigned || proxy.profile_id === profile.id || proxy.id === profile.network.proxy_id
   );
   const selectedPoolProxy = poolChoices.find((proxy) => proxy.id === networkChoice);
+  const originalNetworkChoice = profile.network.mode === 'pool' && profile.network.proxy_id
+    ? profile.network.proxy_id : profile.network.proxy_host ? 'custom' : 'direct';
+  const originalEnvironment = environmentFor(profile);
+  const browserSettingsChanged = Object.keys(originalEnvironment).some(key =>
+    environment[key as keyof RequestedEnvironment] !== originalEnvironment[key as keyof RequestedEnvironment]);
+  const networkChanged = networkChoice !== originalNetworkChoice || (networkChoice === 'custom' && (
+    customHost.trim() !== (profile.network.proxy_host || '') || Number(customPort) !== (profile.network.proxy_port || 1080) ||
+    customUser.trim() !== (profile.network.proxy_user || '') || customPassword !== (profile.network.proxy_pass || '')));
+  const resourcesChanged = resources.cpu_limit !== (profile.resources?.cpu_limit ?? 4) ||
+    resources.memory_mb !== (profile.resources?.memory_mb ?? 4096);
+  const needsBrowserRestart = profile.status === 'running' &&
+    (profile.restart_required || browserSettingsChanged || networkChanged || resourcesChanged);
+
 
   const changeNetwork = (choice: string) => {
     setNetworkChoice(choice);
@@ -111,11 +138,18 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
     }
   };
 
+  const speedTestNetwork = networkChoice === 'custom'
+    ? { mode: 'custom' as const, host: customHost.trim(), port: Number(customPort), username: customUser.trim(), password: customPassword }
+    : networkChoice === 'direct'
+      ? { mode: 'direct' as const }
+      : { mode: 'pool' as const, proxy_id: networkChoice };
+
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     setIsSaving(true);
     setError(null);
     try {
+      if (liveDirty && (liveError || liveLoading)) throw new Error('Live settings could not be loaded. Retry the connection before saving changes to the key or URL.');
       const network: ProfileUpdateRequest['network'] = networkChoice === 'direct'
         ? { mode: 'direct' }
         : networkChoice === 'custom'
@@ -124,6 +158,10 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
       const confirmedEnvironment = await confirmTimezone(environment, network);
       if (!confirmedEnvironment) return;
       setEnvironment(confirmedEnvironment);
+      if (liveDirty) {
+        const saved = await saveLiveSettings(profile.id, { server_url: liveSettings.server_url, producer_url: liveSettings.producer_url, stream_key: liveKey });
+        setLiveSettings(saved); setLiveKey(''); setLiveDirty(false);
+      }
       await onSave(profile.id, {
         name: name.trim(), group: group.trim(), network, requested_environment: confirmedEnvironment, resources,
         behavior_mode: behaviorMode,
@@ -148,9 +186,9 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
           <button type="button" onClick={onClose} className="text-zinc-400 hover:text-white"><X className="h-4 w-4" /></button>
         </div>
         <form onSubmit={submit} className="max-h-[80vh] space-y-4 overflow-y-auto p-5 text-xs">
-          {profile.status === 'running' && (
+          {needsBrowserRestart && (
             <div className="flex gap-2 rounded border border-amber-800/50 bg-amber-950/20 p-2 text-amber-300">
-              <AlertTriangle className="h-4 w-4 shrink-0" />Runtime changes are saved as requested settings and require a restart before they become effective.
+              <AlertTriangle className="h-4 w-4 shrink-0" />Browser settings require restarting this browser profile after saving. Live keys and URLs apply to the next broadcast without restarting the profile.
             </div>
           )}
           <label className="block text-zinc-400">Profile name
@@ -173,6 +211,27 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
             </div>
             <p className="text-[10px] leading-relaxed text-zinc-500">Auto uses two-stage Reel detection. A selected template bypasses selection and validates its expected screens. Changes apply to subsequent jobs.</p>
           </div>
+          <section aria-label="Facebook Live settings" className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
+            <div className="font-medium text-zinc-300">Facebook Live</div>
+            <p className="text-[11px] text-zinc-500">Save this profile’s streaming settings once, then select it in Live batches. Prepare the destination and post details in Facebook Live Producer before running.</p>
+            {liveError && <div className="space-y-2"><p role="alert" className="text-amber-300">{liveError}</p>
+              <button type="button" disabled={liveLoading} onClick={async () => {
+                setLiveLoading(true);
+                try {
+                  const loaded = await fetchLiveSettings(profile.id);
+                  setLiveSettings(current => liveDirty ? {...current, key_saved: loaded.key_saved} : loaded);
+                  setLiveError('');
+                } catch (reason) { setLiveError(reason instanceof Error ? reason.message : 'Could not load Live settings'); }
+                finally { setLiveLoading(false); }
+              }} className="rounded border border-zinc-700 px-2 py-1 text-zinc-300 disabled:opacity-50">{liveLoading ? 'Connecting…' : 'Retry connection'}</button>
+            </div>}
+            <>
+              <label className="block text-zinc-400">Server URL<input disabled={liveLoading || isSaving} value={liveSettings.server_url} onChange={e => { setLiveSettings({ ...liveSettings, server_url: e.target.value }); setLiveDirty(true); }} className="mt-1 w-full rounded border border-zinc-800 bg-zinc-950 p-2 text-zinc-100" /></label>
+              <label className="block text-zinc-400">Stream key<input disabled={liveLoading || isSaving} type="password" autoComplete="new-password" value={liveKey} placeholder={liveSettings.key_saved ? 'Saved · leave blank to keep' : 'Paste Facebook stream key'} onChange={e => { setLiveKey(e.target.value); setLiveDirty(true); }} className="mt-1 w-full rounded border border-zinc-800 bg-zinc-950 p-2 text-zinc-100" /></label>
+              <label className="block text-zinc-400">Live Producer URL<input disabled={liveLoading || isSaving} value={liveSettings.producer_url} onChange={e => { setLiveSettings({ ...liveSettings, producer_url: e.target.value }); setLiveDirty(true); }} placeholder="https://www.facebook.com/live/producer/" className="mt-1 w-full rounded border border-zinc-800 bg-zinc-950 p-2 text-zinc-100" /></label>
+            </>
+            {liveLoading && <p className="text-zinc-500">Loading streaming settings…</p>}
+          </section>
           <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
             <div className="flex items-center gap-1.5 font-medium text-zinc-300"><Globe className="h-3.5 w-3.5" />Network</div>
             <Select value={networkChoice} onValueChange={changeNetwork} ariaLabel="Network connection"
@@ -190,6 +249,7 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
                 <input type="password" value={customPassword} onChange={(e) => setCustomPassword(e.target.value)} placeholder="Password" className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-zinc-200" />
               </div>
             )}
+            <ProxySpeedTest key={JSON.stringify(speedTestNetwork)} network={speedTestNetwork} disabled={isSaving} />
           </div>
           {networkChoice === 'direct' && environment.timezone_policy === 'manual' && (
             <label className="block text-xs text-zinc-400">Confirmed timezone

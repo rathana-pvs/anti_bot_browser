@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Body
 from pydantic import BaseModel, Field
+from backend.models.profile import NetworkIntent
 from backend.services.proxy_service import (
     load_proxy_pool,
     save_proxy_pool,
@@ -11,6 +12,7 @@ from backend.services.proxy_service import (
     refresh_proxy_geography,
     refresh_proxy_statuses,
     test_proxy_ping,
+    check_proxy_speed,
 )
 
 router = APIRouter(prefix="/api/proxies", tags=["proxies"])
@@ -18,6 +20,31 @@ router = APIRouter(prefix="/api/proxies", tags=["proxies"])
 
 class ProxySelection(BaseModel):
     proxy_ids: list[str] = Field(min_length=1, max_length=10000)
+
+
+@router.post("/speed-test")
+def test_network_speed(intent: NetworkIntent):
+    """Measure a selected proxy without reserving it or creating a profile."""
+    if intent.mode == "direct":
+        raise HTTPException(status_code=400, detail="Select a proxy to test its speed")
+    if intent.mode == "pool":
+        proxy = next((p for p in load_proxy_pool() if p.get("id") == intent.proxy_id), None)
+        if not proxy:
+            raise HTTPException(status_code=404, detail="Selected proxy does not exist")
+        network = {"mode": "pool", "proxy_host": proxy["host"], "proxy_port": proxy["port"],
+                   "proxy_type": proxy.get("type") or "socks5",
+                   "proxy_user": proxy.get("username"), "proxy_pass": proxy.get("password")}
+    else:
+        network = {"mode": "custom", "proxy_host": intent.host, "proxy_port": intent.port,
+                   "proxy_type": "socks5", "proxy_user": intent.username, "proxy_pass": intent.password}
+    try:
+        latency = test_proxy_ping(network["proxy_host"], network["proxy_port"])
+        download = check_proxy_speed(network, "download")
+        upload = check_proxy_speed(network, "upload")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"latency": latency, "download": download, "upload": upload,
+            "last_checked": datetime.now(timezone.utc).isoformat()}
 
 
 @router.post("/delete-selected")

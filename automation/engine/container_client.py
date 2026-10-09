@@ -7,6 +7,7 @@ directly from the Docker container via pure OS-level events (zero CDP).
 import subprocess
 import re
 import time
+import uuid
 import numpy as np
 import cv2
 
@@ -217,21 +218,28 @@ class ContainerClient:
         Capture current virtual display screen using scrot.
         Returns the image as an OpenCV BGR numpy array directly in memory.
         """
-        tmp_path = f"/tmp/screen_{self.profile_id}.png"
-        self.exec_cmd(["scrot", "-o", tmp_path], user="root")
-
-        # Read binary PNG from container
-        proc = subprocess.run(
-            ["docker", "exec", "-u", "root", self.container_name, "cat", tmp_path],
-            capture_output=True,
-            check=True,
-        )
-        img_bytes = proc.stdout
-        nparr = np.frombuffer(img_bytes, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        if img is None:
-            raise RuntimeError(f"Failed to decode screenshot from {self.container_name}")
-        return img
+        # Every caller needs its own file: a viewer/diagnostic capture can run
+        # while automation is reading its PNG. A shared path allows partial reads.
+        tmp_path = f"/tmp/screen_{uuid.uuid4().hex}.png"
+        try:
+            self.exec_cmd(["scrot", "-o", tmp_path], user="root")
+            proc = subprocess.run(
+                ["docker", "exec", "-u", "root", self.container_name, "cat", tmp_path],
+                capture_output=True,
+                check=True,
+            )
+            nparr = np.frombuffer(proc.stdout, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if img is None:
+                raise RuntimeError(f"Failed to decode screenshot from {self.container_name}")
+            return img
+        finally:
+            # Screens may contain credentials; remove the transient capture even
+            # when capture or decoding fails. Cleanup must not hide the error.
+            try:
+                self.exec_cmd(["rm", "-f", tmp_path], check=False, user="root")
+            except Exception:
+                pass
 
     def save_screenshot(self, host_output_path: str) -> None:
         """Capture screenshot and write directly to a host file."""

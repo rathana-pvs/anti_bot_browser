@@ -432,6 +432,7 @@ export const ProfileDetails: React.FC<ProfileDetailsProps> = ({
             </div>
           </div>
 
+
           <div className="rounded-lg border border-zinc-800 bg-zinc-950 p-3 space-y-3 text-xs">
             <div className="flex items-center justify-between">
               <span className="text-zinc-500">Status</span>

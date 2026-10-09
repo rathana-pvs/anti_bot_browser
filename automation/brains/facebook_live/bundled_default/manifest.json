@@ -1,0 +1,23 @@
+{
+  "manifest_version": 1,
+  "brain_api_version": 1,
+  "id": "facebook_live",
+  "version": "1.0.0",
+  "name": "Facebook Live Producer Workflow",
+  "description": "Recognize and control Live Producer; video ingest stays in the host streaming service.",
+  "platform": "facebook",
+  "task_type": "live",
+  "min_engine_version": "1.0.0",
+  "max_engine_version_exclusive": "2.0.0",
+  "supported_locales": [
+    "en"
+  ],
+  "supported_themes": [
+    "light",
+    "dark"
+  ],
+  "supported_viewports": [
+    "desktop_standard",
+    "desktop_wide"
+  ]
+}

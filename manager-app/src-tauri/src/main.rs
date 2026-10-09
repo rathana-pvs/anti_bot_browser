@@ -125,6 +125,22 @@ fn container_platform_installed() -> bool {
         .unwrap_or(false)
 }
 
+fn development_root() -> Option<PathBuf> {
+    #[cfg(all(debug_assertions, not(target_os = "windows")))]
+    {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()?
+            .parent()?
+            .to_path_buf();
+        if root.join("backend/main.py").is_file()
+            && root.join("automation/venv/bin/uvicorn").is_file()
+        {
+            return Some(root);
+        }
+    }
+    None
+}
+
 fn find_install_root(app: &AppHandle) -> Option<PathBuf> {
     let mut candidates = Vec::new();
     // Linux desktop setup always runs from the writable payload copied into
@@ -178,6 +194,14 @@ fn copy_setup_payload(
         if source_path.is_dir() {
             copy_setup_payload(&source_path, &destination_path)?;
         } else {
+            // Keep the user's active/previous Brain versions; new bundled families
+            // resolve to bundled_default even when absent from an older catalog.
+            if source_path.file_name().and_then(|name| name.to_str()) == Some("catalog.json")
+                && source_path.parent().and_then(|parent| parent.file_name()).and_then(|name| name.to_str()) == Some("brains")
+                && destination_path.is_file()
+            {
+                continue;
+            }
             std::fs::copy(&source_path, &destination_path)
                 .map_err(|error| format!("Could not copy {}: {error}", source_path.display()))?;
         }
@@ -313,6 +337,13 @@ fn find_legacy_data_root(destination: &Path) -> Option<PathBuf> {
 
 #[cfg(not(target_os = "windows"))]
 fn prepare_install_root(app: &AppHandle) -> Result<PathBuf, String> {
+    if development_root().is_some() {
+        // Development code comes from the checkout; user data keeps the same
+        // persistent runtime as the packaged desktop application.
+        if let Some(root) = find_install_root(app) {
+            return Ok(root);
+        }
+    }
     let bundled_payload = app
         .path()
         .resource_dir()
@@ -405,6 +436,63 @@ fn backend_runtime_version() -> Option<String> {
         .get("version")?
         .as_str()
         .map(str::to_string)
+}
+
+// Attach to a separately managed worker backend without taking ownership of it.
+// The descriptor contains only the local API token, never the cloud credential.
+fn valid_local_session_token(token: &str) -> bool {
+    // Desktop sessions use a UUID (128 bits); the standalone service uses
+    // token_hex(32) (256 bits). Both are valid authenticated local sessions.
+    matches!(token.len(), 32 | 64) && token.bytes().all(|c| c.is_ascii_hexdigit())
+}
+
+fn worker_service_session(app: &AppHandle) -> Option<ApiSession> {
+    let mut candidates = Vec::new();
+    if let Ok(path) = std::env::var("WORKER_SERVICE_SESSION_FILE") {
+        candidates.push(PathBuf::from(path));
+    }
+    if let Some(root) = find_install_root(app) {
+        candidates.push(root.join("data/worker-service-session.json"));
+    }
+    if let Ok(root) = std::env::current_dir() {
+        candidates.push(root.join("data/worker-service-session.json"));
+        if root.ends_with("manager-app") {
+            if let Some(parent) = root.parent() {
+                candidates.push(parent.join("data/worker-service-session.json"));
+            }
+        }
+    }
+    for path in candidates {
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(value) if value.is_file() && !value.file_type().is_symlink() => value,
+            _ => continue,
+        };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o077 != 0 {
+                continue;
+            }
+        }
+        let Ok(content) = std::fs::read_to_string(&path) else { continue };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else { continue };
+        let Some(port) = value.get("port").and_then(|v| v.as_u64()).filter(|v| *v > 0 && *v <= 65535) else { continue };
+        let Some(token) = value.get("token").and_then(|v| v.as_str()).filter(|v| valid_local_session_token(v)) else { continue };
+        let address = SocketAddr::from(([127, 0, 0, 1], port as u16));
+        let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(500)) else { continue };
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
+        let request = format!("GET /api/worker/status HTTP/1.0\r\nHost: 127.0.0.1\r\nX-Manager-Token: {token}\r\nConnection: close\r\n\r\n");
+        if stream.write_all(request.as_bytes()).is_err() { continue; }
+        let mut response = String::new();
+        if stream.take(65536).read_to_string(&mut response).is_err() { continue; }
+        if !response.starts_with("HTTP/1.0 200") && !response.starts_with("HTTP/1.1 200") { continue; }
+        let Some(body) = response.split("\r\n\r\n").nth(1) else { continue };
+        if serde_json::from_str::<serde_json::Value>(body).ok().and_then(|v| v.get("enabled").and_then(|v| v.as_bool())) == Some(true) {
+            return Some(ApiSession { port: port as u16, token: token.to_string() });
+        }
+    }
+    None
 }
 
 #[cfg(target_os = "windows")]
@@ -1083,6 +1171,37 @@ async fn get_setup_log(app: AppHandle) -> Result<Vec<String>, String> {
         .map_err(|error| format!("Setup log worker failed: {error}"))
 }
 
+// Installer changes code used by the backend. Refuse to interrupt active work.
+fn tasks_block_runtime_install(tasks: &serde_json::Value) -> Result<bool, String> {
+    let records = tasks.as_object().ok_or("Could not verify active automation. Try again after services recover.")?;
+    Ok(records.values().any(|task| {
+        task.get("lifecycle_active").and_then(|value| value.as_bool()) == Some(true)
+            || matches!(task.get("status").and_then(|value| value.as_str()), Some("running" | "preparing" | "publishing"))
+    }))
+}
+
+fn verify_runtime_install_idle() -> Result<(), String> {
+    if !backend_is_running() { return Ok(()); }
+    let token = std::env::var("MANAGER_API_TOKEN").map_err(|_| "Could not verify active work. Restart the app before installing.")?;
+    let address = SocketAddr::from(([127, 0, 0, 1], manager_api_port()));
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(2)).map_err(|_| "Could not check active work.")?;
+    stream.set_read_timeout(Some(Duration::from_secs(5))).map_err(|_| "Could not check active work.")?;
+    stream.set_write_timeout(Some(Duration::from_secs(2))).map_err(|_| "Could not check active work.")?;
+    let request = format!("GET /api/automation/tasks HTTP/1.0\r\nHost: 127.0.0.1\r\nX-Manager-Token: {token}\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).map_err(|_| "Could not check active work.")?;
+    let mut response = String::new();
+    stream.take(2_000_000).read_to_string(&mut response).map_err(|_| "Could not check active work.")?;
+    if !response.starts_with("HTTP/1.0 200 ") && !response.starts_with("HTTP/1.1 200 ") {
+        return Err("Could not verify active work. Restart the app before installing.".into());
+    }
+    let body = response.split_once("\r\n\r\n").ok_or("Invalid service response.")?.1;
+    let tasks = serde_json::from_str(body).map_err(|_| "Could not verify active automation.")?;
+    if tasks_block_runtime_install(&tasks)? {
+        return Err("Wait for running automation and Live broadcasts to finish, then install the runtime.".into());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn run_setup(
     app: AppHandle,
@@ -1090,6 +1209,9 @@ async fn run_setup(
     backend_state: tauri::State<'_, BackendProcess>,
     repair: bool,
 ) -> Result<SetupRunResult, String> {
+    if std::env::var("WORKER_SERVICE_ATTACHED").as_deref() == Ok("1") {
+        return Err("Stop the independently managed worker service, then reopen the app before installing or repairing its runtime.".into());
+    }
     {
         let mut running = state
             .0
@@ -1103,6 +1225,19 @@ async fn run_setup(
     let setup_app = app.clone();
     let mut result = match tauri::async_runtime::spawn_blocking(move || {
         reset_setup_log(&setup_app);
+        verify_runtime_install_idle()?;
+        let backend = setup_app.state::<BackendProcess>();
+        let mut owned = backend.0.lock().map_err(|_| "Backend state is unavailable.")?;
+        if let Some(mut child) = owned.take() {
+            emit_setup_line(&setup_app, "system", "Stopping application services before updating the runtime…");
+            terminate_backend(&mut child);
+        }
+        drop(owned);
+        #[cfg(target_os = "windows")]
+        stop_wsl_backend(find_ubuntu_distribution().as_deref());
+        if backend_is_running() {
+            return Err("Stop the separately running backend before installing its runtime.".into());
+        }
         run_setup_process(&setup_app, repair)
     })
     .await
@@ -1268,6 +1403,9 @@ async fn recover_services(
     app: AppHandle,
     backend_state: tauri::State<'_, BackendProcess>,
 ) -> Result<SetupRunResult, String> {
+    if std::env::var("WORKER_SERVICE_ATTACHED").as_deref() == Ok("1") {
+        return Err("Restart the worker through its service manager; the desktop does not own it.".into());
+    }
     let recovery_app = app.clone();
     let (result, backend_child) =
         tauri::async_runtime::spawn_blocking(move || recover_services_process(&recovery_app))
@@ -1516,16 +1654,46 @@ fn find_backend_binary(app: &AppHandle) -> Option<PathBuf> {
 }
 
 #[allow(unused_variables)]
+fn configure_backend_lifetime(command: &mut Command) {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+        let parent = std::process::id() as libc::pid_t;
+        // Tauri's dev watcher can kill the desktop without delivering a window
+        // close event. Stop its owned backend too, leaving independent workers alone.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::getppid() != parent {
+                    return Err(std::io::Error::other("desktop exited before backend startup"));
+                }
+                Ok(())
+            });
+        }
+    }
+}
+
+#[allow(unused_variables)]
 fn spawn_backend(app: &AppHandle) -> Option<Child> {
+    if std::env::var("WORKER_SERVICE_ATTACHED").as_deref() == Ok("1") {
+        return None;
+    }
     #[cfg(target_os = "windows")]
     {
         return spawn_wsl_backend();
     }
 
     #[cfg(not(target_os = "windows"))]
-    if let Some(binary_path) = find_backend_binary(app) {
+    if let Some(binary_path) = development_root()
+        .is_none()
+        .then(|| find_backend_binary(app))
+        .flatten()
+    {
         println!("[Tauri] Starting backend server from {:?}", binary_path);
         let mut cmd = Command::new(&binary_path);
+        configure_backend_lifetime(&mut cmd);
         cmd.env("PORT", manager_api_port().to_string());
         if let Some(root) = find_install_root(app) {
             // A frozen Python sidecar resolves __file__ inside PyInstaller's
@@ -1556,15 +1724,19 @@ fn spawn_backend(app: &AppHandle) -> Option<Child> {
         }
     } else {
         if let Some(root) = find_install_root(app) {
-            let uvicorn = root.join("automation/venv/bin/uvicorn");
+            let code_root = development_root().unwrap_or_else(|| root.clone());
+            let uvicorn = code_root.join("automation/venv/bin/uvicorn");
             if uvicorn.exists() {
-                println!("[Tauri] Starting backend from the private application runtime");
+                println!("[Tauri] Starting Python backend from {}", code_root.display());
+                println!("[Tauri] Using persistent runtime {}", root.display());
                 let port = manager_api_port().to_string();
                 let mut command = Command::new(uvicorn);
+                configure_backend_lifetime(&mut command);
                 command
                     .args(["backend.main:app", "--host", "127.0.0.1", "--port", &port])
-                    .current_dir(&root)
-                    .env("PYTHONPATH", &root);
+                    .current_dir(&code_root)
+                    .env("PYTHONPATH", &code_root)
+                    .env("AUTOMAT_FB_ROOT", &root);
                 if let Ok(token) = std::env::var("MANAGER_API_TOKEN") {
                     command.env("MANAGER_API_TOKEN", token);
                 }
@@ -1608,7 +1780,6 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(SetupProcess(Mutex::new(false)))
-        .manage(api_session)
         .invoke_handler(tauri::generate_handler![
             get_api_session,
             save_support_bundle,
@@ -1619,6 +1790,19 @@ fn main() {
         ])
         .setup(|app| {
             let handle = app.handle();
+            if let Some(session) = worker_service_session(handle) {
+                std::env::set_var("MANAGER_API_PORT", session.port.to_string());
+                std::env::set_var("MANAGER_API_TOKEN", &session.token);
+                std::env::set_var("WORKER_SERVICE_ATTACHED", "1");
+                app.manage(session);
+                app.manage(BackendProcess(Mutex::new(None)));
+                println!("[Tauri] Attached to the independently managed worker service");
+                return Ok(());
+            }
+            app.manage(ApiSession {
+                port: manager_api_port(),
+                token: std::env::var("MANAGER_API_TOKEN").unwrap_or_default(),
+            });
             // Refresh bundled application code before launching the backend. User data
             // (profiles, browser sessions, queues, and settings) lives outside the
             // bundled payload and is preserved by copy_setup_payload.
@@ -1633,6 +1817,9 @@ fn main() {
             if let tauri::WindowEvent::Destroyed = event {
                 // When main window is destroyed, terminate the backend server process
                 if window.label() == "main" {
+                    if std::env::var("WORKER_SERVICE_ATTACHED").as_deref() == Ok("1") {
+                        return;
+                    }
                     if let Some(state) = window.try_state::<BackendProcess>() {
                         if let Ok(mut lock) = state.0.lock() {
                             if let Some(mut child) = lock.take() {
@@ -1656,6 +1843,44 @@ fn main() {
 #[cfg(all(test, not(target_os = "windows")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_service_discovery_accepts_desktop_and_standalone_tokens() {
+        assert!(valid_local_session_token(&"a".repeat(32)));
+        assert!(valid_local_session_token(&"b".repeat(64)));
+        assert!(!valid_local_session_token(&"a".repeat(16)));
+        assert!(!valid_local_session_token(&"z".repeat(32)));
+        assert!(!valid_local_session_token(&format!("{}\r\n", "a".repeat(30))));
+    }
+
+    #[test]
+    fn runtime_install_refuses_running_and_cleanup_tasks() {
+        assert!(tasks_block_runtime_install(&serde_json::json!({"p": {"status": "running"}})).unwrap());
+        assert!(tasks_block_runtime_install(&serde_json::json!({"p": {"status": "failed", "lifecycle_active": true}})).unwrap());
+        assert!(!tasks_block_runtime_install(&serde_json::json!({"p": {"status": "published", "lifecycle_active": false}})).unwrap());
+        assert!(tasks_block_runtime_install(&serde_json::json!([])).is_err());
+    }
+
+    #[test]
+    fn runtime_update_keeps_brain_activation_and_user_data() {
+        let root = std::env::temp_dir().join(format!("runtime-update-{}", Uuid::new_v4().simple()));
+        let source = root.join("payload");
+        let destination = root.join("runtime");
+        std::fs::create_dir_all(source.join("automation/brains/facebook_live/bundled_default")).unwrap();
+        std::fs::create_dir_all(destination.join("automation/brains/facebook_reel/1.2.3")).unwrap();
+        std::fs::create_dir_all(destination.join("profiles/p/chrome_data")).unwrap();
+        std::fs::write(source.join("automation/brains/catalog.json"), "bundled catalog").unwrap();
+        std::fs::write(source.join("automation/brains/facebook_live/bundled_default/manifest.json"), "new live").unwrap();
+        std::fs::write(destination.join("automation/brains/catalog.json"), "user activation").unwrap();
+        std::fs::write(destination.join("automation/brains/facebook_reel/1.2.3/manifest.json"), "custom").unwrap();
+        std::fs::write(destination.join("profiles/p/chrome_data/session"), "session").unwrap();
+        copy_setup_payload(&source, &destination).unwrap();
+        assert_eq!(std::fs::read_to_string(destination.join("automation/brains/catalog.json")).unwrap(), "user activation");
+        assert_eq!(std::fs::read_to_string(destination.join("profiles/p/chrome_data/session")).unwrap(), "session");
+        assert_eq!(std::fs::read_to_string(destination.join("automation/brains/facebook_reel/1.2.3/manifest.json")).unwrap(), "custom");
+        assert_eq!(std::fs::read_to_string(destination.join("automation/brains/facebook_live/bundled_default/manifest.json")).unwrap(), "new live");
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn legacy_profile_migration_is_complete_and_idempotent() {

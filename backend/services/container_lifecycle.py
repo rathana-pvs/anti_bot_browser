@@ -64,7 +64,7 @@ def _write(owners):
         if os.path.exists(path):
             os.unlink(path)
 
-def acquire(profile_id, execution_id, token=None):
+def acquire(profile_id, execution_id, token=None, deadline_seconds=None):
     if SHUTTING_DOWN:
         raise RuntimeError("Manager is shutting down")
     token = token or uuid.uuid4().hex
@@ -79,7 +79,7 @@ def acquire(profile_id, execution_id, token=None):
             backend_start_time=psutil.Process().create_time(),
             state='active', used=bool(old and old.get('used')),
             heartbeat_expires_at=now + HEARTBEAT_SECONDS,
-            hard_deadline_at=now + HARD_DEADLINE_SECONDS)
+            hard_deadline_at=now + (deadline_seconds or HARD_DEADLINE_SECONDS))
         _write(owners)
     return token
 

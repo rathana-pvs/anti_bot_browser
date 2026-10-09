@@ -1,4 +1,5 @@
 import { ProfileGroupField } from './ProfileGroupField';
+import { ProxySpeedTest } from './ProxySpeedTest';
 import React, { useEffect, useRef, useState } from 'react';
 import { ChevronDown, Cpu, Globe, Loader2, Monitor, Shield, X } from 'lucide-react';
 import { fetchProfileDefaults } from '../services/api';
@@ -121,6 +122,12 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
   const availableProxies = proxies.filter((proxy) => !proxy.assigned);
   const selectedProxy = availableProxies.find((proxy) => proxy.id === networkChoice);
 
+  const speedTestNetwork = networkChoice === 'custom'
+    ? { mode: 'custom' as const, host: customHost.trim(), port: Number(customPort), username: customUser.trim(), password: customPassword }
+    : networkChoice === 'direct'
+      ? { mode: 'direct' as const }
+      : { mode: 'pool' as const, proxy_id: networkChoice };
+
   const handleNetworkChange = (choice: string) => {
     networkTouched.current = true;
     networkChoiceRef.current = choice;
@@ -237,6 +244,7 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
                     className="rounded border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-zinc-100" />
                 </div>
               )}
+              <ProxySpeedTest key={JSON.stringify(speedTestNetwork)} network={speedTestNetwork} disabled={isSaving} />
             </div>
 
             <div className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950 p-3">

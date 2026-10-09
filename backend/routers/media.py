@@ -1,6 +1,6 @@
 import os
 import shutil
-import time
+import uuid
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, UploadFile, File
 from backend.config import SHARED_MEDIA_DIR
@@ -20,8 +20,8 @@ async def upload_media(files: list[UploadFile] = File(...)):
     for file in files:
         ext = Path(file.filename or "").suffix.lower()
         is_video = ext in VIDEO_EXTS
-        timestamp_prefix = int(time.time() * 1000)
-        clean_filename = f"{timestamp_prefix}_{file.filename}"
+        original_name = Path((file.filename or "media").replace("\\", "/")).name
+        clean_filename = f"{uuid.uuid4().hex}_{original_name}"
         dest_path = SHARED_MEDIA_DIR / clean_filename
 
         with open(dest_path, "wb") as buffer:

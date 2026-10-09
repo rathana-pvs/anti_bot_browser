@@ -6,6 +6,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from backend.security import DesktopSessionAuthMiddleware
+from backend.runtime_service import exclusive_backend, publish_session
+from backend.worker import service as worker_service
 
 from backend.config import SHARED_MEDIA_DIR, MANAGER_DIST_DIR
 from backend.scheduler.background import setup_background_tasks, shutdown_background_tasks
@@ -30,27 +32,43 @@ from backend.routers import (
     ai,
     support,
     system,
+    worker,
+    live,
 )
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    recover_stale_queue_executions("manager_startup_stale_lease")
-    container_lifecycle.SHUTTING_DOWN = False
-    legacy_queue = load_posting_queue()
-    container_lifecycle.import_legacy_owners(legacy_queue)
-    save_posting_queue(legacy_queue)
-    await cleanup_orphaned_automation_containers()
-    shared_ocr = start_shared_ocr_worker()
-    setup_background_tasks()
-    print(f"FastAPI Backend started successfully. Shared OCR: {shared_ocr.get('url') or 'local fallback'}")
-    yield
-    # Shutdown
-    container_lifecycle.SHUTTING_DOWN = True
-    shutdown_background_tasks()
-    await cleanup_orphaned_automation_containers(force=True)
-    stop_shared_ocr_worker()
-    print("FastAPI Backend shutdown complete.")
+    with exclusive_backend():
+        session_path = None
+        try:
+            # Startup
+            # Add the bundled Live family to the existing Brain manager without
+            # overwriting user-installed workflow versions or its catalog.
+            from automation.engine.live_brain import install_bundled_live_brain
+            from backend.config import AUTOMATION_RUNNER, ROOT_DIR
+            install_bundled_live_brain(AUTOMATION_RUNNER.parent, ROOT_DIR / 'automation')
+            recover_stale_queue_executions("manager_startup_stale_lease")
+            container_lifecycle.SHUTTING_DOWN = False
+            legacy_queue = load_posting_queue()
+            container_lifecycle.import_legacy_owners(legacy_queue)
+            save_posting_queue(legacy_queue)
+            await cleanup_orphaned_automation_containers()
+            shared_ocr = start_shared_ocr_worker()
+            setup_background_tasks()
+            print(f"FastAPI Backend started successfully. Shared OCR: {shared_ocr.get('url') or 'local fallback'}")
+            await worker_service.start()
+            session_path = publish_session()
+            yield
+        finally:
+            await worker_service.stop()
+            # Shutdown
+            container_lifecycle.SHUTTING_DOWN = True
+            shutdown_background_tasks()
+            await cleanup_orphaned_automation_containers(force=True)
+            stop_shared_ocr_worker()
+            print("FastAPI Backend shutdown complete.")
+            if session_path:
+                session_path.unlink(missing_ok=True)
 
 app = FastAPI(
     title="Isolated Browser Manager",
@@ -67,6 +85,7 @@ app.add_middleware(
         "https://tauri.localhost",
         "tauri://localhost",
         "http://localhost:5173",
+        "http://127.0.0.1:1420",
     ],
     allow_credentials=False,
     allow_methods=["*"],
@@ -85,6 +104,8 @@ app.include_router(media.router)
 app.include_router(ai.router)
 app.include_router(support.router)
 app.include_router(system.router)
+app.include_router(worker.router)
+app.include_router(live.router)
 
 # Mount /shared_media static directory
 if not SHARED_MEDIA_DIR.exists():

@@ -8,3 +8,4 @@ psutil>=6.1.0
 httpx>=0.28.0
 pydantic>=2.9.0
 pytest>=8.0.0
+websockets>=15.0,<18

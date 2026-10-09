@@ -40,6 +40,7 @@ rsync -a \
   --exclude '.env' \
   --exclude '.env.*' \
   "${ROOT_DIR}/automation" \
+  "${ROOT_DIR}/backend" \
   "${ROOT_DIR}/container" \
   "${ROOT_DIR}/manager-app" \
   "${ROOT_DIR}/scripts" \

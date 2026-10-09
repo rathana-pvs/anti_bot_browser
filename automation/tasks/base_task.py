@@ -198,6 +198,8 @@ class BaseTask:
         )
         # Set publish_clicked before the input call. If the actuator raises or
         # the process dies, outer recovery must classify the result uncertain.
+        from engine.cloud_publish_guard import record_cloud_publish_intent
+        record_cloud_publish_intent()
         self.set_stage("publish_clicked", target=[x, y])
         self.human.click(x, y)
         return True

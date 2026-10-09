@@ -3,7 +3,7 @@ import { Profile } from '../types/profile';
 import RFB from '@novnc/novnc';
 import { startVncConnection } from '../services/vncConnection';
 import { pasteToProfile } from '../services/api';
-import { readHostClipboardText } from '../services/clipboard';
+import { readHostClipboardText, writeHostClipboardText } from '../services/clipboard';
 import {
   Play,
   Pause,
@@ -55,6 +55,12 @@ export const VncViewer: React.FC<VncViewerProps> = ({
   const [isInjecting, setIsInjecting] = useState(false);
   const [clipboardToast, setClipboardToast] = useState<string | null>(null);
   const [autoSyncCtrlV, setAutoSyncCtrlV] = useState(true);
+  const [containerClipboardText, setContainerClipboardText] = useState('');
+
+  useEffect(() => {
+    setContainerClipboardText('');
+    setClipboardToast(null);
+  }, [profile?.id]);
 
   // Auto-sync host clipboard on Ctrl+V via capture-phase interception
   useEffect(() => {
@@ -122,6 +128,22 @@ export const VncViewer: React.FC<VncViewerProps> = ({
         const rfb = new RFB(container, `ws://${vncHost}:${wsPort}`, { wsProtocols: ['binary'] });
         rfb.scaleViewport = true;
         rfb.resizeSession = false;
+        setContainerClipboardText('');
+        rfb.addEventListener('clipboard', async (event: { detail?: { text?: string } }) => {
+          if (rfbRef.current !== rfb || typeof event.detail?.text !== 'string') return;
+          const text = event.detail.text;
+          setContainerClipboardText(text);
+          try {
+            await writeHostClipboardText(text);
+            if (rfbRef.current !== rfb) return;
+            setClipboardToast('Copied from Chrome to host clipboard');
+            setTimeout(() => setClipboardToast(null), 3000);
+          } catch {
+            if (rfbRef.current !== rfb) return;
+            setClipboardToast('Text received — open Clipboard and click Copy to host');
+            setTimeout(() => setClipboardToast(null), 5000);
+          }
+        });
         return rfb;
       },
       onClient: (client) => { rfbRef.current = client; },
@@ -363,7 +385,7 @@ export const VncViewer: React.FC<VncViewerProps> = ({
                     <div className="flex items-center justify-between pb-1 border-b border-zinc-800">
                       <span className="text-xs font-semibold text-zinc-200 flex items-center gap-1.5">
                         <ClipboardPaste className="w-3.5 h-3.5 text-emerald-400" />
-                        Host &rarr; Container Clipboard
+                        Clipboard sharing
                       </span>
                       <button
                         onClick={() => setIsClipboardOpen(false)}
@@ -372,6 +394,24 @@ export const VncViewer: React.FC<VncViewerProps> = ({
                         <X className="w-3.5 h-3.5" />
                       </button>
                     </div>
+
+                    <button
+                      type="button"
+                      disabled={!containerClipboardText}
+                      onClick={async () => {
+                        try {
+                          await writeHostClipboardText(containerClipboardText);
+                          setClipboardToast('Copied from Chrome to host clipboard');
+                          setTimeout(() => setClipboardToast(null), 3000);
+                        } catch {
+                          await showAlert('Clipboard access was blocked. Allow clipboard access for this app and try again.', { title: 'Copy failed', variant: 'warning' });
+                        }
+                      }}
+                      className="w-full flex items-center justify-center gap-1.5 rounded border border-zinc-700 bg-zinc-800 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700 disabled:opacity-50"
+                    >
+                      <ClipboardCopy className="h-3 w-3" /> Copy to host
+                    </button>
+                    <p className="text-[10px] text-zinc-400">Copy text in Chrome first, then paste outside the container.</p>
 
                     {/* Direct Host Clipboard Action Button */}
                     <button

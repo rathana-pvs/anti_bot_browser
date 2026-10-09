@@ -176,6 +176,12 @@ def list_profiles():
             disk = get_profile_disk_usage(profile_id)
             if disk:
                 data["disk_usage"] = disk
+            from backend.services import live_service
+            try:
+                live_service.validate_settings(live_service.read_json(live_service.settings_path(profile_id)))
+                data["live"] = {"configured": True}
+            except (ValueError, FileNotFoundError):
+                data["live"] = {"configured": False}
             profiles.append(data)
         except Exception as exc:
             print(f"Error parsing config for {entry.name}: {exc}")

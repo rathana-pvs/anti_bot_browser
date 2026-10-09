@@ -1,0 +1,15 @@
+schema_version: 1
+template_id: source_selector
+content_family: live
+recognition:
+  minimum_score: 0.7
+  required:
+  - source_option
+  - source_heading
+  forbidden:
+  - setup_panel
+  - active_surface
+  - ended_surface
+steps:
+- capability: click_candidate
+  target: streaming_source

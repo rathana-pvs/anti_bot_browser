@@ -139,24 +139,24 @@ export const SetupCenter: React.FC<SetupCenterProps> = ({ initialStatus, onCompl
     }
   };
 
-  const run = async () => {
+  const run = async (installUpdate = false) => {
     setRunning(true);
     setPersistedLogs([]);
     setResultMessage(null);
     setRestartRequired(false);
     setLogs((current) => [...current, {
       stream: 'system',
-      message: `Starting ${completedCount > 0 ? 'setup and repair' : 'initial setup'}…`,
+      message: installUpdate ? 'Installing the runtime bundled with this app…' : `Starting ${completedCount > 0 ? 'setup and repair' : 'initial setup'}…`,
       time: new Date().toLocaleTimeString([], { hour12: false }),
     }]);
     try {
-      const result = useServiceRecovery
+      const result = !installUpdate && useServiceRecovery
         ? await recoverServices()
-        : await startSetup(completedCount > 0);
+        : await startSetup(installUpdate || completedCount > 0);
       setResultMessage(result.message);
       setRestartRequired(result.restartRequired);
       const latest = await refresh();
-      if (latest.ready) setResultMessage('Your computer is ready.');
+      if (result.success && latest.ready) setResultMessage(installUpdate ? 'Runtime installed. Your computer is ready.' : 'Your computer is ready.');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setResultMessage(message);
@@ -181,7 +181,7 @@ export const SetupCenter: React.FC<SetupCenterProps> = ({ initialStatus, onCompl
         <header className="mb-7 flex shrink-0 items-start justify-between gap-6">
           <div>
             <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-blue-500/20 bg-blue-500/10 px-3 py-1 text-xs font-medium text-blue-300">
-              <Settings2 size={13} /> First-time setup · {snapshot.platform === 'windows' ? 'Windows' : 'Linux'}
+              <Settings2 size={13} /> Setup and repair · {snapshot.platform === 'windows' ? 'Windows' : 'Linux'}
             </div>
             <h1 className="text-3xl font-semibold tracking-tight">Prepare Automat FB</h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-400">
@@ -280,15 +280,26 @@ export const SetupCenter: React.FC<SetupCenterProps> = ({ initialStatus, onCompl
 
             <div className="mt-5 flex gap-3">
               {snapshot.ready ? (
-                <button type="button" onClick={onComplete} className="flex-1 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-500">
+                <button type="button" onClick={onComplete} disabled={running} className="flex-1 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-500">
                   Open Automat FB
                 </button>
               ) : (
-                <button type="button" onClick={run} disabled={running} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-500 disabled:cursor-wait disabled:opacity-60">
+                <button type="button" onClick={() => void run()} disabled={running} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-500 disabled:cursor-wait disabled:opacity-60">
                   {running && <Loader2 size={16} className="animate-spin" />}
                   {running ? (useServiceRecovery ? 'Starting required services…' : 'Setting up your computer…') : useServiceRecovery ? 'Start required services' : completedCount > 0 ? 'Continue setup and repair' : 'Set up my computer'}
                 </button>
               )}
+            </div>
+            <div className="mt-4 rounded-xl border border-zinc-800 bg-zinc-900/55 p-4">
+              <h3 className="text-sm font-medium text-zinc-200">Install or update this version</h3>
+              <p className="mt-1 text-xs leading-5 text-zinc-400">
+                Install the backend, automation modules, bundled Brains and browser dependencies included with this app. Profiles, sessions and settings are preserved.
+              </p>
+              <button type="button" onClick={() => void run(true)} disabled={running || checking}
+                className="mt-3 inline-flex items-center gap-2 rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs font-medium text-blue-300 hover:bg-blue-500/20 disabled:opacity-50">
+                {running ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                Install / update runtime
+              </button>
             </div>
             <p className="mt-3 text-center text-[11px] leading-5 text-zinc-600">
               Administrator approval or a restart may be requested for system components. Existing configuration is preserved.

@@ -1,0 +1,16 @@
+schema_version: 1
+template_id: live_dashboard
+content_family: live
+recognition:
+  minimum_score: 0.7
+  required:
+  - active_surface
+  - live_notice
+  - end_control
+  forbidden:
+  - ended_surface
+steps:
+- capability: verify_publication
+  state: live
+- capability: click_candidate
+  target: end_live

@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "regions": {
+    "sidebar": [
+      0,
+      0.13,
+      0.22,
+      0.77
+    ],
+    "footer": [
+      0,
+      0.9,
+      0.22,
+      0.1
+    ],
+    "setup_left": [
+      0,
+      0.13,
+      0.3,
+      0.6
+    ],
+    "setup_center": [
+      0.3,
+      0.13,
+      0.3,
+      0.6
+    ],
+    "details": [
+      0.6,
+      0.13,
+      0.4,
+      0.45
+    ],
+    "home": [
+      0.3,
+      0.13,
+      0.5,
+      0.7
+    ],
+    "dialog": [
+      0.25,
+      0.2,
+      0.5,
+      0.6
+    ]
+  },
+  "targets": {
+    "open_setup": [
+      "set up live video"
+    ],
+    "streaming_source": [
+      "streaming software"
+    ],
+    "go_live": [
+      "go live",
+      "go live now"
+    ],
+    "end_live": [
+      "end live video",
+      "end live"
+    ],
+    "confirm_end": [
+      "end",
+      "end live video",
+      "end live"
+    ]
+  },
+  "phrases": {
+    "home_surface": [
+      "choose how you want to go live",
+      "welcome back"
+    ],
+    "source_heading": [
+      "select a video source"
+    ],
+    "setup_heading": [
+      "streaming software setup"
+    ],
+    "stream_key": [
+      "stream key"
+    ],
+    "details_saved": [
+      "edit post details"
+    ],
+    "active_surface": [
+      "live dashboard"
+    ],
+    "live_notice": [
+      "is live now",
+      "now that youre live"
+    ],
+    "ended_surface": [
+      "your live video has ended",
+      "live video has ended",
+      "broadcast has ended",
+      "youre no longer live",
+      "your live video ended"
+    ],
+    "ended_control": [
+      "return home",
+      "live video ended"
+    ]
+  },
+  "timeouts": {
+    "prepare": 120,
+    "start": 150,
+    "end": 60
+  }
+}

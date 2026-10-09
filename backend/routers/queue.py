@@ -65,6 +65,8 @@ def get_queue():
                     "post_type": post.get("type"),
                     "media_file": post.get("media_file"),
                     "base_caption": post.get("base_caption"),
+                    "title": post.get("title"),
+                    "pinned_comment": post.get("pinned_comment"),
                     "first_comment": post.get("first_comment"),
                     "scrolls": post.get("scrolls"),
                     "warming_options": post.get("warming_options"),
@@ -120,6 +122,27 @@ async def create_batch(payload: dict = Body(...)):
                 post["warming_options"] = normalize_warming_options(post.get("warming_options"))
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if any(post.get("type") == "live" for post in posts):
+        from backend.services import live_service
+        try:
+            destinations = set()
+            for pid in target_profiles:
+                settings = live_service.validate_settings(live_service.read_json(live_service.settings_path(pid)))
+                destination = settings['server_url'] + settings['stream_key']
+                if destination in destinations:
+                    raise ValueError('Selected profiles must have different Facebook stream keys')
+                destinations.add(destination)
+            for post in posts:
+                if post.get("type") == "live":
+                    post.update(live_service.validate_playback(post.get("loop", False), post.get("max_duration_seconds"), post.get("muted", False)))
+                    live_service.resolve_video(post.get("media_file"))
+                    details = live_service.validate_details(post.get("title", ""), post.get("base_caption", ""), post.get("pinned_comment"))
+                    post.update(title=details["title"], base_caption=details["caption"], pinned_comment=details.get("pinned_comment"), ai_spin=False)
+                    if post.get("first_comment"):
+                        raise ValueError("First comments are not supported for Live")
+        except (ValueError, FileNotFoundError) as error:
+            raise HTTPException(status_code=400, detail=f"Live setup required: {error}") from error
 
     queue = load_posting_queue()
     batch_id = f"batch_{int(time.time() * 1000)}"
@@ -212,6 +235,7 @@ async def create_batch(payload: dict = Body(...)):
     formatted_posts = []
     for post_idx, post in enumerate(posts):
         post_id = f"p_{post_idx + 1}"
+        item_preparation_mode = "off" if post.get("type") == "live" else preparation_mode
         executions = []
 
         for p_idx, pid in enumerate(profile_execution_order):
@@ -241,8 +265,8 @@ async def create_batch(payload: dict = Body(...)):
                 "status": "pending",
                 "stage": "pending",
                 "stage_history": [{"stage": "pending", "timestamp": datetime.now(timezone.utc).isoformat()}],
-                "preparation_mode": preparation_mode,
-                "preparation_status": "not_requested" if preparation_mode == "off" else "pending",
+                "preparation_mode": item_preparation_mode,
+                "preparation_status": "not_requested" if item_preparation_mode == "off" else "pending",
                 "retry_count": 0,
                 "error": None,
                 "published_at": None,
@@ -257,6 +281,7 @@ async def create_batch(payload: dict = Body(...)):
             "first_comment": post.get("first_comment"),
             "scrolls": max(1, int(post.get("scrolls", 4))),
             "warming_options": post.get("warming_options"),
+            **({"title": post.get("title", ""), "pinned_comment": post.get("pinned_comment"), "loop": post.get("loop", False), "muted": post.get("muted", False), "max_duration_seconds": post.get("max_duration_seconds")} if post.get("type") == "live" else {}),
             "ai_spin": post.get("ai_spin") is not False,
             "executions": executions,
         })
@@ -274,7 +299,7 @@ async def create_batch(payload: dict = Body(...)):
             "batch_iteration_delay_seconds": iteration_delay_seconds,
             "session_preparation_mode": preparation_mode,
             "start_now": is_start_now,
-            "execution_flow": "sequential",
+            "execution_flow": "resource_bounded",
         },
         "posting_order_per_profile": posting_orders,
         "posts": formatted_posts,
@@ -283,7 +308,8 @@ async def create_batch(payload: dict = Body(...)):
     if "daily_batches" not in queue:
         queue["daily_batches"] = []
     queue["daily_batches"].insert(0, new_batch)
-    save_posting_queue(queue)
+    if not save_posting_queue(queue):
+        raise HTTPException(status_code=500, detail="Could not persist the batch")
 
     if is_start_now:
         async def _start_soon():
@@ -477,8 +503,12 @@ async def run_execution_now(execution_id: str):
         raise HTTPException(status_code=404, detail="Execution not found")
 
     target_exec = match["execution"]
+    if target_exec.get("cloud_attempt_id"):
+        raise HTTPException(status_code=409, detail="Remote attempts are managed by the cloud; retries require a new cloud attempt.")
     target_post = match["post"]
     current_status = target_exec.get("status", "")
+    if target_post.get("type") == "live" and current_status in ("uncertain", "needs_review"):
+        raise HTTPException(status_code=409, detail="Resolve the previous Live outcome and confirm it ended on Facebook before retrying")
 
     is_manual_retry = current_status.startswith("skipped_") or current_status in (
         "failed",
@@ -601,6 +631,16 @@ def resolve_uncertain(execution_id: str, payload: dict = Body(...)):
         if not validated_post_url:
             raise HTTPException(status_code=400, detail="The supplied URL is not a recognized Facebook post or reel permalink.")
 
+    live_state = None
+    if target_post.get("type") == "live":
+        from backend.services import live_service
+        pid = target_exec["profile_id"]
+        if payload.get("confirmed_ended") is not True:
+            raise HTTPException(status_code=400, detail="Confirm that the broadcast has ended on Facebook")
+        if pid in live_service.CONTROLS or pid in live_service.lifecycle.snapshot():
+            raise HTTPException(status_code=409, detail="Wait for the Live stream and profile container to stop")
+        live_state = live_service.get_status(pid)
+
     reviewed_at = datetime.now(timezone.utc).isoformat()
     history = target_exec.get("stage_history")
     if not isinstance(history, list):
@@ -631,7 +671,11 @@ def resolve_uncertain(execution_id: str, payload: dict = Body(...)):
     })
     target_exec["stage_updated_at"] = reviewed_at
     target_exec["reviewed_at"] = reviewed_at
-    save_posting_queue(queue)
+    if not save_posting_queue(queue):
+        raise HTTPException(status_code=500, detail="Could not persist the review resolution")
+
+    if live_state and live_state.get("queue_execution_id") == execution_id and live_state.get("status") == "needs_review":
+        live_service.clear_review(target_exec["profile_id"], from_queue=True)
 
     return {"success": True, "message": f"Execution resolved as {resolution}", "execution": target_exec}
 

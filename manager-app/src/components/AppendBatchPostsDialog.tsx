@@ -90,7 +90,7 @@ export const AppendBatchPostsDialog: React.FC<AppendBatchPostsDialogProps> = ({
         <div className="px-4 py-3 border-b border-zinc-800 bg-zinc-900/80 flex items-center justify-between gap-3">
           <div>
             <h3 className="text-sm font-semibold text-white">Add posts to {batch.name}</h3>
-            <p className="text-[11px] text-zinc-500 mt-0.5">New posts join the end of this queued or running sequential batch.</p>
+            <p className="text-[11px] text-zinc-500 mt-0.5">New posts join the end of this queued or running batch. Account concurrency follows Resource Mode.</p>
           </div>
           <button type="button" onClick={onClose} disabled={submitting} className="p-1.5 rounded-lg text-zinc-500 hover:text-white hover:bg-zinc-800">
             <X className="w-4 h-4" />

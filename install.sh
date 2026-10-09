@@ -31,7 +31,7 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="${SCRIPT_DIR}"
-BROWSER_IMAGE_VERSION="2"
+BROWSER_IMAGE_VERSION="3"
 LOG_FILE="${ROOT_DIR}/data/install.log"
 IS_WSL=false
 RELOGIN_REQUIRED=false

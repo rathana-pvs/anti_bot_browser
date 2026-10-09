@@ -12,6 +12,12 @@
       "previous_version": null,
       "channel": "stable",
       "updated_at": null
+    },
+    "facebook_live": {
+      "active_version": "bundled_default",
+      "previous_version": null,
+      "channel": "stable",
+      "updated_at": null
     }
   }
 }

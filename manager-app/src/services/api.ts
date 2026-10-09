@@ -357,6 +357,26 @@ export interface ProxySpeedResult {
   error?: string | null;
 }
 
+export interface NetworkSpeedResult {
+  latency: { success: boolean; latency_ms: number | null; error?: string };
+  download: Omit<ProxySpeedResult, 'last_checked'>;
+  upload: Omit<ProxySpeedResult, 'last_checked'>;
+  last_checked: string;
+}
+
+export async function testNetworkSpeed(network: NetworkIntent): Promise<NetworkSpeedResult> {
+  const res = await fetch(`${API_BASE}/proxies/speed-test`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(network),
+  });
+  const missingEndpoint = res.status === 404
+    && (await res.clone().json().catch(() => null))?.detail === 'Not Found';
+  if (missingEndpoint || res.status === 405) {
+    throw new Error('The running backend does not support speed tests before IP assignment. Restart the backend (or the independent worker service), then reopen the manager to load the updated backend.');
+  }
+  if (!res.ok) throw await apiError(res, 'Failed to test proxy speed');
+  return res.json();
+}
+
 export async function checkProfileProxySpeed(profileId: string, direction: 'download' | 'upload'): Promise<ProxySpeedResult> {
   const res = await fetch(`${API_BASE}/profiles/${encodeURIComponent(profileId)}/proxy-speed?direction=${direction}`, { method: 'POST' });
   if (!res.ok) throw await apiError(res, 'Failed to check proxy speed');
@@ -583,16 +603,17 @@ export async function resolveUncertainExecution(
   executionId: string,
   resolution: 'published' | 'not_published',
   note?: string,
-  post_url?: string
+  post_url?: string,
+  confirmed_ended?: boolean
 ): Promise<{ success: boolean; message: string; execution: import('../types/automation').QueueExecutionItem }> {
   const res = await fetch(`${API_BASE}/queue/resolve-uncertain/${executionId}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ resolution, note, post_url }),
+    body: JSON.stringify({ resolution, note, post_url, confirmed_ended }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || 'Failed to resolve uncertain execution');
+    throw new Error(err.detail || err.error || 'Failed to resolve uncertain execution');
   }
   return res.json();
 }

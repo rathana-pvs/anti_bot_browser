@@ -317,6 +317,8 @@ def automation_worker_env() -> dict:
     scheduler_cfg = get_scheduler_config()
     threads = recommended_ocr_threads(CPU_THREADS, scheduler_cfg["max_total_automation_tasks"])
     env = os.environ.copy()
+    # Cloud service credentials are not needed by browser automation subprocesses.
+    env.pop("WORKER_CREDENTIAL", None)
     env["AUTOMAT_FB_ROOT"] = str(ROOT_DIR)
     env["PYTHONUNBUFFERED"] = "1"
     env["AUTOMATION_OCR_THREADS"] = str(threads)

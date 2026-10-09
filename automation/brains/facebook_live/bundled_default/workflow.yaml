@@ -1,0 +1,36 @@
+schema_version: 1
+brain_api_version: 1
+workflow_id: facebook_live
+limits:
+  max_steps: 3
+  max_runtime_seconds: 190
+  max_recovery_attempts: 1
+initial_state: dispatch_prepare
+states:
+  dispatch_prepare:
+    require:
+      action: prepare
+    actions:
+    - capability: wait_for_state
+      state: prepare
+    on_success: completed
+    on_timeout: dispatch_start
+    on_failure: failed_safe
+  dispatch_start:
+    require:
+      action: start
+    actions:
+    - capability: wait_for_state
+      state: start
+    on_success: completed
+    on_timeout: dispatch_end
+    on_failure: uncertain
+  dispatch_end:
+    require:
+      action: end
+    actions:
+    - capability: wait_for_state
+      state: end
+    on_success: completed
+    on_timeout: operator_review
+    on_failure: uncertain

@@ -78,6 +78,13 @@ flowchart TD
 
 ## 🛠️ Supported Automation Workflows
 
+The **Studio Center → Facebook Live** tab broadcasts uploaded videos without a camera. Save streaming
+settings in Edit profile, select videos and profiles, choose playback/audio/duration
+settings, enter each video’s title, caption and optional preset pinned comment, and start now or schedule. Track progress and stop streams in Live queue.
+This local feature uses a template-driven Live Producer task and a separate FFmpeg
+streaming service. Choose the broadcast destination in Facebook; the app fills and saves the supplied
+title and caption before streaming. See [Live setup and limits](docs/live-video.md) for pilot results and limits.
+
 | Task | Description | Verification Method |
 | :--- | :--- | :--- |
 | **Feed Image / Photo Post** | Automates single/multi-image feed posts with custom caption and emojis. Supports 2-step Facebook modals (`Next` ➔ `Post review` ➔ `Publish`). | Visual state machine (`POST_ENABLED` ➔ `FEED_READY` via SSIM). |
@@ -150,6 +157,14 @@ hosts with 24 GB or more (for example, 24 GB on a 32 GB machine). Existing
 Microsoft's default policy or `-WslMemoryGB <GB>` for an explicit unattended
 choice. Applying a new limit restarts WSL during setup.
 
+Open **Settings → Setup and repair → Install / update runtime** after installing a newer desktop release.
+This runs the complete installer from that release, rather than only starting services.
+It updates bundled backend/automation code and dependencies, preserves profiles and
+Brain activation choices, and starts the updated desktop-managed backend. Running
+jobs must finish first. An independently managed worker service must be stopped
+by its service manager, then reopen the app before repairing its runtime; this button does not replace
+or stop that background service automatically.
+
 The desktop Install/Repair action also installs the Mesa diagnostics and
 drivers used by browser acceleration. Profile startup supports native Linux
 `/dev/dri` devices and the WSL2 `/dev/dxg` bridge. `host_gpu` is the default;
@@ -211,8 +226,20 @@ Start the backend and development dashboard:
 cd manager-app
 npm start
 ```
-* Backend API: `http://localhost:8000`
+* Backend API: `http://localhost:3001`
 * Frontend Dashboard: `http://localhost:5173`
+
+To open the native desktop app during development:
+```bash
+cd manager-app
+npm run tauri:dev
+```
+Tauri starts Vite at `http://127.0.0.1:1420` and owns one authenticated Python
+backend on an available loopback port. Native development uses the source
+checkout and its `automation/venv`, while profiles, queues, and settings use the
+same persistent runtime as the installed desktop app. It does not require
+rebuilding the frozen backend executable. If an independent worker service is running, the desktop
+attaches to it instead.
 
 ---
 
@@ -358,3 +385,11 @@ The project is pre-configured with a strict [`.gitignore`](.gitignore) to ensure
 ## 📜 License
 
 This project is licensed under the MIT License.
+
+## Cloud worker service
+
+The optional Python worker agent runs with the existing backend independently of
+the desktop window. It uses secure WebSocket (`wss://`) for cloud coordination
+and HTTPS for media/evidence transfers. See [worker setup and scope](docs/worker/README.md)
+and [protocol v1](docs/worker/protocol-v1.md). The cloud gateway offers the matching `/ws/workers` adapter;
+local protocol and recovery behavior are verified with simulated-server tests.

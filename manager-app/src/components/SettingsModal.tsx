@@ -6,6 +6,7 @@ import { BrainCircuit, Check, Eye, EyeOff, KeyRound, Settings, X } from 'lucide-
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
+  onOpenSetup?: () => void;
 }
 
 type Section = 'api-keys' | 'brains';
@@ -47,7 +48,7 @@ function loadApiKeys(): ApiKeys {
   }
 }
 
-export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
+export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, onOpenSetup }) => {
   const [section, setSection] = useState<Section>('api-keys');
   const [apiKeys, setApiKeys] = useState<ApiKeys>(loadApiKeys);
   const [visibleKeys, setVisibleKeys] = useState<Set<ApiKeyId>>(new Set());
@@ -94,6 +95,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
             <button type="button" onClick={() => setSection('brains')} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition-colors ${section === 'brains' ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'}`}>
               <BrainCircuit className="h-4 w-4" /> Brains
             </button>
+            {onOpenSetup && <button type="button" onClick={onOpenSetup} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200">
+              <Settings className="h-4 w-4" /> Setup and repair
+            </button>}
           </nav>
         </aside>
 

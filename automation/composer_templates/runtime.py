@@ -13,7 +13,7 @@ from engine.brain_runtime import ALLOWED_CAPABILITIES, CapabilityResult
 
 
 _ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
-CONTENT_FAMILIES = frozenset({"post", "reel"})
+CONTENT_FAMILIES = frozenset({"post", "reel", "live"})
 STEP_OUTCOMES = frozenset({
     "success", "timeout", "rejected", "uncertain", "known_dialog", "failure"
 })

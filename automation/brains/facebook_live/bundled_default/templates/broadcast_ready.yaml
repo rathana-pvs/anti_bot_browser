@@ -1,0 +1,15 @@
+schema_version: 1
+template_id: broadcast_ready
+content_family: live
+recognition:
+  minimum_score: 0.7
+  required:
+  - setup_panel
+  - details_saved
+  - go_live_enabled
+  forbidden:
+  - active_surface
+  - ended_surface
+steps:
+- capability: request_publish
+  target: go_live

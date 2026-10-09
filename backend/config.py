@@ -11,6 +11,14 @@ from automation.engine.runtime_paths import runtime_root
 # Paths
 BACKEND_DIR = Path(__file__).resolve().parent
 ROOT_DIR = runtime_root(BACKEND_DIR.parent)
+# Use the code bundle matching this backend while retaining profiles/media in
+# the persistent runtime. An older installed runner may lack cloud safety guards.
+def automation_runner(code_root: Path, data_root: Path) -> Path:
+    bundled = code_root / "automation" / "runner.py"
+    return bundled if bundled.is_file() else data_root / "automation" / "runner.py"
+
+
+AUTOMATION_RUNNER = automation_runner(BACKEND_DIR.parent, ROOT_DIR)
 PROFILES_DIR = ROOT_DIR / "profiles"
 SCRIPTS_DIR = ROOT_DIR / "scripts"
 DATA_DIR = ROOT_DIR / "data"

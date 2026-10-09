@@ -4,9 +4,9 @@
   "version": "1.0.7",
   "identifier": "com.isolatedbrowser.manager",
   "build": {
-    "beforeDevCommand": "npm run start",
+    "beforeDevCommand": "npm run dev:desktop",
     "beforeBuildCommand": "node ../scripts/stage_setup_payload.mjs && npm run build",
-    "devUrl": "http://localhost:5173",
+    "devUrl": "http://127.0.0.1:1420",
     "frontendDist": "../dist"
   },
   "app": {

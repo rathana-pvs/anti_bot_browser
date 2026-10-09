@@ -2,6 +2,7 @@ import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { DailyBatch, QueueDataResponse, QueueExecutionItem } from '../types/automation';
 import { Profile } from '../types/profile';
 import { AppendBatchPostsDialog } from './AppendBatchPostsDialog';
+import { stopLive } from '../services/live';
 import { Checkbox } from './ui/Checkbox';
 import { useAppDialog } from './ui/AppDialogProvider';
 import {
@@ -46,6 +47,7 @@ import {
 
 interface PostingQueuePanelProps {
   profiles: Profile[];
+  postTypeFilter?: 'posts' | 'live';
 }
 
 interface LightboxMedia {
@@ -56,7 +58,7 @@ interface LightboxMedia {
   comment?: string;
 }
 
-export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }) => {
+export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, postTypeFilter = 'posts' }) => {
   const { showConfirm, showPrompt, showToast } = useAppDialog();
   const [queueData, setQueueData] = useState<QueueDataResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -90,6 +92,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
   const [appendBatch, setAppendBatch] = useState<DailyBatch | null>(null);
 
   // Phase 0 Safety Gate: Review & Resolve Uncertain State
+  const [stoppingLiveId, setStoppingLiveId] = useState<string | null>(null);
   const [resolvingItem, setResolvingItem] = useState<QueueExecutionItem | null>(null);
   const [resolveNote, setResolveNote] = useState('');
   const [resolvePostUrl, setResolvePostUrl] = useState('');
@@ -99,7 +102,11 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
     setLoading(true);
     try {
       const data = await fetchQueue();
-      setQueueData(data);
+      const include = (type?: string) => postTypeFilter === 'live' ? type === 'live' : type !== 'live';
+      const executions = data.executions.filter(item => include(item.post_type));
+      const batches = data.batches.map(batch => ({...batch, posts: batch.posts.filter(post => include(post.type))})).filter(batch => batch.posts.length > 0);
+      const count = (...statuses: string[]) => executions.filter(item => statuses.includes(item.status)).length;
+      setQueueData({...data, executions, batches, stats: {total: executions.length, pending: count('pending', 'ready'), running: count('running', 'preparing'), published: count('published'), completed: count('completed'), failed: count('failed', 'failed_before_publish', 'failed_after_publish'), uncertain: count('uncertain', 'needs_review'), skipped: executions.filter(item => item.status.startsWith('skipped')).length}});
     } catch (err: any) {
       console.error('Failed to load queue:', err);
       setActionError(err.message || 'Could not refresh the queue.');
@@ -111,6 +118,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
 
   const handleResolveUncertain = async (resolution: 'published' | 'not_published') => {
     if (!resolvingItem) return;
+    if (resolvingItem.post_type === 'live' && !await showConfirm('Check Facebook and confirm this broadcast has ended before resolving its outcome.', { title: 'End confirmation required', confirmLabel: 'Broadcast has ended' })) return;
     setIsResolving(true);
     setActionError(null);
     try {
@@ -118,7 +126,8 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
         resolvingItem.execution_id,
         resolution,
         resolveNote.trim() || undefined,
-        resolution === 'published' ? resolvePostUrl.trim() || undefined : undefined
+        resolution === 'published' ? resolvePostUrl.trim() || undefined : undefined,
+        resolvingItem.post_type === 'live' ? true : undefined
       );
       setResolvingItem(null);
       setResolveNote('');
@@ -135,7 +144,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
     loadQueue();
     const interval = setInterval(loadQueue, 5000);
     return () => clearInterval(interval);
-  }, []);
+  }, [postTypeFilter]);
 
   const handleRunNow = async (executionId: string) => {
     setActionError(null);
@@ -448,7 +457,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                 : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/60'
             }`}
           >
-            <span>All Posts</span>
+            <span>{postTypeFilter === 'live' ? 'All broadcasts' : 'All Posts'}</span>
             <span className="font-mono text-[11px] px-1.5 py-0.2 rounded bg-zinc-950/80 text-zinc-300">
               {stats.total}
             </span>
@@ -594,7 +603,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
         <div className="flex items-center justify-between">
           <h4 className="text-xs font-semibold text-zinc-200 uppercase tracking-wider flex items-center gap-2">
             <Layers3 className="w-4 h-4 text-emerald-400" />
-            {batchGroups.length} batches <span className="text-zinc-500 font-normal normal-case tracking-normal">· {filteredExecutions.length} matching posts</span>
+            {batchGroups.length} batches <span className="text-zinc-500 font-normal normal-case tracking-normal">· {filteredExecutions.length} matching {postTypeFilter === 'live' ? 'broadcasts' : 'posts'}</span>
           </h4>
 
           {filterStatus !== 'all' ? (
@@ -615,7 +624,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
             {loading && !queueData
               ? 'Loading queue…'
               : executions.length === 0
-                ? 'Your queue is empty. Create a daily batch to schedule posts.'
+                ? postTypeFilter === 'live' ? 'Your Live queue is empty. Create a broadcast on New broadcast.' : 'Your queue is empty. Create a daily batch to schedule posts.'
                 : 'No posts match these filters. Try a different search or reset the filters.'}
           </div>
         ) : (
@@ -679,7 +688,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                         {group.attention > 0 && <span className="text-amber-300">{group.attention} attention</span>}
                       </div>
                     </button>
-                    {group.attention === 0
+                    {postTypeFilter !== 'live' && group.attention === 0
                       && (group.active > 0 || group.pending > 0) && (
                       <button
                         type="button"
@@ -783,7 +792,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                       onClick={() =>
                         setLightboxMedia({
                           url: getSharedMediaUrl(item.media_file),
-                          type: item.post_type === 'reel' ? 'reel' : 'photo',
+                          type: item.post_type === 'reel' || item.post_type === 'live' ? 'reel' : 'photo',
                           name: item.media_file || 'Media',
                           caption: item.spun_caption || item.base_caption,
                           comment: item.first_comment || undefined,
@@ -792,7 +801,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                       className="shrink-0 w-10 h-10 rounded-lg overflow-hidden border border-zinc-750 hover:border-blue-500 cursor-pointer shadow relative group/thumb bg-black flex items-center justify-center transition-all"
                       title="Click for full size preview"
                     >
-                      {item.post_type === 'reel' ? (
+                      {item.post_type === 'reel' || item.post_type === 'live' ? (
                         <>
                           <video
                             src={getSharedMediaUrl(item.media_file)}
@@ -835,9 +844,9 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                         <span className="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-orange-950/80 text-orange-300 border border-orange-800/60 flex items-center gap-0.5 shrink-0">
                           <Flame className="w-2.5 h-2.5" /> Warming
                         </span>
-                      ) : item.post_type === 'reel' ? (
+                      ) : item.post_type === 'reel' || item.post_type === 'live' ? (
                         <span className="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-purple-950/80 text-purple-300 border border-purple-800/60 flex items-center gap-0.5 shrink-0">
-                          <Film className="w-2.5 h-2.5" /> Reel
+                          <Film className="w-2.5 h-2.5" /> {item.post_type === 'live' ? 'Live' : 'Reel'}
                         </span>
                       ) : (
                         <span className="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-blue-950/80 text-blue-300 border border-blue-800/60 flex items-center gap-0.5 shrink-0">
@@ -847,7 +856,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                     </div>
 
                     <div className="text-xs text-zinc-400 truncate mt-0.5">
-                      {item.post_type === 'warming'
+                      {item.post_type === 'live' ? `${item.stage || item.status} · ${Math.floor((item.elapsed_seconds || 0) / 60)}:${String(Math.floor((item.elapsed_seconds || 0) % 60)).padStart(2, '0')} / ${Math.floor((item.duration_seconds || 0) / 60)}:${String(Math.floor((item.duration_seconds || 0) % 60)).padStart(2, '0')}` : item.post_type === 'warming'
                         ? `${item.warming_surface ? (item.warming_surface === 'profile' ? 'Profile' : 'News Feed') : (item.warming_options?.surface === 'profile' ? 'Profile' : item.warming_options?.surface === 'news_feed' ? 'News Feed' : 'Feed / Profile')} · ${item.warming_scroll_actions != null ? `${item.warming_scroll_actions} scrolls` : item.warming_options?.random_scrolls ? `${item.warming_options.min_scrolls}–${item.warming_options.max_scrolls} cycles` : `${item.scrolls ?? 4} cycles`}`
                         : (item.spun_caption || item.base_caption || 'No caption')}
                     </div>
@@ -980,6 +989,15 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
 
                   </>}
 
+                  {item.post_type === 'live' && item.status === 'running' && <button type="button"
+                    disabled={stoppingLiveId === item.execution_id || ['stopping', 'ending', 'ended'].includes(item.stage || '')}
+                    onClick={async () => {
+                      setStoppingLiveId(item.execution_id); setActionError(null);
+                      try { await stopLive(item.profile_id, item.execution_id); await loadQueue(); }
+                      catch (error) { setActionError(error instanceof Error ? error.message : 'Could not stop Live'); }
+                      finally { setStoppingLiveId(null); }
+                    }} className="rounded-lg border border-rose-800 bg-rose-950 px-3 py-1 text-xs text-rose-200 disabled:opacity-50">Stop Live</button>}
+
                   {/* Run Now button for pending items */}
                   {item.status === 'pending' && (
                     <button
@@ -1011,7 +1029,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                   )}
 
                   {/* Re-run button for every non-active retryable outcome */}
-                  {(item.status === 'failed' || item.status === 'failed_before_publish' || item.status === 'uncertain' || item.status === 'needs_review' || item.status.startsWith('skipped')) && (
+                  {!(item.post_type === 'live' && ['uncertain', 'needs_review'].includes(item.status)) && (item.status === 'failed' || item.status === 'failed_before_publish' || item.status === 'uncertain' || item.status === 'needs_review' || item.status.startsWith('skipped')) && (
                     <button
                       type="button"
                       onClick={() => handleRunNow(item.execution_id)}
@@ -1060,6 +1078,8 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles }
                       <span>Retries: <span className="text-zinc-200">{item.retry_count || 0}</span></span>
                     </div>
                     {item.media_file && <p>Media: <span className="text-zinc-200">{item.media_file}</span></p>}
+                    {item.post_type === 'live' && item.title && <p className="font-medium text-zinc-200">{item.title}</p>}
+                    {item.post_type === 'live' && item.pinned_comment && <p className="whitespace-pre-wrap text-zinc-400">Pinned comment: {item.pinned_comment}</p>}
                     {(item.spun_caption || item.base_caption) && <p className="whitespace-pre-wrap text-zinc-200">{item.spun_caption || item.base_caption}</p>}
                     {item.error && <p className="text-red-300">{item.error}</p>}
                     <p className="text-[10px] font-mono text-zinc-600">{item.execution_id}</p>

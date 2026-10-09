@@ -272,7 +272,7 @@ Write-Host $(if ($destinationExists) { "Updating the application runtime in WSL.
 if ($LASTEXITCODE -ne 0) { Write-Error "Could not create destination directory in WSL." }
 & wsl.exe -d $ubuntu -- sh -c "mkdir -p '$wslDestination/data' && printf '%s\n' 'Starting Windows / WSL setup: mode=$Mode' > '$wslDestination/data/install.log'"
 if ($LASTEXITCODE -ne 0) { Write-Error "Could not initialize the current setup log." }
-& wsl.exe -d $ubuntu -- cp -a "$wslSource/." "$wslDestination/"
+& wsl.exe -d $ubuntu -- bash "$wslSource/scripts/copy_runtime_payload.sh" "$wslSource" "$wslDestination"
 if ($LASTEXITCODE -ne 0) { Write-Error "Could not copy the application payload into WSL." }
 & wsl.exe -d $ubuntu -- rm -rf "$wslDestination/manager-app/node_modules" "$wslDestination/build"
 & wsl.exe -d $ubuntu -- bash -c "find '$wslDestination' -maxdepth 3 -name '*.sh' -exec sed -i 's/\r$//' {} +"

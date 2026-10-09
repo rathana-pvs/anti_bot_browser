@@ -31,14 +31,17 @@ import { Select } from './ui/Select';
 interface BatchPostCreatorProps {
   profiles: Profile[];
   onBatchCreated: () => void;
+  mode?: 'posts' | 'live';
 }
 
 interface DraftPostRow {
   id: string;
-  type: 'photo' | 'reel';
+  type: 'photo' | 'reel' | 'live';
   media_file: string;
   media_name: string;
   preview_url?: string;
+  title?: string;
+  pinned_comment?: string;
   caption: string;
   first_comment: string;
 }
@@ -54,12 +57,19 @@ interface LightboxMedia {
 export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
   profiles,
   onBatchCreated,
+  mode = 'posts',
 }) => {
+  const liveMode = mode === 'live';
+  const storageKey = (name: string) => `${liveMode ? 'live_creator' : 'batch_creator'}_${name}`;
+  const [loopVideo, setLoopVideo] = useState(() => localStorage.getItem(storageKey('loop')) === 'true');
+  const [durationMinutes, setDurationMinutes] = useState(() => localStorage.getItem(storageKey('duration_minutes')) || '');
+  const [muted, setMuted] = useState(() => localStorage.getItem(storageKey('muted')) === 'true');
+
   // Campaign Name with inline editing
   const [batchName, setBatchName] = useState(() => {
     return (
-      localStorage.getItem('batch_creator_batch_name') ||
-      `Daily Batch ${new Date().toLocaleDateString()}`
+      localStorage.getItem(storageKey('batch_name')) ||
+      `${liveMode ? 'Live Batch' : 'Daily Batch'} ${new Date().toLocaleDateString()}`
     );
   });
   const [isEditingName, setIsEditingName] = useState(false);
@@ -67,29 +77,28 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
   // Selected Target Profiles
   const [savedProfileIds, setSelectedProfileIds] = useState<string[]>(() => {
     try {
-      const saved = localStorage.getItem('batch_creator_profiles');
+      const saved = localStorage.getItem(storageKey('profiles'));
       if (saved) { const ids = JSON.parse(saved); if (Array.isArray(ids)) return ids.filter((id): id is string => typeof id === "string"); }
     } catch (_) {}
     return profiles.filter((p) => p.status === 'running').map((p) => p.id);
   });
-  const selectedProfileIds = savedProfileIds.filter((id) => profiles.some((p) => p.id === id));
   const [showProfileModal, setShowProfileModal] = useState(false);
 
   // Execution & Timing Settings
   const [executionMode, setExecutionMode] = useState<'now' | 'scheduled'>(() => {
-    return localStorage.getItem('batch_creator_start_now') === 'true' ? 'now' : 'now';
+    return localStorage.getItem(storageKey('start_now')) === 'true' ? 'now' : 'now';
   });
 
   const [startTime, setStartTime] = useState(() => {
-    return localStorage.getItem('batch_creator_start_time') || '09:00';
+    return localStorage.getItem(storageKey('start_time')) || '09:00';
   });
 
   const [endTime] = useState(() => {
-    return localStorage.getItem('batch_creator_end_time') || '21:00';
+    return localStorage.getItem(storageKey('end_time')) || '21:00';
   });
 
   const [staggerSeconds, setStaggerSeconds] = useState(() => {
-    const saved = localStorage.getItem('batch_creator_stagger_seconds');
+    const saved = localStorage.getItem(storageKey('stagger_seconds'));
     if (saved !== null) {
       const parsed = parseInt(saved, 10);
       return Number.isNaN(parsed) ? 60 : Math.max(0, parsed);
@@ -98,7 +107,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
   });
 
   const [iterationDelaySeconds, setIterationDelaySeconds] = useState(() => {
-    const saved = localStorage.getItem('batch_creator_iteration_delay_seconds');
+    const saved = localStorage.getItem(storageKey('iteration_delay_seconds'));
     if (saved !== null) {
       const parsed = parseInt(saved, 10);
       return Number.isNaN(parsed) ? 60 : Math.max(0, parsed);
@@ -107,27 +116,32 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
   });
 
   const [preparationMode, setPreparationMode] = useState<'off' | 'brief' | 'extended'>(() => {
-    const saved = localStorage.getItem('batch_creator_preparation_mode');
+    const saved = localStorage.getItem(storageKey('preparation_mode'));
     return saved === 'off' || saved === 'brief' || saved === 'extended' ? saved : 'brief';
   });
 
   // Global AI Caption Spin Toggle
   const [aiSpinAll, setAiSpinAll] = useState(() => {
-    const saved = localStorage.getItem('batch_creator_ai_spin');
+    const saved = localStorage.getItem(storageKey('ai_spin'));
     return saved !== null ? saved === 'true' : true;
   });
 
   // Collapsible Advanced Settings
   const [showAdvanced, setShowAdvanced] = useState(false);
 
+  const videoUploadType = liveMode ? 'live' : 'reel';
+
   // Draft Posts
   const [posts, setPosts] = useState<DraftPostRow[]>(() => {
     try {
-      const saved = localStorage.getItem('batch_creator_draft_posts');
-      if (saved) return JSON.parse(saved);
+      const saved = localStorage.getItem(storageKey('draft_posts'));
+      if (saved) return JSON.parse(saved).filter((post: DraftPostRow) => liveMode ? post.type === 'live' : post.type !== 'live');
     } catch (_) {}
     return [];
   });
+
+  const hasLive = liveMode || posts.some(post => post.type === 'live');
+  const selectedProfileIds = savedProfileIds.filter(id => profiles.some(p => p.id === id && (!hasLive || p.live?.configured)));
 
   // UI state
   const [isUploading, setIsUploading] = useState(false);
@@ -136,29 +150,35 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [lightboxMedia, setLightboxMedia] = useState<LightboxMedia | null>(null);
 
+  useEffect(() => {
+    localStorage.setItem(storageKey('loop'), String(loopVideo));
+    localStorage.setItem(storageKey('duration_minutes'), durationMinutes);
+    localStorage.setItem(storageKey('muted'), String(muted));
+  }, [loopVideo, durationMinutes, muted]);
+
   // Auto-save to localStorage
   useEffect(() => {
     try {
-      localStorage.setItem('batch_creator_draft_posts', JSON.stringify(posts));
+      localStorage.setItem(storageKey('draft_posts'), JSON.stringify(posts));
     } catch (_) {}
   }, [posts]);
 
   useEffect(() => {
-    localStorage.setItem('batch_creator_batch_name', batchName);
+    localStorage.setItem(storageKey('batch_name'), batchName);
   }, [batchName]);
 
   useEffect(() => {
-    localStorage.setItem('batch_creator_profiles', JSON.stringify(savedProfileIds));
+    localStorage.setItem(storageKey('profiles'), JSON.stringify(savedProfileIds));
   }, [savedProfileIds]);
 
   useEffect(() => {
-    localStorage.setItem('batch_creator_start_time', startTime);
-    localStorage.setItem('batch_creator_end_time', endTime);
-    localStorage.setItem('batch_creator_stagger_seconds', String(staggerSeconds));
-    localStorage.setItem('batch_creator_iteration_delay_seconds', String(iterationDelaySeconds));
-    localStorage.setItem('batch_creator_ai_spin', String(aiSpinAll));
-    localStorage.setItem('batch_creator_start_now', String(executionMode === 'now'));
-    localStorage.setItem('batch_creator_preparation_mode', preparationMode);
+    localStorage.setItem(storageKey('start_time'), startTime);
+    localStorage.setItem(storageKey('end_time'), endTime);
+    localStorage.setItem(storageKey('stagger_seconds'), String(staggerSeconds));
+    localStorage.setItem(storageKey('iteration_delay_seconds'), String(iterationDelaySeconds));
+    localStorage.setItem(storageKey('ai_spin'), String(aiSpinAll));
+    localStorage.setItem(storageKey('start_now'), String(executionMode === 'now'));
+    localStorage.setItem(storageKey('preparation_mode'), preparationMode);
   }, [startTime, endTime, staggerSeconds, iterationDelaySeconds, aiSpinAll, executionMode, preparationMode]);
 
   // Bulk Media Upload Handler
@@ -176,7 +196,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
       const res = await uploadMediaFiles(formData);
       const newRows: DraftPostRow[] = res.files.map((file, idx) => ({
         id: `draft_${Date.now()}_${idx}`,
-        type: file.type,
+        type: liveMode ? 'live' : file.type === 'reel' ? videoUploadType : file.type,
         media_file: file.filename,
         media_name: file.original_name || file.filename,
         preview_url: getSharedMediaUrl(file.filename),
@@ -212,7 +232,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                   media_file: uploaded.filename,
                   media_name: uploaded.original_name || uploaded.filename,
                   preview_url: getSharedMediaUrl(uploaded.filename),
-                  type: uploaded.type,
+                  type: liveMode || row.type === 'live' && uploaded.type === 'reel' ? 'live' : uploaded.type,
                 }
               : row
           )
@@ -254,8 +274,8 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
           const caption = item.caption || item.text || item.description || item.content || '';
           const comment = item.comment || item.first_comment || item.link || item.url || '';
           const rawType = (item.type || item.media_type || '').toLowerCase();
-          const type: 'photo' | 'reel' =
-            rawType === 'reel' || rawType === 'video' ? 'reel' : 'photo';
+          const type: 'photo' | 'reel' | 'live' =
+            liveMode ? 'live' : rawType === 'reel' || rawType === 'video' ? 'reel' : 'photo';
           const mediaFile = item.media_file || item.media || item.file || '';
 
           return {
@@ -287,7 +307,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
       ...prev,
       {
         id: `draft_${Date.now()}_${prev.length}`,
-        type: 'photo',
+        type: liveMode ? 'live' : 'photo',
         media_file: '',
         media_name: '',
         caption: '',
@@ -326,6 +346,16 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
       return;
     }
 
+    if (posts.some(p => p.type === 'live' && (!(p.title || '').trim() || !p.caption.trim()))) {
+      setErrorMsg('Enter a title and caption for each Live video.');
+      return;
+    }
+    if (posts.some(p => p.type === 'live' && !p.media_file)) {
+      setErrorMsg('Attach a video to every Live row.'); return;
+    }
+    if (liveMode && ((loopVideo && !durationMinutes) || (durationMinutes !== '' && (!Number.isInteger(Number(durationMinutes)) || Number(durationMinutes) < 1 || Number(durationMinutes) > 240)))) {
+      setErrorMsg('Set a duration between 1 and 240 minutes. Loop requires a duration.'); return;
+    }
     const emptyRow = posts.find((p) => !p.caption.trim() && !p.media_file);
     if (emptyRow) {
       setErrorMsg('Each post must have either an attached image/video or a caption.');
@@ -337,7 +367,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
 
     try {
       const payload: CreateBatchParams = {
-        name: batchName.trim() || `Daily Batch ${new Date().toLocaleDateString()}`,
+        name: batchName.trim() || `${liveMode ? 'Live Batch' : 'Daily Batch'} ${new Date().toLocaleDateString()}`,
         target_profiles: selectedProfileIds,
         start_now: startNow,
         schedule_window: {
@@ -345,15 +375,16 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
           end_time: endTime,
           profile_stagger_seconds: staggerSeconds,
           batch_iteration_delay_seconds: iterationDelaySeconds,
-          session_preparation_mode: preparationMode,
+          session_preparation_mode: liveMode ? 'off' : preparationMode,
           start_now: startNow,
         },
         posts: posts.map((p) => ({
           type: p.type,
+          ...(p.type === 'live' ? {title: (p.title || '').trim(), pinned_comment: (p.pinned_comment || '').trim(), loop: loopVideo, muted, max_duration_seconds: durationMinutes ? Number(durationMinutes) * 60 : undefined} : {}),
           media_file: p.media_file,
           base_caption: p.caption.trim(),
-          first_comment: p.first_comment.trim() || undefined,
-          ai_spin: aiSpinAll,
+          first_comment: p.type === 'live' ? undefined : p.first_comment.trim() || undefined,
+          ai_spin: p.type === 'live' ? false : aiSpinAll,
         })),
       };
 
@@ -362,7 +393,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
         `✅ Successfully launched batch "${res.batch.name}" with ${res.total_executions} scheduled posts!`
       );
       setPosts([]);
-      localStorage.removeItem('batch_creator_draft_posts');
+      localStorage.removeItem(storageKey('draft_posts'));
       onBatchCreated();
     } catch (err: any) {
       setErrorMsg(err.message || 'Failed to schedule campaign');
@@ -415,19 +446,19 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
             <div className="flex items-center justify-between gap-3">
               <div>
                 <h3 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
-                  <span>Content Studio</span>
+                  <span>{liveMode ? 'Live videos' : 'Content Studio'}</span>
                   <span className="text-xs font-normal text-zinc-400">
-                    ({posts.length} {posts.length === 1 ? 'post' : 'posts'} drafted)
+                    ({posts.length} {liveMode ? posts.length === 1 ? 'video' : 'videos' : posts.length === 1 ? 'post' : 'posts'} drafted)
                   </span>
                 </h3>
                 <p className="text-xs text-zinc-400 mt-0.5">
-                  Drag & drop your videos or photos below. Auto-detects Reels & Photos.
+                  {liveMode ? 'Upload videos to broadcast with each profile’s saved streaming settings.' : 'Upload videos or photos. Videos are posted as Reels.'}
                 </p>
               </div>
 
               {/* Action buttons: Import JSON & Add Manual */}
               <div className="flex items-center gap-2">
-                <label className="px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-xs text-zinc-300 flex items-center gap-1.5 cursor-pointer transition-colors shadow-sm" title="Import posts from a JSON file">
+                <label className={`${liveMode ? 'hidden' : ''} px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-xs text-zinc-300 flex items-center gap-1.5 cursor-pointer transition-colors shadow-sm`} title="Import posts from a JSON file">
                   <FileCode className="w-3.5 h-3.5 text-emerald-400" />
                   <span>Import JSON</span>
                   <input
@@ -445,7 +476,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                   title="Add a manual post without uploading media"
                 >
                   <Plus className="w-3.5 h-3.5 text-blue-400" />
-                  <span>Add Post</span>
+                  <span>{liveMode ? 'Add video' : 'Add Post'}</span>
                 </button>
               </div>
             </div>
@@ -455,7 +486,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
               <input
                 type="file"
                 multiple
-                accept="image/*,video/mp4,video/quicktime"
+                accept={liveMode ? ".mp4,.mov,.webm" : "image/*,video/mp4,video/quicktime,video/webm"}
                 onChange={handleBulkMediaUpload}
                 className="hidden"
                 disabled={isUploading}
@@ -469,10 +500,10 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                 <>
                   <UploadCloud className="w-8 h-8 text-zinc-400 group-hover:text-blue-400 transition-colors mb-2" />
                   <span className="text-xs font-semibold text-zinc-200">
-                    Drop videos or photos here, or click to browse
+                    {liveMode ? 'Drop videos here, or click to browse' : 'Drop videos or photos here, or click to browse'}
                   </span>
                   <span className="text-[11px] text-zinc-400 mt-1">
-                    .mp4 / .mov auto-assigned as <strong className="text-purple-400 font-medium">Reels</strong> · images auto-assigned as <strong className="text-blue-400 font-medium">Photos</strong>
+                    .mp4 / .mov / .webm videos assigned as <strong className="text-purple-400 font-medium">{videoUploadType === 'live' ? 'Live' : 'Reels'}</strong> {!liveMode && <>· images auto-assigned as <strong className="text-blue-400 font-medium">Photos</strong></>}
                   </span>
                 </>
               )}
@@ -494,31 +525,9 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                         {idx + 1}
                       </span>
 
-                      {/* Type Toggle Badge */}
-                      <button
-                        type="button"
-                        onClick={() =>
-                          handleUpdateRow(post.id, {
-                            type: post.type === 'reel' ? 'photo' : 'reel',
-                          })
-                        }
-                        className={`px-2 py-0.5 rounded text-[11px] font-semibold flex items-center gap-1 transition-colors ${
-                          post.type === 'reel'
-                            ? 'bg-purple-950/80 text-purple-300 border border-purple-800/70 hover:bg-purple-900/80'
-                            : 'bg-blue-950/80 text-blue-300 border border-blue-800/70 hover:bg-blue-900/80'
-                        }`}
-                        title="Click to toggle between Reel and Photo"
-                      >
-                        {post.type === 'reel' ? (
-                          <>
-                            <Film className="w-3 h-3 text-purple-400" /> Reel
-                          </>
-                        ) : (
-                          <>
-                            <ImageIcon className="w-3 h-3 text-blue-400" /> Photo
-                          </>
-                        )}
-                      </button>
+                      <Select value={post.type} ariaLabel={`Post ${idx + 1} type`} className="w-28 min-h-7 text-xs"
+                        disabled={liveMode} options={liveMode ? [{value: 'live', label: 'Live'}] : [{value: 'photo', label: 'Photo'}, {value: 'reel', label: 'Reel'}]}
+                        onValueChange={value => handleUpdateRow(post.id, {type: value as DraftPostRow['type'], ...(value === 'live' ? {caption: '', first_comment: ''} : {})})} />
 
                       {post.media_file ? (
                         <span className="text-[11px] text-zinc-400 font-mono truncate max-w-[220px]">
@@ -547,7 +556,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                     <div className="shrink-0">
                       {post.media_file ? (
                         <div className="relative group/thumb">
-                          {post.type === 'reel' ? (
+                          {post.type !== 'photo' ? (
                             <div
                               onClick={() =>
                                 setLightboxMedia({
@@ -611,7 +620,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                           <span className="text-[9px] font-medium leading-tight">Attach</span>
                           <input
                             type="file"
-                            accept="image/*,video/mp4,video/quicktime"
+                            accept={liveMode ? ".mp4,.mov,.webm" : "image/*,video/mp4,video/quicktime,video/webm"}
                             onChange={(e) =>
                               e.target.files?.[0] && handleRowMediaUpload(post.id, e.target.files[0])
                             }
@@ -623,7 +632,22 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                     </div>
 
                     {/* Caption & First Comment */}
-                    <div className="flex-1 space-y-2">
+                    {post.type === 'live' ? <div className="flex-1 space-y-2">
+                      <input aria-label="Live title" value={post.title || ''} maxLength={255}
+                        onChange={e => handleUpdateRow(post.id, {title: e.target.value})} placeholder="Live title"
+                        className="w-full px-3 py-2 text-xs rounded-lg bg-zinc-950 border border-zinc-800 text-white focus:outline-none focus:border-rose-500" />
+                      <textarea aria-label="Live caption" value={post.caption} maxLength={5000} rows={3}
+                        onChange={e => handleUpdateRow(post.id, {caption: e.target.value})} placeholder="Live caption"
+                        className="w-full px-3 py-2 text-xs rounded-lg bg-zinc-950 border border-zinc-800 text-white focus:outline-none focus:border-rose-500 resize-none" />
+                      <details className="text-xs text-zinc-400">
+                        <summary className="cursor-pointer">Pinned comment (optional)</summary>
+                        <textarea aria-label="Preset pinned comment" value={post.pinned_comment || ''} maxLength={1000} rows={2}
+                          onChange={e => handleUpdateRow(post.id, {pinned_comment: e.target.value})} placeholder="Comment to pin when Live starts"
+                          className="mt-2 w-full px-3 py-2 rounded-lg bg-zinc-950 border border-zinc-800 text-white focus:outline-none focus:border-rose-500 resize-none" />
+                        <p className="mt-1 text-[11px] text-zinc-500">Leave blank to disable the preset for this Live.</p>
+                      </details>
+                      <p className="text-xs text-zinc-500">Added to Facebook before streaming. Choose the broadcast destination in Live Producer.</p>
+                    </div> : <div className="flex-1 space-y-2">
                       <textarea
                         value={post.caption}
                         onChange={(e) => handleUpdateRow(post.id, { caption: e.target.value })}
@@ -650,14 +674,14 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                           className="flex-1 px-2.5 py-1 text-[11px] rounded bg-zinc-950 border border-zinc-800 text-zinc-300 placeholder-zinc-600 focus:outline-none focus:border-blue-500"
                         />
                       </div>
-                    </div>
+                    </div>}
                   </div>
                 </div>
               ))}
             </div>
           ) : (
             <div className="p-8 rounded-2xl border border-dashed border-zinc-800/80 text-center text-zinc-500 text-xs">
-              No posts drafted yet. Drop videos/photos above or click "Add Post" to start.
+              {liveMode ? 'Upload videos or add a video row to start a broadcast batch.' : 'Drop videos/photos above or click Add Post to start.'}
             </div>
           )}
         </div>
@@ -672,7 +696,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
             {/* 1. Campaign Name (Inline editable) */}
             <div>
               <label className="block text-[11px] font-semibold text-zinc-400 uppercase tracking-wider mb-1.5">
-                Campaign Name
+                {liveMode ? 'Live batch name' : 'Campaign Name'}
               </label>
               {isEditingName ? (
                 <div className="flex items-center gap-2">
@@ -732,7 +756,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                     <div className="text-[11px] text-zinc-500">
                       {selectedProfileIds.length === runningProfilesCount && runningProfilesCount > 0
                         ? 'All running accounts active'
-                        : `${selectedProfileIds.length} accounts will post`}
+                        : `${selectedProfileIds.length} ${liveMode ? 'profiles will broadcast' : 'accounts will post'}`}
                     </div>
                   </div>
                 </div>
@@ -746,7 +770,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
             {/* 3. Execution Mode Segmented Control */}
             <div>
               <label className="block text-[11px] font-semibold text-zinc-400 uppercase tracking-wider mb-2">
-                Posting Schedule Mode
+                {liveMode ? 'Start time' : 'Posting Schedule Mode'}
               </label>
 
               <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-zinc-950 border border-zinc-800">
@@ -784,19 +808,29 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
               </p>
             </div>
 
+            {liveMode && <section className="space-y-3 rounded-xl border border-rose-900/50 bg-zinc-900 p-4" aria-label="Live playback settings">
+              <h3 className="text-sm font-semibold text-zinc-200">Playback</h3>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="text-xs text-zinc-400">Playback<Select ariaLabel="Live playback" value={loopVideo ? 'loop' : 'once'} onValueChange={value => { setLoopVideo(value === 'loop'); if (value === 'loop' && !durationMinutes) setDurationMinutes('60'); }} className="mt-1" options={[{value: 'once', label: 'Play once'}, {value: 'loop', label: 'Loop video'}]} /></label>
+                <label className="text-xs text-zinc-400">Audio<Select ariaLabel="Live audio" value={muted ? 'muted' : 'original'} onValueChange={value => setMuted(value === 'muted')} className="mt-1" options={[{value: 'original', label: 'Original audio'}, {value: 'muted', label: 'Muted'}]} /></label>
+              </div>
+              <label className="block text-xs text-zinc-400">{loopVideo ? 'Stop after (minutes)' : 'Duration limit (minutes, optional)'}<input type="number" min={1} max={240} placeholder="Full video" value={durationMinutes} onChange={e => setDurationMinutes(e.target.value)} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 p-2 text-white" /></label>
+              <p className="text-[11px] text-zinc-500">{loopVideo ? 'Repeats until the duration limit or Stop Live.' : 'Ends with the video or duration limit.'} Maximum 4 hours. Settings apply to all videos in this batch.</p>
+            </section>}
             {/* 4. Global AI Caption Spin Toggle */}
-            <div className="pt-1 border-t border-zinc-800/80">
+            <div className={`${liveMode ? 'hidden' : ''} pt-1 border-t border-zinc-800/80`}>
               <label htmlFor="ai-caption-spinning" className="flex items-center justify-between cursor-pointer py-1">
                 <div>
                   <div className="text-xs font-medium text-zinc-200">
                     AI Caption Spinning
                   </div>
                   <div className="text-[11px] text-zinc-500">
-                    Generate unique variation per profile to prevent bot detection
+                    Applies to Photo and Reel captions
                   </div>
                 </div>
                 <Checkbox
                   id="ai-caption-spinning"
+                  disabled={posts.length > 0 && posts.every(post => post.type === 'live')}
                   checked={aiSpinAll}
                   onCheckedChange={setAiSpinAll}
                 />
@@ -830,7 +864,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                         className="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-white focus:outline-none focus:border-zinc-600"
                       />
                       <p className="text-[10px] text-zinc-500 mt-1">
-                        This gates the first iteration only. Remaining posts follow sequentially.
+                        This gates the first post only. Accounts run within Resource Mode limits, and posts advance in order.
                       </p>
                     </div>
                   ) : (
@@ -878,12 +912,12 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                     </p>
                   </div>
 
-                  <div>
+                  <div className={liveMode ? 'hidden' : ''}>
                     <label className="block text-zinc-400 mb-1">
-                      Rolling Session Preparation
+                      {liveMode ? 'Session preparation (skipped for Live)' : 'Rolling Session Preparation'}
                     </label>
                     <Select
-                      value={preparationMode}
+                      disabled={liveMode} value={liveMode ? 'off' : preparationMode}
                       onValueChange={(value) => setPreparationMode(value as 'off' | 'brief' | 'extended')}
                       ariaLabel="Rolling session preparation"
                       options={[
@@ -902,7 +936,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
               <div className="p-3 rounded-xl bg-zinc-950/80 border border-zinc-800 text-xs text-zinc-400">
                 <strong className="text-zinc-200">{selectedProfileIds.length} profiles</strong>
                 {' '}×{' '}
-                <strong className="text-zinc-200">{posts.length} posts</strong>
+                <strong className="text-zinc-200">{posts.length} {liveMode ? 'videos' : 'posts'}</strong>
                 {' '}={' '}
                 <strong className="text-white">{totalExecutions} total executions</strong>
               </div>
@@ -922,8 +956,8 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                 )}
                 <span>
                   {executionMode === 'now'
-                    ? `Start Campaign Now (${totalExecutions} Posts)`
-                    : `Schedule Campaign (${totalExecutions} Posts)`}
+                    ? liveMode ? `Start Live (${totalExecutions} broadcasts)` : `Start Campaign Now (${totalExecutions} Posts)`
+                    : liveMode ? `Schedule Live (${totalExecutions} broadcasts)` : `Schedule Campaign (${totalExecutions} Posts)`}
                 </span>
               </button>
             </div>
@@ -968,7 +1002,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
             </div>
 
             <div className="overflow-y-auto p-4">
-              <GroupedProfileSelector profiles={profiles} selectedIds={selectedProfileIds} onChange={setSelectedProfileIds} />
+              <GroupedProfileSelector disabledProfileIds={hasLive ? profiles.filter(p => !p.live?.configured).map(p => p.id) : []} profiles={profiles} selectedIds={selectedProfileIds} onChange={setSelectedProfileIds} />
             </div>
 
             {/* Modal Footer */}
