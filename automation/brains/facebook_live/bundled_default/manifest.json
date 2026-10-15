@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "brain_api_version": 1,
   "id": "facebook_live",
-  "version": "1.0.0",
+  "version": "1.0.5",
   "name": "Facebook Live Producer Workflow",
   "description": "Recognize and control Live Producer; video ingest stays in the host streaming service.",
   "platform": "facebook",

@@ -15,16 +15,36 @@ def label(item):
 
 
 def phrase(items, text):
-    """Match one label or adjacent lines in the same small control region."""
+    """Match one label or nearby wrapped lines in the same control region."""
     if any(text in label(i) for i in items):
         return True
-    ordered = sorted(items, key=lambda i: (i['center'][1], i['center'][0]))
-    for a, b in zip(ordered, ordered[1:]):
-        ah = a['bounds'][3] - a['bounds'][1]
-        bh = b['bounds'][3] - b['bounds'][1]
+    lines = []
+    for item in sorted(items, key=lambda i: (i['center'][1], i['center'][0])):
+        height = max(1, item['bounds'][3] - item['bounds'][1])
+        if (lines and item['bounds'][0] >= lines[-1]['bounds'][2] - 10
+                and abs(item['center'][1] - lines[-1]['center_y'])
+                <= .6 * max(height, lines[-1]['height'])):
+            lines[-1]['items'].append(item)
+            lines[-1]['height'] = max(lines[-1]['height'], height)
+            lines[-1]['center_y'] = sum(i['center'][1] for i in lines[-1]['items']) / len(lines[-1]['items'])
+            lines[-1]['bounds'] = (
+                min(lines[-1]['bounds'][0], item['bounds'][0]),
+                min(lines[-1]['bounds'][1], item['bounds'][1]),
+                max(lines[-1]['bounds'][2], item['bounds'][2]),
+                max(lines[-1]['bounds'][3], item['bounds'][3]),
+            )
+        else:
+            lines.append({'items': [item], 'height': height, 'center_y': item['center'][1],
+                          'bounds': item['bounds']})
+    for line in lines:
+        line['text'] = ' '.join(label(i) for i in sorted(line['items'], key=lambda i: i['center'][0]))
+        if text in line['text']:
+            return True
+    for a, b in zip(lines, lines[1:]):
         gap = b['bounds'][1] - a['bounds'][3]
-        if 0 <= gap <= max(ah, bh) and abs(a['bounds'][0] - b['bounds'][0]) < 30:
-            if text in label(a) + ' ' + label(b):
+        height = max(a['height'], b['height'])
+        if -height <= gap <= height and abs(a['bounds'][0] - b['bounds'][0]) < 30:
+            if text in a['text'] + ' ' + b['text']:
                 return True
     return False
 

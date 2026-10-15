@@ -77,15 +77,27 @@ class FacebookLiveTask:
                 raise RuntimeError('Facebook already has a live broadcast. End it before starting another.')
             if frame.signals['ended_surface']:
                 raise RuntimeError('This Live Producer broadcast has ended. Prepare a new broadcast before starting.')
-            if frame.signals['setup_panel'] and getattr(self, 'title', '') and not details_written:
-                saved = LivePostDetails(self).fill(frame, self.title, self.caption)
-                details_written = True
-                # The module just observed a saved setup after verified fields.
-                # Reuse that fresh frame instead of repeating every OCR region.
-                if saved is not None and saved.template_id in {'setup_left', 'setup_center', 'broadcast_ready'}:
-                    frame = saved
-                else:
+            if (frame.signals['setup_panel'] and not frame.signals['details_saved']
+                    and getattr(self, 'title', '') and not details_written):
+                # A prior reversible setup attempt can leave the right panel
+                # scrolled below the saved-details marker. Restore the top and
+                # reobserve before reopening or overwriting those fields.
+                self.client.exec_cmd(['xdotool', 'key', '--clearmodifiers', 'ctrl+Home'])
+                time.sleep(.5)
+                restored = self.capture('prepare')
+                if (not restored.signals['setup_panel'] or restored.signals['active_surface']
+                        or restored.signals['ended_surface']):
                     continue
+                frame = restored
+                if not frame.signals['details_saved']:
+                    saved = LivePostDetails(self).fill(frame, self.title, self.caption)
+                    details_written = True
+                    # The module just observed a saved setup after verified fields.
+                    # Reuse that fresh frame instead of repeating every OCR region.
+                    if saved is not None and saved.template_id in {'setup_left', 'setup_center', 'broadcast_ready'}:
+                        frame = saved
+                    else:
+                        continue
             if frame.signals['setup_panel'] and not frame.signals['details_saved']:
                 raise RuntimeError('Complete the required title and description in Facebook Live Producer before starting the video.')
             if frame.template_id in {'setup_left', 'setup_center', 'broadcast_ready'}:

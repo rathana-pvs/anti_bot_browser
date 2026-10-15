@@ -1,7 +1,7 @@
 """Live templates and browser gates without Docker, network or publication."""
 import sys
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 import numpy as np
 import pytest
 
@@ -124,6 +124,18 @@ def test_end_accepts_wrapped_ended_header(task, header):
     task.click.assert_not_called()
 
 
+def test_end_accepts_heading_split_into_same_line_and_wrapped_ocr_boxes(task):
+    frame = task.layouts.observe(image(), {
+        'sidebar': [
+            item('Your live video', x=44, y=200),
+            item('has?', x=216, y=202),
+            item('ended', x=45, y=228),
+        ],
+        'footer': [item('Return home', y=935), item('Live video ended', y=975)],
+    })
+    assert frame.template_id == 'broadcast_ended'
+
+
 def test_end_requires_real_ended_confirmation_and_one_end_click(task):
     task.capture = lambda _: active(task)
     task.vision.read_text.return_value = []
@@ -142,6 +154,17 @@ def test_prepare_recognizes_configured_setup_layouts(task, panel):
     task.capture = lambda _: frame
     task.prepare(URL)
     assert task.state == 'prepared'
+
+
+@pytest.mark.parametrize('heading', ['Add post details', 'Post details'])
+def test_prepare_does_not_treat_unsaved_post_details_heading_as_saved(task, heading):
+    frame = task.layouts.observe(image(), {
+        'setup_center': [item('Streaming software setup'), item('Stream key', y=300)],
+        'details': [item(heading)],
+    })
+    assert frame.template_id is None
+    assert frame.signals['setup_panel'] == 1.0
+    assert frame.signals['details_saved'] == 0.0
 
 
 def test_prepare_rejects_missing_details_before_ingest(task):
@@ -168,6 +191,18 @@ def test_prepare_opens_home_using_clear_welcome_heading(task):
     task.capture = lambda _: next(screens)
     task.prepare(URL)
     task.click.assert_called_once_with(button)
+
+
+def test_prepare_ignores_go_live_heading_and_clicks_lower_setup_button(task):
+    heading = item('Go live', x=834, y=840)
+    button = item('Set up live video', x=950, y=970)
+    home = task.layouts.observe(image(), {'home': [item('Welcome back Example'), heading, button]})
+    assert home.template_id == 'producer_home'
+    screens = iter([home, home, ready(task)])
+    task.capture = lambda _: next(screens)
+    task.prepare(URL)
+    task.click.assert_called_once_with(button)
+    assert task.publish_clicked is False
 
 
 def test_prepare_selects_source_card_above_label(task):
@@ -254,14 +289,42 @@ def test_installed_workflow_is_visible_to_brain_manager_and_not_overwritten(tmp_
 
 def test_prepare_fills_supplied_details_before_accepting_setup(task, monkeypatch):
     frame = ready(task)
+    frame.signals['details_saved'] = 0.0
+    saved = ready(task)
     task.title, task.caption = 'News today', 'News caption'
     task.capture = lambda _: frame
-    fill = Mock()
+    fill = Mock(return_value=saved)
     monkeypatch.setattr('tasks.facebook_live.LivePostDetails', lambda _: Mock(fill=fill))
     task.prepare(URL)
     fill.assert_called_once_with(frame, 'News today', 'News caption')
     assert task.state == 'prepared'
     task.click.assert_not_called()
+
+
+def test_prepare_preserves_details_already_saved_by_a_previous_safe_attempt(task, monkeypatch):
+    frame = ready(task)
+    task.title, task.caption = 'News today', 'News caption'
+    task.capture = lambda _: frame
+    fill = Mock()
+    monkeypatch.setattr('tasks.facebook_live.LivePostDetails', lambda _: Mock(fill=fill))
+    task.prepare(URL)
+    fill.assert_not_called()
+    assert task.state == 'prepared'
+
+
+def test_prepare_restores_scrolled_setup_before_reopening_saved_details(task, monkeypatch):
+    scrolled = ready(task)
+    scrolled.signals['details_saved'] = 0.0
+    restored = ready(task)
+    task.title, task.caption = 'News today', 'News caption'
+    task.capture = Mock(side_effect=[scrolled, restored])
+    fill = Mock()
+    monkeypatch.setattr('tasks.facebook_live.LivePostDetails', lambda _: Mock(fill=fill))
+    task.prepare(URL)
+    fill.assert_not_called()
+    assert ['xdotool', 'key', '--clearmodifiers', 'ctrl+Home'] in [
+        call.args[0] for call in task.client.exec_cmd.call_args_list]
+    assert task.state == 'prepared'
 
 
 def test_post_details_verifies_both_fields_then_fresh_save(task):
@@ -379,6 +442,40 @@ def test_saved_caption_anchor_requires_confirmed_post_form(task):
     task.click.assert_not_called()
 
 
+def test_live_title_accepts_stable_scored_ocr_variant(task, monkeypatch):
+    from modules.live_post_details import LivePostDetails
+    details = LivePostDetails(task)
+    monkeypatch.setattr('modules.live_post_details.time.sleep', lambda _: None)
+    title = item('Titie (required)', x=760, y=455, confidence=.82)
+    details.read_dialog = lambda: (image(), [title])
+    task.client.exec_cmd.return_value.stdout = 'News title'
+    details.field(details.TITLE, 'News title')
+    task.click.assert_called_once_with(title)
+
+
+def test_live_title_uses_geometry_to_reject_duplicate_background_label(task, monkeypatch):
+    from modules.live_post_details import LivePostDetails
+    details = LivePostDetails(task)
+    monkeypatch.setattr('modules.live_post_details.time.sleep', lambda _: None)
+    field = item('Title (required)', x=760, y=455)
+    background = item('Title (required)', x=760, y=760)
+    details.read_dialog = lambda: (image(), [background, field])
+    task.client.exec_cmd.return_value.stdout = 'News title'
+    details.field(details.TITLE, 'News title')
+    task.click.assert_called_once_with(field)
+
+
+def test_live_field_rejects_unstable_candidates_with_safe_diagnostic(task, monkeypatch):
+    from modules.live_post_details import LivePostDetails
+    details = LivePostDetails(task)
+    monkeypatch.setattr('modules.live_post_details.time.sleep', lambda _: None)
+    positions = iter([item('Title', x=500 if index % 2 else 700, y=455) for index in range(8)])
+    details.read_dialog = lambda: (image(), [next(positions)])
+    with pytest.raises(RuntimeError, match=r'stable Live title field \(candidate_count=1\)'):
+        details.field(details.TITLE, 'private value must not appear')
+    task.click.assert_not_called()
+
+
 def test_scrolled_producer_home_is_recognized_without_welcome_heading(task):
     frame = task.layouts.observe(image(), {'sidebar': [item('Home')], 'home': [
         item('Set up live video', x=950, y=550), item('Past live videos', x=860, y=650), item('Live now', x=990, y=650)]})
@@ -421,8 +518,20 @@ def test_preset_switch_requires_unique_knob_and_state_color(enabled):
     cv2.circle(screen,(1593 if enabled else 1567,800),12,(255,255,255),-1)
     result = find_switch(screen,anchor)
     assert result['enabled'] is enabled
-    cv2.circle(screen,(1500,800),12,(255,255,255),-1)
+    screen[786:815,1450:1504] = (255,100,8) if enabled else (120,120,120)
+    cv2.circle(screen,(1490 if enabled else 1464,800),12,(255,255,255),-1)
     assert find_switch(screen,anchor) is None
+
+
+def test_disabled_preset_switch_is_detected_on_white_card_background():
+    import cv2
+    from modules.live_pinned_comment import find_switch
+    screen = np.full((1080,1920,3),255,dtype=np.uint8)
+    anchor = item('Enable preset pinned comment',x=1280,y=800)
+    cv2.rectangle(screen,(1553,786),(1605,814),(120,120,120),-1)
+    cv2.circle(screen,(1567,800),12,(255,255,255),-1)
+    result = find_switch(screen,anchor)
+    assert result == {'center': (1567,800), 'enabled': False}
 
 
 def test_blank_preset_disables_without_opening_or_typing(task):
@@ -481,3 +590,33 @@ def test_preset_edit_accepts_enabled_blue_text_link_but_rejects_dim_text():
     assert LivePinnedComment.enabled_edit(screen,link)
     screen[y1:y2,x1:x2]=(90,90,90)
     assert not LivePinnedComment.enabled_edit(screen,link)
+
+
+def test_preset_editor_scrolls_when_edit_is_below_fold(task, monkeypatch):
+    from modules.live_pinned_comment import LivePinnedComment
+    module = LivePinnedComment(task)
+    monkeypatch.setattr('modules.live_pinned_comment.time.sleep', lambda _: None)
+    ticks = iter(range(100))
+    monkeypatch.setattr('modules.live_pinned_comment.time.monotonic', lambda: next(ticks))
+    heading = item('Preset pinned comment', x=1300, y=850)
+    edit = item('Edit', x=1500, y=900)
+    states = iter([
+        (image(), [heading]),
+        (image(), [heading]),
+        (image(), [heading, edit]),
+        (image(), [heading, edit]),
+    ])
+    module.read_right = lambda: next(states)
+    module.toggle = lambda *_: {'center': (1580, 900), 'enabled': True}
+    module.enabled_edit = lambda *_: True
+    module.read_editor = lambda: (image(), [
+        item('Preset pinned comment'), item('Write my own', y=300), item('Save', y=500),
+    ])
+
+    module.open_editor()
+
+    assert task.click.call_args_list == [
+        call(heading), call(edit),
+    ]
+    task.client.exec_cmd.assert_called_once_with(
+        ['xdotool','key','--clearmodifiers','Page_Down'])

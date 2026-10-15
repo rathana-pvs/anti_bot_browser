@@ -5,6 +5,7 @@ This module never clicks Go live or starts ingest.
 """
 import time
 
+from engine.text_matcher import OcrTextMatcher
 from modules.live_producer import label, phrase, enabled_color
 
 
@@ -13,48 +14,115 @@ class LivePostDetails:
     TITLE = {'title', 'title required', 'add a title', 'add a title required'}
     CAPTION = {'description', 'description required', 'say something about this live video',
                'say something about your live video', 'add a description'}
+    STABLE_OBSERVATIONS = 2
+    MAX_FIELD_OBSERVATIONS = 8
+    TEXT_THRESHOLD = .72
+    AMBIGUITY_MARGIN = .08
 
     def __init__(self, task):
         self.task = task
+        self.matcher = OcrTextMatcher(default_threshold=self.TEXT_THRESHOLD, min_fuzzy_characters=5)
+
+    def dialog_region(self, image):
+        h, w = image.shape[:2]
+        x, y, rw, rh = self.task.layouts.config['regions'].get(
+            'post_details_dialog', (.35, .25, .30, .60))
+        return int(x*w), int(y*h), int(rw*w), int(rh*h)
 
     def read_dialog(self):
         image = self.task.client.screenshot()
-        h, w = image.shape[:2]
         # The post form is narrower than the End Live confirmation region.
         # Keep background setup labels outside field recognition.
-        x, y, rw, rh = self.task.layouts.config['regions'].get('post_details_dialog', (.35, .25, .30, .60))
-        return image, self.task.vision.read_text(image, region=(int(x*w), int(y*h), int(rw*w), int(rh*h)), min_confidence=.7)
+        return image, self.task.vision.read_text(
+            image, region=self.dialog_region(image), min_confidence=.55)
 
     @staticmethod
     def find(items, labels):
         return [i for i in items if label(i) in labels and i.get('confidence', 0) >= .7]
 
-    def field(self, labels, value):
-        _, items = self.read_dialog()
-        candidates = self.find(items, labels)
-        # Prefer the visible field label over its placeholder if both are present.
-        explicit = [i for i in candidates if label(i) in {'title', 'title required', 'description', 'description required'}]
-        candidates = explicit or candidates
-        filled_caption = not candidates and labels == self.CAPTION
-        if filled_caption and phrase(items, 'create post') and len(self.find(items, {'save'})) == 1:
+    def text_score(self, item, labels):
+        normalized = label(item)
+        if normalized in labels:
+            return 1.0
+        return max((self.matcher.evaluate(
+            expected=expected, received=normalized, threshold=self.TEXT_THRESHOLD,
+        ).score for expected in labels), default=0.0)
+
+    def ranked(self, image, items, labels, field_name):
+        _, dialog_y, _, dialog_height = self.dialog_region(image)
+        expected_y = .34 if field_name == 'title' else .50
+        ranked = []
+        for item in items:
+            confidence = float(item.get('confidence', 0))
+            if confidence < .55:
+                continue
+            text_score = self.text_score(item, labels)
+            if text_score < self.TEXT_THRESHOLD:
+                continue
+            relative_y = (item['center'][1] - dialog_y) / max(1, dialog_height)
+            position_score = max(0.0, 1.0 - abs(relative_y - expected_y) / .45)
+            explicit = label(item) in (
+                {'title', 'title required'} if field_name == 'title'
+                else {'description', 'description required'})
+            score = .65 * text_score + .20 * confidence + .15 * position_score
+            ranked.append((round(score, 6), item, explicit))
+        # A visible field label is safer than a placeholder when Facebook
+        # renders both for the same input.
+        if any(candidate[2] for candidate in ranked):
+            ranked = [candidate for candidate in ranked if candidate[2]]
+        ranked.sort(key=lambda candidate: (-candidate[0], candidate[1]['center'][1], candidate[1]['center'][0]))
+        return [(score, item) for score, item, _ in ranked]
+
+    def candidate(self, image, items, labels, field_name):
+        ranked = self.ranked(image, items, labels, field_name)
+        if not ranked:
+            return None, 0, False
+        if len(ranked) > 1 and ranked[0][0] - ranked[1][0] < self.AMBIGUITY_MARGIN:
+            return None, len(ranked), False
+        return ranked[0][1], len(ranked), False
+
+    def observe_field(self, labels, field_name):
+        image, items = self.read_dialog()
+        candidate, count, anchored = self.candidate(image, items, labels, field_name)
+        if candidate is None and field_name == 'description' and phrase(items, 'create post') and len(self.find(items, {'save'})) == 1:
             # Description is a placeholder: it disappears once text is saved.
-            # The editable body remains directly below the required title input.
-            candidates = self.find(items, {'title required'})
-        if len(candidates) != 1:
-            raise RuntimeError('Could not identify the Live post details fields. Check Live Producer.')
-        _, fresh = self.read_dialog()
-        matches = self.find(fresh, {label(candidates[0])})
-        if len(matches) != 1 or not self.task.same(candidates[0], matches[0]):
-            raise RuntimeError('Live post details moved before input. Check Live Producer.')
-        target = matches[0]
-        if filled_caption:
-            if not phrase(fresh, 'create post') or len(self.find(fresh, {'save'})) != 1:
-                raise RuntimeError('Live post details moved before input. Check Live Producer.')
+            # Anchor the editable body below the required Title input.
+            candidate, count, _ = self.candidate(image, items, self.TITLE, 'title')
+            anchored = candidate is not None
+        return image, items, candidate, count, anchored
+
+    def stable_field(self, labels, field_name):
+        previous = None
+        stable = 0
+        largest_count = 0
+        for attempt in range(self.MAX_FIELD_OBSERVATIONS):
+            _, _, candidate, count, anchored = self.observe_field(labels, field_name)
+            largest_count = max(largest_count, count)
+            observation = (candidate, anchored)
+            if (candidate is not None and previous is not None and anchored == previous[1]
+                    and self.task.same(candidate, previous[0])):
+                stable += 1
+            else:
+                stable = 1 if candidate is not None else 0
+            previous = observation if candidate is not None else None
+            if stable >= self.STABLE_OBSERVATIONS:
+                return candidate, anchored
+            if attempt + 1 < self.MAX_FIELD_OBSERVATIONS:
+                time.sleep(.2)
+        raise RuntimeError(
+            f'Could not identify a stable Live {field_name} field '
+            f'(candidate_count={largest_count}). Check Live Producer.'
+        )
+
+    def field(self, labels, value):
+        field_name = 'title' if labels == self.TITLE else 'description'
+        target, anchored = self.stable_field(labels, field_name)
+        if anchored:
             x, y = target['center']
             target = dict(target, center=(x, y + 80))
         # Title's required label is inside its input; Description's label
         # sits above the editable body. Clicking the latter selects page text.
-        if not filled_caption and explicit and (label(target).startswith('description') or not label(target).endswith(' required')):
+        elif field_name == 'description' or not label(target).endswith(' required'):
             x, y = target['center']
             target = dict(target, center=(x, y + max(28, target['bounds'][3] - target['bounds'][1] + 12)))
         self.task.click(target)

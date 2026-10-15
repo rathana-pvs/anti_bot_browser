@@ -6,7 +6,7 @@ from modules.live_producer import label, phrase, enabled_color
 
 
 def find_switch(image, anchor):
-    """Locate the unique white switch knob beside its verified setting label."""
+    """Locate the unique colored switch track beside its verified setting label."""
     h, w = image.shape[:2]
     x1 = int(anchor['bounds'][2] + 20)
     y = int(anchor['center'][1])
@@ -15,28 +15,26 @@ def find_switch(image, anchor):
     crop = image[y1:y2, x1:x2]
     if not crop.size:
         return None
-    white = np.all(crop > 210, axis=2).astype(np.uint8)*255
-    contours, _ = cv2.findContours(white, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    knobs = []
-    for contour in contours:
-        x, cy, width, height = cv2.boundingRect(contour)
-        area = cv2.contourArea(contour)
-        if 12 <= width <= 32 and 12 <= height <= 32 and .75 <= width/height <= 1.3 and area >= 100:
-            knobs.append((x1+x+width//2, y1+cy+height//2))
-    if len(knobs) != 1:
+    pixels = crop.astype(float)
+    b,g,r = (pixels[:,:,i] for i in range(3))
+    masks = [
+        (True, (b > 140) & (b > r+65) & (b > g+25)),
+        (False, (np.maximum(np.maximum(b,g),r)-np.minimum(np.minimum(b,g),r) < 25)
+                & (r > 65) & (r < 210)),
+    ]
+    tracks = []
+    for enabled, mask in masks:
+        contours, _ = cv2.findContours(mask.astype(np.uint8)*255, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for contour in contours:
+            x, cy, width, height = cv2.boundingRect(contour)
+            area = cv2.contourArea(contour)
+            if 38 <= width <= 70 and 20 <= height <= 38 and 1.3 <= width/height <= 3.5 and area >= 500:
+                tracks.append((x1+x, y1+cy, width, height, enabled))
+    if len(tracks) != 1:
         return None
-    x, cy = knobs[0]
-    patch = image[max(0,cy-18):min(h,cy+19), max(0,x-42):min(w,x+43)].astype(float)
-    b,g,r = (patch[:,:,i] for i in range(3))
-    blue = (b > 140) & (b > r+65) & (b > g+25)
-    gray = (np.maximum(np.maximum(b,g),r)-np.minimum(np.minimum(b,g),r) < 25) & (r > 65) & (r < 185)
-    if blue.mean() > .08:
-        enabled = True
-    elif gray.mean() > .08:
-        enabled = False
-    else:
-        return None
-    return {'center': (x,cy), 'enabled': enabled}
+    x, cy, width, height, enabled = tracks[0]
+    knob_x = x + width - height//2 if enabled else x + height//2
+    return {'center': (knob_x, cy+height//2), 'enabled': enabled}
 
 
 class LivePinnedComment:
@@ -109,16 +107,37 @@ class LivePinnedComment:
         return bool(blue.mean() > .10 or np.all(crop > 185,axis=2).mean() > .10)
 
     def open_editor(self):
-        image, items = self.read_right()
-        candidates = self.find(items, {'edit'})
-        fresh_image, fresh_items = self.read_right()
-        matches = self.find(fresh_items, {'edit'})
-        switch = self.toggle(fresh_image, fresh_items)
-        if (not switch or not switch['enabled'] or len(candidates) != 1 or len(matches) != 1
-                or not self.task.same(candidates[0],matches[0])
-                or not self.enabled_edit(image,candidates[0]) or not self.enabled_edit(fresh_image,matches[0])):
+        deadline = time.monotonic()+20
+        scrolled = False
+        while time.monotonic() < deadline:
+            image, items = self.read_right()
+            candidates = self.find(items, {'edit'})
+            switch = self.toggle(image, items)
+            if switch and switch['enabled'] and len(candidates) == 1 and self.enabled_edit(image,candidates[0]):
+                fresh_image, fresh_items = self.read_right()
+                matches = self.find(fresh_items, {'edit'})
+                fresh_switch = self.toggle(fresh_image, fresh_items)
+                if (fresh_switch and fresh_switch['enabled'] and len(matches) == 1
+                        and self.task.same(candidates[0],matches[0])
+                        and self.enabled_edit(fresh_image,matches[0])):
+                    self.task.click(matches[0])
+                    break
+            if switch and switch['enabled'] and not scrolled:
+                headings = self.find(items, {'preset pinned comment'})
+                fresh_image, fresh_items = self.read_right()
+                matches = self.find(fresh_items, {'preset pinned comment'})
+                fresh_switch = self.toggle(fresh_image, fresh_items)
+                if (fresh_switch and fresh_switch['enabled'] and len(headings) == len(matches) == 1
+                        and self.task.same(headings[0], matches[0])):
+                    # Facebook can place Edit below the fold even though the
+                    # enabled switch is visible. Focus this verified card and
+                    # scroll once before looking for the editor control again.
+                    self.task.click(matches[0])
+                    self.task.client.exec_cmd(['xdotool','key','--clearmodifiers','Page_Down'])
+                    scrolled = True
+            time.sleep(.5)
+        else:
             raise RuntimeError('Facebook has not enabled the pinned-comment editor.')
-        self.task.click(matches[0])
         deadline = time.monotonic()+20
         while time.monotonic() < deadline:
             image, items = self.read_editor()
