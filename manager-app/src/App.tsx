@@ -85,18 +85,16 @@ export const App: React.FC = () => {
   });
 
   const loadData = async () => {
-    try {
-      const [profilesData, statsData, proxiesData, groupsData] = await Promise.all([
-        fetchProfiles(),
-        fetchSystemStats(),
-        fetchProxies(),
-        fetchProfileGroups(),
-      ]);
-      setProfiles(profilesData);
-      setProfileGroups(groupsData);
-      setSystemStats(statsData);
-      setProxies(proxiesData);
+    const [profilesResult, statsResult, proxiesResult, groupsResult] = await Promise.allSettled([
+      fetchProfiles(),
+      fetchSystemStats(),
+      fetchProxies(),
+      fetchProfileGroups(),
+    ]);
 
+    if (profilesResult.status === 'fulfilled') {
+      const profilesData = profilesResult.value;
+      setProfiles(profilesData);
       // Auto-select first profile ONLY if none is currently selected
       setSelectedProfileId((prev) => {
         if (!prev && profilesData.length > 0) {
@@ -108,8 +106,24 @@ export const App: React.FC = () => {
         }
         return prev;
       });
-    } catch (err) {
-      console.error('Failed to load dashboard data:', err);
+    } else {
+      console.error('Failed to load profiles:', profilesResult.reason);
+    }
+
+    if (statsResult.status === 'fulfilled') {
+      setSystemStats(statsResult.value);
+    } else {
+      console.error('Failed to load system stats:', statsResult.reason);
+    }
+    if (proxiesResult.status === 'fulfilled') {
+      setProxies(proxiesResult.value);
+    } else {
+      console.error('Failed to load proxies:', proxiesResult.reason);
+    }
+    if (groupsResult.status === 'fulfilled') {
+      setProfileGroups(groupsResult.value);
+    } else {
+      console.error('Failed to load profile groups:', groupsResult.reason);
     }
   };
 
