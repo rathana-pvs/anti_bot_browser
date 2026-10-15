@@ -50,6 +50,16 @@ export const TelemetryFooter: React.FC<TelemetryFooterProps> = ({ stats }) => {
           </span>
         </div>
         <span className="text-zinc-700">|</span>
+        <div
+          className="flex items-center gap-1.5"
+          title="Build version reported by the running backend"
+        >
+          <span>Build:</span>
+          <span className={`font-semibold ${stats.build_version ? 'text-zinc-200' : 'text-amber-400'}`}>
+            {stats.build_version ? `v${stats.build_version}` : 'Unavailable'}
+          </span>
+        </div>
+        <span className="text-zinc-700">|</span>
         <div className="flex items-center gap-1.5">
           <Activity className="w-3 h-3 text-zinc-500" />
           <span className="hidden sm:inline">Profiles:</span>
@@ -93,6 +103,7 @@ export const TelemetryFooter: React.FC<TelemetryFooterProps> = ({ stats }) => {
         <span className="hidden sm:inline">Proxies:</span>
         <span className="text-zinc-200 font-medium">{stats.available_proxies}</span>
       </div>
+
     </footer>
   );
 };

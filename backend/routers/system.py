@@ -15,13 +15,17 @@ from backend.services.host_metrics_service import get_windows_host_stats
 router = APIRouter(prefix="/api/system", tags=["system"])
 
 
-@router.get("/runtime-version")
-def get_runtime_version():
+def read_build_version() -> str:
     try:
         version = (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip()
+        return version or "unknown"
     except Exception:
-        version = "unknown"
-    return {"version": version}
+        return "unknown"
+
+
+@router.get("/runtime-version")
+def get_runtime_version():
+    return {"version": read_build_version()}
 
 
 def runtime_environment() -> str:
@@ -80,6 +84,7 @@ def get_system_stats():
     }
 
     return {
+        "build_version": read_build_version(),
         "docker_running": docker_running,
         "active_profiles": active_containers,
         "total_profiles": total_profiles,

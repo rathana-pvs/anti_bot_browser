@@ -205,6 +205,7 @@ export interface ProfileDefaults {
 }
 
 export interface SystemStats {
+  build_version?: string;
   docker_running: boolean;
   active_profiles: number;
   total_profiles: number;
