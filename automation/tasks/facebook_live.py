@@ -15,7 +15,7 @@ from engine.runtime_paths import automation_dir
 from engine.vision import VisionEngine
 from modules.live_post_details import LivePostDetails
 from modules.live_pinned_comment import LivePinnedComment
-from modules.live_producer import LiveProducerTemplates, label, phrase
+from modules.live_producer import LiveProducerTemplates, enabled_color, label, phrase
 
 
 class FacebookLiveTask:
@@ -27,6 +27,18 @@ class FacebookLiveTask:
         self.template_id = None
         self.state = 'unknown'
         self.publish_clicked = False
+
+    def report(self, event):
+        callback = getattr(self, 'on_event', None)
+        if callback:
+            callback(event)
+
+    def inspect(self):
+        """Observe publication state without navigation or publication clicks."""
+        frame = self.capture('inspect')
+        self.state = ('live' if self.layouts.permits(frame, 'verify_publication', state='live')
+                      else 'ended' if self.layouts.permits(frame, 'verify_publication', state='ended')
+                      else 'unconfirmed')
 
     def capture(self, action):
         image = self.client.screenshot()
@@ -43,6 +55,12 @@ class FacebookLiveTask:
             # Read just the button's text, still inside the protected footer.
             focused = self.vision.read_text(image, region=(int(.105*w), int(.94*h), int(.055*w), int(.05*h)), min_confidence=.55)
             regions['footer'] += [i for i in focused if label(i) in self.layouts.labels('go_live')]
+        # The full sidebar can merge the small grey Live notice with nearby
+        # account/timestamp text. Re-read only its protected sidebar area.
+        if (self.layouts.has(regions['sidebar'], 'active_surface')
+                and not self.layouts.has(regions['sidebar'], 'live_notice')):
+            regions['sidebar'] += self.vision.read_text(
+                image, region=(0, int(.18*h), int(.19*w), int(.14*h)), min_confidence=.55)
         frame = self.layouts.observe(image, regions)
         self.template_id = frame.template_id
         return frame
@@ -73,6 +91,12 @@ class FacebookLiveTask:
         details_written = False
         while time.monotonic() < deadline:
             frame = self.capture('prepare')
+            if frame.template_id is None:
+                h, w = frame.image.shape[:2]
+                dialog = self.vision.read_text(frame.image,
+                    region=(int(.35*w), int(.3*h), int(.3*w), int(.45*h)), min_confidence=.55)
+                if phrase(dialog, 'persistent stream key') and phrase(dialog, 'another live video'):
+                    raise RuntimeError('Facebook says this persistent stream key is assigned to another live video. Check and end the existing broadcast, or explicitly reassign the key in Live Producer before retrying.')
             if frame.signals['active_surface'] or frame.signals['live_notice']:
                 raise RuntimeError('Facebook already has a live broadcast. End it before starting another.')
             if frame.signals['ended_surface']:
@@ -143,7 +167,9 @@ class FacebookLiveTask:
                 matches = self.layouts.controls(fresh, 'go_live')
                 if self.layouts.permits(fresh, 'request_publish', target='go_live') and len(candidates) == len(matches) == 1 and self.same(candidates[0], matches[0]):
                     self.publish_clicked = True
+                    self.report('go_live_requested')
                     self.click(matches[0])
+                    self.report('go_live_click_sent')
             time.sleep(1)
         raise RuntimeError('Facebook did not confirm the broadcast. Check Live Producer; do not start another stream until this session is resolved.')
 
@@ -156,30 +182,48 @@ class FacebookLiveTask:
                 self.template_id = frame.template_id
                 self.state = 'ended'
                 return
+            if not confirmed and (clicked or frame.template_id is None):
+                confirmed = self.confirm_end_dialog(frame.image)
+                if confirmed:
+                    clicked = True
             if not clicked and self.layouts.permits(frame, 'click_candidate', target='end_live'):
                 candidates = self.layouts.controls(frame, 'end_live')
                 fresh = self.capture('end')
                 matches = self.layouts.controls(fresh, 'end_live')
                 if self.layouts.permits(fresh, 'click_candidate', target='end_live') and len(candidates) == len(matches) == 1 and self.same(candidates[0], matches[0]):
                     clicked = True
+                    self.report('end_live_requested')
                     self.click(matches[0])
-            elif clicked and not confirmed:
-                image = frame.image
-                h, w = image.shape[:2]
-                x, y, rw, rh = self.layouts.config['regions']['dialog']
-                dialog = self.vision.read_text(image, region=(int(x*w), int(y*h), int(rw*w), int(rh*h)), min_confidence=.75)
-                if phrase(dialog, 'end live') or phrase(dialog, 'are you sure'):
-                    buttons = [i for i in dialog if label(i).replace('iive', 'live') in self.layouts.labels('confirm_end')]
-                    if len(buttons) == 1:
-                        # Reobserve the dialog before its final confirmation.
-                        fresh = self.client.screenshot()
-                        items = self.vision.read_text(fresh, region=(int(x*w), int(y*h), int(rw*w), int(rh*h)), min_confidence=.75)
-                        matches = [i for i in items if label(i).replace('iive', 'live') in self.layouts.labels('confirm_end')]
-                        if (phrase(items, 'end live') or phrase(items, 'are you sure')) and len(matches) == 1 and self.same(buttons[0], matches[0]):
-                            confirmed = True
-                            self.click(matches[0])
+                    self.report('end_live_click_sent')
             time.sleep(1)
         raise RuntimeError('The stream is stopping, but Facebook did not confirm the broadcast ended. Check Live Producer.')
+
+    def confirm_end_dialog(self, image):
+        h, w = image.shape[:2]
+        x, y, rw, rh = self.layouts.config['regions']['dialog']
+        region = (int(x*w), int(y*h), int(rw*w), int(rh*h))
+
+        def button(screen):
+            items = self.vision.read_text(screen, region=region, min_confidence=.75)
+            if not (phrase(items, 'end live') or phrase(items, 'are you sure')):
+                return None
+            controls = [item for item in items
+                        if label(item).replace('iive', 'live') in self.layouts.labels('confirm_end')
+                        and (enabled_color(screen, item) or enabled_color(screen, item, 'red'))]
+            return controls[0] if len(controls) == 1 else None
+
+        candidate = button(image)
+        if candidate is None:
+            return False
+        # Distinguish the colored action from the identically worded heading,
+        # and require its location, label and enabled color on a fresh screen.
+        match = button(self.client.screenshot())
+        if match is None or not self.same(candidate, match):
+            return False
+        self.report('end_confirmation_requested')
+        self.click(match)
+        self.report('end_confirmation_click_sent')
+        return True
 
     def evaluate(self, requirement, context):
         return requirement.get('action') == context['inputs']['action']
@@ -196,12 +240,15 @@ class FacebookLiveTask:
 
     def run(self, action, producer_url, title='', caption='', pinned_comment=None):
         self.title, self.caption, self.pinned_comment = title, caption, pinned_comment
-        if action not in {'prepare', 'start', 'end'}:
+        if action not in {'prepare', 'start', 'end', 'inspect'}:
             raise ValueError('Unknown Live browser action')
         if action != 'prepare':
             url = urlsplit(self.client.get_current_url() or '')
             if url.hostname not in {'facebook.com', 'www.facebook.com'} or not url.path.startswith('/live/producer'):
                 raise RuntimeError('Keep Facebook Live Producer open while broadcasting')
+        if action == 'inspect':
+            self.inspect()
+            return {'success': True, 'brain': self.package.metadata(), 'template_id': self.template_id, 'state': self.state}
         result = WorkflowInterpreter(self.package, self).run({'action': action, 'producer_url': producer_url})
         if result.terminal_state != 'completed':
             raise RuntimeError('Live workflow requires review before continuing')

@@ -20,6 +20,7 @@ from engine.runtime_paths import automation_dir
 from engine.text_matcher import OcrTextMatcher
 from engine.vision import VisionEngine
 from modules.publication_result_verifier import ReelPublicationResultVerifier
+from modules.reel_top_post import first_header_region, evaluate_header
 from modules.reel_post_click_verifier import ReelPostClickVerifier
 from .base_task import BaseTask
 
@@ -1474,27 +1475,25 @@ class FacebookReelTask(BaseTask):
         )
 
     def _latest_reel_is_visible(self, screen) -> bool:
-        """Check the top profile feed for this Reel's caption or a fresh timestamp."""
+        """Confirm only the first card's author/header timestamp, never its body."""
+        self._reel_top_post_found = False
+        self._reel_posts_toolbar_seen = False
         if screen is None:
             return False
         height, width = screen.shape[:2]
-        items = self.vision.read_text(
-            screen,
-            region=(int(width * 0.28), int(height * 0.16), int(width * 0.67), int(height * 0.78)),
-            min_confidence=0.18,
-        )
-        if any(self._is_recent_timestamp_text(item.get("text", "")) for item in items):
-            return True
-
-        caption_words = [
-            word for word in re.sub(r"[^a-z0-9]+", " ", (self.caption or "").casefold()).split()
-            if len(word) >= 3
-        ][:8]
-        if not caption_words:
+        items = self.vision.read_text(screen,
+            region=(int(width * .28), int(height * .16), int(width * .67), int(height * .78)),
+            min_confidence=.55)
+        region, seen = first_header_region(items, width, height)
+        self._reel_posts_toolbar_seen = seen
+        if region is None:
             return False
-        visible_text = " ".join(item.get("text", "").casefold() for item in items)
-        matched = sum(1 for word in caption_words if word in visible_text)
-        return matched >= min(2, len(caption_words))
+        self._reel_top_post_found = True
+        header_items = self.vision.read_text(screen, region=region, min_confidence=.55)
+        result = evaluate_header(header_items, region, height)
+        self.latest_reel_timestamp_check = result
+        self.log('INFO', 'Top post timestamp check: ' + str(result))
+        return result['accepted']
 
     def _refresh_until_latest_reel_visible(self) -> bool:
         """Delegate template-independent profile verification to its module."""
@@ -1502,6 +1501,8 @@ class FacebookReelTask(BaseTask):
 
     def _scan_profile_for_latest_reel(self, max_scans: int = 6):
         """Scroll from the profile header until the first post has rendered."""
+        self._reel_top_post_found = False
+        self._reel_posts_toolbar_seen = False
         # Navigating to the same profile URL can preserve Facebook's previous
         # scroll offset, which may leave the newest post's timestamp above the
         # viewport. Reset before the bounded downward scan.
@@ -1514,9 +1515,12 @@ class FacebookReelTask(BaseTask):
             if self._latest_reel_is_visible(last_screen):
                 self.log("INFO", f"Latest Reel found in the profile feed on scan {scan}/{max_scans}.")
                 return True, last_screen
+            if getattr(self, '_reel_top_post_found', False):
+                self.log('WARN', 'The first post timestamp is old or unreadable; no later post will be checked.')
+                return False, last_screen
             if scan < max_scans:
-                self.log("INFO", f"Latest Reel not visible on scan {scan}/{max_scans}; scrolling toward the first post.")
-                self.human.scroll("down", notches=2)
+                self.log("INFO", f"Finding the Posts toolbar on scan {scan}/{max_scans}; not searching later posts.")
+                self.human.scroll("down", notches=1 if getattr(self, '_reel_posts_toolbar_seen', False) else 2)
                 time.sleep(1.2)
         return False, last_screen
 

@@ -1,3 +1,4 @@
+import { LivePlaybackSettings, LivePlaybackMode } from './LivePlaybackSettings';
 import { GroupedProfileSelector } from './GroupedProfileSelector';
 import React, { useState, useEffect } from 'react';
 import { Profile } from '../types/profile';
@@ -61,6 +62,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
 }) => {
   const liveMode = mode === 'live';
   const storageKey = (name: string) => `${liveMode ? 'live_creator' : 'batch_creator'}_${name}`;
+  const [playbackMode, setPlaybackMode] = useState<LivePlaybackMode>(() => localStorage.getItem(storageKey('playback_mode')) === 'manual' ? 'manual' : 'auto');
   const [loopVideo, setLoopVideo] = useState(() => localStorage.getItem(storageKey('loop')) === 'true');
   const [durationMinutes, setDurationMinutes] = useState(() => localStorage.getItem(storageKey('duration_minutes')) || '');
   const [muted, setMuted] = useState(() => localStorage.getItem(storageKey('muted')) === 'true');
@@ -151,10 +153,11 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
   const [lightboxMedia, setLightboxMedia] = useState<LightboxMedia | null>(null);
 
   useEffect(() => {
+    localStorage.setItem(storageKey('playback_mode'), playbackMode);
     localStorage.setItem(storageKey('loop'), String(loopVideo));
     localStorage.setItem(storageKey('duration_minutes'), durationMinutes);
     localStorage.setItem(storageKey('muted'), String(muted));
-  }, [loopVideo, durationMinutes, muted]);
+  }, [playbackMode, loopVideo, durationMinutes, muted]);
 
   // Auto-save to localStorage
   useEffect(() => {
@@ -353,7 +356,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
     if (posts.some(p => p.type === 'live' && !p.media_file)) {
       setErrorMsg('Attach a video to every Live row.'); return;
     }
-    if (liveMode && ((loopVideo && !durationMinutes) || (durationMinutes !== '' && (!Number.isInteger(Number(durationMinutes)) || Number(durationMinutes) < 1 || Number(durationMinutes) > 240)))) {
+    if (liveMode && playbackMode === 'manual' && ((loopVideo && !durationMinutes) || (durationMinutes !== '' && (!Number.isInteger(Number(durationMinutes)) || Number(durationMinutes) < 1 || Number(durationMinutes) > 240)))) {
       setErrorMsg('Set a duration between 1 and 240 minutes. Loop requires a duration.'); return;
     }
     const emptyRow = posts.find((p) => !p.caption.trim() && !p.media_file);
@@ -380,7 +383,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
         },
         posts: posts.map((p) => ({
           type: p.type,
-          ...(p.type === 'live' ? {title: (p.title || '').trim(), pinned_comment: (p.pinned_comment || '').trim(), loop: loopVideo, muted, max_duration_seconds: durationMinutes ? Number(durationMinutes) * 60 : undefined} : {}),
+          ...(p.type === 'live' ? {title: (p.title || '').trim(), pinned_comment: (p.pinned_comment || '').trim(), playback_mode: playbackMode, loop: playbackMode === 'manual' && loopVideo, muted, max_duration_seconds: playbackMode === 'manual' && durationMinutes ? Number(durationMinutes) * 60 : undefined} : {}),
           media_file: p.media_file,
           base_caption: p.caption.trim(),
           first_comment: p.type === 'live' ? undefined : p.first_comment.trim() || undefined,
@@ -808,15 +811,9 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
               </p>
             </div>
 
-            {liveMode && <section className="space-y-3 rounded-xl border border-rose-900/50 bg-zinc-900 p-4" aria-label="Live playback settings">
-              <h3 className="text-sm font-semibold text-zinc-200">Playback</h3>
-              <div className="grid grid-cols-2 gap-3">
-                <label className="text-xs text-zinc-400">Playback<Select ariaLabel="Live playback" value={loopVideo ? 'loop' : 'once'} onValueChange={value => { setLoopVideo(value === 'loop'); if (value === 'loop' && !durationMinutes) setDurationMinutes('60'); }} className="mt-1" options={[{value: 'once', label: 'Play once'}, {value: 'loop', label: 'Loop video'}]} /></label>
-                <label className="text-xs text-zinc-400">Audio<Select ariaLabel="Live audio" value={muted ? 'muted' : 'original'} onValueChange={value => setMuted(value === 'muted')} className="mt-1" options={[{value: 'original', label: 'Original audio'}, {value: 'muted', label: 'Muted'}]} /></label>
-              </div>
-              <label className="block text-xs text-zinc-400">{loopVideo ? 'Stop after (minutes)' : 'Duration limit (minutes, optional)'}<input type="number" min={1} max={240} placeholder="Full video" value={durationMinutes} onChange={e => setDurationMinutes(e.target.value)} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 p-2 text-white" /></label>
-              <p className="text-[11px] text-zinc-500">{loopVideo ? 'Repeats until the duration limit or Stop Live.' : 'Ends with the video or duration limit.'} Maximum 4 hours. Settings apply to all videos in this batch.</p>
-            </section>}
+            {liveMode && <LivePlaybackSettings mode={playbackMode} onMode={setPlaybackMode}
+              loop={loopVideo} onLoop={setLoopVideo} minutes={durationMinutes} onMinutes={setDurationMinutes}
+              muted={muted} onMuted={setMuted} />}
             {/* 4. Global AI Caption Spin Toggle */}
             <div className={`${liveMode ? 'hidden' : ''} pt-1 border-t border-zinc-800/80`}>
               <label htmlFor="ai-caption-spinning" className="flex items-center justify-between cursor-pointer py-1">

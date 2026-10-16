@@ -10,7 +10,7 @@ from tasks.facebook_live import FacebookLiveTask
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--profile', required=True)
-    parser.add_argument('--action', choices=['prepare', 'start', 'end'], required=True)
+    parser.add_argument('--action', choices=['prepare', 'start', 'end', 'inspect'], required=True)
     parser.add_argument('--producer-url', required=True)
     parser.add_argument('--brain-package')
     parser.add_argument('--brain-digest')
@@ -22,6 +22,7 @@ def main():
             raise RuntimeError('A Live workflow pin requires both package and digest')
         package = pinned_live_brain(args.brain_package, args.brain_digest) if args.brain_package else None
         task = FacebookLiveTask(args.profile, package)
+        task.on_event = lambda event: print(json.dumps({'event': event}), file=output, flush=True)
         details = json.loads(sys.stdin.read(65536) or '{}')
         result = task.run(args.action, args.producer_url, title=details.get('title', ''), caption=details.get('caption', ''), pinned_comment=details.get('pinned_comment'))
     except Exception as error:

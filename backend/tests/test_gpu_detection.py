@@ -12,6 +12,12 @@ from backend import config
 
 
 class GpuDetectionTests(unittest.TestCase):
+    def test_probes_automation_interpreter(self):
+        with patch.object(config.subprocess, "check_output", return_value='[true, "Test GPU"]\n') as probe:
+            self.assertEqual(config.probe_ocr_cuda(), (True, "Test GPU"))
+        self.assertEqual(probe.call_args.args[0][:2], [str(config.AUTOMATION_PYTHON), "-c"])
+        self.assertEqual(probe.call_args.kwargs["timeout"], 30)
+
     def test_reports_actual_memory_instead_of_a_coarse_bucket(self):
         with patch.object(
             config.psutil,
@@ -28,7 +34,7 @@ class GpuDetectionTests(unittest.TestCase):
             )
         )
         with patch.object(config, "detect_nvidia_gpu", return_value=(True, "NVIDIA RTX Test")), \
-             patch.dict(sys.modules, {"torch": torch}):
+             patch.object(config, "probe_ocr_cuda", return_value=(False, None)):
             runtime = config.detect_ocr_runtime()
 
         self.assertEqual(runtime["device"], "cpu")
@@ -45,7 +51,7 @@ class GpuDetectionTests(unittest.TestCase):
             )
         )
         with patch.object(config, "detect_nvidia_gpu", return_value=(True, "NVIDIA RTX Test")), \
-             patch.dict(sys.modules, {"torch": torch}):
+             patch.object(config, "probe_ocr_cuda", return_value=(True, "NVIDIA RTX CUDA Test")):
             runtime = config.detect_ocr_runtime()
 
         self.assertEqual(runtime["device"], "cuda")

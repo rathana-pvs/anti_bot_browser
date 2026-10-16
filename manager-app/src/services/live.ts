@@ -14,6 +14,9 @@ export interface LiveSession {
   duration_seconds?: number;
   elapsed_seconds?: number;
   broadcast_confirmed?: boolean;
+  playback_mode?: 'auto' | 'manual';
+  playback_started_at?: string;
+  startup_elapsed_seconds?: number;
   error?: string | null;
 }
 
@@ -35,6 +38,6 @@ async function request<T>(profileId: string, action: string, method = 'GET', bod
 export const fetchLiveSettings = (id: string) => request<LiveSettings>(id, 'settings');
 export const saveLiveSettings = (id: string, value: {server_url: string; producer_url: string; stream_key: string}) => request<LiveSettings>(id, 'settings', 'PUT', value);
 export const fetchLiveStatus = (id: string) => request<LiveSession>(id, 'status');
-export const startLive = (id: string, filename: string, title: string, caption: string, pinned_comment = '') => request<LiveSession>(id, 'start', 'POST', {filename, title, caption, pinned_comment});
+export const startLive = (id: string, filename: string, title: string, caption: string, pinned_comment = '', playback: {playback_mode: 'auto' | 'manual'; loop: boolean; max_duration_seconds?: number; muted: boolean} = {playback_mode: 'auto', loop: false, muted: false}) => request<LiveSession>(id, 'start', 'POST', {filename, title, caption, pinned_comment, ...playback});
 export const stopLive = (id: string, executionId?: string) => request(id, executionId ? `stop?execution_id=${encodeURIComponent(executionId)}` : 'stop', 'POST');
 export const reviewLive = (id: string) => request<LiveSession>(id, 'review', 'POST', {confirmed_ended: true});

@@ -79,7 +79,7 @@ flowchart TD
 ## 🛠️ Supported Automation Workflows
 
 The **Studio Center → Facebook Live** tab broadcasts uploaded videos without a camera. Save streaming
-settings in Edit profile, select videos and profiles, choose playback/audio/duration
+settings in Edit profile, select videos and profiles, use Automatic playback or choose Manual loop/duration
 settings, enter each video’s title, caption and optional preset pinned comment, and start now or schedule. Track progress and stop streams in Live queue.
 This local feature uses a template-driven Live Producer task and a separate FFmpeg
 streaming service. Choose the broadcast destination in Facebook; the app fills and saves the supplied
@@ -393,3 +393,17 @@ the desktop window. It uses secure WebSocket (`wss://`) for cloud coordination
 and HTTPS for media/evidence transfers. See [worker setup and scope](docs/worker/README.md)
 and [protocol v1](docs/worker/protocol-v1.md). The cloud gateway offers the matching `/ws/workers` adapter;
 local protocol and recovery behavior are verified with simulated-server tests.
+
+### Reel profile timestamp confirmation
+
+Before the Reel comment step, only the first post header under the profile's
+Posts/List view toolbar is checked. The parser accepts now/seconds or a numeric
+age strictly below ten minutes; 10m, hours and days are rejected. Small known OCR
+word substitutions and scored unit matches are supported, while ambiguous numeric
+text or unknown units remain unconfirmed. The first post's timestamp is read on
+the header row under its author, including separate Published by attribution.
+Caption text, comment timestamps and second posts cannot supply confirmation.
+If the top post is old/unreadable, the same top position can be rechecked after
+one refresh delay; the task never searches later posts for a newer timestamp.
+A Facebook success popup may still establish publication, but commenting still
+requires this top-post check. Timestamp checks alone do not prove media identity.

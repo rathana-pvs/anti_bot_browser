@@ -1,5 +1,7 @@
 """Base Task Class for Browser Automation."""
 
+from modules.post_timestamp import parse_timestamp
+
 import json
 import math
 import os
@@ -1577,41 +1579,9 @@ class BaseTask:
 
     @staticmethod
     def _is_recent_timestamp_text(text: str) -> bool:
-        """Recognize recent Facebook timestamps with bounded OCR-error tolerance."""
-        clean = re.sub(r"[^a-z0-9]+", " ", (text or "").casefold()).strip()
-        if not clean:
-            return False
-        if clean in {"just now", "1m", "2m", "3m", "a few seconds ago", "moment ago"}:
-            return True
-        if re.fullmatch(r"\d+\s*(m|min|mins|minute|minutes|s|sec|secs|second|seconds)", clean):
-            return True
-
-        parts = clean.split()
-        words = set(parts)
-        now_like = bool(words & {"now", "n0w"})
-        just_like = bool(words & {"just", "jusl", "jusi"})
-        ago_like = bool(words & {"ago", "ag0", "a00", "aoo", "ano"})
-        few_like = bool(words & {"few", "tew"})
-        seconds_like = bool(words & {"second", "seconds", "sec", "secs"})
-        numeric_time_like = any(
-            re.fullmatch(r"\d+(m|min|mins|minute|minutes|s|sec|secs|second|seconds)", word)
-            for word in words
-        )
-        expanded_recent_time = any(
-            parts[index].isdigit()
-            and int(parts[index]) <= 15
-            and parts[index + 1] in {"m", "min", "mins", "minute", "minutes"}
-            and parts[index + 2] in {"ago", "ag0", "a00", "aoo", "ano"}
-            for index in range(max(0, len(parts) - 2))
-        )
-        moment_like = bool(words & {"moment", "mornent"})
-        return (
-            (just_like and now_like)
-            or (seconds_like and (few_like or ago_like))
-            or (numeric_time_like and ago_like)
-            or expanded_recent_time
-            or (moment_like and ago_like)
-        )
+        """Parse a known timestamp and require a strict age below ten minutes."""
+        parsed = parse_timestamp(text)
+        return parsed is not None and parsed.recent
 
     @timed_telemetry_step("permalink_correlation")
     def correlate_and_extract_permalink(

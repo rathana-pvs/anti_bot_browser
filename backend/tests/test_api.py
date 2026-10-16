@@ -1,4 +1,7 @@
 import pytest
+from pathlib import Path
+
+RELEASE_VERSION = (Path(__file__).resolve().parents[2] / "VERSION").read_text().strip()
 from fastapi.testclient import TestClient
 from backend.main import app
 from backend.services import proxy_service
@@ -34,7 +37,7 @@ def test_settings_resource_mode(client):
 def test_runtime_version(client):
     res = client.get("/api/system/runtime-version")
     assert res.status_code == 200
-    assert res.json()["version"] == "1.0.11"
+    assert res.json()["version"] == RELEASE_VERSION
 
 
 def test_desktop_session_token_protects_api(client, monkeypatch):
@@ -56,7 +59,7 @@ def test_system_stats(client):
     res = client.get("/api/system/stats")
     assert res.status_code == 200
     data = res.json()
-    assert data["build_version"] == "1.0.11"
+    assert data["build_version"] == RELEASE_VERSION
     assert "docker_running" in data
     assert "cpu_cores" in data
     assert "total_memory_mb" in data

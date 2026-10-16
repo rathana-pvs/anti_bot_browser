@@ -1,4 +1,5 @@
 import os
+import json
 import shutil
 import subprocess
 import sys
@@ -129,12 +130,26 @@ def detect_nvidia_gpu() -> tuple[bool, str | None]:
         return False, None
 
 
+def probe_ocr_cuda() -> tuple[bool, str | None]:
+    """Probe the interpreter that actually runs OCR, including packaged desktops."""
+    result = subprocess.check_output(
+        [str(AUTOMATION_PYTHON), "-c",
+         "import json, torch; available = bool(torch.cuda.is_available()); "
+         "print(json.dumps([available, torch.cuda.get_device_name(0) if available else None]))"],
+        text=True,
+        stderr=subprocess.DEVNULL,
+        timeout=30,
+    )
+    available, name = json.loads(result.strip().splitlines()[-1])
+    return available is True, name
+
+
 def detect_ocr_runtime():
     nvidia_detected, detected_gpu_name = detect_nvidia_gpu()
     try:
-        import torch
-        if torch.cuda.is_available():
-            gpu_name = torch.cuda.get_device_name(0) or detected_gpu_name
+        cuda_available, gpu_name = probe_ocr_cuda()
+        if cuda_available:
+            gpu_name = gpu_name or detected_gpu_name
             return {
                 "device": "cuda",
                 "label": "NVIDIA GPU",

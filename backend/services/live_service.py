@@ -1,5 +1,6 @@
 """Local, single-file Facebook Live broadcasts. Keys never enter task state/logs."""
 import asyncio
+import hashlib
 import json
 import math
 import os
@@ -92,7 +93,11 @@ def validate_details(title='', caption='', pinned_comment=None):
     return result
 
 
-def validate_playback(loop=False, max_duration_seconds=None, muted=False):
+def validate_playback(loop=False, max_duration_seconds=None, muted=False, playback_mode=None):
+    if playback_mode not in (None, 'auto', 'manual'):
+        raise ValueError('Choose Automatic or Manual playback')
+    if playback_mode == 'auto':
+        loop, max_duration_seconds = False, None
     if not isinstance(loop, bool) or not isinstance(muted, bool):
         raise ValueError('Loop and muted must be true or false')
     if max_duration_seconds is not None and (isinstance(max_duration_seconds, bool)
@@ -100,7 +105,9 @@ def validate_playback(loop=False, max_duration_seconds=None, muted=False):
         raise ValueError('Set a duration limit between 1 second and 4 hours')
     if loop and max_duration_seconds is None:
         raise ValueError('Set a loop duration between 1 second and 4 hours')
-    return {'loop': loop, 'max_duration_seconds': max_duration_seconds, 'muted': muted}
+    result = {'loop': loop, 'max_duration_seconds': max_duration_seconds, 'muted': muted}
+    result['playback_mode'] = playback_mode or 'manual'
+    return result
 
 
 def settings_path(profile_id):
@@ -143,6 +150,18 @@ def get_status(profile_id):
     return saved
 
 
+def archive_previous_session(profile_id):
+    """Retain unresolved outcomes before a distinct session takes the status slot."""
+    previous = get_status(profile_id)
+    if previous.get('status') == 'idle':
+        return
+    encoded = json.dumps(previous, sort_keys=True).encode()
+    digest = hashlib.sha256(encoded).hexdigest()
+    path = LIVE_DIR / profile_id / 'history' / (digest + '.json')
+    if not path.exists():
+        private_write(path, previous)
+
+
 def resolve_video(filename):
     if not filename or Path(filename).name != filename or '\\' in filename:
         raise ValueError('Select an uploaded video')
@@ -161,11 +180,16 @@ def update(record, stage=None, **fields):
     record['last_activity_at'] = now()
     # Store only public fields; never serialize processes, keys, or settings.
     public = {k: record[k] for k in ('profile_id', 'task', 'session_id', 'status', 'stage', 'started_at',
-              'ended_at', 'filename', 'duration_seconds', 'elapsed_seconds', 'error', 'logs', 'broadcast_confirmed', 'queue_execution_id', 'loop', 'max_duration_seconds', 'muted', 'brain', 'browser_template', 'browser_state') if k in record}
+              'ended_at', 'filename', 'duration_seconds', 'elapsed_seconds', 'error', 'logs', 'broadcast_confirmed', 'queue_execution_id', 'loop', 'max_duration_seconds', 'muted', 'brain', 'browser_template', 'browser_state', 'encoder_exit_code', 'final_browser_state', 'playback_mode', 'source_duration_seconds', 'startup_elapsed_seconds', 'playback_started_at') if k in record}
     private_write(state_path(record['profile_id']), public)
     if record.get('queue_execution_id'):
         sync_queue(record)
     return public
+
+
+def live_event(record, event):
+    record.setdefault('logs', []).append({'timestamp': now(), 'event': event, 'level': 'STEP', 'message': event.replace('_', ' ').capitalize()})
+    update(record)
 
 
 def sync_queue(record, finalize=False):
@@ -176,7 +200,7 @@ def sync_queue(record, finalize=False):
         if not match or (match['execution'].get('scheduler_lease') or {}).get('lease_id') != lease.get('lease_id'):
             raise RuntimeError('Live queue ownership lost; check Facebook')
         execution = match['execution']
-        for key in ('elapsed_seconds', 'duration_seconds', 'broadcast_confirmed', 'error', 'session_id', 'brain', 'browser_template', 'browser_state'):
+        for key in ('elapsed_seconds', 'duration_seconds', 'broadcast_confirmed', 'error', 'session_id', 'brain', 'browser_template', 'browser_state', 'logs', 'encoder_exit_code', 'final_browser_state', 'playback_mode', 'source_duration_seconds', 'startup_elapsed_seconds', 'playback_started_at'):
             if key in record:
                 execution[key] = record[key]
         stage = record.get('stage')
@@ -208,12 +232,19 @@ async def execute_queue_live(claim):
                   queue_execution_id=execution['execution_id'], scheduler_lease=claim['lease'],
                   container_owner_token=lifecycle.OWNER_TOKEN.get(), last_activity_at=now())
     try:
-        if profile_id in CONTROLS or get_status(profile_id)['status'] == 'needs_review':
-            raise RuntimeError('Review the previous Live broadcast before starting another')
+        if profile_id in CONTROLS:
+            raise RuntimeError('This profile already has an active Live session')
+        prior = get_status(profile_id)
+        if prior.get('status') == 'needs_review' and prior.get('queue_execution_id') == execution['execution_id']:
+            record.update(status='needs_review', stage='needs_review', error=prior.get('error'),
+                          session_id=prior.get('session_id', record['session_id']), logs=prior.get('logs', []))
+            sync_queue(record, finalize=True)
+            return {'success': False, 'status': 'needs_review'}
         settings = validate_settings(read_json(settings_path(profile_id)))
         record.update(validate_details(post.get('title', ''), post.get('base_caption', ''), post.get('pinned_comment')))
-        record.update(validate_playback(post.get('loop', False), post.get('max_duration_seconds'), post.get('muted', False)))
+        record.update(validate_playback(post.get('loop', False), post.get('max_duration_seconds'), post.get('muted', False), post.get('playback_mode')))
         video = resolve_video(record['filename'])
+        archive_previous_session(profile_id)
     except Exception as error:
         record.update(status='failed', stage='failed', error=str(error), ended_at=now())
         sync_queue(record, finalize=True)
@@ -249,23 +280,44 @@ async def browser_action(profile_id, action, producer_url, stop_event):
             '--action', action, '--producer-url', producer_url,
             '--brain-package', record['brain_package'], '--brain-digest', pin['digest'], cwd=str(ROOT_DIR),
             env=automation.automation_worker_env(), stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
-    communication = asyncio.create_task(proc.communicate(json.dumps(details).encode()))
+    async def receive():
+        proc.stdin.write(json.dumps(details).encode())
+        await proc.stdin.drain()
+        proc.stdin.close()
+        result = None
+        while line := await proc.stdout.readline():
+            try:
+                message = json.loads(line)
+            except (ValueError, TypeError):
+                raise RuntimeError('Facebook Live verification failed') from None
+            if not isinstance(message, dict):
+                raise RuntimeError('Facebook Live verification failed')
+            if message.get('event') in {'go_live_requested', 'go_live_click_sent', 'end_live_requested', 'end_live_click_sent',
+                                        'end_confirmation_requested', 'end_confirmation_click_sent'}:
+                live_event(record, message['event'])
+            elif 'success' in message:
+                result = message
+        await proc.wait()
+        return result
+    communication = asyncio.create_task(receive())
     stopped = asyncio.create_task(stop_event.wait())
     try:
+        live_event(record, action + '_requested')
         done, _ = await asyncio.wait([communication, stopped], timeout=190, return_when=asyncio.FIRST_COMPLETED)
         if communication not in done:
             raise RuntimeError('Live setup was stopped' if stop_event.is_set() else 'Facebook Live verification timed out')
-        output, _ = communication.result()
-        try:
-            result = json.loads(output)
-        except (ValueError, TypeError):
-            raise RuntimeError('Facebook Live verification failed') from None
+        result = communication.result()
+        if not isinstance(result, dict):
+            raise RuntimeError('Facebook Live verification failed')
         if not result.get('success'):
             raise RuntimeError(result.get('error') or 'Facebook Live verification failed')
-        expected_state = {'prepare': 'prepared', 'start': 'live', 'end': 'ended'}[action]
-        if result.get('state') != expected_state or result.get('brain') != pin:
+        expected_state = result.get('state') if action == 'inspect' else {'prepare': 'prepared', 'start': 'live', 'end': 'ended'}[action]
+        allowed_states = {'live', 'ended', 'unconfirmed'} if action == 'inspect' else {expected_state}
+        if (expected_state not in allowed_states or result.get('state') != expected_state or result.get('brain') != pin):
             raise RuntimeError('Facebook Live returned an unverified browser workflow result')
         update(record, browser_template=result.get('template_id'), browser_state=expected_state)
+        live_event(record, action + '_' + expected_state)
+        return expected_state
     finally:
         stopped.cancel()
         if proc.returncode is None:
@@ -277,40 +329,23 @@ async def browser_action(profile_id, action, producer_url, stop_event):
 
 
 def encoder_command(profile_id, video, duration, has_audio, session_id, loop=False):
-    # Destination is supplied over stdin, not exposed in host process arguments.
-    # The wrapper owns FFmpeg and guarantees a bounded run even if the backend dies.
-    audio_map = '0:a:0' if has_audio else '1:a:0'
-    script = '''IFS= read -r destination
-printf '%s' "$$" > "$1"
-shift
-exec ffmpeg "$@" "$destination"
-'''
-    args = ['docker', 'exec', '-i', '-u', 'chromeuser', f'isolated_{profile_id}', 'sh', '-c', script, 'live',
-            f'/tmp/live-{session_id}.pid', '-hide_banner', '-loglevel', 'error', '-nostdin',
-            '-re', '-i', video, '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo',
-            '-map', '0:v:0', '-map', audio_map, '-t', str(duration),
-            '-vf', "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=30",
-            '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-b:v', '3000k',
-            '-maxrate', '3000k', '-bufsize', '6000k', '-g', '60', '-threads', '2',
-            '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2',
-            '-progress', 'pipe:1', '-stats_period', '2', '-f', 'flv']
+    script = (AUTOMATION_RUNNER.parent / 'live_encoder.py').read_text()
+    args = ['docker', 'exec', '-i', '-u', 'chromeuser', f'isolated_{profile_id}',
+            'python3', '-u', '-c', script, '--video', video, '--duration', str(duration),
+            '--pidfile', f'/tmp/live-{session_id}.pid', '--control', f'/tmp/live-{session_id}.play']
     if loop:
-        # Docker also has an -i option. Insert at FFmpeg's media input,
-        # after its realtime flag, rather than before Docker's stdin flag.
-        input_index = args.index('-re') + 1
-        args[input_index:input_index] = ['-stream_loop', '-1']
+        args.append('--loop')
+    if has_audio:
+        args.append('--has-audio')
     return args
 
 
-async def start_live(profile_id, filename, loop=False, max_duration_seconds=None, muted=False, title='', caption='', pinned_comment=None):
+async def start_live(profile_id, filename, loop=False, max_duration_seconds=None, muted=False, title='', caption='', pinned_comment=None, playback_mode=None):
     profile_path(profile_id)
     details = validate_details(title, caption, pinned_comment)
-    playback = validate_playback(loop, max_duration_seconds, muted)
+    playback = validate_playback(loop, max_duration_seconds, muted, playback_mode)
     video = resolve_video(filename)
     settings = validate_settings(read_json(settings_path(profile_id)))
-    saved = get_status(profile_id)
-    if saved['status'] == 'needs_review':
-        raise RuntimeError('Check the previous broadcast on Facebook and clear its review before starting another')
     if profile_id in CONTROLS or automation.is_task_process_active(automation.active_automation_tasks.get(profile_id)):
         raise RuntimeError('This profile already has an active task')
     cfg = automation.get_scheduler_config()
@@ -337,6 +372,7 @@ async def start_live(profile_id, filename, loop=False, max_duration_seconds=None
     CONTROLS[profile_id] = stop_event
     automation.active_automation_tasks[profile_id] = record
     try:
+        archive_previous_session(profile_id)
         public = update(record)
         context = lifecycle.OWNER_TOKEN.set(token)
         try:
@@ -416,18 +452,18 @@ async def run_live(record, settings, video, stop_event):
         if not any(s.get('codec_type') == 'video' for s in metadata.get('streams', [])):
             raise ValueError('This file has no video track')
         has_audio = any(s.get('codec_type') == 'audio' for s in metadata.get('streams', []))
-        playback = validate_playback(record.get('loop', False), record.get('max_duration_seconds'), record.get('muted', False))
+        playback = validate_playback(record.get('loop', False), record.get('max_duration_seconds'), record.get('muted', False), record.get('playback_mode'))
         if playback['max_duration_seconds'] is not None:
             duration = playback['max_duration_seconds'] if playback['loop'] else min(duration, playback['max_duration_seconds'])
         has_audio = has_audio and not playback['muted']
-        update(record, duration_seconds=duration)
+        update(record, duration_seconds=duration, source_duration_seconds=float(metadata['format']['duration']))
         await browser_action(profile_id, 'prepare', settings['producer_url'], stop_event)
         if stop_event.is_set():
             raise RuntimeError('Live setup was stopped')
         # Ingest itself may trigger configured Facebook automatic start. Persist before sending any bytes.
         update(record, 'stream_start_intent')
         stream_attempted = True
-        proc = await asyncio.create_subprocess_exec(*encoder_command(profile_id, video, duration, has_audio, record['session_id'], loop=record.get('loop', False)),
+        proc = await asyncio.create_subprocess_exec(*encoder_command(profile_id, video, duration, has_audio, record['session_id'], loop=playback['loop']),
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
         record['process'] = proc
         proc.stdin.write((settings['server_url'] + settings['stream_key'] + '\n').encode())
@@ -435,12 +471,20 @@ async def run_live(record, settings, video, stop_event):
         proc.stdin.close()
         update(record, 'sending')
 
+        playback_ready = asyncio.Event()
+        startup_began = time.monotonic()
+
         async def progress():
             while True:
                 line = await proc.stdout.readline()
                 if not line:
                     break
                 value = line.decode(errors='replace').strip()
+                if value == 'phase=playback':
+                    update(record, 'live', elapsed_seconds=0, playback_started_at=now(),
+                           startup_elapsed_seconds=time.monotonic() - startup_began)
+                    live_event(record, 'playback_started_from_beginning')
+                    playback_ready.set()
                 if value.startswith('out_time_us='):
                     try:
                         update(record, elapsed_seconds=max(0, int(value.split('=', 1)[1])/1_000_000))
@@ -460,12 +504,51 @@ async def run_live(record, settings, video, stop_event):
         update(record, 'starting')
         done, _ = await asyncio.wait([starting, finished, stopped], return_when=asyncio.FIRST_COMPLETED)
         if starting not in done:
-            raise RuntimeError('Stream stopped before Facebook confirmed the broadcast')
+            # Cancel and reap the click-capable helper before observing the final screen.
+            starting.cancel()
+            await asyncio.gather(starting, return_exceptions=True)
+            if finished in done:
+                update(record, encoder_exit_code=proc.returncode)
+                live_event(record, 'video_finished' if proc.returncode == 0 else 'encoder_failed')
+            else:
+                live_event(record, 'stop_requested_before_confirmation')
+            await stop_encoder(record)
+            try:
+                final_state = await asyncio.wait_for(
+                    browser_action(profile_id, 'inspect', settings['producer_url'], asyncio.Event()), 30)
+                update(record, final_browser_state=final_state)
+                if final_state == 'live':
+                    update(record, broadcast_confirmed=True)
+                    await browser_action(profile_id, 'end', settings['producer_url'], asyncio.Event())
+                    if finished not in done or proc.returncode == 0:
+                        update(record, 'ended', status='stopped' if stop_event.is_set() else 'completed', ended_at=now())
+                        return
+            except Exception:
+                live_event(record, 'final_state_check_failed')
+            reason = ('Video finished before Facebook Live could be confirmed' if finished in done and proc.returncode == 0
+                      else 'Stream stopped before Facebook confirmed the broadcast')
+            raise RuntimeError(reason + '; check Facebook before retrying')
         await starting
-        update(record, 'live', broadcast_confirmed=True)
+        update(record, broadcast_confirmed=True)
+        if not stop_event.is_set():
+            # This only switches an already connected encoder. Never reconnect
+            # or repeat Go Live after the durable publication boundary.
+            await command('docker', 'exec', '-u', 'chromeuser', f'isolated_{profile_id}',
+                          'touch', f"/tmp/live-{record['session_id']}.play")
+            acknowledged = asyncio.create_task(playback_ready.wait())
+            readers.append(acknowledged)
+            ready, _ = await asyncio.wait([acknowledged, finished, stopped], timeout=15,
+                                          return_when=asyncio.FIRST_COMPLETED)
+            if not stop_event.is_set() and (acknowledged not in ready or (finished in ready and proc.returncode != 0)):
+                raise RuntimeError('Live was confirmed but video playback could not start; check Facebook')
+        else:
+            update(record, 'live')
         done, _ = await asyncio.wait([stopped, finished], timeout=duration + 60, return_when=asyncio.FIRST_COMPLETED)
         if not done or (finished in done and proc.returncode != 0):
             raise RuntimeError('The video stream disconnected; check Facebook before starting another broadcast')
+        if finished in done:
+            update(record, encoder_exit_code=proc.returncode)
+            live_event(record, 'playback_completed')
         update(record, 'ending')
         if stop_event.is_set():
             await stop_encoder(record)

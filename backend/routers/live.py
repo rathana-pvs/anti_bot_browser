@@ -1,3 +1,4 @@
+from typing import Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from backend.services import live_service as live
@@ -13,6 +14,7 @@ class Settings(BaseModel):
 
 
 class Start(BaseModel):
+    playback_mode: Literal['auto', 'manual'] = 'auto'
     model_config = ConfigDict(extra='forbid')
     filename: str = Field(min_length=1, max_length=255)
     title: str = Field(default='', max_length=255)
@@ -56,7 +58,7 @@ async def status(profile_id: str):
 @router.post('/start')
 async def start(profile_id: str, payload: Start):
     try:
-        return await live.start_live(profile_id, payload.filename, payload.loop, payload.max_duration_seconds, payload.muted, payload.title, payload.caption, payload.pinned_comment)
+        return await live.start_live(profile_id, payload.filename, payload.loop, payload.max_duration_seconds, payload.muted, payload.title, payload.caption, payload.pinned_comment, payload.playback_mode)
     except FileNotFoundError as error:
         raise HTTPException(404, str(error)) from None
     except ValueError as error:

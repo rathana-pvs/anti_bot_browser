@@ -334,6 +334,7 @@ export interface CreateBatchParams {
     start_now?: boolean;
   };
   posts: {
+    playback_mode?: 'auto' | 'manual';
     muted?: boolean;
     loop?: boolean;
     max_duration_seconds?: number;

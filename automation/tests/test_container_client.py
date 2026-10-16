@@ -62,6 +62,7 @@ class ChromeNavigationTests(unittest.TestCase):
                 completed(),
                 completed(),
                 completed(),
+                completed(),
             ]
         )
 
@@ -76,6 +77,7 @@ class ChromeNavigationTests(unittest.TestCase):
                 ["xdotool", "click", "1"],
                 ["xdotool", "key", "--clearmodifiers", "ctrl+a"],
                 ["xdotool", "type", "--clearmodifiers", "https://www.facebook.com/"],
+                ["xdotool", "key", "--clearmodifiers", "Delete"],
                 ["xdotool", "key", "--clearmodifiers", "Return"],
             ],
         )

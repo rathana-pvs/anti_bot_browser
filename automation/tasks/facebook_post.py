@@ -136,9 +136,9 @@ class FacebookPostTask(BaseTask):
         return ImagePublicationResultVerifier(self).verify_latest_image()
 
     def _image_post_not_found(self) -> bool:
-        message = "The new image post was not found after scrolling and one profile refresh."
-        self.log("ERROR", message)
-        return self.set_outcome("failed_after_publish", "image_publish_not_found_after_verification", message=message)
+        message = "Post submitted; confirmation uncertain after one profile refresh. Comment skipped; check Facebook before retrying."
+        self.log("WARN", message)
+        return self.set_outcome("uncertain", "image_publication_unconfirmed", message=message)
 
     def _needs_review(self, code: str, message: str, screen=None) -> bool:
         self.log("WARN", message)

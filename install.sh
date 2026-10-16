@@ -355,7 +355,7 @@ install_system_dependencies() {
   fi
 
   if [ "$(id -u)" -ne 0 ] && command -v docker >/dev/null 2>&1 && ! docker info >/dev/null 2>&1; then
-    if sudo docker info >/dev/null 2>&1; then
+    if sudo_run docker info >/dev/null 2>&1; then
       sudo_run usermod -aG docker "${USER}"
       RELOGIN_REQUIRED=true
     fi

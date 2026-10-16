@@ -75,8 +75,8 @@ class FakePublishTask:
         return True
 
     def _image_post_not_found(self):
-        self.result_status = "failed_after_publish"
-        self.result_error = "image_publish_not_found_after_verification"
+        self.result_status = "uncertain"
+        self.result_error = "image_publication_unconfirmed"
         return False
 
     def permalink_not_requested(self):
@@ -108,7 +108,7 @@ class PublishingPipelineTests(unittest.TestCase):
         orchestrator, context = build_publishing_pipeline(task, content_type="image", comment_text="comment")
         result = orchestrator.run(context)
         self.assertEqual(result.stopped_at, "publication_result_verifier")
-        self.assertEqual(task.result_status, "failed_after_publish")
+        self.assertEqual(task.result_status, "uncertain")
         self.assertEqual(result.module_results["comment"].outcome, "skipped")
 
     def test_image_without_comment_uses_completed_publish_verification(self):

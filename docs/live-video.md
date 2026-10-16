@@ -17,20 +17,36 @@ No camera, virtual camera, or OBS installation is needed.
    confirmed live, and ended. **Stop Live** stops the sender and attempts to end
    the same Facebook broadcast. The profile container is stopped during cleanup.
 
-The video is sent at real-time speed as 720p H.264/AAC. Playback defaults to once
-with original audio. Choose **Loop video** to repeat until a required duration
-limit, or set an optional limit to shorten once playback. Choose **Muted** to use
-a silent audio track. Limits are between 1 and 240 minutes in the UI; the encoder
-always enforces a maximum of four hours even if the backend exits.
-Silent files receive a silent audio track. The application currently caps files
-at four hours. Encoding uses two CPU threads inside the account container and
-therefore follows that profile's direct/proxy network route and Docker limits.
+The video is sent at real-time speed as 720p H.264/AAC. **Automatic** is the default
+for new batches and the direct profile Live control. FFprobe determines each source
+video's length. Startup repeats the source until Facebook Live is visually confirmed;
+the sender then restarts the source at the beginning and plays its full length once.
+It ends the existing broadcast and verifies Facebook's ended state before completion.
+The one RTMPS output connection stays open across startup and playback. Viewers may
+see startup footage before the complete playback begins; exact public duration is
+not guaranteed.
+
+Choose **Manual** to reveal **Play once / Loop video** and a duration limit. Both
+use the same confirmed startup. Manual once ends at the source length or shorter
+limit; Manual loop repeats until its required limit. Duration and video progress
+start with playback after confirmation, separately from startup. Audio can remain
+original or be muted in either mode. Silent files receive a silent AAC track.
+Limits are 1–240 minutes in the UI and four hours in the service. Startup has a
+separate 190-second sender deadline; it never repeats indefinitely. Older saved
+queue rows without a mode retain their manual loop/duration choices and gain the
+same startup handling.
+
+`automation/live_encoder.py` runs two bounded source phases into one continuous
+FFmpeg relay inside the profile container. MPEG-TS discontinuities are remapped by
+the relay to monotonic FLV timestamps. The service only signals playback after
+confirmed Live, waits for the sender acknowledgement, and keeps startup and
+playback progress distinct. Stop, sender failure or lost confirmation never creates
+or retries a Facebook broadcast. Keys remain in stdin and inside the container.
+Encoding uses two CPU threads and follows the profile's network route and limits.
 
 **Current limits:** The visual integration supports English desktop Live Producer
 controls and requires a prepared broadcast; saving a persistent key does not create
-all future broadcast metadata automatically. Incoming video begins while Facebook
-previews it, so initial seconds may be consumed before public start. A waiting
-slate/full-file switch is not implemented. Facebook UI changes or missing/disabled
+all future broadcast metadata automatically. Facebook UI changes or missing/disabled
 controls require operator review. An authorized pilot on October 6, 2026 published
 and ended a real broadcast: a 60-second looping stream was publicly live for 41
 seconds after preview/startup. The earlier helper missed confirmation and required
@@ -97,8 +113,8 @@ leases, playback duration, stop handling and uncertain-publication recovery.
 
 Save streaming settings in **Edit profile → Facebook Live** for each target profile.
 On **Studio Center → Facebook Live → New broadcast**, upload videos. All rows on this page are Live videos;
-Photo/Reel batches stay on Campaigns. **Playback** offers once/loop, duration limit,
-and original/muted audio. Use Start now or Scheduled; advanced pacing stays collapsed.
+Photo/Reel batches stay on Campaigns. **Playback** defaults to Automatic. Manual reveals once/loop and a duration limit;
+both modes offer original/muted audio. Use Start now or Scheduled; advanced pacing stays collapsed.
 The profile selector disables profiles without valid saved Live settings. The backend
 revalidates settings and media both when creating and executing the batch. Keys are
 never copied into queue data or profile catalog responses.
@@ -114,9 +130,13 @@ new jobs with a blank comment explicitly disable it. Legacy jobs without this fi
 leave the existing Facebook preset unchanged. Normal first comments are not supported for Live. Prepare each broadcast before its job runs,
 including a new prepared page for later videos on the same profile.
 
-Interrupted broadcasts require **Review & Resolve** in the queue, with explicit
-confirmation that Facebook has ended the broadcast. An unresolved Live item cannot
-be restarted through Run now. Remote/cloud batch Live is not part of protocol v1.
+Interrupted broadcasts retain **Review & Resolve** in the queue for their historical outcome.
+They do not block a distinct new Live job on the same profile. Before replacing
+the profile status, the service archives its previous public session under
+`data/live/<profile>/history/` with private permissions. Existing queue rows remain
+unchanged. Profile ownership and publisher admission still exclude running work;
+Facebook preflight refuses an active broadcast before ingest. Retrying the same
+unresolved attempt through Run now or the scheduler still requires resolution. Remote/cloud batch Live is not part of protocol v1.
 Appending Live rows to an existing batch is not supported yet; create a new batch.
 
 ## Ownership, privacy and recovery
@@ -142,8 +162,9 @@ Appending Live rows to an existing batch is not supported yet; create a new batc
 - “Live” requires visual confirmation of Facebook's dashboard, Live notice and end-broadcast control;
   encoder progress alone is labeled sending/waiting. Ended requires Facebook's
   ended confirmation. Failed end confirmation leaves review even after sender and
-  container cleanup, and a new Live session stays blocked until the user confirms
-  on Facebook that the old broadcast ended. Cleanup ownership must also be clear.
+  container cleanup, and that attempt remains unresolved. A distinct new job may proceed through
+  normal admission and Facebook preflight; actual active broadcasts still block ingest.
+  Cleanup ownership must also be clear.
 - This service can run in the independent worker/backend process. Closing the
   desktop is supported only when it is attached to that independent service;
   exiting a desktop-owned backend interrupts the stream and requires review.
@@ -152,7 +173,7 @@ Appending Live rows to an existing batch is not supported yet; create a new batc
 
 All endpoints are under `/api/profiles/{profile_id}/live` and inherit the desktop
 session middleware. `GET /settings`, `PUT /settings`, `GET /status`,
-`POST /start` (`filename`, optional `loop`, `muted`, `max_duration_seconds`), `POST /stop`, and `POST /review`
+`POST /start` (`filename`, optional `playback_mode` defaulting to `auto`, `loop`, `muted`, `max_duration_seconds`), `POST /stop`, and `POST /review`
 (`confirmed_ended: true`). A blank key during settings update preserves a saved
 key. Profile IDs, media paths and Facebook RTMPS destinations are validated.
 
@@ -180,3 +201,51 @@ The container's installed FFmpeg 4.4.2 was also exercised offline with generated
 one-second videos, with and without audio, using the actual encoder arguments.
 Both produced 1280×720 H.264 with AAC. Browser checks used simulated responses for
 settings, video selection, Live progress and Stop; they sent no Facebook stream.
+
+### Early stream completion diagnostics
+
+Startup now saves timestamped preparation, start, Go Live request/click and
+verification events in the session and queue logs. If the sender finishes before
+confirmation, the click-capable helper is cancelled and reaped first. A bounded,
+read-only final check records Live, ended or unconfirmed before container cleanup;
+it never clicks Go Live. A confirmed active broadcast is ended through the normal
+end workflow. Unconfirmed publication or failed end verification retains review.
+A normal sender exit reports that the video finished before confirmation, distinct
+from an encoder failure. No screenshots, OCR text or stream keys enter these logs.
+This does not add a waiting slate or defer playback until public Live.
+
+On October 16, 2026 an authorized diagnostic used a two-minute loop. Facebook's
+persistent-key conflict warning blocked preparation until the operator confirmed
+no other sender used the key and explicitly reassigned it. The broadcast then
+reached the Live dashboard. Broad sidebar OCR missed the grey Live notice despite
+recognizing the dashboard and red End button; a focused sidebar OCR read recovered
+it. The broadcast was manually ended, ended state was visually verified by the
+service, and its queue result was reconciled to Published. The task now retries
+that notice in a narrow sidebar region and reports a key-conflict dialog without
+automatically reassigning keys. No second broadcast was used to validate the fix.
+
+### Automatic playback validation (1.0.13)
+
+The new sender was verified offline in disposable network-disabled browser-image
+containers, without profiles or Facebook credentials. Real FFmpeg tests cover a
+1.2-second source, once playback, repeated playback, original/muted audio, a shortened limit, stopping during
+startup and a startup deadline. The checks decode the final red/green/blue source
+frames to verify complete playback from frame zero, inspect H.264/AAC output, and
+verify monotonic audio/video packet timestamps across the single-output handoff.
+Service tests cover automatic defaults, ignored hidden manual controls, manual
+limits, legacy rows, confirmation before switching and ended confirmation. No real
+broadcast was started to validate this new two-phase sender.
+
+```sh
+RUN_LIVE_ENCODER_OFFLINE=1 automation/venv/bin/python -m pytest backend/tests/test_live_encoder_offline.py -q
+```
+
+### Automatic end confirmation (1.0.15)
+
+Natural completion waits for the sender to flush the full playback before requesting
+End live video. The browser then confirms the colored End action and waits for
+Facebook's ended state. The confirmation heading may itself read End live video;
+it is excluded from button candidates by requiring enabled blue/red button color
+on both the initial and fresh screen. An already-open confirmation is supported.
+End requests, clicks and confirmation clicks are recorded without OCR or images.
+Clicking End alone never marks a job completed; ended verification is required.

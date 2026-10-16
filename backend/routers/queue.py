@@ -135,7 +135,7 @@ async def create_batch(payload: dict = Body(...)):
                 destinations.add(destination)
             for post in posts:
                 if post.get("type") == "live":
-                    post.update(live_service.validate_playback(post.get("loop", False), post.get("max_duration_seconds"), post.get("muted", False)))
+                    post.update(live_service.validate_playback(post.get("loop", False), post.get("max_duration_seconds"), post.get("muted", False), post.get("playback_mode", "auto")))
                     live_service.resolve_video(post.get("media_file"))
                     details = live_service.validate_details(post.get("title", ""), post.get("base_caption", ""), post.get("pinned_comment"))
                     post.update(title=details["title"], base_caption=details["caption"], pinned_comment=details.get("pinned_comment"), ai_spin=False)
@@ -281,7 +281,7 @@ async def create_batch(payload: dict = Body(...)):
             "first_comment": post.get("first_comment"),
             "scrolls": max(1, int(post.get("scrolls", 4))),
             "warming_options": post.get("warming_options"),
-            **({"title": post.get("title", ""), "pinned_comment": post.get("pinned_comment"), "loop": post.get("loop", False), "muted": post.get("muted", False), "max_duration_seconds": post.get("max_duration_seconds")} if post.get("type") == "live" else {}),
+            **({"title": post.get("title", ""), "pinned_comment": post.get("pinned_comment"), "loop": post.get("loop", False), "muted": post.get("muted", False), "max_duration_seconds": post.get("max_duration_seconds"), "playback_mode": post.get("playback_mode", "auto")} if post.get("type") == "live" else {}),
             "ai_spin": post.get("ai_spin") is not False,
             "executions": executions,
         })
@@ -509,6 +509,12 @@ async def run_execution_now(execution_id: str):
     current_status = target_exec.get("status", "")
     if target_post.get("type") == "live" and current_status in ("uncertain", "needs_review"):
         raise HTTPException(status_code=409, detail="Resolve the previous Live outcome and confirm it ended on Facebook before retrying")
+
+    if target_post.get("type") == "live":
+        from backend.services import live_service
+        prior = live_service.get_status(target_exec["profile_id"])
+        if prior.get("status") == "needs_review" and prior.get("queue_execution_id") == execution_id:
+            raise HTTPException(status_code=409, detail="This same Live attempt has an unresolved outcome. Create a new Live job, or resolve this attempt before retrying it.")
 
     is_manual_retry = current_status.startswith("skipped_") or current_status in (
         "failed",

@@ -57,11 +57,16 @@ def batch_iteration_availability(
         return {"allowed": True, "reason": "batch_iteration_ready", "retry_after_ms": 0}
 
     profile_id = (target_execution or {}).get("profile_id")
+    target_is_live = posts[target_post_index].get("type") == "live"
     previous_executions = [
         execution
         for earlier_post in posts[:target_post_index]
         for execution in earlier_post.get("executions", [])
         if execution.get("profile_id") == profile_id
+        and not (target_is_live and earlier_post.get("type") == "live"
+                 and execution.get("status") in ("uncertain", "needs_review")
+                 and not execution.get("container_cleanup_in_progress")
+                 and not execution.get("automation_container_owned"))
     ]
     if any(
         execution.get("status") in ("pending", "ready", "running", "preparing", "uncertain", "needs_review")

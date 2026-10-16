@@ -282,3 +282,23 @@ if __name__ == "__main__":
     test_scheduled_batch_releases_all_iterations_at_its_start_gate()
     test_started_batch_keeps_queue_ownership_until_its_pending_work_finishes()
     print("batch iteration checks passed")
+
+
+@pytest.mark.parametrize('status', ['uncertain', 'needs_review'])
+def test_new_live_iteration_is_not_held_by_historical_live_review(status):
+    target = _execution('next-live')
+    old = _execution('old-live', status)
+    batch = _batch(delay_seconds=0, posts=[
+        {'type': 'live', 'executions': [old]}, {'type': 'live', 'executions': [target]}])
+    assert batch_iteration_availability(batch, target_execution=target)['allowed']
+    old['container_cleanup_in_progress'] = True
+    assert not batch_iteration_availability(batch, target_execution=target)['allowed']
+
+
+@pytest.mark.parametrize('status', ['pending', 'ready', 'running', 'preparing'])
+def test_new_live_iteration_waits_for_actual_unfinished_work(status):
+    target = _execution('next-live')
+    batch = _batch(delay_seconds=0, posts=[
+        {'type': 'live', 'executions': [_execution('old-live', status)]},
+        {'type': 'live', 'executions': [target]}])
+    assert not batch_iteration_availability(batch, target_execution=target)['allowed']

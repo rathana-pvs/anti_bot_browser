@@ -34,6 +34,7 @@ def task(monkeypatch):
     obj.client = Mock()
     obj.client.get_current_url.return_value = URL
     obj.vision = Mock()
+    obj.vision.read_text.return_value = []
     obj.click = Mock()
     obj.publish_clicked = False
     obj.state = 'unknown'
@@ -620,3 +621,87 @@ def test_preset_editor_scrolls_when_edit_is_below_fold(task, monkeypatch):
     ]
     task.client.exec_cmd.assert_called_once_with(
         ['xdotool','key','--clearmodifiers','Page_Down'])
+
+
+@pytest.mark.parametrize('state', ['live', 'ended', 'unconfirmed'])
+def test_final_inspection_never_navigates_or_clicks(task, state):
+    task.capture = Mock(return_value=Mock(template_id='live_dashboard'))
+    task.layouts.permits = Mock(side_effect=lambda frame, capability, **kw: kw.get('state') == state)
+    task.inspect()
+    assert task.state == state
+    task.click.assert_not_called()
+    task.client.navigate_to.assert_not_called()
+
+
+def test_capture_recovers_small_live_notice_from_focused_sidebar(task):
+    task.client.screenshot.return_value = image((0, 0, 255))
+    sidebar = [item('Live dashboard', y=180)]
+    footer = [item('End live video', y=930)]
+    notice = [item('Braxton Scott is live now', y=290)]
+    task.vision.read_text.side_effect = [sidebar, footer, [], notice]
+    frame = task.capture('start')
+    assert frame.signals['live_notice'] == 1
+    assert task.layouts.permits(frame, 'verify_publication', state='live')
+    assert task.vision.read_text.call_args.kwargs['region'] == (0, 180, 228, 140)
+
+
+def test_prepare_reports_stream_key_conflict_without_reassigning(task):
+    frame = task.layouts.observe(image(), {})
+    task.capture = Mock(return_value=frame)
+    task.vision.read_text.return_value = [item('Your persistent stream key is being used'),
+                                        item('by another live video happening now', y=225)]
+    with pytest.raises(RuntimeError, match='assigned to another live video'):
+        task.prepare(URL)
+    task.click.assert_not_called()
+
+
+def end_dialog_image():
+    screen = image()
+    screen[568:612, 660:740] = (255, 80, 0)
+    return screen
+
+
+def end_dialog_items():
+    return [item('End live video?', x=600, y=350), item('Cancel', x=600, y=590),
+            item('End', x=700, y=590)]
+
+
+def test_end_dialog_chooses_enabled_button_instead_of_heading(task):
+    task.vision.read_text.return_value = end_dialog_items()
+    task.client.screenshot.return_value = end_dialog_image()
+    assert task.confirm_end_dialog(end_dialog_image())
+    task.click.assert_called_once_with(end_dialog_items()[-1])
+
+
+def test_end_resumes_already_open_confirmation_then_verifies_ended(task):
+    unknown = task.layouts.observe(end_dialog_image(), {})
+    frames = iter([unknown, ended(task)])
+    task.capture = lambda _: next(frames)
+    task.vision.read_text.return_value = end_dialog_items()
+    task.client.screenshot.return_value = end_dialog_image()
+    task.end()
+    assert task.state == 'ended'
+    task.click.assert_called_once_with(end_dialog_items()[-1])
+
+
+@pytest.mark.parametrize('fresh', ['disabled', 'moved'])
+def test_end_dialog_rejects_stale_or_disabled_confirmation(task, fresh):
+    task.vision.read_text.return_value = end_dialog_items()
+    task.client.screenshot.return_value = image() if fresh == 'disabled' else end_dialog_image()
+    if fresh == 'moved':
+        moved = end_dialog_items()
+        moved[-1] = item('End', x=720, y=590)
+        task.vision.read_text.side_effect = [end_dialog_items(), moved]
+    assert not task.confirm_end_dialog(end_dialog_image())
+    task.click.assert_not_called()
+
+
+def test_end_confirmation_alone_is_not_success(task):
+    unknown = task.layouts.observe(end_dialog_image(), {})
+    task.capture = lambda _: unknown
+    task.vision.read_text.return_value = end_dialog_items()
+    task.client.screenshot.return_value = end_dialog_image()
+    with pytest.raises(RuntimeError, match='did not confirm'):
+        task.end()
+    assert task.state != 'ended'
+    assert task.click.call_count == 1

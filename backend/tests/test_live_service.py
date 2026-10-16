@@ -4,7 +4,7 @@ import json
 import os
 from functools import wraps
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import FastAPI
@@ -85,8 +85,6 @@ def test_crash_holds_session_and_requires_review(sandbox):
     live.private_write(live.state_path(PROFILE), {'profile_id': PROFILE, 'status': 'running', 'stage': 'sending', 'logs': []})
     assert live.get_status(PROFILE)['status'] == 'needs_review'
     assert live.get_status(PROFILE)['stage'] == 'needs_review'
-    with pytest.raises(RuntimeError, match='previous broadcast'):
-        asyncio.run(live.start_live(PROFILE, 'video.mp4'))
     assert live.clear_review(PROFILE)['stage'] == 'reviewed'
 
 
@@ -122,17 +120,17 @@ def test_encoder_keeps_key_out_of_host_arguments_and_bounds_duration():
     args = live.encoder_command(PROFILE, '/data/shared_media/video.mp4', 300, True, 'session')
     assert SETTINGS['stream_key'] not in ' '.join(args)
     assert args[0:3] == ['docker', 'exec', '-i']
-    assert args[args.index('-t')+1] == '300'
-    assert '-re' in args and '-stream_loop' not in args
+    assert args[args.index('--duration')+1] == '300'
+    assert '--loop' not in args
+    assert '--has-audio' in args
     silent = live.encoder_command(PROFILE, '/data/shared_media/video.mp4', 300, False, 'session')
-    assert '1:a:0' in silent
+    assert '--has-audio' not in silent
 
 
 def test_loop_option_is_passed_to_ffmpeg_not_docker():
     args = live.encoder_command(PROFILE, '/data/shared_media/video.mp4', 60, True, 'session', loop=True)
     assert args[:3] == ['docker', 'exec', '-i']
-    realtime = args.index('-re')
-    assert args[realtime:realtime + 5] == ['-re', '-stream_loop', '-1', '-i', '/data/shared_media/video.mp4']
+    assert args.index('--loop') > args.index('python3')
 
 
 def test_api_masks_keys_and_review_requires_confirmation(sandbox):
@@ -155,7 +153,7 @@ class FakeEncoder:
         self.stdout = self
         self.sent = b''
         self.done = asyncio.Event()
-        self.progress_sent = False
+        self.lines = asyncio.Queue()
     def write(self, value):
         self.sent += value
     async def drain(self):
@@ -163,17 +161,17 @@ class FakeEncoder:
     def close(self):
         pass
     async def readline(self):
-        if not self.progress_sent:
-            self.progress_sent = True
-            return b'out_time_us=2000000\n'
-        await self.done.wait()
-        return b''
+        return await self.lines.get()
+    def activate(self):
+        self.lines.put_nowait(b'phase=playback\n')
+        self.lines.put_nowait(b'out_time_us=2000000\n')
     async def wait(self):
         await self.done.wait()
         return self.returncode
     def finish(self, code=0):
         self.returncode = code
         self.done.set()
+        self.lines.put_nowait(b'')
     def kill(self):
         self.finish(-9)
 
@@ -190,14 +188,17 @@ def test_full_lifecycle_persists_boundary_and_never_retries(sandbox, monkeypatch
         async def command(*args, **kwargs):
             if 'ffprobe' in args:
                 return json.dumps({'format': {'duration': '300'}, 'streams': [{'codec_type': 'video'}, {'codec_type': 'audio'}]}).encode()
-            encoder.finish()
+            if 'touch' in args:
+                encoder.activate()
+            else:
+                encoder.finish()
             return b''
         monkeypatch.setattr(live, 'command', command)
         async def create(*args, **kwargs):
             assert live.read_json(live.state_path(PROFILE))['stage'] == 'stream_start_intent'
-            assert ('-stream_loop' in args) is loop
-            assert args[args.index('-t') + 1] == str(limit if limit is not None else 300.0)
-            assert args[args.index('-map', args.index('-map') + 1) + 1] == ('1:a:0' if muted else '0:a:0')
+            assert ('--loop' in args) is loop
+            assert args[args.index('--duration') + 1] == str(limit if limit is not None else 300.0)
+            assert ('--has-audio' in args) is (not muted)
             return encoder
         monkeypatch.setattr(live.asyncio, 'create_subprocess_exec', create)
         async def browser(_, action, url, event):
@@ -260,7 +261,10 @@ def test_stop_after_live_stops_encoder_before_ending_facebook(sandbox, monkeypat
         async def command(*args, **kwargs):
             if 'ffprobe' in args:
                 return b'{"format":{"duration":"300"},"streams":[{"codec_type":"video"}]}'
-            encoder.finish()
+            if 'touch' in args:
+                encoder.activate()
+            else:
+                encoder.finish()
             return b''
         monkeypatch.setattr(live, 'command', command)
         async def create(*args, **kwargs):
@@ -393,6 +397,8 @@ async def test_unresolved_live_cannot_run_now_or_resolve_without_end_confirmatio
 @run_async_test
 async def test_queue_live_dispatch_reuses_claimed_lease(sandbox, monkeypatch):
     record, execution = queue_record(monkeypatch)
+    prior = {'profile_id': PROFILE, 'status': 'needs_review', 'stage': 'needs_review', 'queue_execution_id': 'older-exec', 'session_id': 'older-session'}
+    live.private_write(live.state_path(PROFILE), prior)
     post = {'type': 'live', 'media_file': 'video.mp4'}
     claim = {'targetExec': execution, 'targetPost': post, 'lease': execution['scheduler_lease']}
     observed = {}
@@ -409,6 +415,9 @@ async def test_queue_live_dispatch_reuses_claimed_lease(sandbox, monkeypatch):
     assert result['success']
     assert observed['queue_execution_id'] == 'exec_live'
     assert 'stream_key' not in observed
+    archives = list((live.LIVE_DIR / PROFILE / 'history').glob('*.json'))
+    assert len(archives) == 1
+    assert live.read_json(archives[0]) == prior
 
 
 def test_stop_live_is_fenced_to_queue_execution(sandbox):
@@ -464,7 +473,7 @@ async def test_live_batch_persists_playback_settings(sandbox, monkeypatch):
     monkeypatch.setattr(queue_api, 'load_posting_queue', lambda: queue)
     monkeypatch.setattr(queue_api, 'save_posting_queue', lambda value: True)
     result = await queue_api.create_batch({'target_profiles': [PROFILE], 'posts': [
-        {'type': 'live', 'media_file': 'video.mp4', 'loop': True, 'muted': True, 'max_duration_seconds': 3600}]})
+        {'type': 'live', 'media_file': 'video.mp4', 'playback_mode': 'manual', 'loop': True, 'muted': True, 'max_duration_seconds': 3600}]})
     post = result['batch']['posts'][0]
     assert post['loop'] is True
     assert post['muted'] is True
@@ -481,8 +490,11 @@ async def test_browser_helper_receives_pin_and_only_verified_metadata_is_persist
     automation.active_automation_tasks[PROFILE] = record
     proc = AsyncMock()
     proc.returncode = 0
-    proc.communicate.return_value = (json.dumps({'success': True, 'brain': pin,
-        'state': 'prepared' if valid_result else 'live', 'template_id': 'setup_center'}).encode(), b'')
+    proc.stdout.readline.side_effect = [b'{"event":"go_live_requested"}\n',
+        b'{"event":"go_live_click_sent"}\n', json.dumps({'success': True, 'brain': pin,
+        'state': 'prepared' if valid_result else 'live', 'template_id': 'setup_center'}).encode(), b'']
+    proc.stdin.write = Mock()
+    proc.stdin.close = Mock()
     create = AsyncMock(return_value=proc)
     monkeypatch.setattr(live.asyncio, 'create_subprocess_exec', create)
     if valid_result:
@@ -491,6 +503,9 @@ async def test_browser_helper_receives_pin_and_only_verified_metadata_is_persist
         assert public['browser_state'] == 'prepared'
         assert public['browser_template'] == 'setup_center'
         assert public['brain'] == pin
+        assert [entry['event'] for entry in public['logs']] == [
+            'prepare_requested', 'go_live_requested', 'go_live_click_sent', 'prepare_prepared']
+        assert all(entry['message'] and entry['level'] for entry in public['logs'])
         assert 'brain_package' not in public
         assert SETTINGS['stream_key'] not in json.dumps(public)
     else:
@@ -500,7 +515,7 @@ async def test_browser_helper_receives_pin_and_only_verified_metadata_is_persist
     assert args[args.index('--brain-digest') + 1] == pin['digest']
     assert SETTINGS['stream_key'] not in ' '.join(args)
     assert 'News title' not in ' '.join(args)
-    assert json.loads(proc.communicate.call_args.args[0]) == {'title': 'News title', 'caption': 'News caption', 'pinned_comment': 'Pinned message'}
+    assert json.loads(proc.stdin.write.call_args.args[0]) == {'title': 'News title', 'caption': 'News caption', 'pinned_comment': 'Pinned message'}
 
 
 @pytest.mark.parametrize('title,caption', [(None, 'text'), ('Title', None), ('Title', ''), ('', 'Caption'), ('x'*256, 'Caption'), ('Title', 'x'*5001), ('Bad\x00title', 'Caption')])
@@ -549,3 +564,231 @@ async def test_live_batch_preserves_preset_comment(sandbox,monkeypatch):
         {'type':'live','media_file':'video.mp4','title':'Title','base_caption':'Caption',
          'pinned_comment':'  Comment\nខ្មែរ 😀  '}]})
     assert result['batch']['posts'][0]['pinned_comment']=='Comment\nខ្មែរ 😀'
+
+
+@pytest.mark.parametrize('final_state', ['unconfirmed', 'live', 'ended', 'error'])
+@pytest.mark.parametrize('exit_code', [0, 1])
+def test_early_encoder_exit_observes_facebook_before_container_cleanup(sandbox, monkeypatch, final_state, exit_code):
+    async def scenario():
+        encoder = FakeEncoder()
+        actions = []
+        start_cancelled = asyncio.Event()
+        async def ready(_):
+            lifecycle.mark_used(PROFILE, lifecycle.OWNER_TOKEN.get())
+        async def command(*args, **kwargs):
+            return b'{"format":{"duration":"10"},"streams":[{"codec_type":"video"}]}'
+        async def create(*args, **kwargs):
+            return encoder
+        async def browser(_, action, url, event):
+            actions.append(action)
+            if action == 'start':
+                live.live_event(automation.active_automation_tasks[PROFILE], 'go_live_requested')
+                encoder.finish(exit_code)
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    start_cancelled.set()
+            if action == 'inspect':
+                assert start_cancelled.is_set()
+                if final_state == 'error':
+                    raise RuntimeError('Inspection unavailable')
+                return final_state
+            if action == 'end':
+                assert final_state == 'live'
+        async def cleanup(_):
+            assert 'inspect' in actions
+            actions.append('cleanup')
+            return {'stopped': True}
+        monkeypatch.setattr(automation, 'ensure_profile_container_ready', ready)
+        monkeypatch.setattr(live, 'command', command)
+        monkeypatch.setattr(live.asyncio, 'create_subprocess_exec', create)
+        monkeypatch.setattr(live, 'browser_action', browser)
+        monkeypatch.setattr(automation, '_stop_container_with_retries', cleanup)
+        await live.start_live(PROFILE, 'video.mp4')
+        for _ in range(100):
+            if PROFILE not in live.CONTROLS:
+                break
+            await asyncio.sleep(.01)
+        saved = live.get_status(PROFILE)
+        assert saved['encoder_exit_code'] == exit_code
+        assert saved['status'] == ('completed' if final_state == 'live' and exit_code == 0 else 'needs_review')
+        assert actions.count('start') == 1
+        assert actions[-1] == 'cleanup'
+        assert ('end' in actions) == (final_state == 'live')
+        assert saved['logs'][0]['event'] == 'go_live_requested'
+        if final_state != 'error':
+            assert saved['final_browser_state'] == final_state
+        if final_state != 'live' and exit_code == 0:
+            assert 'Video finished' in saved['error']
+        assert SETTINGS['stream_key'] not in json.dumps(saved)
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('mode,loop,limit,expected', [
+    ('auto', True, 60, 10.154), ('manual', False, None, 10.154),
+    ('manual', False, 5, 5), ('manual', True, 60, 60)])
+def test_confirmed_playback_starts_at_zero_after_confirmation(sandbox, monkeypatch, mode, loop, limit, expected):
+    async def scenario():
+        encoder = FakeEncoder()
+        lines = asyncio.Queue()
+        lines.put_nowait(b'phase=startup\n')
+        async def readline():
+            return await lines.get()
+        encoder.readline = readline
+        actions = []
+        async def ready(_):
+            lifecycle.mark_used(PROFILE, lifecycle.OWNER_TOKEN.get())
+        def complete():
+            lines.put_nowait(b'out_time_us=1000000\n')
+            lines.put_nowait(b'')
+            encoder.finish()
+        async def command(*args, **kw):
+            if 'ffprobe' in args:
+                return b'{"format":{"duration":"10.154"},"streams":[{"codec_type":"video"}]}'
+            if 'touch' in args:
+                record = automation.active_automation_tasks[PROFILE]
+                assert record['broadcast_confirmed']
+                assert 'start' in actions
+                assert record['elapsed_seconds'] == 0
+                actions.append('switch')
+                lines.put_nowait(b'phase=playback\n')
+                asyncio.get_running_loop().call_later(.03, complete)
+            else:
+                encoder.finish()
+            return b''
+        async def create(*args, **kw):
+            assert args[args.index('--duration') + 1] == str(expected)
+            assert ('--loop' in args) == (mode == 'manual' and loop)
+            assert SETTINGS['stream_key'] not in ' '.join(args)
+            return encoder
+        async def browser(_, action, *args):
+            actions.append(action)
+            if action == 'end':
+                assert 'switch' in actions
+                assert encoder.done.is_set() and encoder.returncode == 0
+        async def cleanup(_):
+            return {'stopped': True}
+        monkeypatch.setattr(automation, 'ensure_profile_container_ready', ready)
+        monkeypatch.setattr(live, 'command', command)
+        monkeypatch.setattr(live.asyncio, 'create_subprocess_exec', create)
+        monkeypatch.setattr(live, 'browser_action', browser)
+        monkeypatch.setattr(automation, '_stop_container_with_retries', cleanup)
+        await live.start_live(PROFILE, 'video.mp4', loop=loop, max_duration_seconds=limit, playback_mode=mode)
+        for _ in range(100):
+            if PROFILE not in live.CONTROLS:
+                break
+            await asyncio.sleep(.01)
+        saved = live.get_status(PROFILE)
+        assert saved['status'] == 'completed'
+        assert saved['duration_seconds'] == expected
+        assert saved['source_duration_seconds'] == 10.154
+        assert saved['playback_mode'] == mode
+        assert saved['playback_started_at']
+        assert saved['broadcast_confirmed']
+        assert actions == ['prepare', 'start', 'switch', 'end']
+        assert saved['encoder_exit_code'] == 0
+        assert saved['loop'] == (mode == 'manual' and loop)
+    asyncio.run(scenario())
+
+
+def test_auto_ignores_hidden_manual_controls():
+    assert live.validate_playback(True, 120, True, 'auto') == {
+        'playback_mode': 'auto', 'loop': False, 'max_duration_seconds': None, 'muted': True}
+    with pytest.raises(ValueError, match='Automatic or Manual'):
+        live.validate_playback(playback_mode='unexpected')
+
+
+@run_async_test
+async def test_new_live_batch_defaults_to_auto_and_clears_hidden_limits(sandbox, monkeypatch):
+    from backend.routers import queue as queue_api
+    monkeypatch.setattr(queue_api, 'PROFILES_DIR', live.PROFILES_DIR)
+    monkeypatch.setattr(queue_api, 'load_posting_queue', lambda: {'daily_batches': []})
+    monkeypatch.setattr(queue_api, 'save_posting_queue', lambda value: True)
+    result = await queue_api.create_batch({'target_profiles': [PROFILE], 'posts': [
+        {'type': 'live', 'media_file': 'video.mp4', 'loop': True, 'max_duration_seconds': 60}]})
+    post = result['batch']['posts'][0]
+    assert post['playback_mode'] == 'auto'
+    assert post['loop'] is False
+    assert post['max_duration_seconds'] is None
+
+
+@run_async_test
+async def test_direct_live_api_defaults_to_automatic(sandbox, monkeypatch):
+    start = AsyncMock(return_value={'status': 'running', 'stage': 'preparing'})
+    monkeypatch.setattr(live, 'start_live', start)
+    app = FastAPI()
+    app.include_router(router)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
+        result = await client.post(f'/api/profiles/{PROFILE}/live/start', json={'filename': 'video.mp4'})
+    assert result.status_code == 200
+    assert start.call_args.args[-1] == 'auto'
+
+
+def test_older_jobs_keep_manual_options_with_confirmed_startup():
+    playback = live.validate_playback(True, 60, False)
+    assert playback['playback_mode'] == 'manual'
+    assert playback['loop'] is True
+    assert playback['max_duration_seconds'] == 60
+
+
+@run_async_test
+async def test_new_direct_live_preserves_old_review_without_blocking(sandbox, monkeypatch):
+    previous = {'profile_id': PROFILE, 'session_id': 'old', 'status': 'needs_review',
+                'stage': 'needs_review', 'error': 'Unconfirmed previous publication', 'queue_execution_id': 'old-exec'}
+    live.private_write(live.state_path(PROFILE), previous)
+    async def fake_run(record, *args):
+        record['lifecycle_active'] = False
+    monkeypatch.setattr(live, 'run_live', fake_run)
+    result = await live.start_live(PROFILE, 'video.mp4', playback_mode='auto')
+    assert result['status'] == 'running'
+    assert result['session_id'] != 'old'
+    archives = list((live.LIVE_DIR / PROFILE / 'history').glob('*.json'))
+    assert len(archives) == 1
+    assert live.read_json(archives[0]) == previous
+    assert os.stat(archives[0]).st_mode & 0o777 == 0o600
+
+
+@run_async_test
+async def test_new_live_still_blocks_active_profile_despite_old_review(sandbox):
+    live.private_write(live.state_path(PROFILE), {'profile_id': PROFILE, 'status': 'needs_review', 'stage': 'needs_review'})
+    live.CONTROLS[PROFILE] = asyncio.Event()
+    with pytest.raises(RuntimeError, match='active task'):
+        await live.start_live(PROFILE, 'video.mp4')
+    assert live.get_status(PROFILE)['status'] == 'needs_review'
+
+
+@run_async_test
+async def test_same_unresolved_live_cannot_bypass_review_via_failed_retry(sandbox, monkeypatch):
+    from backend.routers import queue as queue_api
+    from fastapi import HTTPException
+    record, execution = queue_record(monkeypatch)
+    execution.update(status='failed_before_publish', stage='failed')
+    prior = {'profile_id': PROFILE, 'status': 'needs_review', 'stage': 'needs_review',
+             'queue_execution_id': 'exec_live', 'session_id': 'original-session', 'error': 'Unknown publication'}
+    live.private_write(live.state_path(PROFILE), prior)
+    monkeypatch.setattr(queue_api, 'load_posting_queue', automation.load_posting_queue)
+    save = Mock()
+    monkeypatch.setattr(queue_api, 'save_posting_queue', save)
+    with pytest.raises(HTTPException) as error:
+        await queue_api.run_execution_now('exec_live')
+    assert error.value.status_code == 409
+    assert 'same Live attempt' in error.value.detail
+    save.assert_not_called()
+    assert live.get_status(PROFILE) == prior
+
+
+@run_async_test
+async def test_scheduler_cannot_republish_same_unresolved_live(sandbox, monkeypatch):
+    record, execution = queue_record(monkeypatch)
+    prior = {'profile_id': PROFILE, 'status': 'needs_review', 'stage': 'needs_review',
+             'queue_execution_id': 'exec_live', 'session_id': 'original-session', 'error': 'Unknown publication'}
+    live.private_write(live.state_path(PROFILE), prior)
+    run = AsyncMock()
+    monkeypatch.setattr(live, 'run_live', run)
+    result = await live.execute_queue_live({'targetExec': execution, 'targetPost': {'type': 'live', 'media_file': 'video.mp4'},
+                                          'lease': execution['scheduler_lease']})
+    assert result['status'] == 'needs_review'
+    assert execution['status'] == 'needs_review'
+    assert execution['session_id'] == 'original-session'
+    assert live.get_status(PROFILE) == prior
+    run.assert_not_called()

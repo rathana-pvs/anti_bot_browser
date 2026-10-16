@@ -131,6 +131,10 @@ class ContainerClient:
         time.sleep(0.1)
         self.exec_cmd(["xdotool", "type"] + clean_modifiers + [url])
         time.sleep(0.1)
+        # Chrome may select a history-completed suffix (e.g. /live/producer/)
+        # after typing the Facebook root URL. Delete only that selected suffix;
+        # at an unselected end-of-line this is a no-op.
+        self.exec_cmd(["xdotool", "key"] + clean_modifiers + ["Delete"])
         self.exec_cmd(["xdotool", "key"] + clean_modifiers + ["Return"])
 
     def refresh_page(self) -> None:
