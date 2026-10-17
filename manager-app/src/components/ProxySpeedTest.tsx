@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { Gauge, Loader2 } from 'lucide-react';
+import { Gauge } from 'lucide-react';
 import { NetworkSpeedResult, testNetworkSpeed } from '../services/api';
 import { NetworkIntent } from '../types/profile';
+import { Alert } from './ui/Alert';
+import { Button } from './ui/Button';
+import { Spinner } from './ui/Spinner';
 
 export function ProxySpeedTest({ network, disabled = false }: { network: NetworkIntent; disabled?: boolean }) {
   const [testing, setTesting] = useState(false);
@@ -34,11 +37,10 @@ export function ProxySpeedTest({ network, disabled = false }: { network: Network
 
   return (
     <div className="space-y-2 border-t border-zinc-800 pt-2">
-      <button type="button" onClick={test} disabled={disabled || testing || !valid}
-        className="flex items-center gap-1.5 rounded border border-zinc-700 px-2.5 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50">
-        {testing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Gauge className="h-3.5 w-3.5" />}
+      <Button type="button" variant="outline" size="sm" onClick={test} disabled={disabled || testing || !valid} loading={testing}>
+        {testing ? <Spinner label="Testing proxy speed" className="h-3.5 w-3.5" /> : <Gauge className="h-3.5 w-3.5" />}
         {testing ? 'Testing speed…' : result ? 'Test again' : 'Test speed'}
-      </button>
+      </Button>
       <div aria-live="polite" aria-busy={testing} className="space-y-1 text-[11px]">
         {testing && <p className="text-zinc-400">Checking latency, download and upload. This may take up to a minute.</p>}
         {result && <>
@@ -51,7 +53,7 @@ export function ProxySpeedTest({ network, disabled = false }: { network: Network
             !measurement.success && <p key={index} className="text-amber-400">{['Latency', 'Download', 'Upload'][index]}: {measurement.error || 'Test failed'}</p>)}
           <p className="text-zinc-500">Tested {new Date(result.last_checked).toLocaleTimeString()}. Speed is an estimate.</p>
         </>}
-        {error && <p role="alert" className="text-red-400">{error}</p>}
+        {error && <Alert variant="danger">{error}</Alert>}
       </div>
       <p className="text-[10px] text-zinc-500">Uses Cloudflare: 5 MB download + 2 MB upload. Latency measures the proxy connection.</p>
     </div>

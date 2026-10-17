@@ -3,6 +3,9 @@ import { AlertTriangle, Info, X } from 'lucide-react';
 import React, { createContext, useCallback, useContext, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Toast, ToastVariant } from './Toast';
+import { Button } from './Button';
+import { IconButton } from './IconButton';
+import { Input } from './Input';
 
 type DialogKind = 'alert' | 'confirm' | 'prompt';
 type DialogVariant = 'default' | 'danger' | 'warning' | 'success';
@@ -127,15 +130,15 @@ export function AppDialogProvider({ children }: { children: React.ReactNode }) {
                 </Dialog.Description>
               </div>
               <Dialog.Close asChild>
-                <button className="rounded p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200" aria-label="Close dialog">
+                <IconButton aria-label="Close dialog" className="h-7 w-7">
                   <X className="h-4 w-4" />
-                </button>
+                </IconButton>
               </Dialog.Close>
             </div>
 
             {request?.kind === 'prompt' && (
               <div className="px-5 pt-4">
-                <input
+                <Input
                   autoFocus
                   value={promptValue}
                   placeholder={request.options.placeholder}
@@ -143,31 +146,27 @@ export function AppDialogProvider({ children }: { children: React.ReactNode }) {
                   onKeyDown={(event) => {
                     if (event.key === 'Enter') settle(promptValue.trim());
                   }}
-                  className="w-full rounded-lg border border-zinc-800 bg-black/40 px-3 py-2 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                  className="bg-black/40 text-sm"
                 />
               </div>
             )}
 
             <div className="flex justify-end gap-2 px-5 py-4">
               {request?.kind !== 'alert' && (
-                <button
+                <Button
+                  variant="secondary"
                   onClick={() => settle(null)}
-                  className="rounded-md border border-zinc-700 bg-zinc-900 px-4 py-2 text-xs font-medium text-zinc-300 hover:bg-zinc-800 hover:text-white"
                 >
                   {request?.options.cancelLabel || 'Cancel'}
-                </button>
+                </Button>
               )}
-              <button
+              <Button
                 autoFocus={request?.kind !== 'prompt'}
+                variant={isDanger ? 'danger' : 'primary'}
                 onClick={() => settle(request?.kind === 'prompt' ? promptValue.trim() : true)}
-                className={`rounded-md px-4 py-2 text-xs font-semibold transition-colors ${
-                  isDanger
-                    ? 'bg-red-600 text-white hover:bg-red-500'
-                    : 'bg-blue-600 text-white hover:bg-blue-500'
-                }`}
               >
                 {request?.options.confirmLabel || (request?.kind === 'alert' ? 'Close' : 'Continue')}
-              </button>
+              </Button>
             </div>
           </Dialog.Content>
         </Dialog.Portal>
