@@ -43,7 +43,7 @@ def test_queue_preserves_preferences_for_runner_and_monitor(monkeypatch, tmp_pat
     stored = {'daily_batches': []}
     monkeypatch.setattr(queue, 'PROFILES_DIR', tmp_path)
     monkeypatch.setattr(queue, 'load_posting_queue', lambda: stored)
-    monkeypatch.setattr(queue, 'save_posting_queue', lambda value: None)
+    monkeypatch.setattr(queue, 'save_posting_queue', lambda value: True)
     options = {'random_scrolls': True, 'min_scrolls': 3, 'max_scrolls': 7, 'pace': 'relaxed'}
     result = request(queue.router, '/api/queue/batch', {
         'target_profiles': ['test'], 'posts': [{'type': 'warming', 'warming_options': options}],

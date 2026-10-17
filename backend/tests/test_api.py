@@ -4,17 +4,38 @@ from pathlib import Path
 RELEASE_VERSION = (Path(__file__).resolve().parents[2] / "VERSION").read_text().strip()
 from fastapi.testclient import TestClient
 from backend.main import app
-from backend.services import proxy_service
+from backend.routers import settings as settings_router
+from backend.services import docker_service, proxy_service, queue_service, resource_service
 
 @pytest.fixture(scope="module")
 def client(tmp_path_factory):
+    runtime_dir = tmp_path_factory.mktemp("api-runtime")
     original_pool = proxy_service.PROXY_POOL_FILE
-    proxy_service.PROXY_POOL_FILE = tmp_path_factory.mktemp("proxy-api") / "proxy_pool.json"
+    original_queue_file = queue_service.QUEUE_FILE
+    original_claim_lock = queue_service.QUEUE_CLAIM_LOCK_FILE
+    original_resource_service_manager = resource_service.settings_manager
+    original_docker_service_manager = docker_service.settings_manager
+    original_settings_router_manager = settings_router.settings_manager
+
+    proxy_service.PROXY_POOL_FILE = runtime_dir / "proxies" / "proxy_pool.json"
+    queue_service.QUEUE_FILE = runtime_dir / "data" / "posting_queue.json"
+    queue_service.QUEUE_CLAIM_LOCK_FILE = runtime_dir / "data" / "posting_queue.claim.lock"
+    isolated_settings = resource_service.ResourceSettingsManager(
+        runtime_dir / "data" / "manager_settings.json"
+    )
+    resource_service.settings_manager = isolated_settings
+    docker_service.settings_manager = isolated_settings
+    settings_router.settings_manager = isolated_settings
     try:
         with TestClient(app) as c:
             yield c
     finally:
         proxy_service.PROXY_POOL_FILE = original_pool
+        queue_service.QUEUE_FILE = original_queue_file
+        queue_service.QUEUE_CLAIM_LOCK_FILE = original_claim_lock
+        resource_service.settings_manager = original_resource_service_manager
+        docker_service.settings_manager = original_docker_service_manager
+        settings_router.settings_manager = original_settings_router_manager
 
 def test_settings_resource_mode(client):
     res = client.get("/api/settings/resource-mode")

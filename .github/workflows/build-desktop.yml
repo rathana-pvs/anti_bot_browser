@@ -53,7 +53,14 @@ jobs:
 
       - name: Install npm dependencies
         working-directory: manager-app
-        run: npm install
+        run: npm ci
+
+      - name: Run release gate tests
+        shell: bash
+        run: |
+          python -m pytest backend/tests -q
+          cd automation && python -m unittest discover -s tests
+          cd ../manager-app && npm test && npm run build
 
       - name: Build Tauri Desktop Application (Windows)
         uses: tauri-apps/tauri-action@v0
@@ -126,7 +133,13 @@ jobs:
 
       - name: Install npm dependencies
         working-directory: manager-app
-        run: npm install
+        run: npm ci
+
+      - name: Run release gate tests
+        run: |
+          python -m pytest backend/tests -q
+          cd automation && python -m unittest discover -s tests
+          cd ../manager-app && npm test && npm run build
 
       - name: Build Tauri Desktop Application (Linux)
         uses: tauri-apps/tauri-action@v0
