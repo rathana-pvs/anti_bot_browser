@@ -6,6 +6,7 @@ from backend.config import DATA_DIR, PROFILES_DIR, CPU_THREADS, ROOT_DIR
 from backend.scheduler.background import scheduler
 from backend.services import container_lifecycle
 from backend.services.queue_service import load_posting_queue
+from backend.services.reliability_service import build_reliability_scorecard, flatten_queue_executions
 from backend.services.ocr_worker_service import shared_ocr_worker_snapshot
 from backend.worker.service import status as worker_status
 from backend.services.proxy_service import load_proxy_pool
@@ -75,6 +76,12 @@ def get_health():
 @router.get("/ready")
 def get_readiness():
     return health_snapshot()
+
+
+@router.get("/reliability")
+def get_reliability():
+    queue = load_posting_queue()
+    return build_reliability_scorecard(flatten_queue_executions(queue))
 
 
 def read_build_version() -> str:

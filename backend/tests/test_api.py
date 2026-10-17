@@ -61,6 +61,20 @@ def test_runtime_version(client):
     assert res.json()["version"] == RELEASE_VERSION
 
 
+def test_health_and_reliability_endpoints(client):
+    health = client.get("/api/system/health")
+    assert health.status_code == 200
+    assert health.json()["status"] in {"ready", "degraded", "not_ready"}
+
+    readiness = client.get("/api/system/ready")
+    assert readiness.status_code == 200
+    assert {"lifecycle", "data_directory", "queue", "scheduler"} <= set(readiness.json()["checks"])
+
+    reliability = client.get("/api/system/reliability")
+    assert reliability.status_code == 200
+    assert reliability.json()["status"] in {"pass", "fail", "insufficient_data"}
+
+
 def test_desktop_session_token_protects_api(client, monkeypatch):
     monkeypatch.setenv("MANAGER_API_TOKEN", "test-desktop-session")
     assert client.get("/api/profiles").status_code == 403
