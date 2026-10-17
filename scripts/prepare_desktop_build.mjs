@@ -3,9 +3,11 @@ import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import process from 'node:process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { checkVersion } from './release-version.mjs';
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(scriptDirectory, '..');
+checkVersion(projectRoot);
 
 const backendVersion = readFileSync(join(projectRoot, 'VERSION'), 'utf8').trim();
 const packageVersion = JSON.parse(
@@ -38,3 +40,7 @@ if (process.platform !== 'win32') {
 }
 
 await import(pathToFileURL(join(scriptDirectory, 'stage_setup_payload.mjs')).href);
+const privacyScan = spawnSync(process.execPath, [join(scriptDirectory, 'scan_release_for_secrets.mjs'),
+  projectRoot, join(projectRoot, 'manager-app/src-tauri/resources/payload')], { cwd: projectRoot, stdio: 'inherit' });
+if (privacyScan.error) throw privacyScan.error;
+if (privacyScan.status !== 0) throw new Error('Setup payload failed release privacy checks.');

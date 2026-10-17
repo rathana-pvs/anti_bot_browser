@@ -1,7 +1,8 @@
 import subprocess
 import os
 import psutil
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 from backend.config import PROFILES_DIR, CPU_THREADS, ROOT_DIR
 from backend.services.proxy_service import load_proxy_pool
 from backend.services.docker_service import (
@@ -13,6 +14,22 @@ from backend.services.docker_service import (
 from backend.services.host_metrics_service import get_windows_host_stats
 
 router = APIRouter(prefix="/api/system", tags=["system"])
+
+
+class UpdateMaintenance(BaseModel):
+    enabled: bool
+
+
+@router.post('/update-maintenance')
+async def update_maintenance(request: UpdateMaintenance):
+    from backend.services import container_lifecycle, automation_service
+    if os.environ.get('WORKER_SERVICE_MODE') == '1':
+        raise HTTPException(409, 'Stop the independently managed worker before updating')
+    try:
+        enabled = container_lifecycle.set_update_maintenance(request.enabled, automation_service.active_automation_tasks)
+    except RuntimeError as error:
+        raise HTTPException(409, str(error)) from None
+    return {'enabled': enabled}
 
 
 def read_build_version() -> str:

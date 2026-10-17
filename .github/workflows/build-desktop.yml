@@ -1,150 +1,147 @@
 name: Build Desktop App
 
+# Ordinary pushes are development only. Tags create drafts, never publish them.
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       target:
-        description: 'Platform to build'
+        description: Platform to build (artifacts only, no release)
         required: true
-        default: 'windows'
+        default: all
         type: choice
-        options:
-          - 'windows'
-          - 'linux'
-          - 'all'
+        options: [windows, linux, all]
+
+permissions:
+  contents: read
+concurrency:
+  group: desktop-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: false
 
 jobs:
-  build-windows:
-    if: github.event_name == 'push' || github.event.inputs.target == 'windows' || github.event.inputs.target == 'all'
-    runs-on: windows-latest
-    permissions:
-      contents: write
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            os: ubuntu-24.04
+            bundles: deb,appimage
+          - platform: windows
+            os: windows-latest
+            bundles: nsis,msi
+    runs-on: ${{ matrix.os }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r backend/requirements.txt
-          pip install pyinstaller
-
-      - name: Build Python Sidecar Binary
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Validate synchronized version and deliberate tag
         shell: bash
         run: |
-          mkdir -p manager-app/src-tauri/binaries
-          pyinstaller --name backend_server --onefile --clean --noconfirm --distpath manager-app/src-tauri/binaries --add-data "automation/brains;automation/brains" --add-data "automation/templates;automation/templates" backend/main.py
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install npm dependencies
+          node scripts/release-version.mjs check
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            node scripts/validate-release-tag.mjs "$GITHUB_REF_NAME"
+          fi
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf libfuse2t64
+          python -m pip install -r backend/requirements.txt pyinstaller opencv-python-headless numpy
+      - name: Install frontend dependencies
         working-directory: manager-app
-        run: npm install
-
-      - name: Build Tauri Desktop Application (Windows)
-        uses: tauri-apps/tauri-action@v0
+        run: npm ci
+      - name: Run frontend and release-tool tests
+        working-directory: manager-app
+        run: npm test
+      - name: Test update admission, cleanup, payload, and worker integration
+        if: matrix.platform == 'linux'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PYTHONPATH: .:automation
+        run: python -m pytest -q backend/tests/test_update_maintenance.py backend/tests/test_container_cleanup.py backend/tests/test_queue_container_startup.py backend/tests/test_runtime_payload.py backend/tests/test_worker_integration.py
+      - name: Run Rust tests
+        working-directory: manager-app/src-tauri
+        run: cargo test --locked
+      - name: Build platform bundles
+        if: github.event_name == 'push' || inputs.target == matrix.platform || inputs.target == 'all'
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          BUNDLES: ${{ matrix.bundles }}
+          CI: true
+          APPIMAGE_EXTRACT_AND_RUN: 1
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            test -n "$TAURI_SIGNING_PRIVATE_KEY" || { echo 'Configure TAURI_SIGNING_PRIVATE_KEY before tagging a release.'; exit 1; }
+            cd manager-app
+            npm run tauri:build -- --bundles "$BUNDLES" --config '{"bundle":{"createUpdaterArtifacts":true}}'
+            if [ "$RUNNER_OS" = Linux ]; then
+              for package in src-tauri/target/release/bundle/deb/*.deb; do
+                npm run tauri -- signer sign --app-version "$(tr -d '[:space:]' < ../VERSION)" "$package"
+              done
+            fi
+          else
+            cd manager-app
+            npm run tauri:build -- --bundles "$BUNDLES"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'push' || inputs.target == matrix.platform || inputs.target == 'all'
         with:
-          projectPath: manager-app
-          tagName: v__VERSION__
-          releaseName: 'Anti-Bot Browser Manager v__VERSION__'
-          releaseBody: 'Automated desktop build for Windows.'
-          releaseDraft: true
-          prerelease: true
-
-      - name: Upload Windows Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-desktop-installer
+          name: desktop-${{ matrix.platform }}
           path: |
+            manager-app/src-tauri/target/release/bundle/deb/*.deb
+            manager-app/src-tauri/target/release/bundle/deb/*.sig
+            manager-app/src-tauri/target/release/bundle/appimage/*.AppImage
+            manager-app/src-tauri/target/release/bundle/appimage/*.sig
             manager-app/src-tauri/target/release/bundle/nsis/*.exe
+            manager-app/src-tauri/target/release/bundle/nsis/*.sig
             manager-app/src-tauri/target/release/bundle/msi/*.msi
-            manager-app/src-tauri/target/release/*.exe
-          if-no-files-found: warn
+            manager-app/src-tauri/target/release/bundle/msi/*.sig
+          if-no-files-found: error
 
-  build-linux:
-    if: github.event_name == 'push' || github.event.inputs.target == 'linux' || github.event.inputs.target == 'all'
+  draft-release:
+    if: github.event_name == 'push'
+    needs: build
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/download-artifact@v4
         with:
-          python-version: '3.12'
-
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r backend/requirements.txt
-          pip install pyinstaller
-
-      - name: Build Python Sidecar Binary
-        run: |
-          mkdir -p manager-app/src-tauri/binaries
-          pyinstaller --name backend_server --onefile --clean --noconfirm --distpath manager-app/src-tauri/binaries --add-data "automation/brains:automation/brains" --add-data "automation/templates:automation/templates" backend/main.py
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install Linux dependencies
+          pattern: desktop-*
+          path: release-input
+          merge-multiple: true
+      - name: Assemble complete signed update metadata
+        env:
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            build-essential \
-            curl \
-            wget \
-            file \
-            libssl-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev
-
-      - name: Install npm dependencies
-        working-directory: manager-app
-        run: npm install
-
-      - name: Build Tauri Desktop Application (Linux)
-        uses: tauri-apps/tauri-action@v0
+          sudo apt-get install -y minisign
+          node scripts/assemble-release.mjs release-input release-output
+      - name: Create or refresh a draft (never overwrite a published release)
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          projectPath: manager-app
-          tagName: v__VERSION__
-          releaseName: 'Anti-Bot Browser Manager v__VERSION__'
-          releaseBody: 'Automated desktop build for Linux.'
-          releaseDraft: true
-          prerelease: true
-
-      - name: Upload Linux Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-desktop-package
-          path: |
-            manager-app/src-tauri/target/release/bundle/deb/*.deb
-            manager-app/src-tauri/target/release/bundle/appimage/*.AppImage
-          if-no-files-found: warn
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_TAG" --json isDraft >/dev/null 2>&1; then
+            test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true || { echo 'Release is already published; refusing to replace it.'; exit 1; }
+          else
+            prerelease=()
+            if [[ "$RELEASE_TAG" == *-* ]]; then prerelease+=(--prerelease); fi
+            gh release create "$RELEASE_TAG" --verify-tag --draft "${prerelease[@]}" --title "Isolated Browser Manager $RELEASE_TAG" --notes-file RELEASE_NOTES.md
+          fi
+          gh release upload "$RELEASE_TAG" release-output/* --clobber
