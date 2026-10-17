@@ -1,6 +1,7 @@
-# Version 1.1.0
+# Version 1.1.1
 
 - Added Settings > App updates for checking, downloading, and installing signed whole-app releases.
+- Missing published update information now shows a clear informational message instead of a technical JSON error. Connection and invalid-metadata errors remain errors.
 - EasyOCR remains primary, with bounded Tesseract fallback for labels and unreadable timestamps.
 - Improved first-post verification with optional author rows and explicit old-timestamp results.
 - App installation waits for automation and live broadcasts to be idle.

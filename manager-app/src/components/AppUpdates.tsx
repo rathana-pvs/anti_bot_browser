@@ -51,7 +51,8 @@ export function AppUpdates() {
         <RefreshCw className={`h-3.5 w-3.5 ${busy === 'checking' ? 'animate-spin' : ''}`} />
         {busy === 'checking' ? 'Checking…' : 'Check for updates'}
       </button>
-      {checked && !update?.version && <p role="status" className="text-emerald-400">You have the latest published stable version.</p>}
+      {checked && update?.notice && <p role="status" className="rounded-lg border border-zinc-700 bg-zinc-900 p-3 leading-5 text-zinc-300">{update.notice}</p>}
+      {checked && !update?.version && !update?.notice && <p role="status" className="text-emerald-400">You have the latest published stable version.</p>}
       {update?.version && <div className="space-y-3 rounded-xl border border-blue-500/25 bg-blue-500/5 p-4">
         <p className="font-semibold text-zinc-100">Version {update.version} is available</p>
         {update.notes && <p className="max-h-40 overflow-auto whitespace-pre-wrap leading-5 text-zinc-400">{update.notes}</p>}

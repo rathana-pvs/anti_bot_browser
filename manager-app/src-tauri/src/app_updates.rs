@@ -90,6 +90,16 @@ pub struct UpdateInfo {
     version: Option<String>,
     notes: Option<String>,
     downloaded: bool,
+    notice: Option<String>,
+}
+
+fn release_check_notice(error: &tauri_plugin_updater::Error) -> Option<&'static str> {
+    match error {
+        tauri_plugin_updater::Error::ReleaseNotFound => Some(
+            "Published update information is unavailable. There may not be a published release yet. Please try again later.",
+        ),
+        _ => None,
+    }
 }
 
 pub fn ensure_desktop_owned() -> Result<(), String> {
@@ -115,14 +125,20 @@ pub async fn check_app_update(
             .map_err(|_| "Update state is unavailable")?;
         *pending = Pending::default();
     }
-    let update = app
+    let result = app
         .updater_builder()
         .timeout(Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())?
         .check()
-        .await
-        .map_err(|e| format!("Could not check published releases: {e}"))?;
+        .await;
+    let (update, notice) = match result {
+        Ok(update) => (update, None),
+        Err(error) => match release_check_notice(&error) {
+            Some(notice) => (None, Some(notice.to_string())),
+            None => return Err(format!("Could not check for updates. Check your connection and try again. Details: {error}")),
+        },
+    };
     if let Some(ref update) = update {
         if update.download_url.scheme() != "https" {
             return Err("Update download must use HTTPS.".into());
@@ -133,6 +149,7 @@ pub async fn check_app_update(
         version: update.as_ref().map(|u| u.version.clone()),
         notes: update.as_ref().and_then(|u| u.body.clone()),
         downloaded: false,
+        notice,
     };
     state
         .pending
@@ -265,6 +282,14 @@ pub fn app_update_version(app: AppHandle) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unavailable_release_is_informational_but_other_errors_remain_errors() {
+        assert!(release_check_notice(&tauri_plugin_updater::Error::ReleaseNotFound)
+            .unwrap().contains("may not be a published release"));
+        assert!(release_check_notice(&tauri_plugin_updater::Error::EmptyEndpoints).is_none());
+        let invalid_json = serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
+        assert!(release_check_notice(&tauri_plugin_updater::Error::Serialization(invalid_json)).is_none());
+    }
     #[test]
     fn operations_are_exclusive_and_guard_releases_on_error() {
         let state = AppUpdates::default();

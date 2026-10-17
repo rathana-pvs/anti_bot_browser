@@ -6,6 +6,7 @@ export interface AppUpdateInfo {
   version: string | null;
   notes: string | null;
   downloaded: boolean;
+  notice: string | null;
 }
 export interface AppUpdateProgress { downloaded: number; total: number | null }
 export const getAppVersion = () => invoke<string>('app_update_version');
