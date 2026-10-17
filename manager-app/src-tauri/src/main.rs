@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 struct BackendProcess(Mutex<Option<Child>>);
 struct SetupProcess(Mutex<bool>);
+mod app_updates;
 
 #[derive(Clone)]
 struct ApiSession {
@@ -505,7 +506,7 @@ fn installed_wsl_runtime_version(distribution: &str) -> Option<String> {
             "--",
             "bash",
             "-lc",
-            "cat \"$HOME/automat_fb-beta/VERSION\" 2>/dev/null",
+            "cat \"$HOME/automat_fb-beta/data/runtime-installed-version\" 2>/dev/null",
         ],
     )
     .map(|value| value.trim().to_string())
@@ -907,6 +908,13 @@ fn setup_state(root: Option<&PathBuf>) -> (bool, bool, bool, bool, bool) {
 }
 
 #[cfg(not(target_os = "windows"))]
+fn runtime_version_current(root: &Path) -> bool {
+    let expected = std::fs::read_to_string(root.join("VERSION")).unwrap_or_default();
+    let installed = std::fs::read_to_string(root.join("data/runtime-installed-version")).unwrap_or_default();
+    !expected.trim().is_empty() && expected.trim() == installed.trim()
+}
+
+#[cfg(not(target_os = "windows"))]
 fn setup_state(root: Option<&PathBuf>) -> (bool, bool, bool, bool, bool) {
     let system_ready = std::fs::read_to_string("/etc/os-release")
         .map(|contents| contents.contains("ID=ubuntu") || contents.contains("ID=debian"))
@@ -915,7 +923,8 @@ fn setup_state(root: Option<&PathBuf>) -> (bool, bool, bool, bool, bool) {
     let image_ready = platform_ready
         && command_succeeds("docker", &["image", "inspect", "isolated-chrome:latest"]);
     let runtime_ready = root
-        .map(|path| path.join("automation/venv/bin/python").exists())
+        .map(|path| path.join("automation/venv/bin/python").exists()
+            && (development_root().is_some() || runtime_version_current(path)))
         .unwrap_or(false);
     let configuration_ready = root
         .map(|path| {
@@ -1680,8 +1689,25 @@ fn spawn_backend(app: &AppHandle) -> Option<Child> {
     if std::env::var("WORKER_SERVICE_ATTACHED").as_deref() == Ok("1") {
         return None;
     }
+    #[cfg(not(target_os = "windows"))]
+    if development_root().is_none() {
+        if let Some(root) = find_install_root(app) {
+            if !runtime_version_current(&root) {
+                println!("[Tauri] Runtime setup is required for this app version; services are deferred.");
+                return None;
+            }
+        }
+    }
     #[cfg(target_os = "windows")]
     {
+        let current = find_ubuntu_distribution()
+            .and_then(|name| installed_wsl_runtime_version(&name))
+            .map(|version| version == app.package_info().version.to_string())
+            .unwrap_or(false);
+        if !current {
+            println!("[Tauri] WSL runtime setup is required for this app version; services are deferred.");
+            return None;
+        }
         return spawn_wsl_backend();
     }
 
@@ -1779,6 +1805,8 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(app_updates::AppUpdates::default())
         .manage(SetupProcess(Mutex::new(false)))
         .invoke_handler(tauri::generate_handler![
             get_api_session,
@@ -1786,7 +1814,11 @@ fn main() {
             get_setup_status,
             get_setup_log,
             run_setup,
-            recover_services
+            recover_services,
+            app_updates::check_app_update,
+            app_updates::download_app_update,
+            app_updates::install_app_update,
+            app_updates::app_update_version
         ])
         .setup(|app| {
             let handle = app.handle();
@@ -1859,6 +1891,19 @@ mod tests {
         assert!(tasks_block_runtime_install(&serde_json::json!({"p": {"status": "failed", "lifecycle_active": true}})).unwrap());
         assert!(!tasks_block_runtime_install(&serde_json::json!({"p": {"status": "published", "lifecycle_active": false}})).unwrap());
         assert!(tasks_block_runtime_install(&serde_json::json!([])).is_err());
+    }
+
+    #[test]
+    fn copied_code_does_not_claim_dependency_setup_completed() {
+        let root = std::env::temp_dir().join(format!("runtime-marker-{}", Uuid::new_v4().simple()));
+        std::fs::create_dir_all(root.join("data")).unwrap();
+        std::fs::write(root.join("VERSION"), "1.1.0\n").unwrap();
+        assert!(!runtime_version_current(&root));
+        std::fs::write(root.join("data/runtime-installed-version"), "1.0.19\n").unwrap();
+        assert!(!runtime_version_current(&root));
+        std::fs::write(root.join("data/runtime-installed-version"), "1.1.0\n").unwrap();
+        assert!(runtime_version_current(&root));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

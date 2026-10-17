@@ -10,7 +10,9 @@ mkdir -p "${DIST_DIR}"
 echo "==> Building Python FastAPI Sidecar Binary..."
 cd "${ROOT_DIR}"
 
-"${ROOT_DIR}/automation/venv/bin/pyinstaller" \
+BUILD_PYTHON="${BACKEND_BUILD_PYTHON:-${ROOT_DIR}/automation/venv/bin/python}"
+if [ ! -x "$BUILD_PYTHON" ]; then BUILD_PYTHON="python3"; fi
+"$BUILD_PYTHON" -m PyInstaller \
   --name backend_server \
   --onefile \
   --clean \

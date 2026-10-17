@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Select } from './ui/Select';
 import { BrainPanel } from './BrainPanel';
+import { AppUpdates } from './AppUpdates';
 import { BrainCircuit, Check, Eye, EyeOff, KeyRound, Settings, X } from 'lucide-react';
 
 interface SettingsModalProps {
@@ -9,7 +10,7 @@ interface SettingsModalProps {
   onOpenSetup?: () => void;
 }
 
-type Section = 'api-keys' | 'brains';
+type Section = 'api-keys' | 'brains' | 'updates';
 
 const API_KEY_FIELDS = [
   { id: 'gemini', label: 'Google Gemini', placeholder: 'API key' },
@@ -89,6 +90,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
             <h2 id="settings-title" className="text-sm font-semibold text-white">Settings</h2>
           </div>
           <nav className="space-y-1">
+            <button type="button" onClick={() => setSection('updates')} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition-colors ${section === 'updates' ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'}`}>
+              <Settings className="h-4 w-4" /> App updates
+            </button>
             <button type="button" onClick={() => setSection('api-keys')} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition-colors ${section === 'api-keys' ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'}`}>
               <KeyRound className="h-4 w-4" /> API keys
             </button>
@@ -104,8 +108,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
         <section className="flex min-w-0 flex-1 flex-col">
           <header className="flex h-14 shrink-0 items-center justify-between border-b border-zinc-800 px-6">
             <div>
-              <h3 className="text-sm font-semibold text-zinc-100">{section === 'api-keys' ? 'API keys' : 'Brains'}</h3>
-              <p className="mt-0.5 text-[11px] text-zinc-500">{section === 'api-keys' ? 'Manage your Gemini API key and model.' : 'Manage installed brains, versions, and activation.'}</p>
+              <h3 className="text-sm font-semibold text-zinc-100">{section === 'api-keys' ? 'API keys' : section === 'updates' ? 'App updates' : 'Brains'}</h3>
+              <p className="mt-0.5 text-[11px] text-zinc-500">{section === 'api-keys' ? 'Manage your Gemini API key and model.' : section === 'updates' ? 'Check published versions and update the whole app.' : 'Manage installed brains, versions, and activation.'}</p>
             </div>
             <button type="button" onClick={onClose} aria-label="Close settings" className="rounded-md p-2 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"><X className="h-4 w-4" /></button>
           </header>
@@ -150,7 +154,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                   <button type="button" onClick={saveKeys} className="rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-500">Save settings</button>
                 </div>
               </div>
-            ) : (
+            ) : section === 'updates' ? <AppUpdates /> : (
               <BrainPanel embedded />
             )}
           </div>
