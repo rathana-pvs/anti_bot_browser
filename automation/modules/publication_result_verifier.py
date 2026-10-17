@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 from .post_timestamp import parse_header_timestamp
-from .reel_top_post import first_header_region, evaluate_header
+from .reel_top_post import first_header_region, retry_unreadable_header
 
 
 class ImagePublicationResultVerifier:
@@ -88,7 +88,8 @@ class ImagePublicationResultVerifier:
         header = [i for i in header_items if i.get("bounds")
                   and x <= i["bounds"][0] < x + rw
                   and y <= i["bounds"][1] and i["bounds"][3] <= y + rh]
-        timestamp_check = evaluate_header(header, region, height, min_confidence=.35)
+        header, timestamp_check = retry_unreadable_header(
+            self.task.vision, screen, region, header, min_confidence=.35)
         timestamp_reads = [i.get("text", "") for i in header
                            if parse_header_timestamp(i.get("text", "")) is not None]
         details = dict(header_reads=[i.get("text", "") for i in header],

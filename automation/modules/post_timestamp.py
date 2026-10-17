@@ -74,6 +74,9 @@ def parse_timestamp(text):
 
 def parse_header_timestamp(text):
     """Allow Facebook attribution before a timestamp, only on a header row."""
+    # OCR sometimes joins the trailing privacy icon to the age ("2h . 0").
+    # Strip only a separated icon suffix, never digits/words or decimal ages.
+    text = re.sub(r'\s+[·•.]\s*[0Oo○●🌐]*\s*$', '', text or '')
     if re.search(r'[+-]\s*\d', text or ''):
         return None
     if re.search(r'\d[.,]\d|\b\d+\s+\d', text or ''):
@@ -88,5 +91,10 @@ def parse_header_timestamp(text):
         if word[:1].isdigit() or word in {'now', 'just', 'jusl', 'jusi', 'n0w', 'justnow', 'a', 'few', 'moment'}:
             parsed = parse_timestamp(' '.join(words[index:]))
             if parsed is not None:
+                # A trailing age cannot override another age in the same box.
+                # Attribution may contain names/numbers, but not two timestamps.
+                if any(parse_timestamp(' '.join(words[start:index])) is not None
+                       for start in range(index)):
+                    return None
                 return parsed
     return None

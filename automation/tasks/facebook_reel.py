@@ -20,7 +20,7 @@ from engine.runtime_paths import automation_dir
 from engine.text_matcher import OcrTextMatcher
 from engine.vision import VisionEngine
 from modules.publication_result_verifier import ReelPublicationResultVerifier
-from modules.reel_top_post import first_header_region, evaluate_header
+from modules.reel_top_post import first_header_region, retry_unreadable_header
 from modules.reel_post_click_verifier import ReelPostClickVerifier
 from .base_task import BaseTask
 
@@ -1490,7 +1490,7 @@ class FacebookReelTask(BaseTask):
             return False
         self._reel_top_post_found = True
         header_items = self.vision.read_text(screen, region=region, min_confidence=.55)
-        result = evaluate_header(header_items, region, height)
+        header_items, result = retry_unreadable_header(self.vision, screen, region, header_items)
         self.latest_reel_timestamp_check = result
         self.log('INFO', 'Top post timestamp check: ' + str(result))
         return result['accepted']

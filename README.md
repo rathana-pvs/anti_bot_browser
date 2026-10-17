@@ -401,9 +401,31 @@ Posts/List view toolbar is checked. The parser accepts now/seconds or a numeric
 age strictly below ten minutes; 10m, hours and days are rejected. Small known OCR
 word substitutions and scored unit matches are supported, while ambiguous numeric
 text or unknown units remain unconfirmed. The first post's timestamp is read on
-the header row under its author, including separate Published by attribution.
+the first card's header, with or without an author, including separate Published
+by attribution. Standalone ages such as `1m`, `30s`, and `30 seconds ago` are
+supported; timestamp-only rows must remain near the top of that header.
+Unreadable headers get one enlarged OCR read of the same region. Recognized old
+timestamps report `old_top_post`; a separated trailing privacy-icon OCR suffix
+such as `2h . 0` is ignored without guessing numeric ages.
 Caption text, comment timestamps and second posts cannot supply confirmation.
 If the top post is old/unreadable, the same top position can be rechecked after
 one refresh delay; the task never searches later posts for a newer timestamp.
 A Facebook success popup may still establish publication, but commenting still
 requires this top-post check. Timestamp checks alone do not prove media identity.
+
+### Optional OCR fallback
+
+EasyOCR remains the primary reader. Bounded expected-label searches (buttons and
+input labels) may retry a miss with Tesseract. Timestamp checks may retry an
+unreadable short header candidate after the existing enlarged EasyOCR read.
+Secondary text must agree at 3x and 4x with confidence at least 0.60; successful
+primary reads, recognized old timestamps, and conflicting ages skip recovery.
+All action/geometry checks still apply. Full-screen secondary OCR is disabled.
+
+Linux and Windows/WSL setup installs `tesseract-ocr` and `tesseract-ocr-eng` on
+the host where Python automation runs. Existing installs can add these packages
+separately. Missing Tesseract fails closed to the existing OCR outcome. Set
+`AUTOMATION_TESSERACT_ENABLED=0` to disable, `AUTOMATION_TESSERACT_BIN` to select
+an executable, or `TESSDATA_PREFIX` to select its model directory. Secondary OCR
+uses stdin, a subprocess timeout, a bounded cache, and records engine provenance
+plus OCR telemetry. No browser evidence is sent to an external OCR service.

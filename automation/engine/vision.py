@@ -96,6 +96,7 @@ class VisionEngine:
         self.browser_zoom = None
         self.ocr_device = "uninitialized"
         self._ocr_cache: dict[tuple, list[dict]] = {}
+        self._secondary_ocr_cache: dict[tuple, list[dict]] = {}
 
     def set_runtime_context(
         self,
@@ -454,6 +455,64 @@ class VisionEngine:
             )
         return results
 
+    def read_text_with_fallback(
+        self, screen, *, region, accept, min_confidence=.60, primary=None, psm=7,
+    ):
+        """Use secondary OCR only after a caller's bounded primary check fails.
+
+        Return the primary results unchanged on success. Tesseract results must
+        agree at two scales; consumers still own geometry/action validation.
+        """
+        if primary is None:
+            primary = self.read_text(screen, region=region, min_confidence=min_confidence)
+        if any(accept(item) for item in primary) or region is None:
+            return primary
+        from .tesseract_ocr import read_crop
+        crop, offset_x, offset_y = self._crop_region(screen, region)
+        if not crop.size or crop.shape[0] * crop.shape[1] > 600_000 or max(crop.shape[:2]) > 1600:
+            return primary
+        key = (self._content_digest(crop), crop.shape, psm,
+               os.environ.get('AUTOMATION_TESSERACT_BIN', 'tesseract'),
+               os.environ.get('TESSDATA_PREFIX', ''), os.environ.get('AUTOMATION_TESSERACT_ENABLED', '1'))
+        cache = getattr(self, '_secondary_ocr_cache', None)
+        if cache is None:
+            cache = self._secondary_ocr_cache = {}
+        started = time.perf_counter()
+        if key not in cache:
+            first = read_crop(crop, scale=3, psm=psm)
+            second = read_crop(crop, scale=4, psm=psm) if first else []
+            agreed = []
+            normalize = lambda value: re.sub(r'\s+', ' ', value.casefold()).strip()
+            for a in first:
+                for b in second:
+                    if normalize(a['text']) != normalize(b['text']):
+                        continue
+                    al, at, ar, ab = a['bounds']
+                    bl, bt, br, bb = b['bounds']
+                    overlap = max(0, min(ar, br)-max(al, bl)) * max(0, min(ab, bb)-max(at, bt))
+                    smaller = min((ar-al)*(ab-at), (br-bl)*(bb-bt))
+                    if smaller > 0 and overlap / smaller >= .5:
+                        agreed.append(dict(a, confidence=min(a['confidence'], b['confidence'])))
+                        break
+            cache[key] = agreed
+            while len(cache) > 32:
+                cache.pop(next(iter(cache)))
+        recovered = []
+        for item in cache[key]:
+            if item['confidence'] < max(.60, min_confidence):
+                continue
+            left, top, right, bottom = item['bounds']
+            mapped = dict(item, bounds=(left+offset_x, top+offset_y, right+offset_x, bottom+offset_y),
+                          center=((left+right)/2+offset_x, (top+bottom)/2+offset_y))
+            if accept(mapped):
+                recovered.append(mapped)
+        telemetry = getattr(self, 'telemetry', None)
+        if telemetry is not None:
+            telemetry.record_ocr((time.perf_counter()-started)*1000, self._region_name(region),
+                                 len(recovered), [i['confidence'] for i in recovered],
+                                 outcome='tesseract_consensus' if recovered else 'tesseract_unconfirmed')
+        return primary + recovered
+
     def find_text(
         self,
         labels: str | tuple[str, ...] | list[str],
@@ -476,7 +535,18 @@ class VisionEngine:
                     continue
                 candidates.append(item)
         if not candidates:
-            return None
+            # Only a bounded miss reaches the optional secondary reader. Exact
+            # label matching prevents recovering "Post" from "Post review".
+            if region is None:
+                return None
+            recovered = self.read_text_with_fallback(
+                screen, region=region, primary=[], min_confidence=max(.60, min_confidence), psm=11,
+                accept=lambda item: item['text'].casefold().strip() in normalized,
+            )
+            candidates = [item for item in recovered
+                          if not prefer_lower_half or item['center'][1] >= screen.shape[0] // 2]
+            if not candidates:
+                return None
         candidates.sort(key=lambda item: (item["confidence"], item["center"][1]), reverse=True)
         return candidates[0]
 

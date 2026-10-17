@@ -41,3 +41,20 @@ def test_header_does_not_guess_an_ambiguous_number(text):
 
 def test_joined_timestamp_with_arbitrary_header_attribution():
     assert parse_header_timestamp('Posted by Editor · Justnow').recent
+
+
+@pytest.mark.parametrize('text,seconds,recent', [
+    ('2h . 0', 7200, False), ('2h · O', 7200, False),
+    ('Published by Editor · 2h · 0', 7200, False),
+    ('1m · 0', 60, True), ('30s ·', 30, True), ('Just now · 0', 0, True),
+])
+def test_header_privacy_icon_suffix(text, seconds, recent):
+    parsed = parse_header_timestamp(text)
+    assert parsed.age_seconds == seconds
+    assert parsed.recent is recent
+
+
+@pytest.mark.parametrize('text', ['9.5m · 0', '9 5 minutes ago · 0',
+                                '1m 30s', '2h . 1m', '1m and a caption'])
+def test_icon_cleanup_does_not_hide_ambiguous_or_extra_text(text):
+    assert parse_header_timestamp(text) is None

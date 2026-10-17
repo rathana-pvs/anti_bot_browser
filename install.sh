@@ -332,7 +332,8 @@ install_system_dependencies() {
   apt_get update
   apt_get install -y \
     ca-certificates curl gnupg jq zip unzip rsync python3 python3-venv python3-pip \
-    build-essential iproute2 mesa-utils libgl1-mesa-dri mesa-vulkan-drivers vulkan-tools
+    build-essential iproute2 mesa-utils libgl1-mesa-dri mesa-vulkan-drivers vulkan-tools \
+    tesseract-ocr tesseract-ocr-eng
 
   if [ "${DESKTOP_SETUP}" = false ]; then
     local node_ok=false

@@ -64,6 +64,20 @@ class ImagePublicationVerifierTests(unittest.TestCase):
         self.assertIsNotNone(calls[1].kwargs.get("region"))
         self.assertEqual(verifier.last_check["timestamp_reads"], ["Justnow"])
 
+    def test_timestamp_without_author_still_requires_matching_photo_content(self):
+        for stamp in ("1m", "30s", "30 seconds ago"):
+            with self.subTest(timestamp=stamp):
+                verifier = self.make_verifier()
+                verifier.task.caption = "Expected caption"
+                items = self.card_items(timestamp=stamp)
+                items = [i for i in items if i["text"] != "Author Name"]
+                verifier.task.vision.read_text.return_value = items
+                verifier._matching_image_bounds = Mock(return_value=None)
+                screen = np.zeros((1080, 1920, 3), dtype=np.uint8)
+                self.assertTrue(verifier._post_visible(screen))
+                verifier.task.caption = "Unrelated words"
+                self.assertFalse(verifier._post_visible(screen))
+
     def test_native_timestamp_at_real_world_confidence_is_accepted(self):
         verifier = self.make_verifier()
         verifier.task.caption = "Expected caption"
