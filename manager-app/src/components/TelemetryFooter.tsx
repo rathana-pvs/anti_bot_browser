@@ -27,6 +27,16 @@ export const TelemetryFooter: React.FC<TelemetryFooterProps> = ({ stats }) => {
   const hostRam = Math.round(((displayHost?.used_memory_mb || 0) / (displayHost?.total_memory_mb || 1)) * 100);
   const runtimeCpu = percent(runtime.cpu_percent);
   const runtimeRam = Math.round((runtime.used_memory_mb / runtime.total_memory_mb) * 100);
+  const healthStatus = stats.health?.status || (stats.docker_running ? 'ready' : 'degraded');
+  const healthLabel = healthStatus === 'ready' ? 'Ready' : healthStatus === 'degraded' ? 'Degraded' : 'Not ready';
+  const healthClass = healthStatus === 'ready'
+    ? 'text-emerald-400'
+    : healthStatus === 'degraded' ? 'text-amber-400' : 'text-red-400';
+  const healthDetails = stats.health
+    ? Object.entries(stats.health.checks)
+      .map(([name, check]) => `${name}: ${check.detail || check.status || (check.ok ? 'ok' : 'unavailable')}`)
+      .join('\n')
+    : 'Backend health details are unavailable.';
 
   const color = (value: number) => value >= 85 ? 'bg-red-500' : value >= 60 ? 'bg-yellow-400' : 'bg-emerald-500';
   const textColor = (value: number) => value >= 85
@@ -42,6 +52,12 @@ export const TelemetryFooter: React.FC<TelemetryFooterProps> = ({ stats }) => {
   return (
     <footer className="h-8 bg-zinc-950 border-t border-border px-4 flex items-center gap-3 text-[11px] text-zinc-400 select-none shrink-0 font-mono overflow-x-auto whitespace-nowrap">
       <div className="flex items-center gap-3 shrink-0">
+        <div className="flex items-center gap-1.5" title={healthDetails}>
+          <Activity className="w-3 h-3 text-zinc-500" />
+          <span className="hidden sm:inline">System:</span>
+          <span className={`font-semibold ${healthClass}`}>{healthLabel}</span>
+        </div>
+        <span className="text-zinc-700">|</span>
         <div className="flex items-center gap-1.5">
           <Server className="w-3 h-3 text-zinc-500" />
           <span className="hidden sm:inline">Docker:</span>
