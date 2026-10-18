@@ -278,8 +278,16 @@ export interface QueueDataResponse {
 }
 
 export type ResourceMode = 'auto' | 'low' | 'medium' | 'high';
+export type OcrEngine = 'paddleocr-v5' | 'paddleocr-v6' | 'easyocr';
 
 export interface ResourceModeSettings {
+  ocr_engine: {
+    selected: OcrEngine;
+    active: OcrEngine;
+    restart_required: boolean;
+    locked: boolean;
+    options: { value: OcrEngine; label: string }[];
+  };
   selected_mode: ResourceMode;
   effective_mode: Exclude<ResourceMode, 'auto'>;
   recommended_mode: Exclude<ResourceMode, 'auto'>;

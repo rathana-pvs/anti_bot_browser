@@ -67,6 +67,7 @@ def start_shared_ocr_worker() -> dict:
         env = os.environ.copy()
         env["AUTOMAT_FB_ROOT"] = str(ROOT_DIR)
         env["PYTHONUNBUFFERED"] = "1"
+        env["AUTOMATION_OCR_ENGINE"] = OCR_RUNTIME["engine"]
         env["AUTOMATION_OCR_DEVICE"] = OCR_RUNTIME["device"]
         env["AUTOMATION_OCR_THREADS"] = str(threads)
         env["AUTOMATION_OCR_WORKER_TOKEN"] = token
@@ -137,6 +138,7 @@ def shared_ocr_worker_snapshot() -> dict:
         status = "ready" if payload.get("ready") else ("error" if payload.get("error") else "initializing")
         return {
             "status": status,
+            "engine": payload.get("engine"),
             "device": payload.get("device"),
             "cache_entries": int(payload.get("cache_entries") or 0),
             "error": payload.get("error"),

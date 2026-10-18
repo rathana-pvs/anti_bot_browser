@@ -1,0 +1,7 @@
+# Evaluation only. Do not install into the production automation environment.
+paddleocr==3.7.0
+paddlex==3.7.2
+# 3.3.x oneDNN/PIR fails on the first inference on this CPU; see the guide.
+paddlepaddle==3.2.2
+numpy==2.3.5
+opencv-contrib-python==4.10.0.84

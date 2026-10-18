@@ -277,6 +277,7 @@ def resource_mode_snapshot() -> dict:
         cpu_model_str = "x86_64 CPU"
 
     return {
+        "ocr_engine": settings_manager.ocr_selection(),
         "selected_mode": settings_manager.resource_mode,
         "effective_mode": resolve_resource_mode(settings_manager.resource_mode, TOTAL_MEMORY_GB, CPU_THREADS)["effective"],
         "recommended_mode": resolve_resource_mode(settings_manager.resource_mode, TOTAL_MEMORY_GB, CPU_THREADS)["recommended"],
@@ -321,6 +322,7 @@ def automation_worker_env() -> dict:
     env.pop("WORKER_CREDENTIAL", None)
     env["AUTOMAT_FB_ROOT"] = str(ROOT_DIR)
     env["PYTHONUNBUFFERED"] = "1"
+    env["AUTOMATION_OCR_ENGINE"] = OCR_RUNTIME["engine"]
     env["AUTOMATION_OCR_THREADS"] = str(threads)
     env["AUTOMATION_OCR_DEVICE"] = OCR_RUNTIME["device"]
     return env

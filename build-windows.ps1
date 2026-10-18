@@ -149,6 +149,10 @@ Write-Host "Compiling backend\main.py into $BinariesDir\backend_server.exe..." -
     --distpath $BinariesDir `
     --workpath $WorkPath `
     --specpath $SpecPath `
+    --exclude-module paddle `
+    --exclude-module paddleocr `
+    --exclude-module paddlex `
+    --exclude-module easyocr `
     --add-data "$RootDir\automation\brains;automation\brains" `
     --add-data "$RootDir\automation\templates;automation\templates" `
     (Join-Path $RootDir "backend\main.py")

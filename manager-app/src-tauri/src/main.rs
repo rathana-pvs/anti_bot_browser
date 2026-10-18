@@ -656,11 +656,11 @@ fn gpu_compatibility(
     let wsl_gpu_visible = runtime_gpu.is_some();
     let cuda_runtime_available = cuda_device.is_some();
     let fallback_reason = if runtime_install_required {
-        Some("The matching PyTorch runtime package must be installed during setup.".into())
+        Some("The selected OCR runtime package must be installed during setup.".into())
     } else if cuda_runtime_available {
         None
     } else if wsl_gpu_visible {
-        Some("GPU detected, but the installed PyTorch CUDA runtime is unavailable; OCR will use CPU.".into())
+        Some("GPU detected, but the selected OCR CUDA runtime is unavailable; OCR will use CPU.".into())
     } else {
         Some(
             "No compatible NVIDIA GPU is visible to the automation runtime; OCR will use CPU."
@@ -729,7 +729,7 @@ fn detect_gpu_compatibility(
             "(test -d /dev/dri && find /dev/dri -mindepth 1 -maxdepth 1 -print -quit | grep -q .) || (test -c /dev/dxg && test -f /usr/lib/wsl/lib/libd3d12.so && test -f /usr/lib/wsl/lib/libdxcore.so)",
         ],
     );
-    let torch_probe = if runtime_ready {
+    let ocr_probe = if runtime_ready {
         command_output(
             "wsl.exe",
             &[
@@ -738,14 +738,14 @@ fn detect_gpu_compatibility(
                 "--",
                 "bash",
                 "-lc",
-                "timeout 12 ~/automat_fb-beta/automation/venv/bin/python -c 'import torch; print(torch.__version__); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"\")' 2>/dev/null",
+                "timeout 20 ~/automat_fb-beta/automation/venv/bin/python ~/automat_fb-beta/automation/probe_ocr_runtime.py 2>/dev/null",
             ],
         )
     } else {
         None
     };
-    let mut probe_lines = torch_probe.as_deref().unwrap_or("").lines();
-    let torch_version = probe_lines.next().filter(|value| !value.trim().is_empty());
+    let mut probe_lines = ocr_probe.as_deref().unwrap_or("").lines();
+    let ocr_version = probe_lines.next().filter(|value| !value.trim().is_empty());
     let cuda_device = probe_lines
         .next()
         .map(str::trim)
@@ -763,8 +763,9 @@ fn detect_gpu_compatibility(
         ],
     );
     let runtime_install_required = runtime_ready
-        && (torch_version.is_none()
-            || (runtime_gpu.is_some() && cuda_device.is_none() && !cuda_fallback_recorded));
+        && (ocr_version.is_none()
+            || (runtime_gpu.is_some() && cuda_device.is_none() && !cuda_fallback_recorded
+                && !ocr_version.unwrap_or("").starts_with("paddleocr-")));
     gpu_compatibility(
         host_gpu,
         runtime_gpu,
@@ -794,25 +795,26 @@ fn detect_gpu_compatibility(
             "(test -d /dev/dri && find /dev/dri -mindepth 1 -maxdepth 1 -print -quit | grep -q .) || (test -c /dev/dxg && test -f /usr/lib/wsl/lib/libd3d12.so && test -f /usr/lib/wsl/lib/libdxcore.so)",
         ],
     );
-    let torch_probe = if runtime_ready {
+    let ocr_probe = if runtime_ready {
         root.and_then(|path| {
             let python = path.join("automation/venv/bin/python");
             let python = python.to_str()?;
+            let probe = path.join("automation/probe_ocr_runtime.py");
+            let probe = probe.to_str()?;
             command_output(
                 "timeout",
                 &[
-                    "12",
+                    "20",
                     python,
-                    "-c",
-                    "import torch; print(torch.__version__); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else '')",
+                    probe,
                 ],
             )
         })
     } else {
         None
     };
-    let mut probe_lines = torch_probe.as_deref().unwrap_or("").lines();
-    let torch_version = probe_lines.next().filter(|value| !value.trim().is_empty());
+    let mut probe_lines = ocr_probe.as_deref().unwrap_or("").lines();
+    let ocr_version = probe_lines.next().filter(|value| !value.trim().is_empty());
     let cuda_device = probe_lines
         .next()
         .map(str::trim)
@@ -828,8 +830,9 @@ fn detect_gpu_compatibility(
         })
         .unwrap_or(false);
     let runtime_install_required = runtime_ready
-        && (torch_version.is_none()
-            || (runtime_gpu.is_some() && cuda_device.is_none() && !cuda_fallback_recorded));
+        && (ocr_version.is_none()
+            || (runtime_gpu.is_some() && cuda_device.is_none() && !cuda_fallback_recorded
+                && !ocr_version.unwrap_or("").starts_with("paddleocr-")));
     gpu_compatibility(
         runtime_gpu.clone(),
         runtime_gpu,

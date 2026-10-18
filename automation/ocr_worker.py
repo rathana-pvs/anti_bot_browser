@@ -1,4 +1,4 @@
-"""Long-lived, loopback-only EasyOCR service shared by automation processes."""
+"""Long-lived, loopback-only selected-engine OCR service shared by automation processes."""
 
 import argparse
 import hashlib
@@ -10,7 +10,7 @@ import time
 from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from engine.runtime_paths import automation_dir
+from engine.ocr_reader import create_reader, selected_engine, configuration_signature
 
 import cv2
 import numpy as np
@@ -20,6 +20,8 @@ class OcrRuntime:
     CACHE_LIMIT = 128
 
     def __init__(self, requested_device: str, threads: int):
+        self.engine = selected_engine()
+        self.signature = configuration_signature(self.engine)
         self.requested_device = requested_device
         self.threads = threads
         self.device = "initializing"
@@ -33,28 +35,14 @@ class OcrRuntime:
 
     def _initialize(self) -> None:
         try:
-            import easyocr
-            import torch
-
-            use_cuda = self.requested_device in {"auto", "cuda", "gpu"} and torch.cuda.is_available()
-            self.device = "cuda" if use_cuda else "cpu"
-            if not use_cuda:
-                torch.set_num_threads(max(1, min(4, self.threads)))
-            model_dir = Path(
-                os.environ.get(
-                    "AUTOMATION_OCR_MODEL_DIR",
-                    str(automation_dir() / "models" / "easyocr"),
-                )
-            )
-            self.reader = easyocr.Reader(
-                ["en"],
-                gpu=use_cuda,
-                verbose=False,
-                model_storage_directory=str(model_dir),
-                download_enabled=False,
-            )
-            self.reader.readtext(np.zeros((64, 128, 3), dtype=np.uint8))
-            print(f"Shared OCR model ready on {self.device}.", flush=True)
+            try:
+                self.reader = create_reader(requested_device=self.requested_device, threads=self.threads, engine=self.engine)
+            except Exception:
+                if self.requested_device == "cpu":
+                    raise
+                self.reader = create_reader(requested_device="cpu", threads=self.threads, engine=self.engine)
+            self.device = self.reader.device
+            print(f"Shared OCR {self.engine} ready on {self.device}.", flush=True)
         except Exception as exc:
             self.error = str(exc)
             self.device = "unavailable"
@@ -64,6 +52,8 @@ class OcrRuntime:
 
     def status(self) -> dict:
         return {
+            "engine": self.engine,
+            "signature": self.signature,
             "ready": self.ready.is_set() and self.reader is not None,
             "device": self.device,
             "error": self.error,
@@ -79,14 +69,14 @@ class OcrRuntime:
             raise RuntimeError("the shared OCR worker currently supports English only")
 
         cache_key = hashlib.blake2b(
-            encoded_image + b"\0" + ",".join(languages).encode("utf-8"),
+            self.signature.encode() + b"\0" + encoded_image + b"\0" + ",".join(languages).encode("utf-8"),
             digest_size=16,
         ).hexdigest()
         with self.cache_lock:
             cached = self.cache.get(cache_key)
             if cached is not None:
                 self.cache.move_to_end(cache_key)
-                return {"items": cached, "device": self.device, "cache_hit": True, "inference_ms": 0.0}
+                return {"items": cached, "engine": self.engine, "signature": self.signature, "device": self.device, "cache_hit": True, "inference_ms": 0.0}
 
         image = cv2.imdecode(np.frombuffer(encoded_image, dtype=np.uint8), cv2.IMREAD_COLOR)
         if image is None or image.size == 0:
@@ -100,7 +90,7 @@ class OcrRuntime:
                 cached = self.cache.get(cache_key)
                 if cached is not None:
                     self.cache.move_to_end(cache_key)
-                    return {"items": cached, "device": self.device, "cache_hit": True, "inference_ms": 0.0}
+                    return {"items": cached, "engine": self.engine, "signature": self.signature, "device": self.device, "cache_hit": True, "inference_ms": 0.0}
             results = self.reader.readtext(image, detail=1, paragraph=False)
         duration_ms = (time.perf_counter() - started) * 1000.0
         items = [
@@ -117,6 +107,8 @@ class OcrRuntime:
             while len(self.cache) > self.CACHE_LIMIT:
                 self.cache.popitem(last=False)
         return {
+            "engine": self.engine,
+            "signature": self.signature,
             "items": items,
             "device": self.device,
             "cache_hit": False,
@@ -159,6 +151,8 @@ class OcrRequestHandler(BaseHTTPRequestHandler):
             content_length = int(self.headers.get("Content-Length", "0"))
             if content_length <= 0 or content_length > 16 * 1024 * 1024:
                 raise ValueError("OCR request must contain at most 16 MiB")
+            if self.headers.get("X-OCR-Signature") != self.server.runtime.signature:
+                raise ValueError("OCR worker configuration does not match the client")
             image = self.rfile.read(content_length)
             languages = tuple(
                 value.strip() for value in self.headers.get("X-OCR-Languages", "en").split(",") if value.strip()
@@ -198,7 +192,7 @@ def _watch_parent(parent_pid: int, server: ThreadingHTTPServer, poll_interval: f
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Shared EasyOCR worker")
+    parser = argparse.ArgumentParser(description="Shared selectable OCR worker")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--token", default=os.environ.get("AUTOMATION_OCR_WORKER_TOKEN", ""))

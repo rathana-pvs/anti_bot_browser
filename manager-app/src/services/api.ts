@@ -518,6 +518,21 @@ export async function fetchResourceMode(): Promise<import('../types/automation')
   return res.json();
 }
 
+export async function updateOcrEngine(
+  engine: import('../types/automation').OcrEngine
+): Promise<import('../types/automation').ResourceModeSettings> {
+  const res = await fetch(`${API_BASE}/settings/ocr-engine`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ engine }),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.detail || error.error || 'Failed to update OCR engine');
+  }
+  return res.json();
+}
+
 export async function updateResourceMode(
   mode: import('../types/automation').ResourceMode
 ): Promise<import('../types/automation').ResourceModeSettings> {

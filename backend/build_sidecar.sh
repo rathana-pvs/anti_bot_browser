@@ -23,6 +23,10 @@ if [ ! -x "$BUILD_PYTHON" ]; then BUILD_PYTHON="python3"; fi
   --paths "${ROOT_DIR}" \
   --exclude-module torch \
   --exclude-module torchvision \
+  --exclude-module paddle \
+  --exclude-module paddleocr \
+  --exclude-module paddlex \
+  --exclude-module easyocr \
   --exclude-module scipy \
   --exclude-module pytest \
   --add-data "${ROOT_DIR}/automation/brains:automation/brains" \

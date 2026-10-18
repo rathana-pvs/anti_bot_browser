@@ -23,7 +23,7 @@ Traditional frameworks (Puppeteer, Playwright, Selenium) hook into the browser u
 ### 2. Guarded Visual State Machine
 Instead of relying on fragile, obfuscated CSS class names (`x1i10hfl xjbqb8w`) or blind `sleep()` timeouts:
 * **Hybrid 3-Tier Localization:** Uses coordinate caching, OpenCV template matching, and signature HSV color masking (e.g. Facebook `#45BD62` green camera icon and `#0866FF` primary blue action buttons).
-* **EasyOCR Deep Learning:** Offline OCR recognition for dynamic text and modal verification.
+* **Selectable offline OCR:** PaddleOCR v5 + Tesseract by default, v6 + Tesseract for speed, or EasyOCR + Tesseract for legacy/generic use.
 * **Pre/Post Structural Similarity (`SSIM`):** Compares screenshots before and after clicking publish to confirm modal closure and feed return.
 * **Strict "Uncertain" Contract:** If a publish button was clicked once but confirmation is ambiguous, the task exits with code `2` (`uncertain`) and **never auto-retries blindly**, preventing accidental duplicate posts.
 
@@ -52,7 +52,7 @@ flowchart TD
 
     subgraph Automation["Python Visual Engine"]
         Runner["runner.py"]
-        Vision["VisionEngine (OpenCV + EasyOCR)"]
+        Vision["VisionEngine (OpenCV + selectable OCR)"]
         Recognizer["FacebookStateRecognizer"]
         Evidence["EvidenceRecorder (Profiles/Evidence)"]
         Tasks["FacebookPostTask / FacebookReelTask"]
@@ -113,8 +113,9 @@ clicks Post again.
 │   │   ├── human_input.py      # Bézier curves, natural typing, xclip
 │   │   ├── screen_state.py     # Facebook visual state machine & OCR signals
 │   │   ├── telemetry.py        # Bounded timing, OCR, locator & environment metrics
-│   │   └── vision.py           # Multi-tier CV (Cache, Template, HSV, EasyOCR)
-│   ├── models/easyocr/         # Pretrained OCR weights (CRAFT + CRNN)
+│   │   └── vision.py           # Multi-tier CV (Cache, Template, HSV, OCR)
+│   ├── models/easyocr/         # Legacy/generic OCR weights (CRAFT + CRNN)
+│   ├── models/paddleocr/       # Pinned v5 and v6 detection/recognition weights
 │   ├── tasks/                  # Task definitions (Post, Reel, Warming, Comment)
 │   ├── templates/              # OpenCV visual templates (icons, buttons)
 │   ├── tests/                  # Offline reliability and safety test suite
@@ -187,7 +188,7 @@ Inspector shows these observed values and uses Chrome's WebGL result—not the
 container's GLX result—to determine the effective rendering mode.
 
 The manager starts one loopback-only OCR worker and keeps the selected
-EasyOCR model warm for all automation processes. GPU requests are serialized
+OCR model warm for all automation processes. Requests are serialized
 through that worker so concurrent profiles share one CUDA model allocation
 instead of loading a separate copy per process. Each automation process keeps
 its existing local OCR fallback if the shared worker is unavailable.
@@ -212,7 +213,12 @@ cd automation
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+# Restore the common OpenCV module after EasyOCR installs its headless dependency.
+pip install --force-reinstall --no-deps opencv-contrib-python==4.10.0.84
+python bootstrap_ocr_models.py --engine all
 ```
+Setup downloads pinned Paddle models and EasyOCR weights once; normal inference
+uses local assets. `install.sh` performs these steps automatically.
 
 Run the offline visual verification test suite:
 ```bash
@@ -418,11 +424,28 @@ one refresh delay; the task never searches later posts for a newer timestamp.
 A Facebook success popup may still establish publication, but commenting still
 requires this top-post check. Timestamp checks alone do not prove media identity.
 
-### Optional OCR fallback
+`about a minute ago` is parsed as a one-minute age, including attributed
+header rows. Conflicting timestamps still fail the recency check.
 
-EasyOCR remains the primary reader. Bounded expected-label searches (buttons and
+### OCR engine selection and recovery
+
+Use the **OCR engine** dropdown beside the global resource controls:
+
+- **v5 + Tesseract (Default):** PaddleOCR v5 for accuracy.
+- **v6 + Tesseract (Speed):** PaddleOCR v6 for lower latency.
+- **EasyOCR + Tesseract (Legacy / Generic):** the existing EasyOCR reader.
+
+The choice is saved in `data/manager_settings.json`. Restart the app or backend
+service to apply it; active jobs keep their startup engine. The shared worker and
+local fallback use that same engine, with separate caches for each model.
+`AUTOMATION_OCR_ENGINE=paddleocr-v5`, `paddleocr-v6`, or `easyocr` overrides the
+saved choice and locks the dropdown while that launch configuration is active.
+Paddle runs on CPU with the pinned package supplied by setup; GPU availability
+is checked against the selected framework.
+
+Bounded expected-label searches (buttons and
 input labels) may retry a miss with Tesseract. Timestamp checks may retry an
-unreadable short header candidate after the existing enlarged EasyOCR read.
+unreadable short header candidate after the existing enlarged primary OCR read.
 Secondary text must agree at 3x and 4x with confidence at least 0.60; successful
 primary reads, recognized old timestamps, and conflicting ages skip recovery.
 All action/geometry checks still apply. Full-screen secondary OCR is disabled.
@@ -434,3 +457,9 @@ separately. Missing Tesseract fails closed to the existing OCR outcome. Set
 an executable, or `TESSDATA_PREFIX` to select its model directory. Secondary OCR
 uses stdin, a subprocess timeout, a bounded cache, and records engine provenance
 plus OCR telemetry. No browser evidence is sent to an external OCR service.
+
+For offline EasyOCR/PaddleOCR evaluation against saved profile screenshots, see
+[the comparison guide](docs/OCR_ENGINE_COMPARISON.md) and
+[measured results](docs/OCR_ENGINE_COMPARISON_RESULTS.md). The evaluation uses
+separate environments and local evidence snapshots without browser actions.
+These crop measurements informed the default; they are not full publication tests.

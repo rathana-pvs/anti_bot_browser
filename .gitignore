@@ -7,10 +7,14 @@ automation/venv/
 automation/.venv
 automation/.venv/
 .venv/
+.venv-ocr-eval/
+data/ocr-evaluation/
 venv/
 
 # Deep Learning Models (EasyOCR / PyTorch weights)
 automation/models/easyocr/*.pth
+automation/models/paddleocr/
+profiles/*/element_cache_*.json
 
 # Node & Build Outputs
 node_modules/

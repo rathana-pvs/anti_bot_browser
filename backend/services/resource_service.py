@@ -1,5 +1,6 @@
 import json
 import math
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from backend.config import (
@@ -7,7 +8,11 @@ from backend.config import (
     TOTAL_MEMORY_GB,
     CPU_THREADS,
     OCR_RUNTIME,
+    OCR_ENGINE,
+    OCR_ENGINE_OVERRIDE,
 )
+
+from automation.engine.ocr_reader import DEFAULT_ENGINE, ENGINES, ENGINE_LABELS, validate_engine
 
 RESOURCE_MODE_LIMITS = {
     "low": {
@@ -73,6 +78,7 @@ def resource_admission_decision(
 
 class ResourceSettingsManager:
     def __init__(self, file_path: Path):
+        self._lock = threading.RLock()
         self.file_path = file_path
         self._settings = self._load()
 
@@ -80,12 +86,15 @@ class ResourceSettingsManager:
         if self.file_path.exists():
             try:
                 with open(self.file_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    value = json.load(f)
+                    if isinstance(value, dict):
+                        return value
             except Exception:
                 pass
         return {"resource_mode": "auto", "updated_at": datetime.now(timezone.utc).isoformat()}
 
     def _save(self):
+        self.file_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = f"{self.file_path}.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(self._settings, f, indent=2)
@@ -95,11 +104,33 @@ class ResourceSettingsManager:
     def resource_mode(self) -> str:
         return self._settings.get("resource_mode", "auto")
 
+    @property
+    def ocr_engine(self) -> str:
+        value = self._settings.get("ocr_engine", DEFAULT_ENGINE)
+        return value if value in ENGINES else DEFAULT_ENGINE
+
+    def ocr_selection(self) -> dict:
+        return {"selected": OCR_ENGINE if OCR_ENGINE_OVERRIDE else self.ocr_engine, "active": OCR_ENGINE,
+                "locked": OCR_ENGINE_OVERRIDE,
+                "restart_required": not OCR_ENGINE_OVERRIDE and self.ocr_engine != OCR_ENGINE,
+                "options": [{"value": e, "label": ENGINE_LABELS[e]} for e in ENGINES]}
+
+    def update_ocr_engine(self, engine: str) -> dict:
+        validate_engine(engine)
+        if OCR_ENGINE_OVERRIDE:
+            raise ValueError('OCR engine is set by launch configuration; remove the override to use saved selection')
+        with self._lock:
+            self._settings["ocr_engine"] = engine
+            self._settings["updated_at"] = datetime.now(timezone.utc).isoformat()
+            self._save()
+        return self.ocr_selection()
+
     def update_resource_mode(self, mode: str) -> dict:
         mode = mode if mode in ("auto", "low", "medium", "high") else "auto"
-        self._settings["resource_mode"] = mode
-        self._settings["updated_at"] = datetime.now(timezone.utc).isoformat()
-        self._save()
+        with self._lock:
+            self._settings["resource_mode"] = mode
+            self._settings["updated_at"] = datetime.now(timezone.utc).isoformat()
+            self._save()
         return self.get_snapshot()
 
     def get_snapshot(self) -> dict:

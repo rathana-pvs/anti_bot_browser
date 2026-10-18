@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Body
+from fastapi import APIRouter, Body, HTTPException
 from backend.services.docker_service import resource_mode_snapshot
 from backend.services.resource_service import settings_manager
 from backend.services.ocr_worker_service import shared_ocr_worker_snapshot
@@ -18,3 +18,13 @@ def update_resource_mode(payload: dict = Body(...)):
     snapshot = resource_mode_snapshot()
     snapshot["runtime"]["ocr_worker"] = shared_ocr_worker_snapshot()
     return snapshot
+
+
+@router.put("/ocr-engine")
+def update_ocr_engine(payload: dict = Body(...)):
+    try:
+        settings_manager.update_ocr_engine(payload.get("engine"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # Selection is persisted, while active processes keep their startup engine.
+    return get_resource_mode()

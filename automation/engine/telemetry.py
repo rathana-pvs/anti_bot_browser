@@ -85,6 +85,8 @@ class TelemetryRecorder:
             "theme": None,
             "theme_confidence": None,
             "browser_zoom": None,
+            "ocr_engine": None,
+            "ocr_model_signature": None,
             "ocr_device": None,
             "ocr_worker": None,
         }

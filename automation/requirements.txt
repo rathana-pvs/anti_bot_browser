@@ -1,9 +1,16 @@
-opencv-python-headless>=4.8.0
-numpy>=1.24.0
+opencv-contrib-python==4.10.0.84
+# EasyOCR declares headless OpenCV; keep its version aligned with PaddleX's
+# contrib build. Setup reinstalls contrib last to own the shared cv2 files.
+opencv-python-headless==4.10.0.84
+numpy==2.3.5
 requests>=2.31.0
 beautifulsoup4>=4.12.0
 PyYAML>=6.0.1
 # PyTorch and torchvision are installed by bootstrap_torch_runtime.py so setup
 # can select the verified CUDA build or the smaller CPU fallback.
-easyocr>=1.7.0
+easyocr==1.7.2
+paddleocr==3.7.0
+paddlex==3.7.2
+# Tested accelerated CPU runtime; 3.3.x has a oneDNN/PIR inference regression.
+paddlepaddle==3.2.2
 scikit-image>=0.22.0

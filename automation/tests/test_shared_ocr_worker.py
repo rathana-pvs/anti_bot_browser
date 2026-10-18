@@ -17,6 +17,8 @@ from ocr_worker import OcrRuntime, _watch_parent
 class SharedOcrRuntimeTests(unittest.TestCase):
     def test_runtime_reuses_results_for_identical_images(self):
         runtime = OcrRuntime.__new__(OcrRuntime)
+        runtime.engine = "easyocr"
+        runtime.signature = "test-signature"
         runtime.device = "cuda"
         runtime.reader = Mock()
         runtime.reader.readtext.return_value = [

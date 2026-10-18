@@ -47,6 +47,8 @@ def parse_timestamp(text):
     if corrected in {'now', 'just now', 'justnow', 'moment ago', 'a moment ago', 'seconds ago',
                      'few seconds ago', 'a few seconds ago'}:
         return Timestamp(0, 'now', 1.0 if corrected == clean else .92)
+    if corrected in {'a minute ago', 'about a minute ago'}:
+        return Timestamp(60, 'minutes', 1.0 if corrected == clean else .92)
     match = re.fullmatch(r'(\d{1,6})\s*([a-z]+)(?:\s+(ago|ag0|a00|aoo|ano))?', clean)
     if not match:
         return None
@@ -88,7 +90,7 @@ def parse_header_timestamp(text):
     # Attribution can share the row with the timestamp. Only its trailing suffix
     # is eligible; date-like text elsewhere in a card cannot reach this function.
     for index, word in enumerate(words):
-        if word[:1].isdigit() or word in {'now', 'just', 'jusl', 'jusi', 'n0w', 'justnow', 'a', 'few', 'moment'}:
+        if word[:1].isdigit() or word in {'now', 'just', 'jusl', 'jusi', 'n0w', 'justnow', 'a', 'about', 'few', 'moment'}:
             parsed = parse_timestamp(' '.join(words[index:]))
             if parsed is not None:
                 # A trailing age cannot override another age in the same box.

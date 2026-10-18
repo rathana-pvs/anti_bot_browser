@@ -7,6 +7,8 @@ from modules.post_timestamp import parse_timestamp, parse_header_timestamp
     ('Justnow', 0, True), ('Just now', 0, True), ('now', 0, True), ('Jusl n0w', 0, True),
     ('seconds ago', 0, True), ('a tew seconds a00', 0, True), ('a moment ago', 0, True),
     ('30 seconds ago', 30, True), ('59s', 59, True), ('600s', 600, False),
+    ('about a minute ago', 60, True), ('a minute ago', 60, True),
+    ('About a minute ago', 60, True), ('about a minute ag0', 60, True),
     ('1m', 60, True), ('9m', 540, True), ('9 minutes ago', 540, True),
     ('10m', 600, False), ('10 minutes ago', 600, False), ('30m', 1800, False),
     ('30 minutes ago', 1800, False), ('7Minutes Ano', 420, True),
@@ -58,3 +60,33 @@ def test_header_privacy_icon_suffix(text, seconds, recent):
                                 '1m 30s', '2h . 1m', '1m and a caption'])
 def test_icon_cleanup_does_not_hide_ambiguous_or_extra_text(text):
     assert parse_header_timestamp(text) is None
+
+
+@pytest.mark.parametrize('text', [
+    'about a minute ago',
+    'Published by Editor · about a minute ago',
+    'Published by Editor · About a minute ago · 0',
+])
+def test_header_about_a_minute_is_one_minute(text):
+    parsed = parse_header_timestamp(text)
+    assert parsed.age_seconds == 60
+    assert parsed.unit == 'minutes'
+    assert parsed.recent is True
+
+
+@pytest.mark.parametrize('text', [
+    '2h about a minute ago',
+    'about a minute ago 2h',
+    'Published by Editor · 10m · about a minute ago',
+    'Published by Editor · about a minute ago · 10m',
+    'about a minute ago and a new video',
+    'about a day ago',
+])
+def test_about_a_minute_does_not_hide_old_conflicting_or_unrelated_text(text):
+    assert parse_header_timestamp(text) is None
+
+
+def test_about_does_not_change_numeric_old_age():
+    parsed = parse_header_timestamp('about 10 minutes ago')
+    assert parsed.age_seconds == 600
+    assert parsed.recent is False

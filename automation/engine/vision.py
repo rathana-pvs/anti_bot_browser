@@ -17,6 +17,7 @@ import numpy as np
 from .container_client import ContainerClient
 from .runtime_paths import profiles_dir, automation_dir
 from .text_matcher import OcrTextMatcher
+from .ocr_reader import create_reader, selected_engine, configuration_signature
 from .ocr_worker_client import (
     SharedOcrUnavailable,
     read_text_with_shared_worker,
@@ -49,7 +50,7 @@ class VisionEngine:
     CACHE_TTL_HOURS = 72
     MAX_CONSECUTIVE_FAILURES = 3
     OCR_CACHE_MAX_ENTRIES = 24
-    _ocr_readers: dict[tuple[tuple[str, ...], str], object] = {}
+    _ocr_readers: dict[tuple[tuple[str, ...], str, str], object] = {}
     COMMENT_INPUT_MATCHER = OcrTextMatcher(default_threshold=0.78)
 
     @classmethod
@@ -85,8 +86,9 @@ class VisionEngine:
 
     def __init__(self, client: ContainerClient):
         self.client = client
+        self.ocr_engine = selected_engine()
         self.cache_dir = str(profiles_dir() / client.profile_id)
-        self.cache_file = os.path.join(self.cache_dir, "element_cache.json")
+        self.cache_file = os.path.join(self.cache_dir, f"element_cache_{self._ocr_signature()}.json")
         self._cache = self._load_cache()
         self.telemetry = None
         self.theme = "unknown"
@@ -97,6 +99,12 @@ class VisionEngine:
         self.ocr_device = "uninitialized"
         self._ocr_cache: dict[tuple, list[dict]] = {}
         self._secondary_ocr_cache: dict[tuple, list[dict]] = {}
+
+    def _selected_ocr_engine(self):
+        return getattr(self, "ocr_engine", None) or selected_engine()
+
+    def _ocr_signature(self):
+        return configuration_signature(self._selected_ocr_engine())
 
     def set_runtime_context(
         self,
@@ -229,52 +237,30 @@ class VisionEngine:
         cls,
         languages: tuple[str, ...] = ("en",),
         requested_device: str | None = None,
+        engine: str | None = None,
     ):
-        """Initialize EasyOCR on CUDA when usable, otherwise fall back safely to CPU."""
+        """Use the selected engine in both shared and local execution paths."""
+        requested = requested_device or os.environ.get("AUTOMATION_OCR_DEVICE", "auto")
+        engine = engine or selected_engine()
+        key = (languages, configuration_signature(engine), requested)
+        if key in cls._ocr_readers:
+            reader = cls._ocr_readers[key]
+            return reader, reader.device
         try:
-            import warnings
-            warnings.filterwarnings(
-                "ignore",
-                category=UserWarning,
-                message=r".*torch\.quantize_per_tensor.*deprecated.*",
-            )
-            import torch
-            import easyocr
-
-            requested = requested_device or os.environ.get("AUTOMATION_OCR_DEVICE", "auto")
-            device = cls.select_ocr_device(requested, torch.cuda.is_available())
-            cache_key = (languages, device)
-            if cache_key in cls._ocr_readers:
-                return cls._ocr_readers[cache_key], device
-
-            if device == "cpu":
-                configured_threads = int(os.environ.get("AUTOMATION_OCR_THREADS", "4"))
-                torch.set_num_threads(max(1, min(4, configured_threads)))
-
-            model_dir = os.environ.get("AUTOMATION_OCR_MODEL_DIR") or str(automation_dir() / "models" / "easyocr")
-            os.makedirs(model_dir, exist_ok=True)
-            reader = easyocr.Reader(
-                list(languages),
-                gpu=device == "cuda",
-                verbose=False,
-                model_storage_directory=model_dir,
-                download_enabled=False,
-            )
-            # Warm up detector and recognizer with a minimal dummy image to eliminate cold-start lag
-            dummy = np.zeros((64, 128, 3), dtype=np.uint8)
-            reader.readtext(dummy)
+            reader = create_reader(languages, requested,
+                int(os.environ.get("AUTOMATION_OCR_THREADS", "4")), engine=engine)
         except Exception as exc:
-            if (requested_device or os.environ.get("AUTOMATION_OCR_DEVICE", "auto")).casefold() != "cpu":
-                print(f"Warning: CUDA OCR initialization failed; retrying on CPU: {exc}")
-                return cls._get_ocr_reader(languages, requested_device="cpu")
-            print(f"Warning: EasyOCR is unavailable: {exc}")
+            if requested.casefold() != "cpu":
+                print(f"Warning: OCR initialization failed; retrying selected engine on CPU: {exc}")
+                return cls._get_ocr_reader(languages, requested_device="cpu", engine=engine)
+            print(f"Warning: Selected OCR engine is unavailable: {exc}")
             return None, "unavailable"
-        cls._ocr_readers[cache_key] = reader
-        return reader, device
+        cls._ocr_readers[key] = reader
+        return reader, reader.device
 
     def _read_with_local_ocr(self, image: np.ndarray, languages: tuple[str, ...]):
-        """Run the legacy in-process reader, including its CUDA-to-CPU fallback."""
-        reader, device = self._get_ocr_reader(languages)
+        """Run the selected in-process reader, including CUDA-to-CPU recovery."""
+        reader, device = self._get_ocr_reader(languages, engine=self._selected_ocr_engine())
         if reader is None:
             return None, device, None
         try:
@@ -284,7 +270,7 @@ class VisionEngine:
                 print(f"Warning: OCR failed: {exc}")
                 return None, device, str(exc)
             print(f"Warning: CUDA OCR inference failed; retrying this scan on CPU: {exc}")
-            reader, device = self._get_ocr_reader(languages, requested_device="cpu")
+            reader, device = self._get_ocr_reader(languages, requested_device="cpu", engine=self._selected_ocr_engine())
             if reader is None:
                 return None, device, str(exc)
             try:
@@ -368,12 +354,14 @@ class VisionEngine:
         telemetry = getattr(self, "telemetry", None)
         if telemetry is not None:
             telemetry.observe_screen(screen)
+            telemetry.set_environment(ocr_engine=self._selected_ocr_engine(), ocr_model_signature=self._ocr_signature())
         crop, offset_x, offset_y = self._crop_region(screen, region)
         if crop.size == 0:
             if telemetry is not None:
                 telemetry.record_ocr((time.perf_counter() - started) * 1000.0, region_name, 0, outcome="empty_region")
             return []
         cache_key = (
+            self._ocr_signature(),
             self._content_digest(crop),
             crop.shape,
             int(offset_x),
@@ -399,7 +387,7 @@ class VisionEngine:
         shared_cache_hit = False
         if shared_worker_configured():
             try:
-                shared_result = read_text_with_shared_worker(ocr_image, languages)
+                shared_result = read_text_with_shared_worker(ocr_image, languages, engine=self._selected_ocr_engine())
                 self.ocr_device = str(shared_result.get("device") or "shared")
                 shared_cache_hit = bool(shared_result.get("cache_hit"))
                 raw_results = [
@@ -435,6 +423,7 @@ class VisionEngine:
             bounds = (min(xs), min(ys), max(xs), max(ys))
             raw_items.append(
                 {
+                    "engine": self._selected_ocr_engine(),
                     "text": str(text).strip(),
                     "confidence": confidence,
                     "bounds": bounds,
@@ -471,7 +460,7 @@ class VisionEngine:
         crop, offset_x, offset_y = self._crop_region(screen, region)
         if not crop.size or crop.shape[0] * crop.shape[1] > 600_000 or max(crop.shape[:2]) > 1600:
             return primary
-        key = (self._content_digest(crop), crop.shape, psm,
+        key = (self._ocr_signature(), self._content_digest(crop), crop.shape, psm,
                os.environ.get('AUTOMATION_TESSERACT_BIN', 'tesseract'),
                os.environ.get('TESSDATA_PREFIX', ''), os.environ.get('AUTOMATION_TESSERACT_ENABLED', '1'))
         cache = getattr(self, '_secondary_ocr_cache', None)

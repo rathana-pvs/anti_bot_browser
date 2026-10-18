@@ -6,6 +6,7 @@ from urllib import error, request
 
 import cv2
 import numpy as np
+from .ocr_reader import configuration_signature, selected_engine
 
 
 class SharedOcrUnavailable(RuntimeError):
@@ -20,7 +21,9 @@ def read_text_with_shared_worker(
     image: np.ndarray,
     languages: tuple[str, ...] = ("en",),
     timeout_seconds: float = 120.0,
+    engine: str | None = None,
 ) -> dict:
+    engine = engine or selected_engine()
     worker_url = os.environ.get("AUTOMATION_OCR_WORKER_URL", "").strip()
     if not worker_url:
         raise SharedOcrUnavailable("shared OCR worker is not configured")
@@ -33,6 +36,7 @@ def read_text_with_shared_worker(
     headers = {
         "Content-Type": "image/png",
         "X-OCR-Languages": ",".join(languages),
+        "X-OCR-Signature": configuration_signature(engine),
     }
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -51,4 +55,6 @@ def read_text_with_shared_worker(
 
     if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
         raise SharedOcrUnavailable("shared OCR worker returned an invalid response")
+    if payload.get("engine") != engine or payload.get("signature") != configuration_signature(engine):
+        raise SharedOcrUnavailable("shared OCR worker is using a different engine/model configuration")
     return payload

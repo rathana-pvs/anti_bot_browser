@@ -37,10 +37,11 @@ def test_profile_settings_behavior_cache_and_evidence_use_configured_root(tmp_pa
     task = BaseTask(profile_id)
     assert task.profile_config == config
     assert task.behavior_session.mode == 'slow'
-    assert Path(task.vision.cache_file) == directory / 'element_cache.json'
+    assert Path(task.vision.cache_file).parent == directory
+    assert Path(task.vision.cache_file).name.startswith('element_cache_')
     task.vision._cache['test'] = {'x': 12}
     task.vision._save_cache()
-    assert json.loads((directory / 'element_cache.json').read_text())['test']['x'] == 12
+    assert json.loads(Path(task.vision.cache_file).read_text())['test']['x'] == 12
     evidence_path = task.evidence.capture('root', np.zeros((10, 10, 3), dtype=np.uint8))
     assert Path(evidence_path).is_relative_to(directory / 'automation_evidence')
     assert task.vision.configured_resolution == '1366x768'
