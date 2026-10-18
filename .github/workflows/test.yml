@@ -26,11 +26,26 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+      - name: Upload tested dashboard build
+        uses: actions/upload-artifact@v4
+        with:
+          name: tested-dashboard
+          path: manager-app/dist/
+          if-no-files-found: error
+          retention-days: 1
 
   python:
+    needs: frontend
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Download tested dashboard build
+        uses: actions/download-artifact@v4
+        with:
+          name: tested-dashboard
+          path: manager-app/dist/
+      - name: Verify dashboard build is present
+        run: test -s manager-app/dist/index.html
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"

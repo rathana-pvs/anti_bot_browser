@@ -75,3 +75,15 @@ test('Python CI workflows install the shared offline test dependencies',()=>{
     assert.match(workflow,/python -m pip install -r requirements-test\.txt/);
   }
 });
+
+test('backend CI receives the tested dashboard before importing the application',()=>{
+  const workflow=readFileSync(join(root,'.github/workflows/test.yml'),'utf8');
+  const [frontend,python]=workflow.split('\n  python:');
+  assert.match(frontend,/npm run build[\s\S]*uses: actions\/upload-artifact@v4/);
+  assert.match(frontend,/name: tested-dashboard\s+path: manager-app\/dist\//);
+  assert.match(frontend,/if-no-files-found: error/);
+  assert.match(python,/needs: frontend/);
+  assert.match(python,/uses: actions\/download-artifact@v4[\s\S]*name: tested-dashboard\s+path: manager-app\/dist\//);
+  assert.match(python,/test -s manager-app\/dist\/index\.html/);
+  assert.ok(python.indexOf('test -s manager-app/dist/index.html') < python.indexOf('python -m pytest backend/tests -q'));
+});
