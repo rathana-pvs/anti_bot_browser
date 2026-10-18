@@ -64,3 +64,14 @@ test('desktop settings keep the updater navigation and guarded native commands w
   }
   assert.match(native,/tauri_plugin_updater::Builder/);
 });
+
+test('Python CI workflows install the shared offline test dependencies',()=>{
+  const requirements=readFileSync(join(root,'requirements-test.txt'),'utf8');
+  for(const dependency of ['-r backend/requirements.txt','numpy>=','opencv-python-headless>=','PyYAML>=']) {
+    assert.ok(requirements.includes(dependency),`Missing test dependency: ${dependency}`);
+  }
+  for(const file of ['test.yml','build-desktop.yml','reliability-drill.yml']) {
+    const workflow=readFileSync(join(root,'.github/workflows',file),'utf8');
+    assert.match(workflow,/python -m pip install -r requirements-test\.txt/);
+  }
+});

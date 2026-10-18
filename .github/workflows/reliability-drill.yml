@@ -14,14 +14,16 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: backend/requirements.txt
+          cache-dependency-path: |
+            backend/requirements.txt
+            requirements-test.txt
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: manager-app/package-lock.json
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install -r backend/requirements.txt
+      - run: python -m pip install -r requirements-test.txt
       - run: npm ci
         working-directory: manager-app
       - run: bash scripts/run_reliability_drills.sh
