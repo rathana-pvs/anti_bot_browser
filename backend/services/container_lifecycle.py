@@ -20,6 +20,7 @@ HEARTBEAT_SECONDS = 90
 HARD_DEADLINE_SECONDS = 30 * 60
 HANDOFF_SECONDS = 120
 SHUTTING_DOWN = False
+UPDATE_MAINTENANCE = False
 
 @contextmanager
 def _locked():
@@ -70,6 +71,8 @@ def acquire(profile_id, execution_id, token=None, deadline_seconds=None):
     token = token or uuid.uuid4().hex
     now = time.time()
     with _locked():
+        if UPDATE_MAINTENANCE:
+            raise RuntimeError("App update maintenance: execution admission is paused")
         owners = _read()
         old = owners.get(profile_id)
         if old and not (old['state'] == 'handoff' and old['execution_id'] == execution_id):
@@ -82,6 +85,19 @@ def acquire(profile_id, execution_id, token=None, deadline_seconds=None):
             hard_deadline_at=now + (deadline_seconds or HARD_DEADLINE_SECONDS))
         _write(owners)
     return token
+
+
+def set_update_maintenance(enabled, tasks):
+    """Freeze admission atomically with owner acquisition; never persist a pause."""
+    global UPDATE_MAINTENANCE
+    with _locked():
+        if enabled:
+            active = any(record.get('lifecycle_active') or record.get('status') in
+                         {'running', 'preparing', 'publishing'} for record in tasks.values())
+            if active or _read():
+                raise RuntimeError('Wait for active automation, live broadcasts, and cleanup before updating')
+        UPDATE_MAINTENANCE = bool(enabled)
+    return UPDATE_MAINTENANCE
 
 def mark_used(profile_id, token):
     with _locked():

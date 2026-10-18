@@ -19,6 +19,10 @@ const excludedNames = new Set([
   'staging',
   'target',
   'venv',
+  'test_fb_typing.py',
+  'test_human_input.py',
+  'test_human_typing.py',
+  'test_vision.py',
 ]);
 
 const shouldCopy = (source) => {

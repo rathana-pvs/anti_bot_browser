@@ -443,6 +443,8 @@ install_application
 
 echo
 if run_checks; then
+  install -m 0644 "${ROOT_DIR}/VERSION" "${ROOT_DIR}/data/runtime-installed-version.new"
+  mv -f "${ROOT_DIR}/data/runtime-installed-version.new" "${ROOT_DIR}/data/runtime-installed-version"
   echo
   echo "READY: Automat FB Beta installation completed successfully."
   if [ "${DESKTOP_SETUP}" = false ]; then

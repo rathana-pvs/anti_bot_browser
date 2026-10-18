@@ -144,6 +144,11 @@ clicks Post again.
 
 ## ⚡ Getting Started
 
+Whole-app releases and Settings > App updates are described in
+[App releases and updates](docs/APP_RELEASES.md). Ordinary pushes are development;
+version tags build drafts, and a human publishes a tested release. VERSION is
+the release source of truth (`node scripts/release-version.mjs set VERSION`).
+
 ### 1. Prerequisites
 * **Docker Engine** with Docker Compose
 * **Node.js** (v18+) & `npm`

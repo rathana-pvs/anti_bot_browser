@@ -1351,6 +1351,8 @@ def _reserve_dispatch_slot(reservations: dict, kind: str, profile_id: str, confi
 
 async def _run_dispatched_queue_task(execution_id: str, kind: str):
     """Consume claim races as normal scheduler deferrals instead of orphan errors."""
+    if lifecycle.UPDATE_MAINTENANCE:
+        return {"success": False, "status": "deferred", "error": "App update maintenance"}
     try:
         if kind == "preparer":
             match = find_queue_execution(load_posting_queue(), execution_id)
@@ -1362,6 +1364,7 @@ async def _run_dispatched_queue_task(execution_id: str, kind: str):
     except Exception as err:
         message = str(err)
         expected_prefixes = (
+            "App update maintenance",
             "Batch iteration is not ready:",
             "Scheduler could not claim execution:",
             "Execution is not ready for the publisher slot",
@@ -1380,7 +1383,7 @@ async def _run_dispatched_queue_task(execution_id: str, kind: str):
 
 async def dispatch_pending_queue():
     global _is_dispatching
-    if _is_dispatching:
+    if _is_dispatching or lifecycle.UPDATE_MAINTENANCE:
         return
     _is_dispatching = True
     try:

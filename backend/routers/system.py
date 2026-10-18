@@ -1,7 +1,8 @@
 import subprocess
 import os
 import psutil
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 from backend.config import DATA_DIR, PROFILES_DIR, CPU_THREADS, ROOT_DIR
 from backend.scheduler.background import scheduler
 from backend.services import container_lifecycle
@@ -82,6 +83,22 @@ def get_readiness():
 def get_reliability():
     queue = load_posting_queue()
     return build_reliability_scorecard(flatten_queue_executions(queue))
+
+
+class UpdateMaintenance(BaseModel):
+    enabled: bool
+
+
+@router.post('/update-maintenance')
+async def update_maintenance(request: UpdateMaintenance):
+    from backend.services import container_lifecycle, automation_service
+    if os.environ.get('WORKER_SERVICE_MODE') == '1':
+        raise HTTPException(409, 'Stop the independently managed worker before updating')
+    try:
+        enabled = container_lifecycle.set_update_maintenance(request.enabled, automation_service.active_automation_tasks)
+    except RuntimeError as error:
+        raise HTTPException(409, str(error)) from None
+    return {'enabled': enabled}
 
 
 def read_build_version() -> str:
