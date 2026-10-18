@@ -1,6 +1,6 @@
 [package]
 name = "isolated-browser-manager"
-version = "1.0.2"
+version = "1.1.2"
 description = "Isolated Browser Manager for Facebook Automation"
 edition = "2021"
 
