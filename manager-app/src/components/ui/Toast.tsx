@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, CheckCircle2, Info, X } from 'lucide-react';
+import { IconButton } from './IconButton';
 
 export type ToastVariant = 'success' | 'error' | 'warning' | 'info';
 
@@ -42,14 +43,13 @@ export function Toast({ message, onDismiss, variant = 'info' }: ToastProps) {
     >
       <Icon className="h-4 w-4 shrink-0" />
       <span className="min-w-0 flex-1 break-words">{message}</span>
-      <button
-        type="button"
+      <IconButton
         onClick={onDismiss}
         aria-label="Dismiss notification"
-        className="shrink-0 rounded p-1 text-current hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-current"
+        className="h-7 w-7 shrink-0 text-current hover:text-white"
       >
         <X className="h-4 w-4" />
-      </button>
+      </IconButton>
     </div>
   );
 }

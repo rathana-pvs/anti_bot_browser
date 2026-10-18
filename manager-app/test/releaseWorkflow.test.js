@@ -49,4 +49,18 @@ test('tag builds create drafts; manual builds and ordinary pushes never release'
   assert.match(workflow,/gh release create .*--draft/);
   assert.match(workflow,/Release is already published; refusing to replace it/);
   assert.doesNotMatch(workflow,/gh release edit .*--draft=false|branches: \[.*main/);
+  assert.match(workflow,/python -m pytest backend\/tests -q/);
+  assert.match(workflow,/python -m unittest discover -s tests/);
+});
+
+test('desktop settings keep the updater navigation and guarded native commands wired',()=>{
+  const settings=readFileSync(join(root,'manager-app/src/components/SettingsModal.tsx'),'utf8');
+  assert.match(settings,/import \{ AppUpdates \} from '\.\/AppUpdates'/);
+  assert.match(settings,/setSection\('updates'\)/);
+  assert.match(settings,/<AppUpdates\s*\/>/);
+  const native=readFileSync(join(root,'manager-app/src-tauri/src/main.rs'),'utf8');
+  for(const command of ['check_app_update','download_app_update','install_app_update']) {
+    assert.match(native,new RegExp(`app_updates::${command}`));
+  }
+  assert.match(native,/tauri_plugin_updater::Builder/);
 });

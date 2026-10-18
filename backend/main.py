@@ -1,4 +1,5 @@
 import os
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI
@@ -8,6 +9,8 @@ from fastapi.responses import FileResponse
 from backend.security import DesktopSessionAuthMiddleware
 from backend.runtime_service import exclusive_backend, publish_session
 from backend.worker import service as worker_service
+from backend.idempotency import IdempotencyMiddleware
+from backend.observability import RequestLoggingMiddleware, configure_structured_logging
 
 from backend.config import SHARED_MEDIA_DIR, MANAGER_DIST_DIR
 from backend.scheduler.background import setup_background_tasks, shutdown_background_tasks
@@ -36,6 +39,9 @@ from backend.routers import (
     live,
 )
 
+configure_structured_logging()
+logger = logging.getLogger("automat.lifecycle")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     with exclusive_backend():
@@ -55,7 +61,10 @@ async def lifespan(app: FastAPI):
             await cleanup_orphaned_automation_containers()
             shared_ocr = start_shared_ocr_worker()
             setup_background_tasks()
-            print(f"FastAPI Backend started successfully. Shared OCR: {shared_ocr.get('url') or 'local fallback'}")
+            logger.info(
+                "backend_started",
+                extra={"event": "backend_started", "stage": "ready" if shared_ocr.get("url") else "ocr_local_fallback"},
+            )
             await worker_service.start()
             session_path = publish_session()
             yield
@@ -66,7 +75,7 @@ async def lifespan(app: FastAPI):
             shutdown_background_tasks()
             await cleanup_orphaned_automation_containers(force=True)
             stop_shared_ocr_worker()
-            print("FastAPI Backend shutdown complete.")
+            logger.info("backend_stopped", extra={"event": "backend_stopped"})
             if session_path:
                 session_path.unlink(missing_ok=True)
 
@@ -78,6 +87,8 @@ app = FastAPI(
 )
 
 app.add_middleware(DesktopSessionAuthMiddleware)
+app.add_middleware(IdempotencyMiddleware)
+app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[

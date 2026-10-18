@@ -3,7 +3,13 @@ import os
 import psutil
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from backend.config import PROFILES_DIR, CPU_THREADS, ROOT_DIR
+from backend.config import DATA_DIR, PROFILES_DIR, CPU_THREADS, ROOT_DIR
+from backend.scheduler.background import scheduler
+from backend.services import container_lifecycle
+from backend.services.queue_service import load_posting_queue
+from backend.services.reliability_service import build_reliability_scorecard, flatten_queue_executions
+from backend.services.ocr_worker_service import shared_ocr_worker_snapshot
+from backend.worker.service import status as worker_status
 from backend.services.proxy_service import load_proxy_pool
 from backend.services.docker_service import (
     count_running_profile_containers,
@@ -14,6 +20,69 @@ from backend.services.docker_service import (
 from backend.services.host_metrics_service import get_windows_host_stats
 
 router = APIRouter(prefix="/api/system", tags=["system"])
+
+
+def _docker_available() -> bool:
+    try:
+        subprocess.run(
+            ["docker", "info"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=True, timeout=2,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def health_snapshot(docker_available: bool | None = None) -> dict:
+    checks: dict[str, dict] = {}
+    checks["lifecycle"] = {
+        "ok": not container_lifecycle.SHUTTING_DOWN,
+        "detail": "running" if not container_lifecycle.SHUTTING_DOWN else "shutting_down",
+    }
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        checks["data_directory"] = {"ok": os.access(DATA_DIR, os.W_OK), "detail": "writable"}
+    except OSError as error:
+        checks["data_directory"] = {"ok": False, "detail": type(error).__name__}
+    try:
+        queue = load_posting_queue()
+        checks["queue"] = {
+            "ok": isinstance(queue.get("daily_batches", []), list),
+            "detail": f"{len(queue.get('daily_batches', []))} batches",
+        }
+    except Exception as error:
+        checks["queue"] = {"ok": False, "detail": type(error).__name__}
+    checks["scheduler"] = {"ok": bool(scheduler.running), "detail": "running" if scheduler.running else "stopped"}
+    if docker_available is None:
+        docker_available = _docker_available()
+    checks["docker"] = {"ok": docker_available, "detail": "available" if docker_available else "unavailable"}
+    checks["ocr"] = shared_ocr_worker_snapshot()
+    checks["worker"] = worker_status()
+    required = ("lifecycle", "data_directory", "queue", "scheduler")
+    ready = all(checks[name].get("ok") is True for name in required)
+    degraded = not checks["docker"]["ok"] or checks["ocr"].get("status") in ("error", "stopped")
+    return {
+        "status": "ready" if ready and not degraded else "degraded" if ready else "not_ready",
+        "ready": ready,
+        "checks": checks,
+    }
+
+
+@router.get("/health")
+def get_health():
+    snapshot = health_snapshot()
+    return {"status": snapshot["status"], "build_version": read_build_version()}
+
+
+@router.get("/ready")
+def get_readiness():
+    return health_snapshot()
+
+
+@router.get("/reliability")
+def get_reliability():
+    queue = load_posting_queue()
+    return build_reliability_scorecard(flatten_queue_executions(queue))
 
 
 class UpdateMaintenance(BaseModel):
@@ -57,12 +126,7 @@ def runtime_environment() -> str:
 
 @router.get("/stats")
 def get_system_stats():
-    docker_running = False
-    try:
-        subprocess.run(["docker", "info"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=2)
-        docker_running = True
-    except Exception:
-        pass
+    docker_running = _docker_available()
 
     active_containers = count_running_profile_containers() if docker_running else 0
 
@@ -118,4 +182,5 @@ def get_system_stats():
         "runtime_environment": runtime_environment(),
         "runtime": wsl_runtime,
         "wsl_runtime": wsl_runtime,
+        "health": health_snapshot(docker_running),
     }

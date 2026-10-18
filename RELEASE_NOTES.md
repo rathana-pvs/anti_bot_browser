@@ -1,4 +1,7 @@
-# Version 1.1.1
+# Version 1.1.3
+
+- Combined the reliability/design-system changes with signed in-app updates.
+- Restored Settings > App updates in the combined desktop build.
 
 - Added Settings > App updates for checking, downloading, and installing signed whole-app releases.
 - Missing published update information now shows a clear informational message instead of a technical JSON error. Connection and invalid-metadata errors remain errors.

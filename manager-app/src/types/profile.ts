@@ -238,4 +238,9 @@ export interface SystemStats {
     gpu_model?: string;
   };
   wsl_runtime?: SystemStats['runtime'];
+  health?: {
+    status: 'ready' | 'degraded' | 'not_ready';
+    ready: boolean;
+    checks: Record<string, { ok?: boolean; detail?: string; status?: string }>;
+  };
 }

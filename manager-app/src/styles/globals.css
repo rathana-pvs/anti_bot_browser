@@ -3,10 +3,38 @@
 @tailwind utilities;
 
 @layer base {
+  :root {
+    color-scheme: dark;
+    --color-canvas: 9 9 11;
+    --color-surface: 24 24 27;
+    --color-surface-raised: 39 39 42;
+    --color-border: 63 63 70;
+    --color-foreground: 250 250 250;
+    --color-muted: 161 161 170;
+    --color-accent: 37 99 235;
+    --color-accent-hover: 59 130 246;
+    --color-danger: 220 38 38;
+    --color-warning: 245 158 11;
+    --color-success: 16 185 129;
+    --focus-ring: 96 165 250;
+    --radius-control: 0.5rem;
+    --radius-panel: 0.75rem;
+    --shadow-panel: 0 20px 50px rgb(0 0 0 / 0.45);
+  }
+
+  * {
+    border-color: rgb(var(--color-border));
+  }
+
   body {
-    background-color: #09090b;
-    color: #fafafa;
+    background-color: rgb(var(--color-canvas));
+    color: rgb(var(--color-foreground));
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+
+  :focus-visible {
+    outline: 2px solid rgb(var(--focus-ring));
+    outline-offset: 2px;
   }
 }
 
@@ -17,7 +45,7 @@
 }
 
 ::-webkit-scrollbar-track {
-  background: #09090b;
+  background: rgb(var(--color-canvas));
 }
 
 ::-webkit-scrollbar-thumb {

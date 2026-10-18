@@ -26,7 +26,7 @@
 The sibling main-server context files are absent. This change is local to the
 desktop and release tooling, with no shared-protocol or cloud-job changes.
 
-## Implementation validation
+## Initial updater implementation validation
 
 - Frontend/release-tool tests: 65 passed; TypeScript/Vite production build passed.
 - Rust tests: 7 passed, including exclusion guards and runtime-version tracking.
@@ -44,3 +44,16 @@ Windows/WSL and AppImage packaging remain to be exercised by CI, and a real
 published-release upgrade remains untested. Configure the signing secret and test
 both platform installers before publishing. No release was pushed or published,
 and the locally installed desktop application was not changed.
+
+## Combined reliability/updater build (1.1.3)
+
+The reliability/design-system branch and updater branch were merged together;
+the release workflow retains the full backend/automation release gates and the
+signed, draft-only release assembly. A regression test checks that Settings keeps
+its App updates navigation and native updater commands.
+
+Validation: 410 backend tests passed (7 skipped), 66 frontend/release tests
+passed, 8 Rust tests passed, 466 automation tests plus 6 subtests passed, and the
+production frontend build passed. Earlier
+backend shutdown-state test leakage is fixed by the reliability branch's test
+isolation fixture; the full backend suite now passes.

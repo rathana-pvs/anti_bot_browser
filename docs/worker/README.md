@@ -119,6 +119,20 @@ automation/venv/bin/python -m pytest backend/tests/test_worker_agent.py backend/
 WebSocket integration tests use temporary loopback servers; queue tests use
 isolated temporary files. They do not launch browsers or publish real posts.
 
+## Local API reliability
+
+The authenticated local API exposes `GET /api/system/health` for a compact
+liveness result and `GET /api/system/ready` for scheduler, queue, data-directory,
+Docker, OCR, and worker diagnostics. Responses include an `X-Request-ID`, and
+the backend emits bounded JSON request logs with the same correlation ID.
+
+Clients that may retry work-creating requests should send a stable
+`Idempotency-Key` header (1–128 characters) to `POST /api/automation/run`,
+`POST /api/queue/batch`, and `POST /api/profiles/{profile_id}/live/start`.
+Repeating the same request returns the stored response; reusing the key with a
+different payload is rejected. Keys are retained locally for 24 hours and do
+not change the publication attempt or fencing-token contracts.
+
 ## Connected local development instance — 2026-10-06
 
 The running desktop backend is connected to the sibling server's demo client over
