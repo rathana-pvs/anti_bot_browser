@@ -22,3 +22,19 @@ def spin_caption(payload: dict = Body(...)):
         })
 
     return {"success": True, "variations": variations}
+
+
+from backend.services import caption_hook
+
+
+@router.post('/caption-hooks')
+def generate_caption_hooks(payload: caption_hook.GenerateRequest):
+    return caption_hook.generate(payload)
+
+
+@router.post('/caption-hooks/approve')
+def approve_caption_hook(payload: caption_hook.ApproveRequest):
+    try:
+        return caption_hook.approve(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None

@@ -125,17 +125,20 @@ class LivePostDetails:
         elif field_name == 'description' or not label(target).endswith(' required'):
             x, y = target['center']
             target = dict(target, center=(x, y + max(28, target['bounds'][3] - target['bounds'][1] + 12)))
-        self.task.click(target)
-        self.task.client.exec_cmd(['xdotool', 'key', '--clearmodifiers', 'ctrl+a'])
-        self.task.client.exec_cmd(['xdotool', 'type', '--clearmodifiers', '--', value])
-        # Verify the focused field, including Unicode and multiline text, using
-        # the browser's native Copy action. Keep the clipboard transient.
-        self.task.client.exec_cmd(['xdotool', 'key', '--clearmodifiers', 'ctrl+a', 'ctrl+c'])
-        time.sleep(.2)
-        copied = self.task.client.exec_cmd(['timeout', '3s', 'xclip', '-o', '-selection', 'clipboard']).stdout
-        if copied.replace('\r\n', '\n').strip() != value.strip():
-            raise RuntimeError('Facebook did not accept the Live title or caption. Check the post details before starting.')
-        self.task.client.exec_cmd(['xdotool', 'key', '--clearmodifiers', 'Right'])
+        def surface_guard():
+            _, items = self.read_dialog()
+            return (len(self.find(items, {'save'})) == 1 and (
+                any(phrase(items, heading) for heading in ('create post', 'edit post', 'edit post details'))
+                or bool(self.find(items, self.TITLE))))
+
+        def empty_check():
+            # An anchored body position alone is not evidence of an empty field.
+            _, items = self.read_dialog()
+            return any(self.text_score(item, labels) >= self.TEXT_THRESHOLD for item in items)
+
+        self.task.live_input.enter(value, target,
+                                   field='live_title' if field_name == 'title' else 'live_caption',
+                                   empty_check=empty_check, surface_guard=surface_guard)
 
     def fill(self, frame, title, caption):
         if not title.strip() or not caption.strip() or len(title) > 255 or len(caption) > 5000:
@@ -165,6 +168,7 @@ class LivePostDetails:
         if (len(saves) != 1 or len(matches) != 1 or not self.task.same(saves[0], matches[0])
                 or not enabled_color(image, saves[0]) or not enabled_color(fresh_image, matches[0])):
             raise RuntimeError('Facebook has not enabled Save for the Live post details.')
+        self.task.live_input.before_save()
         self.task.click(matches[0])
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:

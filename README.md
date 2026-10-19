@@ -17,7 +17,7 @@ A production-grade, anti-detection browser automation system engineered for scal
 ### 1. Zero-CDP Input Dispatch
 Traditional frameworks (Puppeteer, Playwright, Selenium) hook into the browser using Chrome DevTools Protocol (`Runtime.enable`, synthetic JavaScript DOM events, injected scripts). Modern anti-bot systems detect these hooks instantly.
 * **Pure X11 Events:** Inputs are dispatched via `xdotool` and native X11 kernel/server events.
-* **Human-like Dynamics:** Mouse movement follows randomized cubic Bézier curves with natural acceleration/deceleration. Typing mimics human cadence (30–80ms variable delays, micro-hesitations).
+* **Interaction pacing:** Mouse movement uses curved paths with acceleration/deceleration. Caption entry chooses whole-caption typing or whole-caption paste with bounded session pacing; interaction style does not guarantee platform acceptance.
 * **Native OS File Chooser Attachment:** Bypasses DOM `input[type="file"]` entirely. Interacts directly with Linux's GTK file chooser via keyboard navigation (`/` path shortcut).
 
 ### 2. Guarded Visual State Machine
@@ -34,7 +34,7 @@ Instead of relying on fragile, obfuscated CSS class names (`x1i10hfl xjbqb8w`) o
 * **Verified Browser Environment:** Profiles store requested settings separately from the effective container launch and observed runtime values. The UI does not claim that hardware or WebGL values are changed unless they are measured.
 
 ### 4. Evidence-Backed Execution Telemetry
-* Every new execution writes `telemetry.json` beside its screenshots under `profiles/<id>/automation_evidence/<run_id>/`.
+* Photo/Reel executions write `telemetry.json` beside their screenshots under `profiles/<id>/automation_evidence/<run_id>/`.
 * Measurements include total and stage duration, navigation/upload/readiness/verification timing, OCR latency and candidate counts, locator tiers and fallback reasons, semantic-provider latency, and available screen/locale/theme context.
 * The queue dashboard calculates observed outcome rates plus median and p95 execution/OCR latency. It shows an empty baseline until measured executions exist; no performance target is presented as achieved without local runs.
 
@@ -75,6 +75,36 @@ flowchart TD
 ```
 
 ---
+
+## Caption entry and optional hooks
+
+Photo/text posts, Reels, and automated Live title/caption entry share one policy: captions below 100
+whitespace-separated words randomly use full typing or full paste (50/50).
+Captions of 100 words or more, captions containing links, link comments, Unicode,
+and multiline text use full paste. Typing and pasting are never mixed. Clipboard
+failures stop entry rather than falling back to typing. Entry checks existing
+drafts, reads back content through the clipboard, and stops on focus/pointer
+ownership loss or uncertainty. X11 cannot reliably detect all manual keyboard
+intervention; avoid concurrent manual input while an attempt owns the profile. Live preset pinned comments are always pasted.
+Live uses a separate adapter without screenshot evidence or field-content logs;
+its existing Go live/End live gates and stream duration remain unchanged. Different
+or unconfirmed drafts stop preparation for review. If a preset editor lacks a
+recognized empty placeholder, preparation stops rather than assuming it is blank.
+
+In the batch creator, enable **Generate opening hook** on a Photo or Reel row.
+Supply a caption or description, optional audience/language/tone, and words to
+avoid. Generation uses the Gemini key/model saved in Settings and sends only the
+supplied text context and recent hook examples; it does not upload media. Choose
+one of up to three options, edit it if needed, preview the full caption, and click
+**Approve this caption** before scheduling. Source changes require another preview.
+The original body and links are preserved, and approved captions bypass legacy
+caption variations. Execution retries reuse the saved final caption without calling
+an AI provider. Hook generation is off by default; legacy variations remain a
+separate opt-in setting for captions without approved hooks.
+
+Provider failures and missing context are explicit. Generated factual claims still
+need operator review. Image/video analysis is a later enhancement. See
+[the implementation plan](docs/HUMAN_MODE_PLAN.md) for module boundaries and limits.
 
 ## 🛠️ Supported Automation Workflows
 
@@ -374,9 +404,16 @@ like, comment, or send messages.
 Batch session preparation uses a rolling resource-mode pipeline. Brief mode
 browses for 40–55 seconds and Extended mode for 55–70 seconds. Preparation
 starts the next profile only when capacity is available, verifies authentication
-and theme, scrolls without likes/reactions/comments, returns to the top, and
+and theme, scrolls without likes/reactions/comments, scrolls back up, and
 keeps that profile ready while the current profile publishes. Profile order is
-shuffled once per batch and persisted across restarts. After every terminal
+shuffled once per batch and persisted across restarts. Passive preparation uses
+1–4 wheel-notch bursts, bounded reading pauses, and occasional small mouse
+repositioning within the content area. The pointer normally rests, but moves off
+Chrome's toolbar before scrolling. Short upward rereads occur only after downward
+movement. Repeated unchanged views get one bounded direction check before browsing
+ends early. The return scroll uses short bursts with an eight-second handoff budget;
+it does not claim that the page reached the top. Logs report remaining time and
+results distinguish requested scrolls from observed visual changes. After every terminal
 publish outcome, the report is saved before the profile container is stopped.
 The queue exposes the persisted flow
 `pending → preparing → ready → running → verifying → published`, with at most

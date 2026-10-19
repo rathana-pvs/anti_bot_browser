@@ -17,6 +17,8 @@ from engine.runtime_paths import profiles_dir
 from engine.evidence import EvidenceRecorder
 from engine.human_input import HumanInput
 from engine.behavior_profile import load_behavior_session
+from modules.composer_entry import ComposerEntry, ClipboardFailure
+from modules.composer_review import ComposerReview
 from engine.post_publish_prompt import PostPublishPromptHandler
 from engine.screen_state import FacebookStateRecognizer, ScreenState, StateObservation
 from engine.vision import VisionEngine
@@ -47,9 +49,12 @@ class BaseTask:
         self.client = ContainerClient(profile_id)
         self.behavior_session = load_behavior_session(
             profile_id,
-            f"{self.__class__.__name__}:{uuid.uuid4().hex}",
+            os.environ.get("AUTOMATION_BEHAVIOR_RUN_ID") or f"{self.__class__.__name__}:{uuid.uuid4().hex}",
         )
         self.human = HumanInput(self.client, self.behavior_session)
+        self.composer_entry = ComposerEntry(self)
+        self.composer_review = ComposerReview(self.behavior_session)
+        self.input_cancelled = False
         self.vision = VisionEngine(self.client)
         self.recognizer = FacebookStateRecognizer(self.vision)
         self.evidence = EvidenceRecorder(profile_id, self.__class__.__name__)
@@ -287,7 +292,8 @@ class BaseTask:
 
         actual = target
         if bounds is not None:
-            actual = HumanInput.safe_click_point(bounds, max_offset_px=max_offset_px)
+            actual = HumanInput.safe_click_point(bounds, max_offset_px=max_offset_px,
+                                                       rng=self.behavior_session.stream("mouse") if hasattr(self, "behavior_session") else None)
             self.log(
                 "DEBUG",
                 f"Safe reversible click '{label}': bounds={tuple(bounds)}, "
@@ -653,6 +659,7 @@ class BaseTask:
         *,
         paste_key: str = "ctrl+v",
         selection: str = "clipboard",
+        expected_owner=None,
     ) -> None:
         """
         Copy text (including full Unicode & emojis) to container X11 clipboard
@@ -661,31 +668,26 @@ class BaseTask:
         fallback when a page ignores the regular clipboard shortcut.
         """
         try:
-            import subprocess
-            subprocess.run(
-                [
-                    "docker",
-                    "exec",
-                    "-i",
-                    "-u",
-                    "chromeuser",
-                    "-e",
-                    f"DISPLAY={self.client.display}",
-                    self.client.container_name,
-                    "xclip",
-                    "-selection",
-                    selection,
-                ],
-                input=text.encode("utf-8"),
-                check=True,
-                capture_output=True,
-            )
-            time.sleep(0.15)
+            owner = expected_owner if expected_owner is not None else self.client.input_owner()
+            if self.client.input_owner() != owner:
+                raise ClipboardFailure("Input ownership lost before clipboard write")
+            self.client.write_clipboard(text, selection)
+            if self.input_cancelled or self.client.input_owner() != owner:
+                raise ClipboardFailure("Input ownership lost before paste")
             self.human.key_press(paste_key)
-            time.sleep(0.2)
-        except Exception as e:
-            self.log("WARN", f"Clipboard paste failed, falling back to typing: {e}")
-            self.human.type_text(text)
+        except Exception:
+            raise ClipboardFailure("Clipboard paste failed; typing fallback is disabled") from None
+
+    def review_composer(self, caption: str, media_revision: str = "", image_count: int = 0):
+        owner = getattr(self.composer_entry, "last_owner", None) or self.client.input_owner()
+        duration = self.composer_review.review(
+            caption, media_revision, image_count, self.composer_entry.waiter(owner),
+        )
+        if caption and hasattr(self.composer_entry, "last_owner"):
+            waiter = self.composer_entry.waiter(owner)
+            if self.composer_entry.read_field(waiter) != caption:
+                raise ClipboardFailure("Caption changed during review; no publish action permitted")
+        self.telemetry.record_step("composer_review", duration * 1000, outcome="completed")
 
     @staticmethod
     def _is_facebook_url(url: str | None) -> bool:
@@ -1326,10 +1328,20 @@ class BaseTask:
             "click 'Comment as ...', paste configured comment, and submit once",
         )
         self.log("STEP", f"Clicking 'Comment as ...' at {comment_box_pos}...")
-        self.human.click(*comment_box_pos)
-        time.sleep(1.0)
-        self.paste_text(comment_link)
-        time.sleep(0.5)
+        entry = self.composer_entry.enter(comment_link, comment_box_pos, field="comment",
+                                          empty_confirmed=lambda: self._find_first_comment_input() is not None,
+                                          deadline=time.monotonic() + 60)
+        if not entry.verified:
+            self.log("WARN", f"First comment entry stopped: {entry.status}; no submission sent.")
+            return "failed_input_not_found"
+        # Submission remains outside content entry and is sent once.
+        owner = self.composer_entry.last_owner
+        if self.input_cancelled:
+            return "failed_input_not_found"
+        try:
+            self.composer_entry.waiter(owner).check()
+        except Exception:
+            return "failed_input_not_found"
         self.human.key_press("Return")
         self.log("INFO", "First comment was submitted once; waiting for Facebook's Posting indicator to clear.")
 

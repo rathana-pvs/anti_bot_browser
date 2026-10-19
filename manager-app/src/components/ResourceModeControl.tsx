@@ -48,6 +48,10 @@ export const ResourceModeControl: React.FC = () => {
     }
   };
 
+  // Older backends can still return a launch lock; newer payloads omit it.
+  const ocrLocked = !!settings?.ocr_engine && 'locked' in settings.ocr_engine
+    && settings.ocr_engine.locked === true;
+
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-2 text-[10px]" aria-label="Global resource controls">
       {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin text-violet-400" /> : <Cpu className="h-3.5 w-3.5 text-violet-400" />}
@@ -60,14 +64,14 @@ export const ResourceModeControl: React.FC = () => {
           disabled: !settings || (mode !== 'auto' && !settings.supported_modes[mode as 'low' | 'medium' | 'high']),
         }))} />
       <Select ariaLabel="OCR engine" value={settings?.ocr_engine?.selected || ''}
-        placeholder="OCR…" disabled={!settings?.ocr_engine || settings.ocr_engine.locked || saving}
+        placeholder="OCR…" disabled={!settings?.ocr_engine || ocrLocked || saving}
         onValueChange={value => selectOcr(value as OcrEngine)}
         className="min-h-7 w-52 border-zinc-700 px-2 py-1 text-[10px] focus:border-violet-500 focus:ring-violet-500/20"
         options={settings?.ocr_engine?.options || []} />
       {settings?.ocr_engine?.restart_required && (
         <span role="status" className="text-amber-400">Saved · Restart app/service to apply OCR</span>
       )}
-      {settings?.ocr_engine?.locked && <span className="text-zinc-500">OCR set by launch configuration</span>}
+      {ocrLocked && <span className="text-zinc-500">OCR set by launch configuration</span>}
       {settings && <details className="relative">
         <summary className="flex cursor-pointer list-none items-center gap-2 rounded px-2 py-1.5 text-zinc-400 outline-none hover:bg-zinc-800 focus-visible:ring-2 focus-visible:ring-violet-500/40 [&::-webkit-details-marker]:hidden" aria-label="Resource details">
           <span><strong className="font-medium text-zinc-200">{settings.runtime.active_profile_containers}/{settings.limits.max_active_profile_containers}</strong> containers</span>

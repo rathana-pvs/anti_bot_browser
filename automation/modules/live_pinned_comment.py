@@ -155,7 +155,7 @@ class LivePinnedComment:
     def is_editor(self, items):
         return phrase(items,'preset pinned comment') and phrase(items,'write my own') and len(self.find(items,{'save'})) == 1
 
-    def focus_body(self):
+    def focus_body(self, *, click=True):
         _, items = self.read_editor()
         anchors = self.find(items, {'write my own'})
         _, fresh = self.read_editor()
@@ -165,12 +165,16 @@ class LivePinnedComment:
             raise RuntimeError('Could not verify the pinned-comment input.')
         item = matches[0]
         x,y = item['center']
-        self.task.click(dict(item,center=(x+40,y+60)))
+        target = dict(item, center=(x+40,y+60))
+        if click:
+            self.task.click(target)
+        return target
 
-    def copy_body(self):
-        self.task.client.exec_cmd(['xdotool','key','--clearmodifiers','ctrl+a','ctrl+c'])
-        time.sleep(.2)
-        return self.task.client.exec_cmd(['timeout','3s','xclip','-o','-selection','clipboard']).stdout.replace('\r\n','\n').strip()
+    def empty_body_visible(self):
+        _, items = self.read_editor()
+        placeholders = {'write a comment', 'write your comment', 'enter your comment',
+                        'add a comment', 'write a pinned comment', 'write your pinned comment here'}
+        return self.is_editor(items) and any(label(item) in placeholders for item in items)
 
     def restore_setup(self):
         _, items = self.read_right()
@@ -198,12 +202,10 @@ class LivePinnedComment:
         self.set_enabled(desired)
         if desired:
             self.open_editor()
-            self.focus_body()
-            self.task.client.exec_cmd(['xdotool','key','--clearmodifiers','ctrl+a'])
-            self.task.client.exec_cmd(['xdotool','type','--clearmodifiers','--',comment])
-            if self.copy_body() != comment.strip():
-                raise RuntimeError('Facebook did not accept the pinned comment.')
-            self.task.client.exec_cmd(['xdotool','key','--clearmodifiers','Right'])
+            target = self.focus_body(click=False)
+            self.task.live_input.enter(comment, target, field='comment',
+                                       empty_check=self.empty_body_visible,
+                                       surface_guard=lambda: self.is_editor(self.read_editor()[1]))
             image,items = self.read_editor()
             fresh_image,fresh_items = self.read_editor()
             buttons,matches = self.find(items,{'save'}),self.find(fresh_items,{'save'})
@@ -211,6 +213,7 @@ class LivePinnedComment:
                     or not self.task.same(buttons[0],matches[0])
                     or not enabled_color(image,buttons[0]) or not enabled_color(fresh_image,matches[0])):
                 raise RuntimeError('Facebook has not enabled Save for the pinned comment.')
+            self.task.live_input.before_save()
             self.task.click(matches[0])
             deadline = time.monotonic()+20
             while time.monotonic() < deadline:
@@ -223,7 +226,9 @@ class LivePinnedComment:
             # Reopen and compare the saved value rather than trusting typing alone.
             self.open_editor()
             self.focus_body()
-            if self.copy_body() != comment.strip():
+            owner = self.task.client.input_owner()
+            if self.task.live_input.composer_entry.read_field(
+                    self.task.live_input.composer_entry.waiter(owner)) != comment:
                 raise RuntimeError('Facebook did not retain the saved pinned comment.')
             self.task.client.exec_cmd(['xdotool','key','--clearmodifiers','Escape'])
         return self.restore_setup()

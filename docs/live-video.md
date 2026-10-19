@@ -4,6 +4,30 @@ Implemented locally on the **Studio Center → Facebook Live** tab with its own 
 MP4, MOV, or WebM, save the Facebook server URL and key in **Edit profile**, and start a broadcast batch on **Studio Center → Facebook Live → New broadcast**.
 No camera, virtual camera, or OBS installation is needed.
 
+## Human-mode text entry
+
+Automated Live title/caption entry shares the Photo/Reel policy: eligible captions
+under 100 whitespace-separated words choose whole typing or whole paste; links,
+100+ words, Unicode, and multiline text always use paste. Preset pinned comments
+always use paste. The adapter uses profile pacing, checks existing field contents,
+reads back entered text, and applies bounded review pauses before Save. It never
+falls back to typing after a clipboard failure or clears a conflicting draft.
+
+The existing preparation deadline still applies, with time reserved for Save and
+retention checks. Insufficient entry time, unknown/changed drafts, focus loss, or
+unconfirmed empty pinned-comment fields require operator review before streaming.
+Only supported English field layouts are recognized. Existing saved-details
+handling remains unchanged. Go live, End live, FFmpeg startup/playback, and broadcast
+duration are independent of input pacing.
+
+Live does not inherit screenshot evidence recording: screen/OCR observations are
+transient, and input diagnostics contain only safe method/timing metadata. No
+stream keys, captions, clipboard payloads, or screenshots are persisted by this
+adapter. Offline tests validate the new input paths; a real Live input pilot has
+not been performed. The profile_004 session inspected during this change reported
+completed/broadcast_ended, but its stopped container and lack of screenshots did
+not establish the current editor layout.
+
 ## Setup and use
 
 1. Start the profile and sign into the intended Facebook account/Page.

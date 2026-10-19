@@ -276,10 +276,12 @@ async def browser_action(profile_id, action, producer_url, stop_event):
     if not pin or not record.get('brain_package'):
         raise RuntimeError('Live browser workflow was not pinned before execution')
     details = validate_details(record.get('title', ''), record.get('caption', ''), record.get('pinned_comment')) if action == 'prepare' else {}
+    worker_env = automation.automation_worker_env()
+    worker_env['AUTOMATION_BEHAVIOR_RUN_ID'] = str(record.get('session_id') or profile_id)
     proc = await asyncio.create_subprocess_exec(str(AUTOMATION_PYTHON), str(helper), '--profile', profile_id,
             '--action', action, '--producer-url', producer_url,
             '--brain-package', record['brain_package'], '--brain-digest', pin['digest'], cwd=str(ROOT_DIR),
-            env=automation.automation_worker_env(), stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            env=worker_env, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
     async def receive():
         proc.stdin.write(json.dumps(details).encode())
         await proc.stdin.drain()

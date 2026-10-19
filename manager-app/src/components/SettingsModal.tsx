@@ -1,8 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Select } from './ui/Select';
-import { BrainPanel } from './BrainPanel';
 import { AppUpdates } from './AppUpdates';
-import { BrainCircuit, Check, Eye, EyeOff, KeyRound, Settings, X } from 'lucide-react';
+import { Check, Eye, EyeOff, KeyRound, Settings, X } from 'lucide-react';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -10,7 +9,7 @@ interface SettingsModalProps {
   onOpenSetup?: () => void;
 }
 
-type Section = 'api-keys' | 'brains' | 'updates';
+type Section = 'api-keys' | 'updates';
 
 const API_KEY_FIELDS = [
   { id: 'gemini', label: 'Google Gemini', placeholder: 'API key' },
@@ -54,35 +53,57 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
   const [apiKeys, setApiKeys] = useState<ApiKeys>(loadApiKeys);
   const [visibleKeys, setVisibleKeys] = useState<Set<ApiKeyId>>(new Set());
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const savedTimer = useRef<number>();
 
   useEffect(() => {
     if (!isOpen) return;
     setApiKeys(loadApiKeys());
     setVisibleKeys(new Set());
     setSaved(false);
+    setSaveError(null);
+    if (savedTimer.current) window.clearTimeout(savedTimer.current);
+    // Parent polling changes callback identities; only opening starts a new draft.
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+      if (event.key === 'Escape' && !event.defaultPrevented) onClose();
     };
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [isOpen, onClose]);
 
+  useEffect(() => () => {
+    if (savedTimer.current) window.clearTimeout(savedTimer.current);
+  }, []);
+
   if (!isOpen) return null;
 
   const saveKeys = () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(apiKeys));
-    setSaved(true);
-    window.setTimeout(() => setSaved(false), 1800);
+    try {
+      const normalized = { ...apiKeys, gemini: apiKeys.gemini.trim() };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
+      setApiKeys(normalized);
+      setSaveError(null);
+      setSaved(true);
+      if (savedTimer.current) window.clearTimeout(savedTimer.current);
+      savedTimer.current = window.setTimeout(() => setSaved(false), 1800);
+    } catch {
+      setSaved(false);
+      setSaveError('Settings could not be saved on this computer. Check that local storage is available and try again.');
+    }
   };
 
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/75 p-5 backdrop-blur-sm" onMouseDown={onClose}>
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/75 p-5 backdrop-blur-sm" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <div
         role="dialog"
         aria-modal="true"
         aria-labelledby="settings-title"
         onMouseDown={(event) => event.stopPropagation()}
-        className={`flex h-[min(640px,88vh)] w-full ${section === 'brains' ? 'max-w-5xl' : 'max-w-3xl'} overflow-hidden rounded-2xl border border-zinc-800 bg-[#0b0c0f] shadow-2xl`}
+        className="flex h-[min(640px,88vh)] w-full max-w-3xl overflow-hidden rounded-2xl border border-zinc-800 bg-[#0b0c0f] shadow-2xl"
       >
         <aside className="w-52 shrink-0 border-r border-zinc-800 bg-zinc-950/80 p-3">
           <div className="mb-5 flex items-center gap-2 px-2 pt-2">
@@ -96,9 +117,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
             <button type="button" onClick={() => setSection('api-keys')} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition-colors ${section === 'api-keys' ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'}`}>
               <KeyRound className="h-4 w-4" /> API keys
             </button>
-            <button type="button" onClick={() => setSection('brains')} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition-colors ${section === 'brains' ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'}`}>
-              <BrainCircuit className="h-4 w-4" /> Brains
-            </button>
             {onOpenSetup && <button type="button" onClick={onOpenSetup} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200">
               <Settings className="h-4 w-4" /> Setup and repair
             </button>}
@@ -108,13 +126,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
         <section className="flex min-w-0 flex-1 flex-col">
           <header className="flex h-14 shrink-0 items-center justify-between border-b border-zinc-800 px-6">
             <div>
-              <h3 className="text-sm font-semibold text-zinc-100">{section === 'api-keys' ? 'API keys' : section === 'updates' ? 'App updates' : 'Brains'}</h3>
-              <p className="mt-0.5 text-[11px] text-zinc-500">{section === 'api-keys' ? 'Manage your Gemini API key and model.' : section === 'updates' ? 'Check published versions and update the whole app.' : 'Manage installed brains, versions, and activation.'}</p>
+              <h3 className="text-sm font-semibold text-zinc-100">{section === 'api-keys' ? 'API keys' : 'App updates'}</h3>
+              <p className="mt-0.5 text-[11px] text-zinc-500">{section === 'api-keys' ? 'Manage your Gemini API key and model.' : 'Check published versions and update the whole app.'}</p>
             </div>
             <button type="button" onClick={onClose} aria-label="Close settings" className="rounded-md p-2 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"><X className="h-4 w-4" /></button>
           </header>
 
-          <div className={`min-h-0 flex-1 ${section === 'brains' ? 'flex overflow-hidden' : 'overflow-y-auto p-6'}`}>
+          <div className="min-h-0 flex-1 overflow-y-auto p-6">
             {section === 'api-keys' ? (
               <div className="max-w-xl space-y-5">
                 <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-xs leading-5 text-amber-200/80">
@@ -127,6 +145,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                     <div className="relative mt-2">
                       <input
                         type={visible ? 'text' : 'password'}
+                        aria-label={`${field.label} API key`}
                         value={apiKeys[field.id]}
                         onChange={(event) => { setApiKeys((current) => ({ ...current, [field.id]: event.target.value })); setSaved(false); }}
                         placeholder={field.placeholder}
@@ -149,14 +168,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                   />
                   <p className="text-[11px] text-zinc-500">Model availability depends on your API key. Legacy models require existing access.</p>
                 </div>
+                {saveError && <p role="alert" className="text-xs text-red-400">{saveError}</p>}
                 <div className="flex items-center justify-end gap-3 pt-2">
-                  {saved && <span className="flex items-center gap-1.5 text-xs text-emerald-400"><Check className="h-3.5 w-3.5" />Saved</span>}
+                  {saved && <span role="status" className="flex items-center gap-1.5 text-xs text-emerald-400"><Check className="h-3.5 w-3.5" />Saved</span>}
                   <button type="button" onClick={saveKeys} className="rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-500">Save settings</button>
                 </div>
               </div>
-            ) : section === 'updates' ? <AppUpdates /> : (
-              <BrainPanel embedded />
-            )}
+            ) : <AppUpdates />}
           </div>
         </section>
       </div>

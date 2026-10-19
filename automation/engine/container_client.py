@@ -33,7 +33,7 @@ class ContainerClient:
         except Exception:
             return False
 
-    def exec_cmd(self, cmd_args: list[str], check: bool = True, user: str = "chromeuser") -> subprocess.CompletedProcess:
+    def exec_cmd(self, cmd_args: list[str], check: bool = True, user: str = "chromeuser", timeout: float | None = None) -> subprocess.CompletedProcess:
         """Execute a command directly inside the container as user with DISPLAY set."""
         full_cmd = [
             "docker",
@@ -44,7 +44,7 @@ class ContainerClient:
             f"DISPLAY={self.display}",
             self.container_name,
         ] + cmd_args
-        return subprocess.run(full_cmd, capture_output=True, text=True, check=check)
+        return subprocess.run(full_cmd, capture_output=True, text=True, check=check, timeout=timeout)
 
     def get_chrome_window(self) -> int:
         """Find the active Chrome browser window ID."""
@@ -177,7 +177,34 @@ class ContainerClient:
     def xdo(self, command: str) -> None:
         """Execute an xdotool command inside the container."""
         cmd_args = ["xdotool"] + command.split()
-        self.exec_cmd(cmd_args, check=True)
+        self.exec_cmd(cmd_args, check=True, timeout=10)
+
+    def input_owner(self) -> tuple[str, str]:
+        """Observable X11 focus/pointer state; does not detect all manual key input."""
+        focus = self.exec_cmd(["xdotool", "getwindowfocus"], timeout=5).stdout.strip()
+        pointer = self.exec_cmd(["xdotool", "getmouselocation", "--shell"], timeout=5).stdout
+        xy = tuple(line for line in pointer.splitlines() if line.startswith(("X=", "Y=")))
+        return focus, "|".join(xy)
+
+    def write_clipboard(self, text: str, selection: str = "clipboard") -> None:
+        if selection not in {"clipboard", "primary"}:
+            raise ValueError("Unsupported clipboard selection")
+        subprocess.run(
+            ["docker", "exec", "-i", "-u", "chromeuser", "-e",
+             f"DISPLAY={self.display}", self.container_name,
+             "xclip", "-selection", selection],
+            input=text.encode("utf-8"), check=True, capture_output=True, timeout=10,
+        )
+
+    def read_clipboard(self) -> str:
+        result = self.exec_cmd(["timeout", "2s", "xclip", "-out", "-selection", "clipboard"], timeout=5)
+        return result.stdout
+
+    def type_character(self, char: str) -> None:
+        if len(char) != 1 or not (' ' <= char <= '~'):
+            raise ValueError("Character is not supported for direct typing")
+        # Preserve literal spaces/quotes/metacharacters as one argv item. No shell.
+        self.exec_cmd(["xdotool", "type", "--clearmodifiers", "--delay", "0", "--", char], timeout=10)
 
     def batch_xdo(self, commands: list[str]) -> None:
         """Execute multiple xdotool commands efficiently in a single exec call."""

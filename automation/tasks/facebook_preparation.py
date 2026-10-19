@@ -7,6 +7,7 @@ import time
 
 from .base_task import BaseTask
 from engine.screen_state import ScreenState
+from engine.passive_browsing import PassiveBrowsing
 
 
 class FacebookPreparationTask(BaseTask):
@@ -81,28 +82,65 @@ class FacebookPreparationTask(BaseTask):
                 warming_surface_requested=requested_surface,
             )
 
-        duration_seconds = random.uniform(*self.DURATION_RANGES[self.mode])
-        deadline = time.time() + duration_seconds
+        rng = self.behavior_session.stream("warming")
+        duration_seconds = rng.uniform(*self.DURATION_RANGES[self.mode])
+        started = time.monotonic()
+        deadline = started + duration_seconds
         previous = surface_screen if surface_screen is not None else self.client.screenshot()
-        stable_observations = 0
+        height, width = previous.shape[:2]
+        browsing = PassiveBrowsing(self.behavior_session, width, height)
         scroll_actions = 0
-        while time.time() < deadline:
-            notches = random.randint(2, 4)
-            self.human.scroll("down", notches=notches)
-            scroll_actions += 1
-            remaining = max(0.0, deadline - time.time())
-            if remaining <= 0:
+        visible_changes = 0
+        return_scroll_notches = 0
+        self.log("STEP", f"Passive browsing on {warm_surface} for up to {duration_seconds:.0f}s.")
+        while time.monotonic() < deadline:
+            step = browsing.next_step()
+            if step is None:
+                self.log("INFO", "The page did not respond after a bounded direction check; ending passive browsing.")
                 break
-            time.sleep(min(remaining, random.uniform(3.0, 6.0)))
+            target = browsing.pointer_target(self.client.get_mouse_position(), first=scroll_actions == 0)
+            if target is not None:
+                self.human.move_to(*target)
+            if time.monotonic() >= deadline:
+                break
+            self.human.scroll(step.direction, notches=step.notches)
+            scroll_actions += 1
+            remaining = max(0.0, deadline - time.monotonic())
+            self.log("INFO", f"Preparation: {step.reason}, {step.direction} {step.notches} notches; "
+                     f"reading pause {min(remaining, step.pause_seconds):.1f}s; {remaining:.0f}s remaining.")
+            if remaining > 0:
+                time.sleep(min(remaining, step.pause_seconds))
             current = self.client.screenshot()
-            similarity = self.vision.similarity(previous, current)
-            stable_observations = stable_observations + 1 if similarity >= 0.985 else 0
+            # Compare scrollable content, excluding the static toolbar/sidebar.
+            left, top, right, bottom = browsing.bounds
+            changed = self.vision.similarity(previous[top:bottom, left:right],
+                                              current[top:bottom, left:right]) < .985
+            browsing.record(step, changed)
+            visible_changes += int(changed)
             previous = current
 
+        # Return gradually, without Home while focus may be in Chrome's address
+        # bar. The handoff has its own short cap; do not add an unbounded rewind.
+        return_deadline = time.monotonic() + 8.0
+        if browsing.net_down:
+            self.log("INFO", "Scrolling back up in short bursts before publishing handoff.")
+        while browsing.net_down > 0 and time.monotonic() < return_deadline:
+            target = browsing.pointer_target(self.client.get_mouse_position())
+            if target is not None:
+                self.human.move_to(*target)
+            if time.monotonic() >= return_deadline:
+                break
+            notches = min(browsing.net_down, rng.randint(2, 4))
+            self.human.scroll("up", notches=notches)
+            browsing.net_down -= notches
+            return_scroll_notches += notches
+            remaining = max(0.0, return_deadline - time.monotonic())
+            if remaining > 0:
+                time.sleep(min(remaining, rng.uniform(.2, .6)))
         if scroll_actions:
-            self.human.key_press("Home")
-            time.sleep(1.0)
             previous = self.client.screenshot()
+        stable_observations = browsing.unchanged
+        actual_browsing_seconds = round(max(0, time.monotonic() - started), 2)
 
         self.capture_evidence(
             "preparation_ready",
@@ -110,6 +148,11 @@ class FacebookPreparationTask(BaseTask):
             preparation_mode=self.mode,
             duration_seconds=round(duration_seconds, 2),
             scroll_actions=scroll_actions,
+            return_scroll_notches=return_scroll_notches,
+            remaining_scroll_offset_notches=browsing.net_down,
+            visible_scroll_changes=visible_changes,
+            browsing_stop_reason=browsing.stopped_reason or "duration_complete",
+            actual_browsing_seconds=actual_browsing_seconds,
             warming_surface_requested=requested_surface,
             warming_surface=warm_surface,
             warming_surface_fallback=fallback_used,
@@ -123,6 +166,11 @@ class FacebookPreparationTask(BaseTask):
             preparation_mode=self.mode,
             duration_seconds=round(duration_seconds, 2),
             scroll_actions=scroll_actions,
+            return_scroll_notches=return_scroll_notches,
+            remaining_scroll_offset_notches=browsing.net_down,
+            visible_scroll_changes=visible_changes,
+            browsing_stop_reason=browsing.stopped_reason or "duration_complete",
+            actual_browsing_seconds=actual_browsing_seconds,
             stable_observations=stable_observations,
             warming_surface_requested=requested_surface,
             warming_surface=warm_surface,

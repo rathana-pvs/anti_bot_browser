@@ -4,12 +4,14 @@ import { Activity, Server, Globe, Cpu, Monitor, HardDrive } from 'lucide-react';
 
 interface TelemetryFooterProps {
   stats: SystemStats;
+  loading?: boolean;
 }
 
 const percent = (value: number | null | undefined) => Math.min(100, Math.max(0, value || 0));
 const gb = (value: number | undefined) => ((value || 0) / 1024).toFixed(1);
 
-export const TelemetryFooter: React.FC<TelemetryFooterProps> = ({ stats }) => {
+export const TelemetryFooter: React.FC<TelemetryFooterProps> = ({ stats, loading = false }) => {
+  if (loading) return <footer role="status" className="flex h-8 shrink-0 items-center border-t border-border bg-zinc-950 px-4 text-xs text-zinc-400">Loading system status…</footer>;
   const runtime = stats.runtime || stats.wsl_runtime || {
     cpu_percent: stats.cpu_percent || 0,
     cpu_threads: stats.cpu_cores || 1,

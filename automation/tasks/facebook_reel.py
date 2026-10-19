@@ -1208,6 +1208,11 @@ class FacebookReelTask(BaseTask):
             time.sleep(1.0)
         return False, last_screen, best_confidence
 
+    def _caption_entry_surface_visible(self):
+        screen = self.client.screenshot()
+        return (self._is_reel_final_composer(screen, allow_layout_fallback=True)
+                or self._is_reel_next_share_composer(screen))
+
     def _enter_reel_caption(self, timeout: float) -> tuple[str, object | None]:
         """Enter and verify the caption while media processing continues.
 
@@ -1233,31 +1238,22 @@ class FacebookReelTask(BaseTask):
         # replaced by caption text. Final-composer recognition uses this to
         # distinguish the direct layout from older Next/Edit flows.
         self._reel_description_target = tuple(description)
-        self.human.click(*description)
-        self.paste_text(self.caption)
-        caption_ready, caption_screen, caption_confidence = self._wait_for_reel_caption()
-        if not caption_ready:
-            self.log(
-                "WARN",
-                "The Reel caption was not visible after Ctrl+V; retrying once with the X11 primary selection.",
-            )
-            self.human.click(*description)
-            self.human.key_press("ctrl+a")
-            self.paste_text(
-                self.caption,
-                paste_key="shift+Insert",
-                selection="primary",
-            )
-            caption_ready, caption_screen, caption_confidence = self._wait_for_reel_caption()
-
-        self.capture_evidence(
-            "reel_caption_verification",
-            caption_screen,
-            caption_visible=caption_ready,
-            caption_match_confidence=round(caption_confidence, 4),
+        entry = self.composer_entry.enter(
+            self.caption, description,
+            empty_confirmed=lambda: self._find_reel_description_target(False) is not None,
+            surface_guard=lambda: self._caption_entry_surface_visible(),
+            deadline=time.monotonic() + 300,
         )
-        if not caption_ready:
-            return "verification_failed", caption_screen
+        if not entry.verified:
+            return "verification_failed", screen
+        try:
+            self.review_composer(self.caption, self.video_path or "")
+        except Exception:
+            return "verification_failed", screen
+        caption_screen = self.client.screenshot()
+        caption_confidence = 1.0
+        self.capture_evidence("reel_caption_verification", caption_screen,
+                              caption_visible=True, verification=entry.verification)
 
         self._reel_caption_entered = True
         self.log(

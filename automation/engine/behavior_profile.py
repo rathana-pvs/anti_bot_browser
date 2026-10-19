@@ -11,7 +11,7 @@ from typing import Any
 from .runtime_paths import profiles_dir
 
 
-BEHAVIOR_VERSION = 1
+BEHAVIOR_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -32,7 +32,7 @@ PRESETS = {
 class BehaviorSession:
     """Independent deterministic random streams derived for a single run."""
 
-    CHANNELS = ("mouse", "click", "typing", "scroll", "pause", "warming")
+    CHANNELS = ("mouse", "click", "typing", "scroll", "pause", "warming", "entry_strategy", "review", "baseline")
 
     def __init__(self, mode: str, profile_seed: int, run_id: str):
         self.preset = PRESETS.get(mode, PRESETS["medium"])
@@ -47,6 +47,10 @@ class BehaviorSession:
             for channel in self.CHANNELS
         }
 
+        baseline = self.stream("baseline")
+        self.pace = baseline.uniform(*self.preset.duration_scale)
+        self.wpm = baseline.randint(*self.preset.typing_wpm)
+
     @property
     def seed_hash(self) -> str:
         return self._session_digest[:12]
@@ -58,11 +62,10 @@ class BehaviorSession:
             raise ValueError(f"Unknown behavior channel: {channel}") from exc
 
     def scaled_duration(self, channel: str, value: float) -> float:
-        low, high = self.preset.duration_scale
-        return max(0.0, float(value) * self.stream(channel).uniform(low, high))
+        return max(0.0, float(value) * self.pace)
 
     def typing_speed(self) -> int:
-        return self.stream("typing").randint(*self.preset.typing_wpm)
+        return self.wpm
 
     def warming_scroll_count(self) -> int:
         return self.stream("warming").randint(*self.preset.warming_scrolls)
@@ -71,6 +74,8 @@ class BehaviorSession:
         return {
             "mode": self.mode,
             "version": self.version,
+            "session_wpm": self.wpm,
+            "session_pace": round(self.pace, 3),
             "seed_hash": self.seed_hash,
             "typing_wpm_range": list(self.preset.typing_wpm),
             "warming_scroll_range": list(self.preset.warming_scrolls),

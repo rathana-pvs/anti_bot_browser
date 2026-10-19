@@ -2,7 +2,6 @@
 
 import json
 from pathlib import Path
-import random
 import time
 import re
 from composer_templates import (
@@ -659,7 +658,7 @@ class FacebookPostTask(BaseTask):
 
             self.capture_evidence("before_click_photo_video", target=list(photo_btn))
             self.human.click(*photo_btn)
-            time.sleep(random.uniform(1.5, 2.5))
+            time.sleep(self.composer_entry.timing.sample(.6, 1.0, 1.5))
 
             # Trigger Zero-CDP GTK file chooser
             container_path = self.media_path
@@ -715,7 +714,7 @@ class FacebookPostTask(BaseTask):
             if not composer_pos:
                 return self._fail("composer_not_found", "Post composer could not be located confidently.")
             self.human.click(*composer_pos)
-            time.sleep(random.uniform(2.0, 3.0))
+            time.sleep(self.composer_entry.timing.sample(.6, 1.0, 1.5))
 
         if self.caption:
             # Locate the composer text area only when text actually needs to be entered.
@@ -732,19 +731,22 @@ class FacebookPostTask(BaseTask):
                     "Caption input could not be visually confirmed; no fallback coordinate was used.",
                 )
 
-            self.human.click(*caption_target)
-            time.sleep(0.5)
-            self.log("STEP", f"Entering post caption ({len(self.caption)} chars)...")
-            if any(ord(c) > 127 for c in self.caption) or len(self.caption) > 80:
-                self.paste_text(self.caption)
-            else:
-                self.human.type_text(self.caption, wpm=random.randint(52, 65))
-
-            review_pause = random.uniform(2.0, 3.5)
-            self.log("INFO", f"Human review pause ({review_pause:.1f}s)...")
-            time.sleep(review_pause)
+            entry = self.composer_entry.enter(
+                self.caption, caption_target, empty_confirmed=lambda: self._stable_caption_target() is not None,
+                surface_guard=lambda: self.recognizer.observe().state in {
+                    ScreenState.COMPOSER_OPEN, ScreenState.MEDIA_READY, ScreenState.POST_ENABLED,
+                },
+                deadline=time.monotonic() + 300,
+            )
+            if not entry.verified:
+                return self._needs_review("caption_" + entry.status,
+                                          "Caption entry could not be confirmed; stopped before publishing.")
         else:
-            self.log("INFO", "No caption requested; skipping caption-field detection and text-entry pause.")
+            self.log("INFO", "No caption requested; skipping caption-field detection and text entry.")
+        try:
+            self.review_composer(self.caption or "", self.media_path or "", 1 if self.media_path else 0)
+        except Exception:
+            return self._needs_review("caption_review_interrupted", "Review interrupted; no publish action sent.")
 
         # Select a declarative composer family from stable visual signals.
         post_template, next_btn, detected_post_btn = self._select_post_template()

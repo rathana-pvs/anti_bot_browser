@@ -36,6 +36,11 @@ def task(monkeypatch):
     obj.vision = Mock()
     obj.vision.read_text.return_value = []
     obj.click = Mock()
+    obj.live_input = Mock()
+    def entered(value, target, **kwargs):
+        obj.click(target)
+        return Mock(verified=True)
+    obj.live_input.enter.side_effect = entered
     obj.publish_clicked = False
     obj.state = 'unknown'
     obj.template_id = None
@@ -343,9 +348,10 @@ def test_post_details_verifies_both_fields_then_fresh_save(task):
         return Mock(stdout=next(copies)) if args[0] == 'timeout' else Mock(stdout='')
     task.client.exec_cmd.side_effect = execute
     details.fill(frame, 'News title', 'Caption\nខ្មែរ 😀')
-    commands = [call.args[0] for call in task.client.exec_cmd.call_args_list]
-    assert ['xdotool', 'type', '--clearmodifiers', '--', 'News title'] in commands
-    assert ['xdotool', 'type', '--clearmodifiers', '--', 'Caption\nខ្មែរ 😀'] in commands
+    assert [entry.args[0] for entry in task.live_input.enter.call_args_list] == ['News title', 'Caption\nខ្មែរ 😀']
+    assert [entry.kwargs['field'] for entry in task.live_input.enter.call_args_list] == ['live_title', 'live_caption']
+    task.live_input.before_save.assert_called_once()
+    assert not any(args.args[0][1] == 'type' for args in task.client.exec_cmd.call_args_list)
     assert task.click.call_args.args[0]['text'] == 'Save'
     assert not any(call.args[0].get('text') == 'Go live' for call in task.click.call_args_list)
 
@@ -355,9 +361,10 @@ def test_post_details_blocks_save_after_failed_field_verification(task):
     details = LivePostDetails(task)
     details.read_dialog = lambda: (image(), [item('Add a title', x=600, y=450)])
     task.client.exec_cmd.return_value.stdout = 'wrong field'
+    task.live_input.enter.side_effect = RuntimeError('Facebook did not accept the Live text')
     with pytest.raises(RuntimeError, match='did not accept'):
         details.field(details.TITLE, 'Correct title')
-    assert task.click.call_count == 1
+    task.live_input.before_save.assert_not_called()
 
 
 def test_post_details_blocks_stale_open_and_disabled_save(task):
@@ -564,7 +571,7 @@ def test_preset_clipboard_mismatch_blocks_save(task):
     module.set_enabled = Mock()
     module.open_editor = Mock()
     module.focus_body = Mock()
-    module.copy_body = lambda: 'different text'
+    task.live_input.enter.side_effect = RuntimeError('Facebook did not accept the pinned comment')
     with pytest.raises(RuntimeError,match='did not accept'):
         module.set(ready(task),'Comment')
     task.click.assert_not_called()
@@ -705,3 +712,34 @@ def test_end_confirmation_alone_is_not_success(task):
         task.end()
     assert task.state != 'ended'
     assert task.click.call_count == 1
+
+
+def test_preset_empty_check_requires_editor_and_explicit_placeholder(task):
+    from modules.live_pinned_comment import LivePinnedComment
+    module = LivePinnedComment(task)
+    editor = [item('Preset pinned comment'), item('Write my own'), item('Save')]
+    module.read_editor = lambda: (image(), editor)
+    assert module.empty_body_visible() is False
+    module.read_editor = lambda: (image(), editor + [item('Write a comment...')])
+    assert module.empty_body_visible() is True
+
+
+def test_preset_uses_shared_paste_policy_before_save(task):
+    from modules.live_pinned_comment import LivePinnedComment
+    module = LivePinnedComment(task)
+    module.set_enabled = Mock()
+    module.open_editor = Mock()
+    target = item('body', x=700, y=500)
+    module.focus_body = Mock(return_value=target)
+    screen = image()
+    save = item('Save', x=600, y=740)
+    screen[720:760, 540:660] = (255, 100, 8)
+    editor = [item('Preset pinned comment'), item('Write my own'), save]
+    observations = iter([(screen, editor), (screen, editor), (screen, [])])
+    module.read_editor = lambda: next(observations)
+    module.restore_setup = Mock(return_value=ready(task))
+    task.live_input.composer_entry.read_field.return_value = 'https://example.com'
+    assert module.set(ready(task), 'https://example.com').template_id == 'broadcast_ready'
+    assert task.live_input.enter.call_args.kwargs['field'] == 'comment'
+    task.live_input.before_save.assert_called_once()
+    assert not any(command.args[0][1] == 'type' for command in task.client.exec_cmd.call_args_list)

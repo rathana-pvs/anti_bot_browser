@@ -1,3 +1,4 @@
+import { CaptionHookEditor, HookDraft, hookIsApproved } from "./CaptionHookEditor";
 import { LivePlaybackSettings, LivePlaybackMode } from './LivePlaybackSettings';
 import { GroupedProfileSelector } from './GroupedProfileSelector';
 import React, { useState, useEffect } from 'react';
@@ -45,6 +46,7 @@ interface DraftPostRow {
   pinned_comment?: string;
   caption: string;
   first_comment: string;
+  hook?: HookDraft;
 }
 
 interface LightboxMedia {
@@ -125,7 +127,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
   // Global AI Caption Spin Toggle
   const [aiSpinAll, setAiSpinAll] = useState(() => {
     const saved = localStorage.getItem(storageKey('ai_spin'));
-    return saved !== null ? saved === 'true' : true;
+    return saved !== null ? saved === 'true' : false;
   });
 
   // Collapsible Advanced Settings
@@ -365,6 +367,10 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
       return;
     }
 
+    if (posts.some(p => !hookIsApproved(p.caption, p.media_file, p.type, p.hook))) {
+      setErrorMsg('Preview and approve each enabled caption hook, or choose Keep original caption.');
+      return;
+    }
     setIsSubmitting(true);
     const startNow = executionMode === 'now';
 
@@ -385,9 +391,10 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
           type: p.type,
           ...(p.type === 'live' ? {title: (p.title || '').trim(), pinned_comment: (p.pinned_comment || '').trim(), playback_mode: playbackMode, loop: playbackMode === 'manual' && loopVideo, muted, max_duration_seconds: playbackMode === 'manual' && durationMinutes ? Number(durationMinutes) * 60 : undefined} : {}),
           media_file: p.media_file,
-          base_caption: p.caption.trim(),
+          base_caption: p.caption,
+          ...(p.hook?.enabled ? { hook_approval: p.hook.approval } : {}),
           first_comment: p.type === 'live' ? undefined : p.first_comment.trim() || undefined,
-          ai_spin: p.type === 'live' ? false : aiSpinAll,
+          ai_spin: p.type === 'live' || p.hook?.enabled ? false : aiSpinAll,
         })),
       };
 
@@ -663,6 +670,9 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                         className="w-full px-3 py-2 text-xs rounded-lg bg-zinc-950 border border-zinc-800 text-white placeholder-zinc-500 focus:outline-none focus:border-blue-500 resize-none font-sans"
                       />
 
+                      <CaptionHookEditor caption={post.caption} media={post.media_file} type={post.type}
+                        value={post.hook} recentHooks={posts.filter(p => p.id !== post.id && p.hook?.approval).map(p => p.hook?.selected || '')}
+                        onChange={hook => handleUpdateRow(post.id, { hook })} />
                       <div className="flex items-center gap-2">
                         <span className="text-[11px] text-zinc-500 whitespace-nowrap">
                           1st Comment Link:
@@ -819,10 +829,10 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
               <label htmlFor="ai-caption-spinning" className="flex items-center justify-between cursor-pointer py-1">
                 <div>
                   <div className="text-xs font-medium text-zinc-200">
-                    AI Caption Spinning
+                    Legacy caption variations
                   </div>
                   <div className="text-[11px] text-zinc-500">
-                    Applies to Photo and Reel captions
+                    Adds canned text per account. Approved hook captions are excluded.
                   </div>
                 </div>
                 <Checkbox

@@ -2,13 +2,14 @@
 
 Provides mathematically realistic human-like mouse trajectories (cubic Bezier curves),
 natural micro-jitter, variable typing cadence (WPM modeling), and organic scrolling
-to ensure 0% behavioral bot detection.
+for bounded interaction pacing. No detection guarantee is implied.
 """
 
 import math
 import random
 import time
 from .container_client import ContainerClient
+from .behavior_timing import InteractionWait
 
 
 def _cubic_bezier(p0: float, p1: float, p2: float, p3: float, t: float) -> float:
@@ -48,6 +49,7 @@ class HumanInput:
         bounds: tuple[int, int, int, int],
         max_offset_px: int = 6,
         inset_ratio: float = 0.22,
+        rng=None,
     ) -> tuple[int, int]:
         """Choose a small, center-biased point that remains safely inside bounds.
 
@@ -55,6 +57,7 @@ class HumanInput:
         visually confirmed. Small controls naturally collapse back toward their
         center because the inset margin takes priority over variation.
         """
+        rng = rng if rng is not None else random
         x1, y1, x2, y2 = (int(value) for value in bounds)
         left, right = sorted((x1, x2))
         top, bottom = sorted((y1, y2))
@@ -74,8 +77,8 @@ class HumanInput:
 
         offset_x = min(max_offset_px, center_x - safe_left, safe_right - center_x)
         offset_y = min(max_offset_px, center_y - safe_top, safe_bottom - center_y)
-        target_x = center_x + random.randint(-max(0, offset_x), max(0, offset_x))
-        target_y = center_y + random.randint(-max(0, offset_y), max(0, offset_y))
+        target_x = center_x + rng.randint(-max(0, offset_x), max(0, offset_x))
+        target_y = center_y + rng.randint(-max(0, offset_y), max(0, offset_y))
         return target_x, target_y
 
     def move_to(self, target_x: int, target_y: int, duration_sec: float | None = None) -> None:
@@ -114,7 +117,7 @@ class HumanInput:
 
         cp1_x = start_x + dx * 0.3 + perp_x * dev1
         cp1_y = start_y + dy * 0.3 + perp_y * dev1
-        cp2_x = start_x + dx * 0.7 + perp_y * dev2
+        cp2_x = start_x + dx * 0.7 + perp_x * dev2
         cp2_y = start_y + dy * 0.7 + perp_y * dev2
 
         commands = []
@@ -169,44 +172,45 @@ class HumanInput:
         time.sleep(self._duration("click", rng.uniform(0.08, 0.15)))
         self.click()
 
-    def type_text(self, text: str, wpm: int | None = None) -> None:
-        """
-        Type text character-by-character at a natural WPM cadence,
-        introducing natural pauses after punctuation and simulated thinking stops.
-        """
+    def type_text(self, text: str, wpm: int | None = None, *, waiter=None) -> dict:
+        """Type a complete supported caption; line breaks never emit Return."""
+        if any(not (' ' <= char <= '~') for char in text):
+            raise ValueError("Use full paste for Unicode or multiline content")
         rng = self._rng("typing")
-        if wpm is None:
-            wpm = self.behavior_session.typing_speed() if self.behavior_session else 55
-        base_char_delay = 60.0 / (wpm * 5)  # Average 5 chars per word
-
-        for idx, char in enumerate(text):
-            # Special character handling for xdotool
-            if char == "\n":
-                self.client.xdo("key Return")
-                time.sleep(rng.uniform(0.2, 0.45))
-                continue
-            elif char == " ":
-                self.client.xdo("key space")
-                delay = base_char_delay * rng.uniform(0.9, 1.4)
-            elif char in ("'", '"', "$", "&", "<", ">", "|", "\\"):
-                # Use key or escaped type
-                self.client.xdo(f"type -- {char}")
-                delay = base_char_delay * rng.uniform(0.8, 1.3)
-            else:
-                self.client.xdo(f"type -- {char}")
-                delay = base_char_delay * rng.uniform(0.7, 1.25)
-
-            # Extra thinking pause after punctuation
-            if char in (".", "!", "?"):
-                delay += rng.uniform(0.25, 0.6)
-            elif char in (",", ";", ":"):
-                delay += rng.uniform(0.15, 0.35)
-
-            # Random 4% chance of a hesitation pause (thinking/looking at keyboard)
-            if rng.random() < 0.04:
-                delay += rng.uniform(0.2, 0.5)
-
-            time.sleep(delay)
+        wpm = wpm or (self.behavior_session.typing_speed() if self.behavior_session else 55)
+        if wpm <= 0:
+            raise ValueError("WPM must be positive")
+        waiter = waiter or InteractionWait()
+        start = waiter.clock()
+        dispatch_time = pause_time = 0.0
+        phrase_wpm = wpm
+        phrase_words = 0
+        waiter.checkpoint()
+        for char in text:
+            before = waiter.clock()
+            waiter.check()
+            self.client.type_character(char)
+            overhead = waiter.clock() - before
+            dispatch_time += overhead
+            delay = max(0, 60 / (phrase_wpm * 5) * rng.uniform(.85, 1.15) - overhead)
+            if char in '.!?':
+                delay += rng.triangular(.4, 1.2, .7)
+                phrase_words = 0
+            elif char == ' ':
+                phrase_words += 1
+                if phrase_words >= 5:
+                    delay += rng.triangular(.2, .7, .35)
+                    phrase_words = 0
+                    waiter.checkpoint()
+                    low, high = self.behavior_session.preset.typing_wpm if self.behavior_session else (1, 200)
+                    phrase_wpm = min(high, max(low, wpm * rng.uniform(.9, 1.1)))
+            before_pause = waiter.clock()
+            waiter.pause(delay)
+            pause_time += waiter.clock() - before_pause
+        elapsed = waiter.clock() - start
+        return {"elapsed_seconds": elapsed, "dispatch_seconds": dispatch_time,
+                "pause_seconds": pause_time,
+                "effective_wpm": (len(text) / 5) * 60 / elapsed if elapsed else 0}
 
     def scroll(self, direction: str = "down", notches: int = 3) -> None:
         """

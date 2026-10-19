@@ -3,6 +3,7 @@ import { Profile, ProfileCreateRequest, ProfileUpdateRequest, SystemStats } from
 import { ProxyItem } from './types/proxy';
 import {
   fetchProfiles,
+  probeBackendConnection,
   fetchProfileGroups,
   createProfileGroup,
   createProfile,
@@ -12,6 +13,8 @@ import {
   fetchSystemStats,
   fetchProxies,
 } from './services/api';
+import { waitForBackend } from './services/backendStartup';
+import { BackendConnectionScreen } from './components/BackendConnectionScreen';
 import { Sidebar } from './components/Sidebar';
 import { VncViewer } from './components/VncViewer';
 import { ProfileDetails } from './components/ProfileDetails';
@@ -40,6 +43,10 @@ export const App: React.FC = () => {
   const [setupStatus, setSetupStatus] = useState<SetupSnapshot | null | undefined>(
     () => isDesktopApp() ? undefined : null,
   );
+  const [backendReady, setBackendReady] = useState(false);
+  const [backendError, setBackendError] = useState<string | null>(null);
+  const [connectionAttempt, setConnectionAttempt] = useState(0);
+  const [statsLoaded, setStatsLoaded] = useState(false);
   const [profileGroups, setProfileGroups] = useState<string[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [proxies, setProxies] = useState<ProxyItem[]>([]);
@@ -112,6 +119,7 @@ export const App: React.FC = () => {
 
     if (statsResult.status === 'fulfilled') {
       setSystemStats(statsResult.value);
+      setStatsLoaded(true);
     } else {
       console.error('Failed to load system stats:', statsResult.reason);
     }
@@ -144,14 +152,32 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     if (setupStatus !== null) return;
-    loadData();
+    const controller = new AbortController();
+    setBackendReady(false);
+    setBackendError(null);
+    void waitForBackend(probeBackendConnection, { signal: controller.signal })
+      .then(async () => {
+        if (controller.signal.aborted) return;
+        await loadData();
+        if (!controller.signal.aborted) setBackendReady(true);
+      })
+      .catch((error: Error) => {
+        if (!controller.signal.aborted) setBackendError(error.message);
+      });
+    return () => controller.abort();
+  }, [setupStatus, connectionAttempt]);
+
+  useEffect(() => {
+    if (setupStatus !== null || !backendReady) return;
+    let loading = false;
     const interval = setInterval(() => {
-      if (!isModalOpenRef.current) {
-        loadData();
+      if (!isModalOpenRef.current && !loading) {
+        loading = true;
+        void loadData().finally(() => { loading = false; });
       }
     }, 3000);
     return () => clearInterval(interval);
-  }, [setupStatus]);
+  }, [setupStatus, backendReady]);
 
   const selectedProfile = profiles.find((p) => p.id === selectedProfileId) || null;
 
@@ -224,6 +250,15 @@ export const App: React.FC = () => {
         }}
       />
     );
+  }
+
+  if (!backendReady) {
+    return <BackendConnectionScreen error={backendError}
+      onRetry={() => setConnectionAttempt(attempt => attempt + 1)}
+      onOpenSetup={isDesktopApp() ? () => {
+        void fetchSetupStatus().then(status => setSetupStatus(status))
+          .catch(() => setBackendError('Could not open Setup and repair. Reopen the app to try again.'));
+      } : undefined} />;
   }
 
   return (
@@ -304,7 +339,7 @@ export const App: React.FC = () => {
       </div>
 
       {/* Persistent Bottom Telemetry */}
-      <TelemetryFooter stats={systemStats} />
+      <TelemetryFooter stats={systemStats} loading={!statsLoaded} />
 
       {/* Creation Modal */}
       <CreateProfileModal

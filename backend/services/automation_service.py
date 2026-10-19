@@ -905,6 +905,7 @@ async def _execute_queue_item_inner(execution_id: str, scheduler_kind: str = "pu
         return {"success": False, "status": "failed_before_publish", "error": str(error)}
 
     worker_env = automation_worker_env()
+    worker_env["AUTOMATION_BEHAVIOR_RUN_ID"] = f"{execution_id}:{target_exec.get('retry_count', 0)}"
     if target_exec.get("cloud_attempt_id"):
         worker_env["CLOUD_EXECUTION_ID"] = execution_id
     else:

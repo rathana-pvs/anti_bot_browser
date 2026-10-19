@@ -44,6 +44,15 @@ export async function initializeBackendSession(): Promise<void> {
   authenticatedFetchInstalled = true;
 }
 
+export async function probeBackendConnection(signal: AbortSignal): Promise<number> {
+  const response = await fetch(`${API_BASE}/system/runtime-version`, { signal, cache: 'no-store' });
+  if (response.ok) {
+    const data = await response.json();
+    return typeof data?.version === 'string' ? response.status : 503;
+  }
+  return response.status;
+}
+
 export function getSharedMediaUrl(filename?: string | null): string {
   if (!filename) return '';
   if (filename.startsWith('http://') || filename.startsWith('https://')) return filename;

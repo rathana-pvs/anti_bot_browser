@@ -13,10 +13,24 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from engine.screen_state import FacebookStateRecognizer, ScreenState, StateObservation
 from engine.human_input import HumanInput
+from modules.composer_entry import EntryResult
 from engine.vision import VisionEngine
 from tasks.base_task import BaseTask
 from tasks.facebook_post import FacebookPostTask
 from tasks.facebook_reel import FacebookReelTask
+
+
+def stub_verified_entry(task):
+    def enter(text, target, **kwargs):
+        task.human.click(*target)
+        task.paste_text(text)
+        return EntryResult("entered_verified", True, "fixture")
+    task.composer_entry = Mock()
+    task.composer_entry.enter.side_effect = enter
+    task.composer_entry.last_owner = ("window", "pointer")
+    task.review_composer = Mock()
+    task.input_cancelled = False
+    task.video_path = "fixture.mp4"
 
 
 class VisionPrimitiveTests(unittest.TestCase):
@@ -66,6 +80,7 @@ class SafeClickVariationTests(unittest.TestCase):
 
     def test_reversible_click_falls_back_to_exact_target_without_bounds(self):
         task = BaseTask.__new__(BaseTask)
+        stub_verified_entry(task)
         task.human = Mock()
         task.log = Mock()
 
@@ -76,6 +91,7 @@ class SafeClickVariationTests(unittest.TestCase):
 
     def test_reversible_click_records_and_uses_confirmed_bounds(self):
         task = BaseTask.__new__(BaseTask)
+        stub_verified_entry(task)
         task.human = Mock()
         task.log = Mock()
         task.remember_reversible_click_bounds((200, 230), (100, 200, 300, 260))
@@ -323,6 +339,7 @@ class StateRecognizerTests(unittest.TestCase):
 class LoginGateTests(unittest.TestCase):
     def make_task(self, gate_observations, full_observations=None):
         task = BaseTask.__new__(BaseTask)
+        stub_verified_entry(task)
         task.client = Mock()
         task.vision = Mock()
         task.vision.detect_theme.return_value = ("dark", 0.91)
@@ -421,6 +438,7 @@ class LoginGateTests(unittest.TestCase):
 class PostPublishPromptTests(unittest.TestCase):
     def make_task(self, ocr):
         task = BaseTask.__new__(BaseTask)
+        stub_verified_entry(task)
         task.client = Mock()
         task.human = Mock()
         task.vision = Mock()
@@ -453,6 +471,7 @@ class PostPublishPromptTests(unittest.TestCase):
 class FileChooserTests(unittest.TestCase):
     def test_detects_visible_file_chooser_and_returns_matching_title(self):
         task = BaseTask.__new__(BaseTask)
+        stub_verified_entry(task)
         task.client = Mock()
 
         def exec_cmd(args, check=False):
@@ -467,6 +486,7 @@ class FileChooserTests(unittest.TestCase):
 
     def test_attachment_clicks_visual_open_without_return(self):
         task = BaseTask.__new__(BaseTask)
+        stub_verified_entry(task)
         task.client = Mock()
         task.human = Mock()
         task.vision = Mock()
@@ -504,6 +524,7 @@ class FileChooserTests(unittest.TestCase):
 class CaptionTargetTests(unittest.TestCase):
     def make_task(self, detected_text, include_modal_title=True):
         task = FacebookPostTask.__new__(FacebookPostTask)
+        stub_verified_entry(task)
         task.client = Mock()
         task.vision = Mock()
         task.record_locator_telemetry = Mock()
@@ -549,6 +570,7 @@ class CaptionTargetTests(unittest.TestCase):
 
     def test_caption_target_tolerates_one_intermittent_ocr_miss(self):
         task = FacebookPostTask.__new__(FacebookPostTask)
+        stub_verified_entry(task)
         task.client = Mock()
         task.vision = VisionEngine.__new__(VisionEngine)
         task.record_locator_telemetry = Mock()
@@ -567,6 +589,7 @@ class CaptionTargetTests(unittest.TestCase):
 class FeedComposerTargetTests(unittest.TestCase):
     def make_task(self, detected_text):
         task = FacebookPostTask.__new__(FacebookPostTask)
+        stub_verified_entry(task)
         task.client = Mock()
         task.vision = Mock()
         task.record_locator_telemetry = Mock()
@@ -592,6 +615,7 @@ class FeedComposerTargetTests(unittest.TestCase):
 class ProfileMediaTargetTests(unittest.TestCase):
     def make_task(self, detected_text):
         task = FacebookPostTask.__new__(FacebookPostTask)
+        stub_verified_entry(task)
         task.client = Mock()
         task.vision = Mock()
         task.record_locator_telemetry = Mock()
@@ -634,6 +658,7 @@ class ProfileMediaTargetTests(unittest.TestCase):
 class ActionTargetTests(unittest.TestCase):
     def make_task(self, button_text, confidence=0.95):
         task = FacebookPostTask.__new__(FacebookPostTask)
+        stub_verified_entry(task)
         task.client = Mock()
         task.vision = Mock()
         task.client.screenshot.return_value = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -680,6 +705,7 @@ class ActionTargetTests(unittest.TestCase):
 class ReelUploadTargetTests(unittest.TestCase):
     def make_task(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
         task.client = Mock()
         task.vision = Mock()
         task.client.screenshot.return_value = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -710,6 +736,7 @@ class ReelUploadTargetTests(unittest.TestCase):
 class ReelEntryFlowTests(unittest.TestCase):
     def make_task(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
         task.client = Mock()
         task.client.screenshot.return_value = np.zeros((1080, 1920, 3), dtype=np.uint8)
         task.recognizer = Mock()
@@ -1547,6 +1574,7 @@ class ReelEntryFlowTests(unittest.TestCase):
 class ReelProfileActionTests(unittest.TestCase):
     def make_task(self, ocr_items):
         task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
         task.client = Mock()
         task.vision = Mock()
         task.telemetry = None
@@ -1588,6 +1616,7 @@ class ReelProfileActionTests(unittest.TestCase):
 class PublicationVerificationTests(unittest.TestCase):
     def make_task(self, observations, similarities):
         task = FacebookPostTask.__new__(FacebookPostTask)
+        stub_verified_entry(task)
         task.caption = "new post caption"
         task.client = Mock()
         task.client.screenshot.return_value = np.zeros((100, 100, 3), dtype=np.uint8)
@@ -1681,6 +1710,7 @@ class ReelPublicationVerificationTests(unittest.TestCase):
 
     def make_task(self, observations, similarities):
         task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
         task.client = Mock()
         task.client.screenshot.return_value = np.zeros((100, 100, 3), dtype=np.uint8)
         task.recognizer = Mock()
@@ -1872,6 +1902,7 @@ class ReelPublicationVerificationTests(unittest.TestCase):
 class FirstCommentTargetTests(unittest.TestCase):
     def test_shared_comment_scan_finds_input_and_action_with_one_ocr_call(self):
         task = FacebookPostTask.__new__(FacebookPostTask)
+        stub_verified_entry(task)
         task.vision = Mock()
         task.vision.read_text.return_value = [
             {"text": "Comment", "center": (1130, 390), "confidence": 0.80},
@@ -1891,6 +1922,7 @@ class FirstCommentTargetTests(unittest.TestCase):
 
     def test_comment_scan_uses_existing_broad_region_after_narrow_miss(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
         task.vision = Mock()
         screen = np.zeros((1080, 1920, 3), dtype=np.uint8)
         task.vision.read_text.side_effect = [
@@ -1914,6 +1946,7 @@ class FirstCommentTargetTests(unittest.TestCase):
 
     def test_comment_scan_stops_after_broad_post_area(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
         task.vision = Mock()
         screen = np.zeros((1080, 1920, 3), dtype=np.uint8)
         task.vision.read_text.side_effect = [
@@ -1938,6 +1971,7 @@ class FirstCommentTargetTests(unittest.TestCase):
 
     def test_broad_post_area_does_not_consult_full_screen_results(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
         task.vision = Mock()
         screen = np.zeros((1080, 1920, 3), dtype=np.uint8)
         task.vision.read_text.side_effect = [
@@ -1954,6 +1988,7 @@ class FirstCommentTargetTests(unittest.TestCase):
 
     def test_comment_scan_never_clicks_comment_action_and_finds_input_after_scroll(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
         screen = np.zeros((1080, 1920, 3), dtype=np.uint8)
         task.client = Mock()
         task.client.screenshot.return_value = screen
@@ -1981,6 +2016,7 @@ class FirstCommentTargetTests(unittest.TestCase):
 
     def test_comment_scan_reaches_bottom_of_tall_reel_card(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
         screen = np.zeros((1080, 1920, 3), dtype=np.uint8)
         task.client = Mock()
         task.client.screenshot.return_value = screen
@@ -2004,6 +2040,7 @@ class FirstCommentTargetTests(unittest.TestCase):
 
     def test_comment_scan_defers_broad_region_during_first_local_attempt(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
         task.vision = Mock()
         task.vision.read_text.return_value = []
         screen = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -2016,6 +2053,7 @@ class FirstCommentTargetTests(unittest.TestCase):
 
     def test_comment_input_can_be_constrained_to_verified_region(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
         task.vision = Mock()
         task.vision.find_comment_input.return_value = (1120, 840)
         screen = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -2032,6 +2070,7 @@ class FirstCommentTargetTests(unittest.TestCase):
 
     def test_uses_topmost_comment_as_field(self):
         task = FacebookPostTask.__new__(FacebookPostTask)
+        stub_verified_entry(task)
         task.vision = Mock()
         task.vision.read_text.return_value = [
             {"text": "Comment as Page", "center": (900, 820), "confidence": 0.95},
@@ -2053,6 +2092,7 @@ class FirstCommentTargetTests(unittest.TestCase):
 
     def test_reel_audio_policy_dialog_preserves_selection_and_saves_once(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
         task.vision = Mock()
         task.human = Mock()
         task.log = Mock()
@@ -2086,6 +2126,7 @@ class FirstCommentTargetTests(unittest.TestCase):
 
     def test_reel_audio_policy_handler_ignores_unrelated_save_button(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
         task.vision = Mock()
         task.human = Mock()
         task.log = Mock()
@@ -2102,6 +2143,7 @@ class FirstCommentTargetTests(unittest.TestCase):
 
     def test_post_first_comment_successful_flow(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
         task.log = Mock()
         task.log_decision = Mock()
         task.capture_evidence = Mock()
@@ -2136,6 +2178,7 @@ class FirstCommentTargetTests(unittest.TestCase):
 
     def test_comment_modal_stays_open_while_submission_is_pending(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
         task.log = Mock()
         task.log_decision = Mock()
         task.capture_evidence = Mock()
@@ -2159,6 +2202,7 @@ class FirstCommentTargetTests(unittest.TestCase):
 
     def test_comment_text_containing_posting_is_not_a_pending_indicator(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
         task.log = Mock()
         task.log_decision = Mock()
         task.capture_evidence = Mock()
@@ -2181,6 +2225,7 @@ class FirstCommentTargetTests(unittest.TestCase):
 
     def test_post_first_comment_visibly_verifies_submitted_text(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
         task.log = Mock()
         task.log_decision = Mock()
         task.capture_evidence = Mock()
@@ -2212,6 +2257,7 @@ class FirstCommentTargetTests(unittest.TestCase):
 
     def test_comment_verification_accepts_text_above_low_viewport_input(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
         task.log = Mock()
         task.log_decision = Mock()
         task.capture_evidence = Mock()
@@ -2235,6 +2281,7 @@ class FirstCommentTargetTests(unittest.TestCase):
 
     def test_permalink_is_used_only_when_primary_target_is_missing(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
         task.log = Mock()
         task.log_decision = Mock()
         task.capture_evidence = Mock()
@@ -2263,6 +2310,7 @@ class FirstCommentTargetTests(unittest.TestCase):
 
     def test_comment_page_reuse_avoids_permalink_correlation_when_profile_input_exists(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
         task.post_first_comment = Mock(return_value="submitted_verified")
         task.correlate_and_extract_permalink = Mock()
 
@@ -2282,6 +2330,7 @@ class FirstCommentTargetTests(unittest.TestCase):
 
     def test_comment_page_reuse_correlates_once_only_after_profile_input_is_missing(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
         task.log = Mock()
         task.post_first_comment = Mock(side_effect=[
             "failed_input_not_found",
@@ -2326,6 +2375,7 @@ class FirstCommentTargetTests(unittest.TestCase):
 
     def test_reel_comment_refreshes_and_checks_latest_post_before_commenting(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
         task.log = Mock()
         task.navigate_to = Mock()
         task._allow_reel_profile_navigation = Mock(return_value=True)
@@ -2355,6 +2405,7 @@ class FirstCommentTargetTests(unittest.TestCase):
 
     def test_reel_comment_stops_after_refreshed_feed_has_no_input(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
         task.log = Mock()
         task.navigate_to = Mock()
         task._allow_reel_profile_navigation = Mock(return_value=True)
@@ -2379,6 +2430,7 @@ class FirstCommentTargetTests(unittest.TestCase):
 
     def test_reel_comment_waits_fifteen_seconds_and_refreshes_once_more(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
         task.log = Mock()
         task.navigate_to = Mock()
         task._allow_reel_profile_navigation = Mock(return_value=True)
@@ -2408,6 +2460,7 @@ class FirstCommentTargetTests(unittest.TestCase):
 
     def test_latest_reel_scan_scrolls_past_profile_header_and_loading_cards(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
         screen = np.zeros((100, 100, 3), dtype=np.uint8)
         task.log = Mock()
         task.client = Mock()
@@ -2430,6 +2483,7 @@ class FirstCommentTargetTests(unittest.TestCase):
 
     def test_reel_comment_skips_post_comment_warm_down(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
         task.log = Mock()
         task.log_decision = Mock()
         task.capture_evidence = Mock()
@@ -2462,6 +2516,7 @@ class FirstCommentTargetTests(unittest.TestCase):
 
     def test_comment_verification_includes_upper_modal_comment_stream(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
         task.log = Mock()
         task.log_decision = Mock()
         task.capture_evidence = Mock()
@@ -2494,6 +2549,7 @@ class FirstCommentTargetTests(unittest.TestCase):
 
     def test_comment_verification_crop_includes_right_side_link_preview(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
         task.log = Mock()
         task.log_decision = Mock()
         task.capture_evidence = Mock()
@@ -2572,6 +2628,7 @@ class FirstCommentTargetTests(unittest.TestCase):
 
     def test_comment_action_prefers_first_post(self):
         task = FacebookPostTask.__new__(FacebookPostTask)
+        stub_verified_entry(task)
         task.vision = Mock()
         task.vision.read_text.return_value = [
             {"text": "Comment", "center": (1130, 820), "confidence": 0.99},

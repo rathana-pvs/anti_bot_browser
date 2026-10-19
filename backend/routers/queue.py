@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Body
 
 from backend.config import PROFILES_DIR
+from backend.services.caption_hook import prepare_scheduled_post
 from backend.services.queue_service import (
     load_posting_queue,
     save_posting_queue,
@@ -108,6 +109,11 @@ async def create_batch(payload: dict = Body(...)):
     target_profiles = payload.get("target_profiles")
     schedule_window = payload.get("schedule_window") or {}
     posts = payload.get("posts")
+    if isinstance(posts, list):
+        try:
+            posts = [prepare_scheduled_post(post) if isinstance(post, dict) else post for post in posts]
+        except (ValueError, TypeError, AttributeError):
+            raise HTTPException(status_code=400, detail="Caption hook approval is invalid or stale; preview again") from None
 
     if not isinstance(target_profiles, list) or len(target_profiles) == 0:
         raise HTTPException(status_code=400, detail="Please select at least one target profile.")
@@ -278,6 +284,7 @@ async def create_batch(payload: dict = Body(...)):
             "type": post.get("type", "photo"),
             "media_file": post.get("media_file", ""),
             "base_caption": post.get("base_caption", ""),
+            "hook_preparation": post.get("hook_preparation"),
             "first_comment": post.get("first_comment"),
             "scrolls": max(1, int(post.get("scrolls", 4))),
             "warming_options": post.get("warming_options"),
@@ -333,6 +340,11 @@ async def create_batch(payload: dict = Body(...)):
 @router.post("/batch/{batch_id}/posts")
 async def append_batch_posts(batch_id: str, payload: dict = Body(...)):
     posts = payload.get("posts")
+    if isinstance(posts, list):
+        try:
+            posts = [prepare_scheduled_post(post) if isinstance(post, dict) else post for post in posts]
+        except (ValueError, TypeError, AttributeError):
+            raise HTTPException(status_code=400, detail="Caption hook approval is invalid or stale; preview again") from None
     if not isinstance(posts, list) or not posts:
         raise HTTPException(status_code=400, detail="Please provide at least one post item.")
     for post in posts:
@@ -422,6 +434,7 @@ async def append_batch_posts(batch_id: str, payload: dict = Body(...)):
                 "type": post.get("type", "photo"),
                 "media_file": str(post.get("media_file") or ""),
                 "base_caption": str(post.get("base_caption") or ""),
+                "hook_preparation": post.get("hook_preparation"),
                 "first_comment": post.get("first_comment"),
                 "scrolls": max(1, int(post.get("scrolls", 4))),
                 "ai_spin": post.get("ai_spin") is not False,

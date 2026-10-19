@@ -14,6 +14,7 @@ from engine.live_brain import resolve_live_brain
 from engine.runtime_paths import automation_dir
 from engine.vision import VisionEngine
 from modules.live_post_details import LivePostDetails
+from modules.live_input import LiveInput
 from modules.live_pinned_comment import LivePinnedComment
 from modules.live_producer import LiveProducerTemplates, enabled_color, label, phrase
 
@@ -22,6 +23,8 @@ class FacebookLiveTask:
     def __init__(self, profile_id, brain_package=None):
         self.client = ContainerClient(profile_id)
         self.vision = VisionEngine(self.client)
+        self.input_cancelled = False
+        self.live_input = LiveInput(self, profile_id)
         self.package = brain_package or resolve_live_brain(Path(__file__).resolve().parents[1], automation_dir())
         self.layouts = LiveProducerTemplates(self.package)
         self.template_id = None
@@ -87,6 +90,7 @@ class FacebookLiveTask:
         if p.hostname not in {'facebook.com', 'www.facebook.com'} or not p.path.startswith('/live/producer') or (expected.query and p.query != expected.query):
             self.client.navigate_to(producer_url)
         deadline = time.monotonic() + self.layouts.config['timeouts']['prepare']
+        self.preparation_deadline = deadline
         clicked = set()
         details_written = False
         while time.monotonic() < deadline:
