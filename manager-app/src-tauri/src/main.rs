@@ -6,7 +6,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
@@ -16,6 +16,7 @@ struct SetupProcess(Mutex<bool>);
 mod app_updates;
 mod reel_export;
 mod reel_import;
+mod setup_output;
 
 #[derive(Clone)]
 struct ApiSession {
@@ -1171,13 +1172,6 @@ fn reset_setup_log(app: &AppHandle) {
     }
 }
 
-fn setup_log_reports_completion(app: &AppHandle) -> bool {
-    setup_log(app).iter().any(|line| {
-        line.contains("READY: Installation completed.")
-            || line.contains("READY: Automat FB Beta installation completed successfully.")
-    })
-}
-
 #[tauri::command]
 async fn get_setup_log(app: AppHandle) -> Result<Vec<String>, String> {
     tauri::async_runtime::spawn_blocking(move || setup_log(&app))
@@ -1489,10 +1483,16 @@ fn run_setup_process(app: &AppHandle, repair: bool) -> Result<SetupRunResult, St
         .map_err(|error| format!("Could not start setup: {error}"))?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
+    let output = Arc::new(Mutex::new(setup_output::SetupOutput::default()));
+    let stdout_output = Arc::clone(&output);
+    let stderr_output = Arc::clone(&output);
     let stdout_app = app.clone();
     let stdout_thread = std::thread::spawn(move || {
         if let Some(stdout) = stdout {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if let Ok(mut output) = stdout_output.lock() {
+                    output.record(&line);
+                }
                 emit_setup_line(&stdout_app, "stdout", &line);
             }
         }
@@ -1501,6 +1501,9 @@ fn run_setup_process(app: &AppHandle, repair: bool) -> Result<SetupRunResult, St
     let stderr_thread = std::thread::spawn(move || {
         if let Some(stderr) = stderr {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                if let Ok(mut output) = stderr_output.lock() {
+                    output.record(&line);
+                }
                 emit_setup_line(&stderr_app, "stderr", &line);
             }
         }
@@ -1512,7 +1515,8 @@ fn run_setup_process(app: &AppHandle, repair: bool) -> Result<SetupRunResult, St
     let _ = stderr_thread.join();
     let code = exit.code().unwrap_or(-1);
     let restart_required = matches!(code, 10 | 11 | 12);
-    let verified_complete = !restart_required && setup_log_reports_completion(app);
+    let output = output.lock().map_err(|_| "Setup output is unavailable.")?;
+    let verified_complete = !restart_required && output.completed();
     let success = exit.success() || verified_complete;
     if !exit.success() && verified_complete {
         emit_setup_line(
@@ -1532,7 +1536,7 @@ fn run_setup_process(app: &AppHandle, repair: bool) -> Result<SetupRunResult, St
         } else if restart_required {
             "A restart or external action is required before setup can continue".into()
         } else {
-            format!("Setup stopped with exit code {code}")
+            output.failure_message(code)
         },
     })
 }

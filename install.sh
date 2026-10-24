@@ -125,7 +125,7 @@ run_checks() {
     local py_version
     py_version="$(command_version python3)"
     if version_at_least "${py_version}" "3.10"; then
-      echo "OK: Python ${py_version}"
+      echo "OK: System Python ${py_version}"
     else
       echo "ERROR: Python ${py_version} is older than 3.10"
       failures=$((failures + 1))
@@ -194,10 +194,10 @@ run_checks() {
   fi
 
   if [ -x "${ROOT_DIR}/automation/venv/bin/python" ] \
-    && "${ROOT_DIR}/automation/venv/bin/python" -c 'import fastapi, uvicorn' >/dev/null 2>&1; then
-    echo "OK: Python application runtime is ready"
+    && "${ROOT_DIR}/automation/venv/bin/python" -c 'import sys; assert sys.version_info[:2] == (3, 12); import fastapi, uvicorn' >/dev/null 2>&1; then
+    echo "OK: Python 3.12 application runtime is ready"
   elif [ -x "${ROOT_DIR}/automation/venv/bin/python" ]; then
-    echo "INFO: Python virtual environment exists, but application packages need installation"
+    echo "INFO: Python 3.12 application environment or its packages need installation"
     warnings=$((warnings + 1))
   else
     echo "INFO: Python virtual environment needs installation"
@@ -374,8 +374,8 @@ install_system_dependencies() {
 install_application() {
   echo
   echo "Setting up Python automation environment..."
-  python3 -m venv "${ROOT_DIR}/automation/venv"
-  "${ROOT_DIR}/automation/venv/bin/python" -m pip install --upgrade pip wheel
+  python3 "${ROOT_DIR}/automation/bootstrap_python_runtime.py" "${ROOT_DIR}"
+  "${ROOT_DIR}/automation/venv/bin/python" -m pip install --upgrade pip 'setuptools<81' wheel
   "${ROOT_DIR}/automation/venv/bin/python" "${ROOT_DIR}/automation/bootstrap_torch_runtime.py"
   "${ROOT_DIR}/automation/venv/bin/python" -m pip uninstall -y opencv-python
   "${ROOT_DIR}/automation/venv/bin/python" -m pip install -r "${ROOT_DIR}/automation/requirements.txt"

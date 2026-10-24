@@ -216,6 +216,11 @@ jobs must finish first. An independently managed worker service must be stopped
 by its service manager, then reopen the app before repairing its runtime; this button does not replace
 or stop that background service automatically.
 
+Setup uses Python 3.12 for the pinned OCR dependencies. If a compatible local
+interpreter is unavailable, it downloads a private copy under the application
+runtime. It preserves an incompatible virtual environment as a backup before
+replacing it, without changing the system Python or browser profile data.
+
 The desktop Install/Repair action also installs the Mesa diagnostics and
 drivers used by browser acceleration. Profile startup supports native Linux
 `/dev/dri` devices and the WSL2 `/dev/dxg` bridge. `host_gpu` is the default;
