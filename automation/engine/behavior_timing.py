@@ -3,7 +3,9 @@ import time
 
 
 class EntryInterrupted(RuntimeError):
-    pass
+    def __init__(self, message, reason='input_ownership_lost'):
+        super().__init__(message)
+        self.reason = reason
 
 
 class InteractionWait:
@@ -22,7 +24,9 @@ class InteractionWait:
     def checkpoint(self):
         self.check()
         if self.surface_guard is not None and not self.surface_guard():
-            raise EntryInterrupted("Composer is no longer confirmed")
+            raise EntryInterrupted("Composer is no longer confirmed", 'composer_unconfirmed')
+        # OCR can take seconds. Ownership must still hold after that read.
+        self.check()
 
     def pause(self, seconds):
         end = self.clock() + max(0, seconds)

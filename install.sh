@@ -151,7 +151,7 @@ run_checks() {
     failures=$((failures + 1))
   fi
 
-  local required_tools=(jq zip unzip rsync curl)
+  local required_tools=(jq zip unzip rsync curl ffmpeg ffprobe)
   if [ "${DESKTOP_SETUP}" = false ]; then required_tools+=(npm); fi
   for tool in "${required_tools[@]}"; do
     if command -v "${tool}" >/dev/null 2>&1; then
@@ -333,7 +333,7 @@ install_system_dependencies() {
   apt_get install -y \
     ca-certificates curl gnupg jq zip unzip rsync python3 python3-venv python3-pip \
     build-essential iproute2 mesa-utils libgl1-mesa-dri mesa-vulkan-drivers vulkan-tools \
-    tesseract-ocr tesseract-ocr-eng
+    tesseract-ocr tesseract-ocr-eng ffmpeg libraqm0
 
   if [ "${DESKTOP_SETUP}" = false ]; then
     local node_ok=false

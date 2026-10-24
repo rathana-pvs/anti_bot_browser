@@ -135,6 +135,37 @@ def test_composer_closure_prevents_insertion():
     task.paste_text.assert_not_called()
 
 
+def test_composer_interruption_records_specific_reason():
+    task, entry = fixture_task()
+    entry.read_field = Mock(return_value='')
+    result = entry.enter('https://example.com', (2, 3), surface_guard=lambda: False)
+    assert result.interruption_reason == 'composer_unconfirmed'
+    assert task.telemetry.record_step.call_args.kwargs['interruption_reason'] == 'composer_unconfirmed'
+
+
+@pytest.mark.parametrize('owner,reason', [
+    (('other', '10,20'), 'focus_changed'),
+    (('chrome', '11,20'), 'pointer_moved'),
+])
+def test_real_ownership_guard_distinguishes_focus_from_pointer(owner, reason):
+    task, entry = fixture_task()
+    task.client.input_owner.return_value = owner
+    waiter = ComposerEntry.waiter(entry, ('chrome', '10,20'))
+    with pytest.raises(EntryInterrupted) as error:
+        waiter.check()
+    assert error.value.reason == reason
+
+
+def test_checkpoint_rechecks_ownership_after_slow_surface_read():
+    owned = [True]
+    def surface():
+        owned[0] = False
+        return True
+    waiter = InteractionWait(guard=lambda: owned[0], surface_guard=surface)
+    with pytest.raises(EntryInterrupted):
+        waiter.checkpoint()
+
+
 def test_empty_clipboard_marker_requires_current_placeholder_confirmation():
     task, entry = fixture_task()
     marker = []

@@ -5,6 +5,9 @@ import { AutomationTaskState, CreateBatchParams } from '../types/automation';
 import { createBatch, fetchAutomationTasks, stopAutomation, uploadMediaFiles, getSharedMediaUrl } from '../services/api';
 import { LivePage } from './LivePage';
 import { BatchPostCreator } from './BatchPostCreator';
+import { ReelCreator } from './reel-creator/ReelCreator';
+import { ReelCreatorBoundary } from './reel-creator/ReelCreatorBoundary';
+import type { CreatedReelMedia } from '../types/reelCreator';
 import { PostingQueuePanel } from './PostingQueuePanel';
 import { ResourceModeControl } from './ResourceModeControl';
 import { GroupedProfileSelector } from './GroupedProfileSelector';
@@ -47,7 +50,13 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
   onToggleSidebar,
 }) => {
   const { showAlert, showToast } = useAppDialog();
-  const [activeMainTab, setActiveMainTab] = useState<'batch_creator' | 'queue_monitor' | 'instant' | 'live'>('batch_creator');
+  const [activeMainTab, setActiveMainTab] = useState<'batch_creator' | 'queue_monitor' | 'instant' | 'live' | 'reel_creator'>('batch_creator');
+  const [incomingReel, setIncomingReel] = useState<CreatedReelMedia | null>(null);
+  const consumeIncomingReel = useCallback(() => setIncomingReel(null), []);
+  const useCreatedReel = useCallback((media: CreatedReelMedia) => {
+    setIncomingReel(media);
+    setActiveMainTab('batch_creator');
+  }, []);
   const [taskType, setTaskType] = useState<'warming' | 'post'>('warming');
   const [selectedProfileIds, setSelectedProfileIds] = useState<string[]>([]);
   const [scrolls, setScrolls] = useState<number>(4);
@@ -263,6 +272,12 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
           <span>📅 Daily Batch Creator</span>
         </button>
 
+        <button type="button" onClick={() => setActiveMainTab('reel_creator')}
+          aria-current={activeMainTab === 'reel_creator' ? 'page' : undefined}
+          className={`flex shrink-0 items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-semibold transition-all ${activeMainTab === 'reel_creator' ? 'border-violet-500 bg-violet-950/20 text-violet-400' : 'border-transparent text-zinc-400 hover:text-zinc-200'}`}>
+          <Film className="h-3.5 w-3.5 text-violet-400" /><span>Reel Creator</span>
+        </button>
+
         <button type="button" onClick={() => setActiveMainTab('live')}
           aria-current={activeMainTab === 'live' ? 'page' : undefined}
           className={`flex shrink-0 items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-semibold transition-all ${activeMainTab === 'live' ? 'border-rose-500 bg-rose-950/20 text-rose-400' : 'border-transparent text-zinc-400 hover:text-zinc-200'}`}>
@@ -287,6 +302,8 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
         <BatchPostCreator
           profiles={profiles}
           onBatchCreated={() => setActiveMainTab('queue_monitor')}
+          incomingReel={incomingReel}
+          onIncomingReelConsumed={consumeIncomingReel}
         />
       </div>
 
@@ -296,6 +313,10 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
 
       <div className={`flex min-h-0 flex-1 overflow-hidden ${activeMainTab === 'live' ? '' : 'hidden'}`}>
         <LivePage profiles={profiles} onEditProfile={onEditProfile} onSelectProfile={onSelectProfile} />
+      </div>
+
+      <div className={`min-h-0 flex-1 overflow-y-auto ${activeMainTab === 'reel_creator' ? '' : 'hidden'}`}>
+        <ReelCreatorBoundary><ReelCreator active={activeMainTab === 'reel_creator'} onUseReel={useCreatedReel} /></ReelCreatorBoundary>
       </div>
 
       <div className={`flex-1 grid grid-cols-12 gap-6 p-6 overflow-hidden ${activeMainTab === 'instant' ? '' : 'hidden'}`}>

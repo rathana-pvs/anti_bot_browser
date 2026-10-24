@@ -14,6 +14,8 @@ use uuid::Uuid;
 struct BackendProcess(Mutex<Option<Child>>);
 struct SetupProcess(Mutex<bool>);
 mod app_updates;
+mod reel_export;
+mod reel_import;
 
 #[derive(Clone)]
 struct ApiSession {
@@ -1808,12 +1810,16 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(app_updates::AppUpdates::default())
         .manage(SetupProcess(Mutex::new(false)))
         .invoke_handler(tauri::generate_handler![
             get_api_session,
             save_support_bundle,
+            reel_export::export_reel_video,
+            reel_import::pick_reel_audio,
+            reel_import::pick_reel_images,
             get_setup_status,
             get_setup_log,
             run_setup,

@@ -1022,11 +1022,14 @@ class BaseTask:
             self.capture_evidence("file_chooser_open_failed")
             return False
 
-        # Re-focus Chrome window
-        chrome_res = self.client.exec_cmd(["xdotool", "search", "--class", "google-chrome"], check=False)
-        if chrome_res.returncode == 0 and chrome_res.stdout.strip():
-            chrome_win = chrome_res.stdout.strip().split()[-1]
-            self.client.exec_cmd(["xdotool", "windowfocus", str(chrome_win)], check=False)
+        # GTK and Chromium helpers also match the Chrome class. The last
+        # search result can be a tiny helper, leaving X11 focus on the root
+        # after the chooser closes. Restore the largest visible browser window
+        # synchronously before returning to composer input.
+        if self.client.ensure_focus() <= 0:
+            self.log("ERROR", "Chrome window was not found after file attachment.")
+            self.capture_evidence("file_chooser_browser_focus_failed")
+            return False
 
         return True
 

@@ -15,6 +15,7 @@ class EntryResult:
     status: str
     verified: bool = False
     verification: str = 'unconfirmed'
+    interruption_reason: str | None = None
 
 
 class ComposerEntry:
@@ -27,9 +28,16 @@ class ComposerEntry:
     def waiter(self, owner, deadline=None, surface_guard=None):
         task = self.task
         def guard():
-            if getattr(task, 'input_cancelled', False) or (deadline is not None and time.monotonic() >= deadline):
-                return False
-            return task.client.input_owner() == owner
+            if getattr(task, 'input_cancelled', False):
+                raise EntryInterrupted('Execution cancelled', 'cancelled')
+            if deadline is not None and time.monotonic() >= deadline:
+                raise EntryInterrupted('Entry deadline reached', 'deadline_exceeded')
+            current_owner = task.client.input_owner()
+            if current_owner[0] != owner[0]:
+                raise EntryInterrupted('Window focus changed', 'focus_changed')
+            if current_owner[1] != owner[1]:
+                raise EntryInterrupted('Pointer moved', 'pointer_moved')
+            return True
         return InteractionWait(guard=guard, surface_guard=surface_guard, progress=lambda: task.log('INFO', 'Caption entry/review in progress.'))
 
     def read_field(self, waiter, empty_confirmed=False):
@@ -62,14 +70,17 @@ class ComposerEntry:
         task.capture_evidence('caption_entry_plan', **plan.summary())
         started = time.monotonic()
         stats = {}
+        interruption_reason = None
         status = 'entry_unconfirmed'
         try:
             if getattr(task, 'input_cancelled', False):
-                raise EntryInterrupted('Execution cancelled before focus')
+                raise EntryInterrupted('Execution cancelled before focus', 'cancelled')
             task.human.click(*target)
             owner = task.client.input_owner()
-            if owner[0] != str(task.client.get_chrome_window()):
-                raise EntryInterrupted('Expected Chrome window is not focused')
+            chrome_window = str(task.client.get_chrome_window())
+            if owner[0] != chrome_window:
+                task.log('WARNING', f'Caption focus mismatch: focused_window={owner[0]}, chrome_window={chrome_window}.')
+                raise EntryInterrupted('Expected Chrome window is not focused', 'chrome_not_focused')
             self.last_owner = owner
             waiter = self.waiter(owner, deadline, surface_guard)
             waiter.pause(self.timing.sample(.15, .25, .4))
@@ -103,9 +114,11 @@ class ComposerEntry:
             self.completed[key] = True
             status = 'entered_verified'
             return EntryResult(status, True, 'clipboard_exact')
-        except EntryInterrupted:
+        except EntryInterrupted as exc:
             status = 'interrupted'
-            return EntryResult(status)
+            interruption_reason = exc.reason
+            task.log('WARNING', f'Caption entry interrupted: {interruption_reason}.')
+            return EntryResult(status, interruption_reason=interruption_reason)
         except ClipboardFailure:
             status = 'clipboard_failed'
             return EntryResult(status)
@@ -114,5 +127,7 @@ class ComposerEntry:
             status = 'entry_unconfirmed'
             return EntryResult(status)
         finally:
+            if interruption_reason is not None:
+                stats['interruption_reason'] = interruption_reason
             task.telemetry.record_step('caption_entry', (time.monotonic() - started) * 1000,
                                        outcome=status, **plan.summary(), **stats)

@@ -24,9 +24,10 @@ class ChromeWindowDiscoveryTests(unittest.TestCase):
 
     def test_returns_largest_visible_chrome_window(self):
         self.client.exec_cmd.side_effect = [
-            completed(stdout="101\n202\n"),
+            completed(stdout="101\n202\n303\n"),
             completed(stdout="Geometry: 800x600\n"),
             completed(stdout="Geometry: 1280x720\n"),
+            completed(stdout="Geometry: 10x10\n"),
         ]
 
         self.assertEqual(self.client.get_chrome_window(), 202)

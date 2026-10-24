@@ -1209,9 +1209,22 @@ class FacebookReelTask(BaseTask):
         return False, last_screen, best_confidence
 
     def _caption_entry_surface_visible(self):
-        screen = self.client.screenshot()
-        return (self._is_reel_final_composer(screen, allow_layout_fallback=True)
-                or self._is_reel_next_share_composer(screen))
+        # Reel settings can briefly replace controls with loading placeholders
+        # while copyright/media checks update. Reobserve before treating one
+        # OCR miss as a closed composer; never insert while unconfirmed.
+        waiter = self.composer_entry.waiter(self.composer_entry.last_owner)
+        for attempt in range(3):
+            waiter.check()
+            screen = self.client.screenshot()
+            visible = (self._is_reel_final_composer(screen, allow_layout_fallback=True)
+                       or self._is_reel_next_share_composer(screen))
+            waiter.check()
+            if visible:
+                return True
+            if attempt < 2:
+                self.log('INFO', 'Reel composer is transitional; rechecking before caption entry.')
+                waiter.pause(0.3)
+        return False
 
     def _enter_reel_caption(self, timeout: float) -> tuple[str, object | None]:
         """Enter and verify the caption while media processing continues.
@@ -1245,7 +1258,9 @@ class FacebookReelTask(BaseTask):
             deadline=time.monotonic() + 300,
         )
         if not entry.verified:
-            return "verification_failed", screen
+            self.log('WARNING', f'Reel caption entry stopped: {entry.status}'
+                     + (f' ({entry.interruption_reason})' if entry.interruption_reason else '') + '.')
+            return "verification_failed", self.client.screenshot()
         try:
             self.review_composer(self.caption, self.video_path or "")
         except Exception:
@@ -1691,7 +1706,7 @@ class FacebookReelTask(BaseTask):
             if early_caption_status == "verification_failed":
                 return self._fail(
                     "reel_caption_not_entered",
-                    "The Reel caption could not be visually verified after two input methods; publication was stopped.",
+                    "The Reel caption entry was not confirmed; publication was stopped. See caption entry diagnostics for the reason.",
                     early_caption_screen,
                 )
             if early_caption_status == "unavailable":
@@ -1774,7 +1789,7 @@ class FacebookReelTask(BaseTask):
             if caption_status == "verification_failed":
                 return self._fail(
                     "reel_caption_not_entered",
-                    "The Reel caption could not be visually verified after two input methods; publication was stopped.",
+                    "The Reel caption entry was not confirmed; publication was stopped. See caption entry diagnostics for the reason.",
                     caption_screen,
                 )
         elif self.caption:

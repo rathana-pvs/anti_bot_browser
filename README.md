@@ -108,6 +108,21 @@ need operator review. Image/video analysis is a later enhancement. See
 
 ## 🛠️ Supported Automation Workflows
 
+**Studio Center → Reel Creator** turns one to five photos into a local news-style Reel.
+Photos play for five seconds each and repeat until the video ends, including single-photo animation loops.
+Choose gentle zoom, zoom in/out, fade, pan, or still. Turn subtitles off for a larger headline.
+New reels default to 1080p/30 fps; Advanced holds timing, 720p/1080p resolution,
+24/30/60 fps, music, branding, and layout. Previous motion presets and layouts remain available.
+Preserve full images or crop to fill,
+add optional Khmer/English text, branding and music, preview, then export MP4 or
+append it to the existing Reel posting draft. Paste an article link or full text
+to prepare scene text and a post caption with your saved Gemini model. Choose the template and settings first, then review and apply the suggestions. Local text-fit checks flag settings changes; adaptation and scene shortening run only when requested.
+Optional English narration has its own editable article-based script and voice
+preview. Online `edge-tts` prepares speech once; local exports reuse that recording
+and automatically lower background music while it speaks.
+Three original news soundtracks are included offline. Rendering does not publish. See
+[Reel Creator setup and limits](docs/REEL_CREATOR.md).
+
 The **Studio Center → Facebook Live** tab broadcasts uploaded videos without a camera. Save streaming
 settings in Edit profile, select videos and profiles, use Automatic playback or choose Manual loop/duration
 settings, enter each video’s title, caption and optional preset pinned comment, and start now or schedule. Track progress and stop streams in Live queue.
@@ -262,13 +277,28 @@ npm install
 npm run build
 ```
 
-Start the backend and development dashboard:
+For **browser development without rebuilding the desktop app**, close the
+installed desktop first, then run this from the source checkout (Linux/WSL):
+
 ```bash
 cd manager-app
-npm start
+npm run dev:web
 ```
-* Backend API: `http://localhost:3001`
-* Frontend Dashboard: `http://localhost:5173`
+
+Open **http://127.0.0.1:5173**. React/CSS changes reload automatically. Stop with
+Ctrl+C and rerun the command after Python changes; no desktop build or install
+is needed. `npm start` runs the same development launcher.
+
+This uses the existing desktop profiles, queues, media and settings under
+`~/.local/share/com.isolatedbrowser.manager/runtime`. Set `AUTOMAT_FB_ROOT` to use
+a different initialized data root. The launcher respects the same backend lock
+as the desktop and refuses to start a second scheduler against that data.
+
+Both servers listen on loopback only. Vite proxies the API and media to a
+random-port authenticated source backend; its session token stays in the
+server process and is not included in browser JavaScript. This is a local
+development workflow. Browser mode uses normal file pickers/downloads; native
+setup, update and desktop integration actions require the desktop app.
 
 To open the native desktop app during development:
 ```bash

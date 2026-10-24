@@ -31,6 +31,17 @@ if [ ! -x "$BUILD_PYTHON" ]; then BUILD_PYTHON="python3"; fi
   --exclude-module pytest \
   --add-data "${ROOT_DIR}/automation/brains:automation/brains" \
   --add-data "${ROOT_DIR}/automation/templates:automation/templates" \
+  --add-data "${ROOT_DIR}/backend/services/reel_creator/fonts:backend/services/reel_creator/fonts" \
+  --add-data "${ROOT_DIR}/backend/services/reel_creator/audio:backend/services/reel_creator/audio" \
+  --collect-submodules fontTools.ttLib.tables \
+  --collect-data trafilatura \
+  --collect-data cv2 \
+  --collect-data certifi \
+  --collect-submodules edge_tts \
+  --collect-data courlan \
+  --collect-data justext \
+  --collect-data tld \
+  --collect-submodules dateparser.data.date_translation_data \
   backend/main.py
 
 echo "==> Sidecar binary built at: ${DIST_DIR}/backend_server"

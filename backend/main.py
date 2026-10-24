@@ -1,4 +1,5 @@
 import os
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -37,6 +38,7 @@ from backend.routers import (
     system,
     worker,
     live,
+    reel_creator,
 )
 
 configure_structured_logging()
@@ -66,9 +68,11 @@ async def lifespan(app: FastAPI):
                 extra={"event": "backend_started", "stage": "ready" if shared_ocr.get("url") else "ocr_local_fallback"},
             )
             await worker_service.start()
+            reel_creator.get_service().start()
             session_path = publish_session()
             yield
         finally:
+            await asyncio.to_thread(reel_creator.get_service().stop)
             await worker_service.stop()
             # Shutdown
             container_lifecycle.SHUTTING_DOWN = True
@@ -101,6 +105,7 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["Content-Type", "X-Manager-Token"],
+    expose_headers=["X-Reel-Warnings"],
 )
 
 # Register API Routers
@@ -117,6 +122,7 @@ app.include_router(support.router)
 app.include_router(system.router)
 app.include_router(worker.router)
 app.include_router(live.router)
+app.include_router(reel_creator.router)
 
 # Mount /shared_media static directory
 if not SHARED_MEDIA_DIR.exists():
