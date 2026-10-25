@@ -259,4 +259,21 @@ def test_content_changed_during_review_blocks_publication():
     task.telemetry = Mock()
     with pytest.raises(ClipboardFailure, match='changed during review'):
         task.review_composer('requested caption')
-    task.telemetry.record_step.assert_not_called()
+    assert task.telemetry.record_step.call_args.kwargs['reason'] == 'caption_changed_after_review'
+
+
+@pytest.mark.parametrize('observed,reason', [('', 'caption_empty_after_review'),
+                                         (None, 'caption_unreadable_after_review')])
+def test_review_reports_empty_and_unreadable_without_exposing_contents(observed, reason):
+    from modules.composer_entry import CaptionReviewFailure
+    task = BaseTask.__new__(BaseTask)
+    task.composer_entry = Mock()
+    task.composer_entry.last_owner = ('chrome', '10,20')
+    task.composer_entry.read_field.return_value = observed
+    task.composer_review = Mock()
+    task.composer_review.review.return_value = 2
+    task.telemetry = Mock()
+    with pytest.raises(CaptionReviewFailure) as failure:
+        task.review_composer('private requested caption')
+    assert failure.value.reason == reason
+    assert 'private requested caption' not in str(failure.value)

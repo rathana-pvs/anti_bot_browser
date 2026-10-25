@@ -9,6 +9,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from automation.engine.runtime_paths import runtime_root
 from automation.engine.ocr_reader import selected_engine
+from automation.engine.ocr_runtime_paths import shared_ocr_python
 
 # Paths
 BACKEND_DIR = Path(__file__).resolve().parent
@@ -114,6 +115,7 @@ def get_host_timezone() -> str:
 OCR_ENGINE_OVERRIDE = bool(os.environ.get("AUTOMATION_OCR_ENGINE", "").strip())
 OCR_ENGINE = selected_engine()
 os.environ["AUTOMATION_OCR_ENGINE"] = OCR_ENGINE
+OCR_PYTHON = shared_ocr_python(ROOT_DIR, OCR_ENGINE, AUTOMATION_PYTHON)
 
 # OCR Runtime Detection
 def detect_nvidia_gpu() -> tuple[bool, str | None]:
@@ -139,7 +141,7 @@ def detect_nvidia_gpu() -> tuple[bool, str | None]:
 def probe_ocr_cuda() -> tuple[bool, str | None]:
     """Probe the interpreter that actually runs OCR, including packaged desktops."""
     result = subprocess.check_output(
-        [str(AUTOMATION_PYTHON), "-c",
+        [str(OCR_PYTHON), "-c",
          "import json,sys; sys.path.insert(0, " + repr(str(AUTOMATION_RUNNER.parent)) + "); "
          "from engine.ocr_reader import probe_cuda; print(json.dumps(probe_cuda()))"],
         text=True,
@@ -182,3 +184,5 @@ def detect_ocr_runtime():
     }
 
 OCR_RUNTIME = detect_ocr_runtime()
+if OCR_RUNTIME['device'] == 'cpu':
+    OCR_PYTHON = AUTOMATION_PYTHON

@@ -10,6 +10,13 @@ class ClipboardFailure(RuntimeError):
     """Clipboard dispatch failed; insertion may be uncertain. Never type fallback."""
 
 
+class CaptionReviewFailure(ClipboardFailure):
+    """A reason code safe to record without caption or clipboard contents."""
+    def __init__(self, reason):
+        self.reason = reason
+        super().__init__('Caption changed during review; no publish action permitted')
+
+
 @dataclass(frozen=True)
 class EntryResult:
     status: str

@@ -17,7 +17,7 @@ from engine.runtime_paths import profiles_dir
 from engine.evidence import EvidenceRecorder
 from engine.human_input import HumanInput
 from engine.behavior_profile import load_behavior_session
-from modules.composer_entry import ComposerEntry, ClipboardFailure
+from modules.composer_entry import ComposerEntry, ClipboardFailure, CaptionReviewFailure
 from modules.composer_review import ComposerReview
 from engine.post_publish_prompt import PostPublishPromptHandler
 from engine.screen_state import FacebookStateRecognizer, ScreenState, StateObservation
@@ -685,8 +685,14 @@ class BaseTask:
         )
         if caption and hasattr(self.composer_entry, "last_owner"):
             waiter = self.composer_entry.waiter(owner)
-            if self.composer_entry.read_field(waiter) != caption:
-                raise ClipboardFailure("Caption changed during review; no publish action permitted")
+            observed = self.composer_entry.read_field(waiter)
+            if observed != caption:
+                reason = ('caption_empty_after_review' if observed == '' else
+                          'caption_unreadable_after_review' if observed is None else
+                          'caption_changed_after_review')
+                self.telemetry.record_step('composer_review', duration * 1000,
+                                           outcome='unconfirmed', reason=reason)
+                raise CaptionReviewFailure(reason)
         self.telemetry.record_step("composer_review", duration * 1000, outcome="completed")
 
     @staticmethod

@@ -102,6 +102,38 @@ class FakePublishTask:
 
 
 class PublishingPipelineTests(unittest.TestCase):
+    def test_unconfirmed_reel_stops_for_review_after_one_publish_attempt(self):
+        from unittest.mock import Mock
+
+        task = FakePublishTask()
+        original_run = task.run
+
+        def publish_without_confirmation():
+            original_run()
+            task.result_status = 'pending_profile_verification'
+            return True
+
+        def uncertain(code, message):
+            task.result_status = 'uncertain'
+            task.result_error = code
+            return False
+
+        task.run = publish_without_confirmation
+        task._refresh_until_latest_reel_visible = Mock(return_value=False)
+        task._uncertain = Mock(side_effect=uncertain)
+        task._failed_after_publish = Mock()
+        orchestrator, context = build_publishing_pipeline(
+            task, content_type='reel', comment_text='comment')
+        result = orchestrator.run(context)
+
+        self.assertEqual(task.run_calls, 1)
+        self.assertEqual(task.result_status, 'uncertain')
+        self.assertEqual(result.outcome, 'uncertain')
+        self.assertEqual(result.stopped_at, 'publication_result_verifier')
+        self.assertEqual(result.module_results['comment'].outcome, 'skipped')
+        task._uncertain.assert_called_once()
+        task._failed_after_publish.assert_not_called()
+
     def test_image_verification_failure_skips_comment(self):
         task = FakePublishTask()
         task._verify_latest_image_post = lambda: False

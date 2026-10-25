@@ -263,10 +263,15 @@ cd automation
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+python bootstrap_paddle_runtime.py
 # Restore the common OpenCV module after EasyOCR installs its headless dependency.
 pip install --force-reinstall --no-deps opencv-contrib-python==4.10.0.84
 python bootstrap_ocr_models.py --engine all
 ```
+Paddle GPU setup uses a separate environment under `data/python-runtime` so its
+CUDA 12 cuDNN libraries do not overwrite PyTorch/EasyOCR's CUDA 13 libraries.
+The backend probes and starts the shared Paddle OCR worker with that interpreter;
+automation processes retain their normal environment and local CPU fallback.
 Setup downloads pinned Paddle models and EasyOCR weights once; normal inference
 uses local assets. `install.sh` performs these steps automatically.
 

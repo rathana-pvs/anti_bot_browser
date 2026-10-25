@@ -584,7 +584,9 @@ class CaptionTargetTests(unittest.TestCase):
             {"text": "Create post", "center": (952, 399), "confidence": 0.99},
             {"text": "What's on your mind?", "center": (787, 517), "confidence": 0.92},
         ]
-        task.vision.read_text = Mock(side_effect=[detected, [], detected])
+        modal_reads = iter([detected, [], detected])
+        task.vision.read_text = Mock(side_effect=lambda *args, **kwargs:
+                                    next(modal_reads) if kwargs['region'][0] else [])
 
         with unittest.mock.patch("engine.vision.time.sleep", return_value=None):
             self.assertEqual(task._stable_caption_target(), (787, 517))

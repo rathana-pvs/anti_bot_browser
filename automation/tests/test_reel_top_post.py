@@ -143,3 +143,70 @@ def test_timestamp_after_separate_published_by_attribution_is_parsed():
     for age, accepted in [('9m', True), ('19m', False), ('1 hour ago', False)]:
         rows = [header(age)[0], item('Published by Editor Name', 1060, 625), item(age, 1300, 625)]
         assert evaluate_header(rows, region, 1080)['accepted'] is accepted
+
+
+@pytest.mark.parametrize('age,seconds,accepted', [
+    ('Just now', 0, True), ('1m', 60, True), ('10m', 600, False),
+    ('1 hour ago', 3600, False),
+])
+@pytest.mark.parametrize('layout', ['bare', 'joined_attribution', 'split_attribution'])
+def test_numeric_page_name_does_not_replace_timestamp_row(age, seconds, accepted, layout):
+    region, _ = first_header_region(toolbar(), 1920, 1080)
+    rows = [item('News 429M', 1060, 600, .988)]
+    if layout == 'bare':
+        rows.append(item(age, 1060, 625))
+    elif layout == 'joined_attribution':
+        rows.append(item('Published by Editor · ' + age, 1060, 625))
+    else:
+        rows.extend([item('Published by Editor', 1060, 625), item(age, 1350, 625)])
+    # Neither a later caption nor a later post may supply the timestamp.
+    rows.extend([item('Just now', 1060, 680), item('1m', 1060, 850)])
+    result = evaluate_header(rows, region, 1080)
+    assert result['age_seconds'] == seconds
+    assert result['accepted'] is accepted
+
+
+@pytest.mark.parametrize('age', ['Im', 'Yesterday', 'unreadable'])
+def test_numeric_author_with_unreadable_timestamp_does_not_use_caption(age):
+    region, _ = first_header_region(toolbar(), 1920, 1080)
+    rows = [item('News 429M', 1060, 600), item(age, 1060, 625),
+            item('Just now', 1060, 660)]
+    result = evaluate_header(rows, region, 1080)
+    assert result == {'accepted': False, 'reason': 'top_timestamp_unreadable'}
+
+
+def test_numeric_author_with_conflicting_timestamp_reads_remains_unconfirmed():
+    region, _ = first_header_region(toolbar(), 1920, 1080)
+    rows = [item('News 429M', 1060, 600), item('1m', 1060, 625),
+            item('2h', 1300, 625)]
+    assert evaluate_header(rows, region, 1080)['reason'] == 'ambiguous_top_timestamp'
+
+
+@pytest.mark.parametrize('age,seconds', [('Just now', 0), ('1m', 60)])
+def test_saved_account_1_header_layout(age, seconds):
+    # Example OCR boxes follow the two saved failure screenshots at 1920x1080.
+    region = (1030, 823, 700, 129)
+    rows = [dict(text='News 429M', bounds=(1105, 843, 1188, 859), confidence=.988),
+            dict(text='Published by Selenia P. Jenny · ' + age,
+                 bounds=(1105, 863, 1370, 878), confidence=.99)]
+    result = evaluate_header(rows, region, 1080)
+    assert result['accepted']
+    assert result['age_seconds'] == seconds
+
+
+def test_unreadable_timestamp_retry_crops_below_author_and_above_caption():
+    region = (1030, 823, 700, 129)
+    screen = np.zeros((1080, 1920, 3), dtype=np.uint8)
+    screen[843:859] = 50  # author row
+    screen[863:878] = 100  # timestamp row
+    screen[893:910] = 200  # caption
+    header = [dict(text='News 429M', bounds=(1105, 843, 1188, 859), confidence=.99),
+              dict(text='Im', bounds=(1105, 863, 1129, 878), confidence=.99)]
+    vision = Mock()
+    vision.read_text.return_value = []
+    _, result = retry_unreadable_header(vision, screen, region, header)
+    enlarged = vision.read_text.call_args.args[0]
+    assert 100 in enlarged
+    assert 50 not in enlarged
+    assert 200 not in enlarged
+    assert not result['accepted']  # Never rewrite Im into a numeric age.

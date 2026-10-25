@@ -380,6 +380,7 @@ install_application() {
   "${ROOT_DIR}/automation/venv/bin/python" -m pip uninstall -y opencv-python
   "${ROOT_DIR}/automation/venv/bin/python" -m pip install -r "${ROOT_DIR}/automation/requirements.txt"
   "${ROOT_DIR}/automation/venv/bin/python" -m pip install -r "${ROOT_DIR}/backend/requirements.txt"
+  "${ROOT_DIR}/automation/venv/bin/python" "${ROOT_DIR}/automation/bootstrap_paddle_runtime.py"
   # EasyOCR/headless and PaddleX/contrib share cv2; restore the aligned contrib build last.
   "${ROOT_DIR}/automation/venv/bin/python" -m pip install --force-reinstall --no-deps opencv-contrib-python==4.10.0.84
   "${ROOT_DIR}/automation/venv/bin/python" "${ROOT_DIR}/automation/bootstrap_ocr_models.py"
