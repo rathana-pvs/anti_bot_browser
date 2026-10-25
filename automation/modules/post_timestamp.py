@@ -87,6 +87,14 @@ def parse_header_timestamp(text):
     if parsed is not None:
         return parsed
     words = clean_text(text).split()
+    # Do not turn an author's name such as "News 429M" into "429 minutes".
+    # A suffix is eligible only with attribution or a visible row separator.
+    # Bare timestamps (including "1m") were already handled above.
+    attribution = re.match(r'^(?:published|posted)\s+by\b', clean_text(text))
+    separated = re.search(r'\s+[·•]\s*', text)
+    about = clean_text(text).startswith('about ')
+    if not (attribution or separated or about):
+        return None
     # Attribution can share the row with the timestamp. Only its trailing suffix
     # is eligible; date-like text elsewhere in a card cannot reach this function.
     for index, word in enumerate(words):

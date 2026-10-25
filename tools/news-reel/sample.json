@@ -1,0 +1,39 @@
+{
+  "brand": "THE DAILY BRIEF",
+  "category": "COMMUNITY",
+  "source": "Fictional story \u00b7 template demonstration",
+  "date": "SAMPLE \u2014 NOT A REAL NEWS REPORT",
+  "accent": "#caff69",
+  "scenes": [
+    {
+      "label": "THE HEADLINE",
+      "title": "A new chapter for the community.",
+      "body": "Learning, closer to home.",
+      "seconds": 3
+    },
+    {
+      "label": "01 / ACCESS",
+      "title": "More than books.",
+      "body": "Free internet and shared study spaces are part of the new library.",
+      "seconds": 7
+    },
+    {
+      "label": "02 / LEARNING",
+      "title": "A place to build skills.",
+      "body": "Weekend classes give students and families another way to learn.",
+      "seconds": 7
+    },
+    {
+      "label": "03 / COMMUNITY",
+      "title": "Closer to home.",
+      "body": "Organizers say the project will make learning resources easier to reach.",
+      "seconds": 7
+    },
+    {
+      "label": "WHY IT MATTERS",
+      "title": "Local access. More opportunity.",
+      "body": "This fictional example demonstrates a silent, text-led news reel.",
+      "seconds": 6
+    }
+  ]
+}

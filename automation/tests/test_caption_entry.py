@@ -135,6 +135,37 @@ def test_composer_closure_prevents_insertion():
     task.paste_text.assert_not_called()
 
 
+def test_composer_interruption_records_specific_reason():
+    task, entry = fixture_task()
+    entry.read_field = Mock(return_value='')
+    result = entry.enter('https://example.com', (2, 3), surface_guard=lambda: False)
+    assert result.interruption_reason == 'composer_unconfirmed'
+    assert task.telemetry.record_step.call_args.kwargs['interruption_reason'] == 'composer_unconfirmed'
+
+
+@pytest.mark.parametrize('owner,reason', [
+    (('other', '10,20'), 'focus_changed'),
+    (('chrome', '11,20'), 'pointer_moved'),
+])
+def test_real_ownership_guard_distinguishes_focus_from_pointer(owner, reason):
+    task, entry = fixture_task()
+    task.client.input_owner.return_value = owner
+    waiter = ComposerEntry.waiter(entry, ('chrome', '10,20'))
+    with pytest.raises(EntryInterrupted) as error:
+        waiter.check()
+    assert error.value.reason == reason
+
+
+def test_checkpoint_rechecks_ownership_after_slow_surface_read():
+    owned = [True]
+    def surface():
+        owned[0] = False
+        return True
+    waiter = InteractionWait(guard=lambda: owned[0], surface_guard=surface)
+    with pytest.raises(EntryInterrupted):
+        waiter.checkpoint()
+
+
 def test_empty_clipboard_marker_requires_current_placeholder_confirmation():
     task, entry = fixture_task()
     marker = []
@@ -228,4 +259,21 @@ def test_content_changed_during_review_blocks_publication():
     task.telemetry = Mock()
     with pytest.raises(ClipboardFailure, match='changed during review'):
         task.review_composer('requested caption')
-    task.telemetry.record_step.assert_not_called()
+    assert task.telemetry.record_step.call_args.kwargs['reason'] == 'caption_changed_after_review'
+
+
+@pytest.mark.parametrize('observed,reason', [('', 'caption_empty_after_review'),
+                                         (None, 'caption_unreadable_after_review')])
+def test_review_reports_empty_and_unreadable_without_exposing_contents(observed, reason):
+    from modules.composer_entry import CaptionReviewFailure
+    task = BaseTask.__new__(BaseTask)
+    task.composer_entry = Mock()
+    task.composer_entry.last_owner = ('chrome', '10,20')
+    task.composer_entry.read_field.return_value = observed
+    task.composer_review = Mock()
+    task.composer_review.review.return_value = 2
+    task.telemetry = Mock()
+    with pytest.raises(CaptionReviewFailure) as failure:
+        task.review_composer('private requested caption')
+    assert failure.value.reason == reason
+    assert 'private requested caption' not in str(failure.value)

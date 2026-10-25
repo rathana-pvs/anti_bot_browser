@@ -11,7 +11,7 @@ from pathlib import Path
 
 import psutil
 
-from backend.config import AUTOMATION_PYTHON, CPU_THREADS, DATA_DIR, OCR_RUNTIME, ROOT_DIR
+from backend.config import OCR_PYTHON, CPU_THREADS, DATA_DIR, OCR_RUNTIME, ROOT_DIR
 from backend.services.resource_service import recommended_ocr_threads, settings_manager
 
 
@@ -73,7 +73,7 @@ def start_shared_ocr_worker() -> dict:
         env["AUTOMATION_OCR_WORKER_TOKEN"] = token
         _process = subprocess.Popen(
             [
-                str(AUTOMATION_PYTHON),
+                str(OCR_PYTHON),
                 "-u",
                 str(worker_script),
                 "--port",

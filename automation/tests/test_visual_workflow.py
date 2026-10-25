@@ -506,6 +506,7 @@ class FileChooserTests(unittest.TestCase):
             return Mock(returncode=0, stdout="")
 
         task.client.exec_cmd.side_effect = exec_cmd
+        task.client.ensure_focus.return_value = 99
         task.client.screenshot.return_value = np.zeros((1080, 1920, 3), dtype=np.uint8)
         task.vision.find_text.return_value = {"center": (1020, 760), "text": "Open", "confidence": 0.99}
         task.human.click.side_effect = lambda *_: dialog_visible.update(value=False)
@@ -514,6 +515,9 @@ class FileChooserTests(unittest.TestCase):
             self.assertTrue(task.attach_file_gtk("/data/shared_media/photo.png"))
 
         task.human.click.assert_called_once_with(1020, 760)
+        task.client.ensure_focus.assert_called_once_with()
+        self.assertFalse(any(call.args[0][:3] == ["xdotool", "search", "--class"]
+                             for call in task.client.exec_cmd.call_args_list))
         task.human.key_press.assert_has_calls([
             unittest.mock.call("ctrl+l"),
             unittest.mock.call("ctrl+a"),
@@ -580,7 +584,9 @@ class CaptionTargetTests(unittest.TestCase):
             {"text": "Create post", "center": (952, 399), "confidence": 0.99},
             {"text": "What's on your mind?", "center": (787, 517), "confidence": 0.92},
         ]
-        task.vision.read_text = Mock(side_effect=[detected, [], detected])
+        modal_reads = iter([detected, [], detected])
+        task.vision.read_text = Mock(side_effect=lambda *args, **kwargs:
+                                    next(modal_reads) if kwargs['region'][0] else [])
 
         with unittest.mock.patch("engine.vision.time.sleep", return_value=None):
             self.assertEqual(task._stable_caption_target(), (787, 517))
@@ -826,6 +832,32 @@ class ReelEntryFlowTests(unittest.TestCase):
         ]
 
         self.assertTrue(task._is_reel_final_composer(screen))
+
+    def test_caption_guard_reobserves_transient_reel_settings(self):
+        task = self.make_task()
+        task.log = Mock()
+        task._is_reel_final_composer = Mock(side_effect=[False, False, True])
+        task._is_reel_next_share_composer = Mock(return_value=False)
+        self.assertTrue(task._caption_entry_surface_visible())
+        self.assertEqual(task._is_reel_final_composer.call_count, 3)
+        self.assertEqual(task.composer_entry.waiter.return_value.pause.call_count, 2)
+
+    def test_caption_guard_rejects_persistently_missing_composer(self):
+        task = self.make_task()
+        task.log = Mock()
+        task._is_reel_final_composer = Mock(return_value=False)
+        task._is_reel_next_share_composer = Mock(return_value=False)
+        self.assertFalse(task._caption_entry_surface_visible())
+        self.assertEqual(task._is_reel_final_composer.call_count, 3)
+
+    def test_caption_guard_never_retries_after_ownership_loss(self):
+        from engine.behavior_timing import EntryInterrupted
+        task = self.make_task()
+        task._is_reel_final_composer = Mock(return_value=True)
+        task.composer_entry.waiter.return_value.check.side_effect = [None, EntryInterrupted('lost')]
+        with self.assertRaises(EntryInterrupted):
+            task._caption_entry_surface_visible()
+        task.composer_entry.waiter.return_value.pause.assert_not_called()
 
     def test_direct_flow_searches_left_sidebar_first(self):
         task = self.make_task()

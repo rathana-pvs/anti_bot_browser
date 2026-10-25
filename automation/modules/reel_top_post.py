@@ -96,6 +96,28 @@ def retry_unreadable_header(vision, screen, region, header, *, min_confidence=.5
         return header, result
     import cv2
     x, y, width, h = region
+    # When the author is readable, enlarge only the row immediately below it.
+    # Keep the original header coordinates/reads for layout and conflict checks.
+    # Do not slide this crop down into captions when the timestamp is missing.
+    rows = sorted((i for i in header if bounds(i) and i.get('confidence', 0) >= min_confidence
+                   and x + 30 * height / 1080 <= bounds(i)[0] < x + width
+                   and y <= bounds(i)[1] and bounds(i)[3] <= y + h),
+                  key=lambda i: (bounds(i)[1], bounds(i)[0]))
+    if rows:
+        author = rows[0]
+        line_height = max(10, bounds(author)[3] - bounds(author)[1])
+        is_author = (len(text(author).split()) >= 2
+                     and parse_header_timestamp(author.get('text', '')) is None
+                     and not re.match(r'^(?:published|posted)\s+by\b', text(author)))
+        below = [i for i in rows if .5 * line_height <= bounds(i)[1] - bounds(author)[1] <= 2.2 * line_height
+                 and abs(bounds(i)[0] - bounds(author)[0]) <= max(35, .04 * width)]
+        if is_author and below:
+            row_y = min(bounds(i)[1] for i in below)
+            same_row = [i for i in rows if abs(bounds(i)[1] - row_y) <= .4 * line_height]
+            top = max(y, int(bounds(author)[3]) + 1, int(row_y - .25 * line_height))
+            bottom = min(y + h, int(max(bounds(i)[3] for i in same_row) + .25 * line_height))
+            if bottom > top:
+                y, h = top, bottom - top
     crop = screen[y:y+h, x:x+width]
     if not crop.size:
         return header, result

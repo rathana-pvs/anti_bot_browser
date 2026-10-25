@@ -4,6 +4,7 @@ import { GroupedProfileSelector } from './GroupedProfileSelector';
 import React, { useState, useEffect } from 'react';
 import { Profile } from '../types/profile';
 import { CreateBatchParams } from '../types/automation';
+import type { CreatedReelMedia } from '../types/reelCreator';
 import { createBatch, uploadMediaFiles, getSharedMediaUrl } from '../services/api';
 import {
   UploadCloud,
@@ -29,11 +30,14 @@ import {
 } from 'lucide-react';
 import { Checkbox } from './ui/Checkbox';
 import { Select } from './ui/Select';
+import { useFileDrop } from '../hooks/useFileDrop';
 
 interface BatchPostCreatorProps {
   profiles: Profile[];
   onBatchCreated: () => void;
   mode?: 'posts' | 'live';
+  incomingReel?: CreatedReelMedia | null;
+  onIncomingReelConsumed?: () => void;
 }
 
 interface DraftPostRow {
@@ -61,6 +65,8 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
   profiles,
   onBatchCreated,
   mode = 'posts',
+  incomingReel,
+  onIncomingReelConsumed,
 }) => {
   const liveMode = mode === 'live';
   const storageKey = (name: string) => `${liveMode ? 'live_creator' : 'batch_creator'}_${name}`;
@@ -144,6 +150,16 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
     return [];
   });
 
+  useEffect(() => {
+    if (!incomingReel || liveMode) return;
+    const id = `reel_${incomingReel.jobId}`;
+    setPosts(current => current.some(row => row.id === id) ? current : [...current, {
+      id, type: 'reel', media_file: incomingReel.filename, media_name: incomingReel.name,
+      preview_url: getSharedMediaUrl(incomingReel.filename), caption: incomingReel.caption || '', first_comment: '',
+    }]);
+    onIncomingReelConsumed?.();
+  }, [incomingReel, liveMode, onIncomingReelConsumed]);
+
   const hasLive = liveMode || posts.some(post => post.type === 'live');
   const selectedProfileIds = savedProfileIds.filter(id => profiles.some(p => p.id === id && (!hasLive || p.live?.configured)));
 
@@ -187,14 +203,19 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
   }, [startTime, endTime, staggerSeconds, iterationDelaySeconds, aiSpinAll, executionMode, preparationMode]);
 
   // Bulk Media Upload Handler
-  const handleBulkMediaUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files || e.target.files.length === 0) return;
+  const importMedia = async (files: File[]) => {
+    if (!files.length || isUploading) return;
     setErrorMsg(null);
+    const unsupported = files.find(file => !/\.(mp4|mov|webm)$/i.test(file.name) && (liveMode || !(file.type.startsWith('image/') || /\.(jpe?g|png|webp|avif|gif|bmp|tiff?|jfif)$/i.test(file.name))));
+    if (unsupported) {
+      setErrorMsg(`${unsupported.name}: ${liveMode ? 'Choose an MP4, MOV or WebM video.' : 'Choose photos or MP4, MOV or WebM videos.'}`);
+      return;
+    }
     setIsUploading(true);
 
     try {
       const formData = new FormData();
-      Array.from(e.target.files).forEach((file) => {
+      files.forEach((file) => {
         formData.append('files', file);
       });
 
@@ -215,9 +236,14 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
       setErrorMsg(err.message || 'Failed to upload media files');
     } finally {
       setIsUploading(false);
-      e.target.value = '';
     }
   };
+  const handleBulkMediaUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.currentTarget.files || []);
+    e.currentTarget.value = '';
+    void importMedia(files);
+  };
+  const mediaDrop = useFileDrop(files => { void importMedia(files); }, isUploading);
 
   // Single Row Media Replace/Upload Handler
   const handleRowMediaUpload = async (rowId: string, file: File) => {
@@ -492,7 +518,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
             </div>
 
             {/* Drag & Drop Upload Zone */}
-            <label className="border-2 border-dashed border-zinc-750 hover:border-blue-500 rounded-xl p-6 flex flex-col items-center justify-center cursor-pointer transition-all bg-zinc-950/40 hover:bg-zinc-900/40 group">
+            <label {...mediaDrop.handlers} className={`border-2 border-dashed rounded-xl p-6 flex flex-col items-center justify-center cursor-pointer transition-all group ${mediaDrop.dragging ? 'border-blue-400 bg-blue-500/10 ring-1 ring-blue-400/30' : 'border-zinc-750 hover:border-blue-500 bg-zinc-950/40 hover:bg-zinc-900/40'}`}>
               <input
                 type="file"
                 multiple
@@ -510,7 +536,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                 <>
                   <UploadCloud className="w-8 h-8 text-zinc-400 group-hover:text-blue-400 transition-colors mb-2" />
                   <span className="text-xs font-semibold text-zinc-200">
-                    {liveMode ? 'Drop videos here, or click to browse' : 'Drop videos or photos here, or click to browse'}
+                    {mediaDrop.dragging ? 'Release to add your files' : liveMode ? 'Drop videos here, or click to browse' : 'Drop videos or photos here, or click to browse'}
                   </span>
                   <span className="text-[11px] text-zinc-400 mt-1">
                     .mp4 / .mov / .webm videos assigned as <strong className="text-purple-400 font-medium">{videoUploadType === 'live' ? 'Live' : 'Reels'}</strong> {!liveMode && <>· images auto-assigned as <strong className="text-blue-400 font-medium">Photos</strong></>}

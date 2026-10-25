@@ -168,14 +168,14 @@ class PublicationResultVerifierModule:
                 )
             if self.task.result_status == "uncertain":
                 return _task_result(self.task, success_reason="publication_unconfirmed")
-            self.task._failed_after_publish(
+            self.task._uncertain(
                 "reel_publish_not_found_after_verification",
-                "The success popup was absent and the latest Reel was not found after two profile checks separated by 15 seconds.",
+                "Post was clicked, but publication could not be confirmed after two profile checks. Review Facebook before retrying.",
             )
             return ModuleResult(
-                FAILED_SAFE,
+                UNCERTAIN,
                 "reel_publish_not_found_after_verification",
-                {"publication_status": "failed_after_publish"},
+                {"publication_status": "uncertain"},
             )
         return _task_result(self.task, success_reason="publication_confirmed")
 

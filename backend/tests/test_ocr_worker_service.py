@@ -13,7 +13,7 @@ def test_worker_uses_parent_watchdog_and_keeps_token_out_of_command_line(tmp_pat
     with patch.dict(os.environ, {}, clear=False), \
          patch.object(ocr_worker_service, "DATA_DIR", tmp_path), \
          patch.object(ocr_worker_service, "ROOT_DIR", Path("/runtime")), \
-         patch.object(ocr_worker_service, "AUTOMATION_PYTHON", Path("/runtime/python")), \
+         patch.object(ocr_worker_service, "OCR_PYTHON", Path("/runtime/paddle-gpu/python")), \
          patch.object(ocr_worker_service, "_available_loopback_port", return_value=4567), \
          patch.object(ocr_worker_service, "_stop_legacy_workers", return_value=0), \
          patch.object(ocr_worker_service.settings_manager, "get_snapshot", return_value=settings), \
@@ -23,6 +23,7 @@ def test_worker_uses_parent_watchdog_and_keeps_token_out_of_command_line(tmp_pat
         result = ocr_worker_service.start_shared_ocr_worker()
 
         command = popen.call_args.args[0]
+        assert command[0] == '/runtime/paddle-gpu/python'
         child_env = popen.call_args.kwargs["env"]
         assert result["pid"] == 4321
         assert command[command.index("--parent-pid") + 1] == str(os.getpid())

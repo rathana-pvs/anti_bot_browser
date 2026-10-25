@@ -1,7 +1,7 @@
 {
   "name": "isolated-browser-manager",
   "private": true,
-  "version": "1.1.4",
+  "version": "1.1.5",
   "type": "module",
   "scripts": {
     "version:check": "node ../scripts/release-version.mjs check",
@@ -12,7 +12,8 @@
     "test": "node --test test/*.test.js",
     "preview": "vite preview",
     "server": "PYTHONPATH=.. ../automation/venv/bin/uvicorn backend.main:app --port 3001",
-    "start": "concurrently -k \"PYTHONPATH=.. ../automation/venv/bin/uvicorn backend.main:app --port 3001\" \"vite\"",
+    "start": "npm run dev:web",
+    "dev:web": "../automation/venv/bin/python ../scripts/dev_web.py",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"

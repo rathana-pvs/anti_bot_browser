@@ -90,3 +90,15 @@ def test_about_does_not_change_numeric_old_age():
     parsed = parse_header_timestamp('about 10 minutes ago')
     assert parsed.age_seconds == 600
     assert parsed.recent is False
+
+
+@pytest.mark.parametrize('name', ['News 429M', 'Channel 1m', 'Studio 30s', 'News just now'])
+def test_author_names_are_not_timestamp_suffixes(name):
+    assert parse_header_timestamp(name) is None
+
+
+@pytest.mark.parametrize('text', ['1m', 'Just now', 'Published by Editor 1m',
+                                 'Published by Editor · 1m', 'Posted by Editor • 1m'])
+def test_timestamp_row_with_or_without_attribution(text):
+    result = parse_header_timestamp(text)
+    assert result is not None and result.recent

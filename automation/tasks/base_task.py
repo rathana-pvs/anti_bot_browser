@@ -17,7 +17,7 @@ from engine.runtime_paths import profiles_dir
 from engine.evidence import EvidenceRecorder
 from engine.human_input import HumanInput
 from engine.behavior_profile import load_behavior_session
-from modules.composer_entry import ComposerEntry, ClipboardFailure
+from modules.composer_entry import ComposerEntry, ClipboardFailure, CaptionReviewFailure
 from modules.composer_review import ComposerReview
 from engine.post_publish_prompt import PostPublishPromptHandler
 from engine.screen_state import FacebookStateRecognizer, ScreenState, StateObservation
@@ -685,8 +685,14 @@ class BaseTask:
         )
         if caption and hasattr(self.composer_entry, "last_owner"):
             waiter = self.composer_entry.waiter(owner)
-            if self.composer_entry.read_field(waiter) != caption:
-                raise ClipboardFailure("Caption changed during review; no publish action permitted")
+            observed = self.composer_entry.read_field(waiter)
+            if observed != caption:
+                reason = ('caption_empty_after_review' if observed == '' else
+                          'caption_unreadable_after_review' if observed is None else
+                          'caption_changed_after_review')
+                self.telemetry.record_step('composer_review', duration * 1000,
+                                           outcome='unconfirmed', reason=reason)
+                raise CaptionReviewFailure(reason)
         self.telemetry.record_step("composer_review", duration * 1000, outcome="completed")
 
     @staticmethod
@@ -1022,11 +1028,14 @@ class BaseTask:
             self.capture_evidence("file_chooser_open_failed")
             return False
 
-        # Re-focus Chrome window
-        chrome_res = self.client.exec_cmd(["xdotool", "search", "--class", "google-chrome"], check=False)
-        if chrome_res.returncode == 0 and chrome_res.stdout.strip():
-            chrome_win = chrome_res.stdout.strip().split()[-1]
-            self.client.exec_cmd(["xdotool", "windowfocus", str(chrome_win)], check=False)
+        # GTK and Chromium helpers also match the Chrome class. The last
+        # search result can be a tiny helper, leaving X11 focus on the root
+        # after the chooser closes. Restore the largest visible browser window
+        # synchronously before returning to composer input.
+        if self.client.ensure_focus() <= 0:
+            self.log("ERROR", "Chrome window was not found after file attachment.")
+            self.capture_evidence("file_chooser_browser_focus_failed")
+            return False
 
         return True
 

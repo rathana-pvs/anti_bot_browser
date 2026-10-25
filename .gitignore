@@ -62,6 +62,8 @@ data/worker.json
 
 # Private Facebook Live keys and durable broadcast state
 data/live/
+data/reel_creator/
+data/python-runtime/
 
 # Local compiler cache and container ownership state
 .build-cargo/

@@ -1,6 +1,15 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
+const backendTarget = process.env.MANAGER_DEV_BACKEND_URL || 'http://127.0.0.1:3001';
+const backendUrl = new URL(backendTarget);
+if (backendUrl.protocol !== 'http:' || backendUrl.hostname !== '127.0.0.1' || backendUrl.username || backendUrl.password) {
+  throw new Error('The development backend must use http://127.0.0.1.');
+}
+// Server-side only: never expose this token through a VITE_* variable or bundle.
+const backendHeaders = process.env.MANAGER_API_TOKEN
+  ? { 'X-Manager-Token': process.env.MANAGER_API_TOKEN } : undefined;
+
 export default defineConfig({
   plugins: [react()],
   build: {
@@ -12,15 +21,18 @@ export default defineConfig({
     },
   },
   server: {
-    host: '0.0.0.0',
+    host: '127.0.0.1',
     port: 5173,
+    strictPort: true,
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:3001',
+        target: backendTarget,
+        headers: backendHeaders,
         changeOrigin: true,
       },
       '/shared_media': {
-        target: 'http://127.0.0.1:3001',
+        target: backendTarget,
+        headers: backendHeaders,
         changeOrigin: true,
       },
     },

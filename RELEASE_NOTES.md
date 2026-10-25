@@ -1,3 +1,17 @@
+# Version 1.1.5
+
+- Fix Linux setup on computers whose system Python is 3.14. The OCR runtime now
+  uses the tested Python 3.12 interpreter instead of the system default.
+- Reuse a compatible local Python or download a private interpreter when needed.
+  Existing incompatible virtual environments are backed up; system Python,
+  profiles, sessions, models, and settings are preserved.
+- Show the underlying setup error alongside its exit code. Setup completion is
+  checked against the current run rather than an older installation log.
+
+After installing, run **Settings → Setup and repair → Install / update runtime**.
+Preparing a private Python runtime requires internet access when Python 3.12 is
+not already available. This local build does not publish an app update.
+
 # Version 1.1.4
 
 - Choose the primary OCR engine beside the manager's global resource controls: V5 + Tesseract (default), V6 + Tesseract (speed), or EasyOCR + Tesseract (legacy/generic).

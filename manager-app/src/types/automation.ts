@@ -285,7 +285,6 @@ export interface ResourceModeSettings {
     selected: OcrEngine;
     active: OcrEngine;
     restart_required: boolean;
-    locked: boolean;
     options: { value: OcrEngine; label: string }[];
   };
   selected_mode: ResourceMode;

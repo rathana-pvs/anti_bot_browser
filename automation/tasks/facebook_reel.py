@@ -912,10 +912,10 @@ class FacebookReelTask(BaseTask):
         )
         return has_create_reel and has_uploaded_media and has_edit_heading and edit_controls >= 2
 
-    def _find_reel_description_target(self, allow_full_screen_fallback: bool = False):
+    def _find_reel_description_target(self, allow_full_screen_fallback: bool = False, *, require_placeholder=False):
         """Locate the caption field in either the left- or right-sidebar layout."""
         remembered_target = getattr(self, "_reel_description_target", None)
-        if remembered_target:
+        if remembered_target and not require_placeholder:
             return remembered_target
 
         labels = (
@@ -967,6 +967,8 @@ class FacebookReelTask(BaseTask):
             # textarea in the direct Reel layout. It is a safer anchor than Post
             # audience, whose distance changes dramatically with thumbnails and
             # other composer controls.
+            if require_placeholder:
+                return None  # A cached point or media heading cannot prove an empty draft.
             media_label = self.vision.find_text_cascaded(
                 ("uploaded media",),
                 region=self.LEFT_REEL_SIDEBAR,
@@ -1209,9 +1211,22 @@ class FacebookReelTask(BaseTask):
         return False, last_screen, best_confidence
 
     def _caption_entry_surface_visible(self):
-        screen = self.client.screenshot()
-        return (self._is_reel_final_composer(screen, allow_layout_fallback=True)
-                or self._is_reel_next_share_composer(screen))
+        # Reel settings can briefly replace controls with loading placeholders
+        # while copyright/media checks update. Reobserve before treating one
+        # OCR miss as a closed composer; never insert while unconfirmed.
+        waiter = self.composer_entry.waiter(self.composer_entry.last_owner)
+        for attempt in range(3):
+            waiter.check()
+            screen = self.client.screenshot()
+            visible = (self._is_reel_final_composer(screen, allow_layout_fallback=True)
+                       or self._is_reel_next_share_composer(screen))
+            waiter.check()
+            if visible:
+                return True
+            if attempt < 2:
+                self.log('INFO', 'Reel composer is transitional; rechecking before caption entry.')
+                waiter.pause(0.3)
+        return False
 
     def _enter_reel_caption(self, timeout: float) -> tuple[str, object | None]:
         """Enter and verify the caption while media processing continues.
@@ -1240,16 +1255,29 @@ class FacebookReelTask(BaseTask):
         self._reel_description_target = tuple(description)
         entry = self.composer_entry.enter(
             self.caption, description,
-            empty_confirmed=lambda: self._find_reel_description_target(False) is not None,
+            empty_confirmed=lambda: self._find_reel_description_target(False, require_placeholder=True) is not None,
             surface_guard=lambda: self._caption_entry_surface_visible(),
             deadline=time.monotonic() + 300,
         )
         if not entry.verified:
-            return "verification_failed", screen
+            self.log('WARNING', f'Reel caption entry stopped: {entry.status}'
+                     + (f' ({entry.interruption_reason})' if entry.interruption_reason else '') + '.')
+            self.capture_evidence('reel_caption_entry_diagnostics', self.client.screenshot(),
+                                  phase='entry', status=entry.status,
+                                  interruption_reason=entry.interruption_reason)
+            return "verification_failed", self.client.screenshot()
+        self.capture_evidence('reel_caption_entry_verified', self.client.screenshot(),
+                              verification=entry.verification)
         try:
             self.review_composer(self.caption, self.video_path or "")
-        except Exception:
-            return "verification_failed", screen
+        except Exception as exc:
+            review_screen = self.client.screenshot()
+            reason = getattr(exc, 'reason', 'review_check_failed')
+            self.log('WARNING', f'Reel caption review stopped: {reason}.')
+            self.capture_evidence('reel_caption_entry_diagnostics', review_screen,
+                                  phase='review', status='review_unconfirmed', reason=reason,
+                                  entry_verified=True)
+            return "review_failed", review_screen
         caption_screen = self.client.screenshot()
         caption_confidence = 1.0
         self.capture_evidence("reel_caption_verification", caption_screen,
@@ -1682,6 +1710,10 @@ class FacebookReelTask(BaseTask):
                 "Entering the Reel caption immediately while the video continues processing...",
             )
             early_caption_status, early_caption_screen = self._enter_reel_caption(timeout=caption_timeout)
+            if early_caption_status == 'review_failed':
+                return self._needs_review('reel_caption_review_unconfirmed',
+                                          'Caption was entered but did not remain verified during review; check the draft before retrying.',
+                                          early_caption_screen)
             if early_caption_status == "error":
                 return self._fail(
                     "reel_description_error",
@@ -1691,7 +1723,7 @@ class FacebookReelTask(BaseTask):
             if early_caption_status == "verification_failed":
                 return self._fail(
                     "reel_caption_not_entered",
-                    "The Reel caption could not be visually verified after two input methods; publication was stopped.",
+                    "The Reel caption entry was not confirmed; publication was stopped. See caption entry diagnostics for the reason.",
                     early_caption_screen,
                 )
             if early_caption_status == "unavailable":
@@ -1761,6 +1793,10 @@ class FacebookReelTask(BaseTask):
                 return self._video_composer_timeout(screen)
             self.log("STEP", "Locating Reel description input...")
             caption_status, caption_screen = self._enter_reel_caption(timeout=caption_timeout)
+            if caption_status == 'review_failed':
+                return self._needs_review('reel_caption_review_unconfirmed',
+                                          'Caption was entered but did not remain verified during review; check the draft before retrying.',
+                                          caption_screen)
             if caption_status == "error":
                 return self._fail(
                     "reel_description_error",
@@ -1774,7 +1810,7 @@ class FacebookReelTask(BaseTask):
             if caption_status == "verification_failed":
                 return self._fail(
                     "reel_caption_not_entered",
-                    "The Reel caption could not be visually verified after two input methods; publication was stopped.",
+                    "The Reel caption entry was not confirmed; publication was stopped. See caption entry diagnostics for the reason.",
                     caption_screen,
                 )
         elif self.caption:
@@ -1914,9 +1950,9 @@ class FacebookReelTask(BaseTask):
             if self.result_status == "uncertain":
                 return False
             if result != "published" and comment_status == "failed_input_not_found":
-                return self._failed_after_publish(
+                return self._uncertain(
                     "reel_publish_not_found_after_verification",
-                    "The success popup was absent and the latest Reel was not found after two profile checks separated by 15 seconds.",
+                    "Post was clicked, but publication could not be confirmed after two profile checks. Review Facebook before retrying.",
                     final_screen,
                 )
             else:
@@ -1934,9 +1970,9 @@ class FacebookReelTask(BaseTask):
         if result != "published" and not self._refresh_until_latest_reel_visible():
             if self.result_status == "uncertain":
                 return False
-            return self._failed_after_publish(
+            return self._uncertain(
                 "reel_publish_not_found_after_verification",
-                "The success popup was absent and the latest Reel was not found after two profile checks separated by 15 seconds.",
+                "Post was clicked, but publication could not be confirmed after two profile checks. Review Facebook before retrying.",
                 final_screen,
             )
 

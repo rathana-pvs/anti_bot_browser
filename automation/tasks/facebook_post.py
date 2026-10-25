@@ -427,6 +427,30 @@ class FacebookPostTask(BaseTask):
             return semantic_pos
         return None
 
+    def _sidebar_caption_target(self, screen):
+        """Recognize the left-pane Create post layout without using its preview."""
+        height, width = screen.shape[:2]
+        region = (0, int(height * .13), int(width * .38), int(height * .32))
+        items = self.vision.read_text(screen, region=region, min_confidence=.20)
+        titles = [i for i in items if self._is_supporting_phrase('Create post', i['text'])]
+        prompts = [i for i in items if self._is_caption_prompt(i['text'])]
+        media = [i for i in items if self._is_supporting_phrase('Uploaded media', i['text'])]
+        controls = [i for i in items if i['text'].casefold().strip() in {'people', 'location', 'fundraiser'}]
+        for title in titles:
+            tx, ty = title['center']
+            for prompt in prompts:
+                px, py = prompt['center']
+                # The audience controls and Uploaded media heading bracket the
+                # actual empty editor. Feed prompts and the right preview fail
+                # these checks even if they contain the same words.
+                if (0 <= tx < region[2] and 0 <= px < region[2]
+                        and 20 < py - ty < height * .22
+                        and len({i['text'].casefold().strip() for i in controls
+                                 if ty < i['center'][1] < py}) >= 2
+                        and any(0 < i['center'][1] - py < height * .18 for i in media)):
+                    return prompt['center']
+        return None
+
     def _stable_caption_target(self):
         """Locate the caption prompt inside a visually confirmed composer modal."""
         def locate():
@@ -471,16 +495,17 @@ class FacebookPostTask(BaseTask):
                 and caption_target
                 and title_target["center"][1] < caption_target["center"][1]
             )
+            sidebar_target = None if found else self._sidebar_caption_target(screen)
             self.record_locator_telemetry(
                 "composer_caption_prompt",
-                "modal_title_plus_ocr",
+                "sidebar_title_controls_and_media" if sidebar_target else "modal_title_plus_ocr",
                 "composer_modal",
                 (time.perf_counter() - started) * 1000.0,
-                found,
+                found or sidebar_target is not None,
                 confidence=caption_target.get("confidence") if found else None,
-                fallback_reason=None if found else "modal_title_or_caption_missing",
+                fallback_reason=None if found or sidebar_target else "modal_title_or_caption_missing",
             )
-            return caption_target["center"] if found else None
+            return caption_target["center"] if found else sidebar_target
 
         # OCR can occasionally miss the low-contrast placeholder for one frame
         # while Facebook finishes rendering the attached-media preview. Keep the
