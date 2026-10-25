@@ -52,6 +52,20 @@ from backend.services.automation_service import (
 
 router = APIRouter(prefix="/api/queue", tags=["queue"])
 
+
+@router.post("/network-recovery/{execution_id}/cancel")
+async def cancel_recovery(execution_id: str):
+    from backend.services.queue_network_recovery import cancel_network_recovery
+    try:
+        return await cancel_network_recovery(execution_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="Execution not found") from error
+    except (ValueError, RuntimeError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except OSError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+
+
 @router.get("")
 def get_queue():
     queue = load_posting_queue()
@@ -591,6 +605,8 @@ async def run_execution_now(execution_id: str):
     # prevents a rejected run-now request from leaving an execution runnable.
     if is_manual_retry:
         now_iso = datetime.now(timezone.utc).isoformat()
+        from backend.services.network_recovery import stop_recovery
+        stop_recovery(target_exec, "cancelled")
         target_exec["status"] = "pending"
         target_exec["stage"] = "pending"
         target_exec["error"] = None
@@ -641,7 +657,8 @@ def resolve_uncertain(execution_id: str, payload: dict = Body(...)):
     target_exec = match["execution"]
     target_post = match["post"]
 
-    if target_exec.get("status") not in ("uncertain", "needs_review"):
+    from backend.services.network_recovery import reviewable
+    if target_exec.get("status") not in ("uncertain", "needs_review") and not reviewable(target_exec):
         raise HTTPException(status_code=400, detail=f"Execution is in '{target_exec.get('status')}' state, not 'uncertain' or 'needs_review'")
 
     validated_post_url = None

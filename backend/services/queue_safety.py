@@ -1,6 +1,7 @@
 import re
 from datetime import datetime, timezone
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+from backend.services.publication_evidence import has_publication_evidence
 
 UNRESOLVED_EXECUTION_STATUSES = {"uncertain", "needs_review"}
 FINAL_CLICK_STAGES = {"publish_clicked", "verifying"}

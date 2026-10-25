@@ -400,6 +400,10 @@ normal-run shadow observations.
 
 ### Bounded Scheduler
 
+Local Reel timeouts support [24-hour proxy recovery](docs/NETWORK_RECOVERY.md):
+two passing checks above 1 Mbps can queue a safe retry through normal scheduler
+admission. Uncertain post-click outcomes still require publication review.
+
 Scheduled automation uses persisted, heartbeat-backed leases. Defaults permit
 one publisher, one optional passive preparer, and two total automation workers.
 Only one task may hold a lease for a profile. Lease IDs are fencing tokens, so a

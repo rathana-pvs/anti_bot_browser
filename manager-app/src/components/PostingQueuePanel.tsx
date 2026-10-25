@@ -4,11 +4,13 @@ import { Profile } from '../types/profile';
 import { AppendBatchPostsDialog } from './AppendBatchPostsDialog';
 import { stopLive } from '../services/live';
 import { Checkbox } from './ui/Checkbox';
+import { NetworkRecoveryStatus } from './NetworkRecoveryStatus';
 import { useAppDialog } from './ui/AppDialogProvider';
 import {
   backfillExecutionPermalink,
   downloadSupportBundle,
   fetchQueue,
+  cancelNetworkRecovery,
   deleteBatch,
   deleteExecution,
   retryExecutionComment,
@@ -386,6 +388,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
   }, [uncertainCount, failedCount, showToast]);
   const activeStatuses = new Set(['running', 'preparing']);
   const attentionStatuses = new Set(['failed', 'failed_before_publish', 'failed_after_publish', 'uncertain', 'needs_review']);
+  const hasRecovery = (item: QueueExecutionItem) => ['waiting_network', 'confirming_network', 'waiting_review', 'ready', 'retrying'].includes(item.network_recovery?.state || '');
   const finishedStatuses = new Set(['published', 'completed']);
   // Index once so large queues do not repeatedly scan every execution for each account.
   const batchGroups = useMemo(() => {
@@ -429,6 +432,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
         active: allBatchExecutions.filter((item) => activeStatuses.has(item.status)).length,
         attention: allBatchExecutions.filter((item) => attentionStatuses.has(item.status)).length,
         pending: allBatchExecutions.filter((item) => item.status === 'pending' || item.status === 'ready').length,
+        recovering: allBatchExecutions.filter(hasRecovery).length,
       };
     }).filter((group) => group.executions.length > 0).sort((left, right) => {
       const rank = (group: typeof left) => (
@@ -686,6 +690,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
                         <span>{group.published}/{group.total} done</span>
                         {group.active > 0 && <span className="text-blue-300">{group.active} active</span>}
                         {group.attention > 0 && <span className="text-amber-300">{group.attention} attention</span>}
+                        {group.recovering > 0 && <span className="text-amber-300">{group.recovering} recovering</span>}
                       </div>
                     </button>
                     {postTypeFilter !== 'live' && group.attention === 0
@@ -866,6 +871,18 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
                         💬 {item.first_comment}
                       </div>
                     )}
+                    <NetworkRecoveryStatus recovery={item.network_recovery} />
+                    {item.network_recovery && !['cancelled', 'completed'].includes(item.network_recovery.state) && !['running', 'preparing'].includes(item.status) && (
+                      <button type="button" className="mt-1 text-[11px] text-zinc-400 hover:text-white underline" onClick={async () => {
+                        try {
+                          await cancelNetworkRecovery(item.execution_id);
+                        } catch (error) {
+                          setActionError(error instanceof Error ? error.message : 'Could not cancel recovery');
+                        } finally {
+                          await loadQueue();
+                        }
+                      }}>Cancel recovery</button>
+                    )}
                   </div>
                 </div>
 
@@ -1012,7 +1029,8 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
                   )}
 
                   {/* Review & Resolve button for Phase 0 safety gated items */}
-                  {(item.status === 'uncertain' || item.status === 'needs_review') && (
+                  {(item.status === 'uncertain' || item.status === 'needs_review' ||
+                    (item.network_recovery && !['cancelled', 'completed'].includes(item.network_recovery.state) && attentionStatuses.has(item.status))) && (
                     <button
                       type="button"
                       onClick={() => {
@@ -1082,6 +1100,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
                     {item.post_type === 'live' && item.pinned_comment && <p className="whitespace-pre-wrap text-zinc-400">Pinned comment: {item.pinned_comment}</p>}
                     {(item.spun_caption || item.base_caption) && <p className="whitespace-pre-wrap text-zinc-200">{item.spun_caption || item.base_caption}</p>}
                     {item.error && <p className="text-red-300">{item.error}</p>}
+                    <NetworkRecoveryStatus recovery={item.network_recovery} details />
                     <p className="text-[10px] font-mono text-zinc-600">{item.execution_id}</p>
                   </div>
                 )}

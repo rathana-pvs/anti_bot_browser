@@ -1,6 +1,7 @@
 import random
 import time
 from datetime import datetime
+from backend.services.network_recovery import holds_profile, retry_admitted
 
 def shuffled_profile_order(profile_ids: list, previous_last_profile: str | None = None, rand_fn=random.random) -> list:
     order = list(dict.fromkeys(profile_ids or []))
@@ -70,6 +71,7 @@ def batch_iteration_availability(
     ]
     if any(
         execution.get("status") in ("pending", "ready", "running", "preparing", "uncertain", "needs_review")
+        or holds_profile(execution)
         for execution in previous_executions
     ):
         return {
@@ -137,6 +139,15 @@ def ordered_due_executions(queue: dict | None, now_ms: float | None = None) -> l
         now_ms = time.time() * 1000
 
     due = []
+    recovery_owners = {}
+    for batch in (queue or {}).get("daily_batches", []):
+        for post in batch.get("posts", []):
+            for execution in post.get("executions", []):
+                if holds_profile(execution):
+                    pid = execution.get("profile_id")
+                    previous = recovery_owners.get(pid)
+                    if previous is None or execution["network_recovery"]["started_at"] < previous["network_recovery"]["started_at"]:
+                        recovery_owners[pid] = execution
     for batch_idx, batch in enumerate((queue or {}).get("daily_batches", [])):
         profile_order = batch.get("profile_execution_order") or batch.get("target_profiles") or []
         profile_ranks = {pid: idx for idx, pid in enumerate(profile_order)}
@@ -158,6 +169,11 @@ def ordered_due_executions(queue: dict | None, now_ms: float | None = None) -> l
             for execution in post.get("executions", []):
                 if execution.get("status") not in ("pending", "ready"):
                     continue
+                owner = recovery_owners.get(execution.get("profile_id"))
+                if owner and owner.get("execution_id") != execution.get("execution_id"):
+                    continue
+                if not retry_admitted(execution, now_ms / 1000):
+                    continue
                 profile_rank = profile_ranks.get(execution.get("profile_id"), 0)
                 sched_time = batch_start_ms + profile_rank * profile_stagger_ms
                 if sched_time > now_ms:
@@ -175,6 +191,7 @@ def ordered_due_executions(queue: dict | None, now_ms: float | None = None) -> l
                 })
 
     due.sort(key=lambda item: (
+        bool(item["execution"].get("network_recovery") and item["execution"]["network_recovery"].get("state") == "ready"),
         item["batchStartMs"],
         item["batchCreatedAtMs"],
         -item["batchIndex"],

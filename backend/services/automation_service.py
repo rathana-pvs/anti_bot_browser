@@ -61,6 +61,7 @@ from backend.services.queue_service import (
 )
 
 from backend.services import container_lifecycle as lifecycle
+from backend.services import network_recovery
 
 # Brain CLI wrapper
 def run_brain_cli(args: list[str]) -> dict:
@@ -543,6 +544,21 @@ def claim_queue_execution(execution_id: str, kind: str = "publisher") -> dict:
         target_post = match["post"]
         target_batch = match["batch"]
 
+        if target_exec.get("status") == "cancelled":
+            raise RuntimeError("Execution was cancelled")
+
+        from backend.services.queue_network_recovery import proxy_measurement_active
+        if proxy_measurement_active(queue, target_exec, time.time()):
+            raise RuntimeError("Proxy measurement is in progress")
+
+        if target_exec.get("network_recovery"):
+            from backend.services.queue_network_recovery import current_fingerprint
+            recovery = target_exec["network_recovery"]
+            if (not network_recovery.retry_admitted(target_exec, time.time())
+                    or (recovery.get("state") == "ready"
+                        and current_fingerprint(target_exec) != recovery.get("proxy_fingerprint"))):
+                raise RuntimeError("Network recovery is not ready for dispatch")
+
         if not cloud_execution_allowed(target_exec):
             raise RuntimeError("Cloud attempt is not authorized for dispatch")
 
@@ -600,6 +616,10 @@ def claim_queue_execution(execution_id: str, kind: str = "publisher") -> dict:
         target_exec["ended_at"] = None
         target_exec["error"] = None
         target_exec["logs"] = []
+        recovery = target_exec.get("network_recovery")
+        if kind == "publisher" and recovery and recovery.get("state") == "ready":
+            recovery.update(state="retrying", retry_count=recovery["retry_count"] + 1,
+                            retry_started_at=now_iso, retry_id=str(uuid.uuid4()))
 
         history = target_exec.get("stage_history")
         if not isinstance(history, list):
@@ -1029,6 +1049,7 @@ async def _execute_queue_item_inner(execution_id: str, scheduler_kind: str = "pu
             ex["telemetry"] = res["telemetry"]
 
         ex["logs"] = [l["message"] for l in task_record["logs"]]
+        network_recovery.refresh_recovery(ex, target_post.get("type"), time.time())
         release_execution_lease(ex, lease_id)
         save_posting_queue(updated_queue)
 
@@ -1373,6 +1394,9 @@ async def _run_dispatched_queue_task(execution_id: str, kind: str):
             "Execution not found",
             "queue_claim_in_progress",
             "Container cleanup is in progress",
+            "Network recovery is not ready for dispatch",
+            "Proxy measurement is in progress",
+            "Execution was cancelled",
         )
         if isinstance(err, RuntimeError) and message.startswith(expected_prefixes):
             print(f"[Queue Dispatcher] Deferred {execution_id}: {message}")
@@ -1415,6 +1439,9 @@ async def dispatch_pending_queue():
             if not cloud_execution_allowed(match["execution"]):
                 continue
             if match["execution"].get("container_cleanup_in_progress"):
+                continue
+            from backend.services.queue_network_recovery import proxy_measurement_active
+            if proxy_measurement_active(current_q, match["execution"], time.time()):
                 continue
 
             pid = match["execution"]["profile_id"]

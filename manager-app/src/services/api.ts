@@ -602,6 +602,12 @@ export async function deleteExecution(executionId: string): Promise<{ success: b
   return res.json();
 }
 
+export async function cancelNetworkRecovery(executionId: string): Promise<{ success: boolean; message: string }> {
+  const res = await fetch(`${API_BASE}/queue/network-recovery/${encodeURIComponent(executionId)}/cancel`, { method: 'POST' });
+  if (!res.ok) throw await apiError(res, 'Could not cancel network recovery');
+  return res.json();
+}
+
 export async function runExecutionNow(executionId: string): Promise<{ success: boolean; queued?: boolean; message?: string }> {
   const res = await fetch(`${API_BASE}/queue/run-now/${executionId}`, {
     method: 'POST',
