@@ -177,7 +177,7 @@ class ReelCreator:
                     raise ValueError('Choose a PNG logo; transparency is supported.')
                 if getattr(raw, 'n_frames', 1) > 1:
                     raise ValueError('Choose a still image. Animated or multi-page images are not supported.')
-                image = ImageOps.exif_transpose(raw).convert('RGBA' if kind == 'logo' else 'RGB')
+                image = ImageOps.exif_transpose(raw).convert('RGBA' if kind == 'logo' or 'A' in raw.getbands() or 'transparency' in raw.info else 'RGB')
                 value.update(width=image.width, height=image.height)
                 image.save(path, 'PNG')
                 if kind == 'image':
@@ -236,6 +236,14 @@ class ReelCreator:
                 ImageOps.contain(image, (256, 160)).convert('RGB').save(path, 'JPEG', quality=80)
             return path
 
+    def _prepare_images(self, reel, images, scene_index=None):
+        if reel.look != 'pop_art':
+            return images
+        from .cutout import prepare_cutout
+        selected = {reel.scenes[scene_index].image_id} if scene_index is not None else set(images)
+        return {key: prepare_cutout(path, self.root / 'cutouts') if key in selected else path
+                for key, path in images.items()}
+
     def render_poster(self, reel, scene_index=0):
         """The scene as it looks once its text has animated in. Runs alongside a video render."""
         if not 0 <= scene_index < len(reel.scenes):
@@ -245,6 +253,7 @@ class ReelCreator:
             if key in self._posters:
                 return self._posters[key]
             images, logo, _ = self.validate_assets(reel)
+            images = self._prepare_images(reel, images, scene_index)
             plan = Plan(reel, PREVIEW_WIDTH, images, logo, FPS)
             output = io.BytesIO()
             plan.frame(plan.settled(scene_index)).save(output, format='JPEG', quality=88)

@@ -28,6 +28,7 @@ LEAD_GAP = 14
 # Type per look, in design px at 1080 wide: (face, preferred size, smallest size). Headline and detail
 # shrink together until the block fits; the smallest sizes stay readable on a phone held at arm's length.
 TYPE = {
+    'pop_art': dict(head=('bold', 86, 50), detail=('regular', 40, 34), label='bold', head_pitch=1.12),
     'breaking': dict(head=('display', 108, 60), detail=('regular', 46, 34), label='condensed', head_pitch=1.1),
     'hot': dict(head=('display', 140, 64), detail=('bold', 46, 34), label='condensed', head_pitch=1.06),
     'politics': dict(head=('condensed', 112, 62), detail=('regular', 46, 34), label='condensed-semi', head_pitch=1.06),
@@ -154,7 +155,9 @@ class Plan:
     def _frame(self):
         """Where the photo sits by default: (x, y, w, h, radius) in pixels, and the color around it."""
         px, look = self.px, self.reel.look
-        if look == 'politics':   # photo on top, text panel below
+        if look == 'pop_art':
+            rect, page = (0, 0, DESIGN_W, round(self.DH * .62), 0), (17, 17, 17)
+        elif look == 'politics':   # photo on top, text panel below
             rect, page = (0, 0, DESIGN_W, round(self.DH * .52), 0), PANEL
         elif look == 'clean':  # rounded photo card on a white page
             rect, page = (48, self.inset + 140, 984, round(self.DH * .41), 32), PAGE
@@ -206,17 +209,58 @@ class Plan:
         path = self.images.get(scene.image_id) if scene.image_id else None
         if path:
             with Image.open(path) as source:
-                photo = source.convert('RGB')
-            if scene.fit == 'blur':
+                photo = source.convert('RGBA' if self.reel.look == 'pop_art' else 'RGB')
+            if self.reel.look == 'pop_art':
+                base = self._collage_photo(photo, size, scene)
+            elif scene.fit == 'blur':
                 base = self._blur_fill(photo, size)
             else:
                 base = ImageOps.fit(photo, size, Image.Resampling.LANCZOS, centering=(scene.focal_x, scene.focal_y))
+        elif self.reel.look == 'pop_art':
+            base = self._collage_photo(None, size, scene)
         else:
             base = self._plain_background(size)
         base = self._scrim(base)
         if len(self._bases) >= 3:  # long reels would otherwise hold every scene in memory
             self._bases.pop(next(iter(self._bases)))
         self._bases[index] = base
+        return base
+
+    def _collage_photo(self, photo, size, scene):
+        """Retro pattern and halo; preserve uploaded cutouts without guessing a subject mask."""
+        w, h = size
+        base = Image.new('RGB', size, '#a28bd4')
+        draw = ImageDraw.Draw(base)
+        step = max(8, round(w / 10))
+        for y in range(-step, h + step, step):
+            for x in range(-step, w + step, step):
+                draw.ellipse((x, y, x + step, y + step), fill='#747d3d')
+        radius = w * .36
+        cx, cy = w * .53, h * .39
+        draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), fill=self.accent)
+        if photo is None:
+            return base
+        alpha = photo.getchannel('A')
+        gray = ImageOps.grayscale(photo).convert('RGBA')
+        gray.putalpha(alpha)
+        if alpha.getextrema()[0] < 255:
+            bounds = alpha.getbbox()
+            if bounds is None:
+                return base
+            front = ImageOps.contain(gray.crop(bounds), (round(w * .9), round(h * .93)), Image.Resampling.LANCZOS)
+            x, y = (w - front.width) // 2, h - front.height
+        else:
+            # Keep a visible patterned margin around photographs that have no subject mask.
+            front = (ImageOps.contain(gray, (round(w * .84), round(h * .83)), Image.Resampling.LANCZOS)
+                     if scene.fit == 'blur' else ImageOps.fit(gray, (round(w * .84), round(h * .83)),
+                         Image.Resampling.LANCZOS, centering=(scene.focal_x, scene.focal_y)))
+            x, y = (w - front.width) // 2, h - front.height
+        mask = Image.new('L', size)
+        mask.paste(front.getchannel('A'), (x, y))
+        spread = max(3, round(w * .008)) | 1
+        outline = mask.filter(ImageFilter.MaxFilter(spread))
+        base.paste((255, 255, 255), (0, 0, w, h), outline)
+        base.paste(front, (x, y), front.getchannel('A'))
         return base
 
     def _blur_fill(self, photo, size):
@@ -418,7 +462,7 @@ class Plan:
     def _layout(self, scene):
         return getattr(self, '_' + self.reel.look)(scene)
 
-    def _fit(self, headline, detail, width, avail, head=None, detail_type=None, det_pitch=1.38, gap=16, lead=True):
+    def _fit(self, headline, detail, width, avail, head=None, detail_type=None, det_pitch=1.38, gap=16, lead=True, max_head_lines=5):
         """Largest type, headline and detail shrinking together, whose block fits `avail` design px.
 
         head/detail_type are (face, preferred, smallest) design sizes, by default the look's own. With `lead`,
@@ -442,7 +486,7 @@ class Plan:
             for k in range(steps + 1):
                 size, detail_size = round(h0 - (h0 - h1) * k / steps), round(d0 - (d0 - d1) * k / steps)
                 try:
-                    hl = wrap(headline, px(size), px(width), 5, hface) if headline else []
+                    hl = wrap(headline, px(size), px(width), max_head_lines, hface) if headline else []
                     dl = wrap(detail, px(detail_size), px(width), 4, dface) if detail else []
                 except ValueError:
                     continue
@@ -660,9 +704,47 @@ class Plan:
             out += details
         return out
 
+    def _pop_art(self, scene):
+        """Centered uppercase headline on a black panel, with no author/footer credit."""
+        px = self.px
+        low, high = round(self.DH * .43), round(self.DH * .62)
+        hl, hs, dl, ds, block = self._fit(scene.headline.upper(), scene.detail_text, self.text_w,
+                                          self.limit - low - 56, gap=24, max_head_lines=6)
+        split = max(low, min(high, round(self.limit - block / self.s - 72)))
+        self._scene_rect = (0, 0, self.W, px(split), 0)
+        out, y = [], px(split + 40)
+        if self._lead_plan:
+            mark, face, size, height, rise = self._lead_plan
+            tile, base = self._text(mark, size, self.accent + (255,), face, shadow=False)
+            out.append(Element(tile, (px(DESIGN_W - self.right + LEFT) - tile.width) // 2,
+                               y - (base - rise), .1, .5, 'pop'))
+            y += height + px(LEAD_GAP)
+        marks = self._highlights(hl)
+        for index, line in enumerate(hl):
+            tile, base = self._text(line, hs, WHITE, 'bold', shadow=False, mark=marks[index])
+            out.append(Element(tile, (px(DESIGN_W - self.right + LEFT) - tile.width) // 2,
+                               y + hs - base, .2 + index * .12, .45, 'rise'))
+            y += round(hs * self.type['head_pitch'])
+        if dl:
+            y += px(24)
+            for index, line in enumerate(dl):
+                tile, base = self._text(line, ds, WHITE, 'regular', shadow=False)
+                out.append(Element(tile, (px(DESIGN_W - self.right + LEFT) - tile.width) // 2,
+                                   y + ds - base, .5 + index * .1, .45, 'fade'))
+                y += round(ds * 1.38)
+        return out
+
     def _identity(self):
         """Logo, brand name and (for Breaking) the live badge and ticker: present for the whole reel."""
         px, out, x = self.px, [], 56
+        if self.reel.look == 'pop_art':
+            label = self.reel.tag if self.reel.tag is not None else self.reel.brand or self.reel.tag_text
+            if label:
+                text, size = self._one_line(label, self.text_w - 60, 64, 30, 'bold')
+                tile = self._label(text, size, WHITE, (86, 108, 11, 235), 28, size / self.s + 34, 36, face='bold')
+                out.append(Element(tile, (self.W - tile.width) // 2, px(self.inset),
+                                   0, .5, 'fade', fades_out=False))
+            return out
         right = DESIGN_W - 56
         badge = None
         if self.reel.look == 'breaking':

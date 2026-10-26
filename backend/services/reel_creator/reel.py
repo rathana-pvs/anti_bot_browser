@@ -13,12 +13,13 @@ LOOKS = {
     'politics': dict(name='Politics', tag='POLITICS', accent='#e8c07a', music='washington_watch'),
     'clean': dict(name='Clean', tag='NEWS', accent='#1d6fe8', music='headlines'),
     'wire': dict(name='Wire', tag='LATEST', accent='#f2780c', music='urgent_wire'),
+    'pop_art': dict(name='Pop Art', tag='SPOTLIGHT', accent='#ccff00', music='headlines'),
     'editorial': dict(name='Editorial', tag='ANALYSIS', accent='#d7261e', music='major_headline'),
 }
 MAX_SCENES = 8
 RATIOS = {'9:16': 1920, '4:5': 1350}  # design height at a 1080 design width
 MAX_SECONDS = 90
-Look = Literal['breaking', 'hot', 'politics', 'clean', 'wire', 'editorial']
+Look = Literal['breaking', 'hot', 'politics', 'clean', 'wire', 'editorial', 'pop_art']
 Motion = Literal['auto', 'zoom_in', 'zoom_out', 'none']  # auto alternates push-in and pull-out by scene
 Ratio = Literal['9:16', '4:5']
 SceneKind = Literal['story', 'stat', 'quote', 'end']

@@ -371,7 +371,7 @@ def test_each_look_has_its_own_layout(creator, reel):
     ys = {look: min(e.y for e in plans[look].scene_elements[0] if e.tile.width > 40) for look in LOOKS}
     assert ys['hot'] < ys['breaking'] and ys['hot'] < ys['clean']                      # hot puts its headline up top
     frames = {look: plans[look].frame(plans[look].settled(0)).tobytes() for look in LOOKS}
-    assert len(set(frames.values())) == len(LOOKS) == 6
+    assert len(set(frames.values())) == len(LOOKS) == 7
     editorial = plans['editorial']
     assert editorial.page and editorial.rect[1] > editorial.H * .4 and editorial.rect[3] < editorial.H * .6   # photo across the bottom
     text_y = min(e.y for e in editorial.scene_elements[0])
@@ -799,3 +799,33 @@ def test_gemini_is_asked_for_scene_kinds_highlights_and_the_end_card():
     assert 'end_card' in schema['required']
     assert {'kind', 'stat', 'attribution', 'highlight'} <= set(schema['$defs']['SceneCopy']['required'])
     assert ReelCopy.model_validate(dict(scenes=[dict(headline='Vote passes', source_quote='voted 7 to 2 on Tuesday')])).end_card is None
+
+@pytest.mark.parametrize('ratio', ['9:16', '4:5'])
+def test_pop_art_preserves_cutout_and_draws_pattern_halo_outline_and_no_byline(creator, ratio):
+    from PIL import ImageDraw
+    photo = Image.new('RGBA', (400, 600))
+    ImageDraw.Draw(photo).rectangle((100, 50, 300, 599), fill=(230, 60, 40, 255))
+    data = io.BytesIO()
+    photo.save(data, 'PNG')
+    asset = creator.import_asset(data.getvalue(), 'portrait.png', 'image')
+    path = creator.asset_path(asset['id'], 'image')
+    with Image.open(path) as saved:
+        assert saved.mode == 'RGBA' and saved.getpixel((0, 0))[3] == 0
+    value = Reel(look='pop_art', ratio=ratio, motion='none', show_progress=False, brand='Daily News',
+                 source='Must not appear as a footer', scenes=[Scene(headline='Technology changes the workplace', image_id=asset['id'])])
+    plan = Plan(value, 540, {asset['id']: path})
+    background = plan._base(0)
+    colors = set(background.getdata())
+    assert {(162, 139, 212), (116, 125, 61), (204, 255, 0), (255, 255, 255)} <= colors
+    # The originally red portrait becomes gray, while its transparent surroundings show the design.
+    center = background.getpixel((background.width // 2, background.height // 2))
+    assert center[0] == center[1] == center[2]
+    assert len(plan.global_elements) == 1  # centered publisher label only
+    frame = plan.frame(plan.settled(0))
+    assert frame.getpixel((20, frame.height - 20)) == (17, 17, 17)
+    assert plan.rect[3] < plan.H * .65
+
+
+def test_writer_accepts_explicit_pop_art_look():
+    assert WriteRequest(api_key='test', model='gemini-test', text=ARTICLE, look='pop_art').look == 'pop_art'
+

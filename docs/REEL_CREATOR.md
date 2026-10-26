@@ -1,8 +1,8 @@
 # Reel Creator
 
 Local news-reel maker in **Studio Center → Reel Creator**. It writes, lays out and
-renders on this machine. Only the AI writing step calls an online service (Gemini, with
-your saved key); rendering and previews never leave the computer and never publish.
+renders on this machine. Only the AI writing step sends content to an online service (Gemini, with
+your saved key). Pop Art downloads model weights once; photos, rendering and previews stay on the computer and never publish.
 
 ## Simple mode
 
@@ -56,7 +56,7 @@ first-comment field. The AI is told not to use engagement bait ("like if", "tag 
 
 ## Looks
 
-Six looks, each its own composition, not a recolor. They borrow newsroom conventions (broadcast strap and ticker,
+Seven looks, each its own composition, not a recolor. They borrow newsroom conventions (broadcast strap and ticker,
 wire kicker and dateline, magazine page and serif deck) without copying any outlet's branding. The same layout adapts to both ratios: text
 stays above the area Facebook covers on Reels (9:16) and uses the extra room on 4:5. On 9:16, text also keeps
 150 px (at 1080 wide) clear of the right edge, where Reels shows its like, comment and share buttons; background
@@ -72,7 +72,17 @@ together with the detail line until the scene fits; detail text never goes below
 | Politics | political news and analysis | photo on top fading into a solid text panel with label, headline and detail, segmented progress | Barlow Condensed headline, Noto Sans detail |
 | Wire | straight factual reports | full-bleed photo, orange rule over a kicker line (label left, source and date right), plain bold headline and detail; Reuters/AP-style wire copy | Noto Sans Bold headline, Barlow Condensed kicker and credit |
 | Editorial | explainers and analysis | cream page: red tab and kicker with date, headline, hairline and an italic serif deck on top; the photo fills the lower part; Economist-style magazine page | Source Serif Bold headline, Source Serif Italic deck |
+| Pop Art | bold news collage | lavender/olive pattern, lime halo, grayscale cutout with a white outline, centered top label and uppercase headline on black; no author footer | Noto Sans Bold headline |
 | Clean | neutral updates | white page, rounded photo card with a label chip, dark headline and detail beneath, top progress line | Noto Sans throughout |
+
+Pop Art removes photo backgrounds automatically using the small U²-Net model through the existing
+OpenCV runtime. The first preview/export downloads about 4.4 MB of checksum-verified model weights
+from the rembg GitHub release; photos are processed locally and never uploaded. Later uses work
+offline. Derived PNGs are cached under the studio's `cutouts/` directory and reused by still previews,
+motion previews and final exports; original assets are preserved. Existing transparent PNGs bypass
+segmentation. Use a clear foreground portrait for best results; complex backgrounds and hair may
+need an already-prepared transparent PNG. A failed download or inference shows an error rather than
+silently keeping the background. The top Label overrides the brand name when supplied.
 
 All looks fade scenes into each other, push or pull the photo slowly, animate the logo in with a
 periodic shine. Text is English; characters the bundled font lacks are reported instead of drawn as boxes. Without a photo a scene gets a dark background

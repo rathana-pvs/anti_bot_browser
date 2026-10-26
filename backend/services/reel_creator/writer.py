@@ -35,7 +35,7 @@ Return JSON:
 - hook_alternatives: exactly 2 other hook headlines for scene 1 in different styles (question, number,
   consequence), each fully supported by the article. Empty when existing_headlines is given.
 - look: breaking (urgent developing news), hot (trending or viral), politics (political news and analysis), wire (straight factual report), editorial
-  (explainer or analysis) or clean (neutral update). Use clean, politics, wire or editorial unless the operator requested another look.
+  (explainer or analysis), pop_art (bold retro collage) or clean (neutral update). Use clean, politics, wire or editorial unless the operator requested another look.
 - post_caption: only when write_caption is true; a readable Facebook caption of 60-130 words in short
   paragraphs with attribution; no URLs. Otherwise an empty string.
 - hashtags: up to 5, no emoji; empty unless write_caption is true.
@@ -87,7 +87,7 @@ class ReelCopy(BaseModel):
     scenes: list[SceneCopy] = Field(min_length=1, max_length=8)
     end_card: EndCopy | None = None
     hook_alternatives: list[str] = Field(default_factory=list, max_length=3)
-    look: Literal['breaking', 'hot', 'politics', 'clean', 'wire', 'editorial'] = 'clean'
+    look: Literal['breaking', 'hot', 'politics', 'clean', 'wire', 'editorial', 'pop_art'] = 'clean'
     post_caption: str = Field(default='', max_length=4000)
     comment_lead: str = Field(default='', max_length=160)
     hashtags: list[str] = Field(default_factory=list, max_length=5)
@@ -106,7 +106,7 @@ class ReelCopy(BaseModel):
 
 
 class WriteRequest(NewsRequest):
-    look: Literal['auto', 'breaking', 'hot', 'politics', 'clean', 'wire', 'editorial'] = 'auto'
+    look: Literal['auto', 'breaking', 'hot', 'politics', 'clean', 'wire', 'editorial', 'pop_art'] = 'auto'
     scenes: int | None = Field(default=None, ge=1, le=8)  # one scene per uploaded photo
     existing: list[str] = Field(default_factory=list, max_length=8)  # headlines already in the reel
     caption: bool = False  # the post caption is written only when asked for
