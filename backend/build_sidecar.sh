@@ -34,10 +34,10 @@ if [ ! -x "$BUILD_PYTHON" ]; then BUILD_PYTHON="python3"; fi
   --add-data "${ROOT_DIR}/backend/services/reel_creator/fonts:backend/services/reel_creator/fonts" \
   --add-data "${ROOT_DIR}/backend/services/reel_creator/audio:backend/services/reel_creator/audio" \
   --collect-submodules fontTools.ttLib.tables \
+  --collect-submodules glcontext \
   --collect-data trafilatura \
   --collect-data cv2 \
   --collect-data certifi \
-  --collect-submodules edge_tts \
   --collect-data courlan \
   --collect-data justext \
   --collect-data tld \

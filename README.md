@@ -108,19 +108,15 @@ need operator review. Image/video analysis is a later enhancement. See
 
 ## 🛠️ Supported Automation Workflows
 
-**Studio Center → Reel Creator** turns one to five photos into a local news-style Reel.
-Photos play for five seconds each and repeat until the video ends, including single-photo animation loops.
-Choose gentle zoom, zoom in/out, fade, pan, or still. Turn subtitles off for a larger headline.
-New reels default to 1080p/30 fps; Advanced holds timing, 720p/1080p resolution,
-24/30/60 fps, music, branding, and layout. Previous motion presets and layouts remain available.
-Preserve full images or crop to fill,
-add optional Khmer/English text, branding and music, preview, then export MP4 or
-append it to the existing Reel posting draft. Paste an article link or full text
-to prepare scene text and a post caption with your saved Gemini model. Choose the template and settings first, then review and apply the suggestions. Local text-fit checks flag settings changes; adaptation and scene shortening run only when requested.
-Optional English narration has its own editable article-based script and voice
-preview. Online `edge-tts` prepares speech once; local exports reuse that recording
-and automatically lower background music while it speaks.
-Three original news soundtracks are included offline. Rendering does not publish. See
+**Studio Center → Reel Creator** makes a vertical news reel for Facebook from an article.
+Paste a link or the article text and press **Create reel**: the AI writes a hook headline
+(with alternatives) and the scene text, using only facts from the article, written for your goal:
+**Engage** (people share a view) or **Read more** (people open the article from a link in the first
+comment). The post caption is generated only when you ask for it.
+One scene is written per photo. Pick one of six looks with their own layouts (Breaking, Hot,
+Politics, Clean, Wire, Editorial), 9:16 or 4:5, and music, then preview any scene, then create the MP4 and hand it to the Reel posting draft in either ratio, or save it.
+Headlines slide in, a progress line tracks the reel, and your logo animates in.
+Music is built in and works offline. Rendering never publishes. See
 [Reel Creator setup and limits](docs/REEL_CREATOR.md).
 
 The **Studio Center → Facebook Live** tab broadcasts uploaded videos without a camera. Save streaming

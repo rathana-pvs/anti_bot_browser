@@ -153,9 +153,9 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
   useEffect(() => {
     if (!incomingReel || liveMode) return;
     const id = `reel_${incomingReel.jobId}`;
-    setPosts(current => current.some(row => row.id === id) ? current : [...current, {
-      id, type: 'reel', media_file: incomingReel.filename, media_name: incomingReel.name,
-      preview_url: getSharedMediaUrl(incomingReel.filename), caption: incomingReel.caption || '', first_comment: '',
+    setPosts(current => current.some(row => row.id === id) ? current.map(row => row.id === id ? { ...row, type: incomingReel.postType } : row) : [...current, {
+      id, type: incomingReel.postType, media_file: incomingReel.filename, media_name: incomingReel.name,
+      preview_url: getSharedMediaUrl(incomingReel.filename), caption: incomingReel.caption || '', first_comment: incomingReel.comment || '',
     }]);
     onIncomingReelConsumed?.();
   }, [incomingReel, liveMode, onIncomingReelConsumed]);
@@ -263,7 +263,8 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                   media_file: uploaded.filename,
                   media_name: uploaded.original_name || uploaded.filename,
                   preview_url: getSharedMediaUrl(uploaded.filename),
-                  type: liveMode || row.type === 'live' && uploaded.type === 'reel' ? 'live' : uploaded.type,
+                  type: liveMode || row.type === 'live' && uploaded.type === 'reel' ? 'live'
+                    : uploaded.type === 'reel' && row.type === 'photo' ? 'photo' : uploaded.type,
                 }
               : row
           )
@@ -488,7 +489,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                   </span>
                 </h3>
                 <p className="text-xs text-zinc-400 mt-0.5">
-                  {liveMode ? 'Upload videos to broadcast with each profile’s saved streaming settings.' : 'Upload videos or photos. Videos are posted as Reels.'}
+                  {liveMode ? 'Upload videos to broadcast with each profile’s saved streaming settings.' : 'Upload videos or photos. Videos default to Reels; choose Feed post to use the feed composer.'}
                 </p>
               </div>
 
@@ -562,7 +563,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                       </span>
 
                       <Select value={post.type} ariaLabel={`Post ${idx + 1} type`} className="w-28 min-h-7 text-xs"
-                        disabled={liveMode} options={liveMode ? [{value: 'live', label: 'Live'}] : [{value: 'photo', label: 'Photo'}, {value: 'reel', label: 'Reel'}]}
+                        disabled={liveMode} options={liveMode ? [{value: 'live', label: 'Live'}] : [{value: 'photo', label: 'Feed post'}, {value: 'reel', label: 'Reel'}]}
                         onValueChange={value => handleUpdateRow(post.id, {type: value as DraftPostRow['type'], ...(value === 'live' ? {caption: '', first_comment: ''} : {})})} />
 
                       {post.media_file ? (
@@ -592,7 +593,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                     <div className="shrink-0">
                       {post.media_file ? (
                         <div className="relative group/thumb">
-                          {post.type !== 'photo' ? (
+                          {post.type !== 'photo' || /\.(mp4|mov|webm)$/i.test(post.media_file) ? (
                             <div
                               onClick={() =>
                                 setLightboxMedia({

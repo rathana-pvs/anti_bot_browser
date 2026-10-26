@@ -1,5 +1,0 @@
-output/*
-!output/.gitkeep
-app-bundle/
-browser.json
-app-runtime.json
