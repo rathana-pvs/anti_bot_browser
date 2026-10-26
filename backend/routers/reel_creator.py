@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 from backend.services.reel_creator.articles import extract_article
 from backend.services.reel_creator.audio_presets import preset_path
-from backend.services.reel_creator.reel import DraftInput, Reel, RenderInput
+from backend.services.reel_creator.reel import MAX_HOUSE_STYLES, DraftInput, HouseStyle, Reel, RenderInput
 from backend.services.reel_creator.service import MAX_UPLOAD, get_service
 from backend.services.reel_creator.store import Conflict
 from backend.services.reel_creator.writer import WriteRequest, write_reel
@@ -109,6 +109,23 @@ def layout(value: Reel, scene: int = Query(default=0, ge=0, le=7)):
 @router.get('/music/{track}/preview')
 def preview_music(track: str):
     return FileResponse(checked(preset_path, track), media_type='audio/wav')
+
+
+@router.get('/house-styles')
+def house_styles():
+    return get_service().store.house_styles()
+
+
+@router.put('/house-styles/{style_id}')
+def save_house_style(style_id: Id, value: HouseStyle):
+    if value.id != style_id:
+        raise HTTPException(400, 'The house style ID does not match the address.')
+    return checked(get_service().store.save_house_style, value.model_dump(), MAX_HOUSE_STYLES)
+
+
+@router.delete('/house-styles/{style_id}')
+def delete_house_style(style_id: Id):
+    return get_service().store.delete_house_style(style_id)
 
 
 @router.get('/brand')

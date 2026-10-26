@@ -159,6 +159,31 @@ class Store:
                     return job
         return None
 
+    def house_styles(self):
+        with self.db() as db:
+            row = db.execute('SELECT payload FROM settings WHERE id=?', ('house_styles',)).fetchone()
+        return json.loads(row['payload']) if row else []
+
+    def save_house_style(self, value, limit):
+        """Add or replace one house style by id; names are unique so the picker can tell them apart."""
+        with self.db() as db:
+            row = db.execute('SELECT payload FROM settings WHERE id=?', ('house_styles',)).fetchone()
+            styles = [s for s in (json.loads(row['payload']) if row else []) if s['id'] != value['id']]
+            if any(s['name'].casefold() == value['name'].casefold() for s in styles):
+                raise ValueError(f'A house style is already called {value["name"]}. Choose another name.')
+            if len(styles) >= limit:
+                raise ValueError(f'Keep up to {limit} house styles. Delete one first.')
+            styles.append(value)
+            db.execute('INSERT OR REPLACE INTO settings VALUES(?,?)', ('house_styles', json.dumps(styles)))
+        return styles
+
+    def delete_house_style(self, style_id):
+        with self.db() as db:
+            row = db.execute('SELECT payload FROM settings WHERE id=?', ('house_styles',)).fetchone()
+            styles = [s for s in (json.loads(row['payload']) if row else []) if s['id'] != style_id]
+            db.execute('INSERT OR REPLACE INTO settings VALUES(?,?)', ('house_styles', json.dumps(styles)))
+        return styles
+
     def brand(self, value=None):
         with self.db() as db:
             if value is not None:

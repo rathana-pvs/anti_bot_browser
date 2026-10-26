@@ -69,6 +69,8 @@ export function SceneList(p: Props) {
               aria-label={`Scene ${i + 1} highlighted words`} placeholder="Highlight words" title="Words from the headline shown in the accent color"
               className={`min-w-0 flex-1 ${scene.highlight && !includesWords(scene.headline, scene.highlight) ? 'border-amber-600' : ''}`} />
           </div>
+          {scene.image_id && <Input value={scene.credit ?? ''} onChange={event => p.onEdit(i, { credit: event.target.value })} maxLength={60}
+            aria-label={`Scene ${i + 1} photo credit`} placeholder="Photo credit, e.g. Photo: AP" className="h-8 text-xs" />}
         </div>
         <div className="flex shrink-0 flex-col items-center justify-between">
           <span className="flex items-center gap-1 text-[11px] tabular-nums text-zinc-500">

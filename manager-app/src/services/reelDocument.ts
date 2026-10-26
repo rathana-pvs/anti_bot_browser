@@ -1,9 +1,9 @@
-import type { ElementStyle, Reel, ReelAsset, ReelBrand, ReelScene, ReelStyles, StyleRole, WrittenReel, WrittenScene } from '../types/reelCreator';
+import type { ElementStyle, HouseStyle, Reel, ReelAsset, ReelBrand, ReelScene, ReelStyles, StyleRole, WrittenReel, WrittenScene } from '../types/reelCreator';
 
 export const MAX_SCENES = 8;
 export const MAX_SECONDS = 90;
 
-export const emptyScene = (): ReelScene => ({ headline: '', detail: '', image_id: null, focal_x: .5, focal_y: .4, seconds: null, fit: 'cover', kind: 'story', stat: '', attribution: '', highlight: '' });
+export const emptyScene = (): ReelScene => ({ headline: '', detail: '', image_id: null, focal_x: .5, focal_y: .4, seconds: null, fit: 'cover', kind: 'story', stat: '', attribution: '', highlight: '', credit: '' });
 
 export const emptyReel = (brand?: ReelBrand | null): Reel => ({
   version: 4, look: 'breaking', tag: null, accent: null, scenes: [emptyScene()],
@@ -146,3 +146,41 @@ export const sceneIsStyled = (scene: ReelScene): boolean =>
 
 /** Advanced settings of a scene removed, leaving its words, photo and timing. */
 export const unstyledScene = ({ style: _style, motion: _motion, transition: _transition, shade: _shade, backdrop: _backdrop, text_position: _position, ...scene }: ReelScene): ReelScene => scene;
+
+/** Key order and absent-versus-null do not change what a style means. */
+const stable = (value: unknown): string => JSON.stringify(value, (_key, v) =>
+  v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).filter(([, x]) => x != null).sort(([a], [b]) => a.localeCompare(b))) : v);
+
+/** What a house style keeps from a reel. An uploaded track is this reel's own, so the style keeps the look's music. */
+export const houseStyleOf = (reel: Reel, id: string, name: string): HouseStyle => ({
+  id, name: name.trim(), look: reel.look, tag: reel.tag, accent: reel.accent, ratio: reel.ratio, motion: reel.motion,
+  show_progress: reel.show_progress, music: reel.music === 'custom' ? 'auto' : reel.music, style: reel.style ?? {},
+});
+
+/** The reel in a house style: its words, photos, per-scene settings and any uploaded track stay. */
+export const applyHouseStyle = (reel: Reel, house: HouseStyle): Reel => ({
+  ...reel, look: house.look, tag: house.tag, accent: house.accent, ratio: house.ratio, motion: house.motion,
+  show_progress: house.show_progress, style: house.style, ...(reel.music === 'custom' ? {} : { music: house.music, music_id: null }),
+});
+
+/** Whether the reel currently looks exactly as the house style says (an uploaded track counts as the look's music). */
+export const matchesHouseStyle = (reel: Reel, house: HouseStyle): boolean => {
+  const { id: _id, name: _name, ...mine } = houseStyleOf(reel, house.id, house.name);
+  const { id: _hid, name: _hname, ...theirs } = house;
+  return stable(mine) === stable(theirs);
+};
+
+/** The label a reel carries once it has been updated with new reporting. */
+export const UPDATE_LABEL = 'UPDATE';
+
+/**
+ * A developing story rewritten from newer reporting: every scene's words are new, while its photo, credit, timing
+ * settings and styles stay in place (the end card keeps its own). The look is kept; `mark` sets the UPDATE label.
+ */
+export function updatedStory(reel: Reel, written: WrittenReel, dateline: string, mark: boolean): Reel {
+  const end = reel.scenes.find(scene => scene.kind === 'end');
+  const next = applyWriting({ ...reel, scenes: reel.scenes.filter(scene => scene.kind !== 'end') }, written, true);
+  const scenes = next.scenes.map(scene => scene.kind === 'end' && end
+    ? { ...end, headline: scene.headline, detail: scene.detail, highlight: scene.highlight, seconds: null } : scene);
+  return { ...next, scenes, tag: mark ? UPDATE_LABEL : reel.tag, dateline: dateline || reel.dateline };
+}

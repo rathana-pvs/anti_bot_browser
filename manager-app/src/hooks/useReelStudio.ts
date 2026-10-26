@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { reelApi, type WriteRequest } from '../services/reelCreator';
 import { configuredGemini } from '../services/newsSource';
-import { addScene, applyWriting, datelineFor, emptyReel, fillPhotos, fillScenes, hasContent, headlines, insertIndex, MAX_SCENES, moveScene, placePhotos, reelKey, removeScene, setPhoto, sourceKind, withHook } from '../services/reelDocument';
-import type { CreatedReelMedia, Reel, ReelGoal, ReelAsset, ReelBrand, ReelCapabilities, ReelDraft, ReelJob } from '../types/reelCreator';
+import { addScene, updatedStory, applyHouseStyle, applyWriting, houseStyleOf, datelineFor, emptyReel, fillPhotos, fillScenes, hasContent, headlines, insertIndex, MAX_SCENES, moveScene, placePhotos, reelKey, removeScene, setPhoto, sourceKind, withHook } from '../services/reelDocument';
+import type { CreatedReelMedia, HouseStyle, Reel, ReelGoal, ReelAsset, ReelBrand, ReelCapabilities, ReelDraft, ReelJob } from '../types/reelCreator';
 
 interface Doc { reel: Reel; caption: string; goal: ReelGoal; comment: string; hooks: string[]; sourceText: string; sourceUrl: string; sourceTitle: string; sourcePublisher: string }
 /** An article as read once: pasted text, or the text extracted from a link. */
@@ -22,6 +22,7 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
   const [capabilities, setCapabilities] = useState<ReelCapabilities | null>(null);
   const [drafts, setDrafts] = useState<ReelDraft[]>([]);
   const [jobs, setJobs] = useState<ReelJob[]>([]);
+  const [houseStyles, setHouseStyles] = useState<HouseStyle[]>([]);
   const [doc, setDocState] = useState<Doc>(() => blank());
   const [draftId, setDraftId] = useState(newId);
   const [loaded, setLoaded] = useState(false);
@@ -77,10 +78,10 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
     let cancelled = false;
     (async () => {
       try {
-        const [caps, saved, renders, brand] = await Promise.all([reelApi.capabilities(true), reelApi.drafts(), reelApi.jobs(), reelApi.brand()]);
+        const [caps, saved, renders, brand, styles] = await Promise.all([reelApi.capabilities(true), reelApi.drafts(), reelApi.jobs(), reelApi.brand(), reelApi.houseStyles()]);
         if (cancelled) return;
         brandRef.current = brand;
-        setCapabilities(caps); setDrafts(saved); setJobs(renders);
+        setCapabilities(caps); setDrafts(saved); setJobs(renders); setHouseStyles(styles);
         const remembered = localStorage.getItem('reel_creator_draft');
         open(saved.find(d => d.id === remembered) ?? saved[0] ?? null);
         setLoaded(true);
@@ -139,11 +140,44 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
     return { written, article };
   };
 
-  const create = (source: string, look: WriteRequest['look'], photos: ReelAsset[], goal: ReelGoal) => attempt('write', async () => {
-    const { written, article } = await requestWriting(source, look, { scenes: photos.length ? Math.min(photos.length, MAX_SCENES) : undefined }, goal);
-    setDoc(d => ({ ...d, goal, comment: '', reel: { ...fillPhotos(applyWriting(d.reel, written, look !== 'auto'), photos), dateline: d.reel.dateline || datelineFor(article.published) },
-      hooks: written.hooks.slice(0, 4), sourceText: article.text, sourceUrl: article.url, sourceTitle: article.title, sourcePublisher: article.publisher }));
+  /** Write a reel from an article. With a house style, its look is the one written for and the style is applied. */
+  const create = (source: string, look: WriteRequest['look'], photos: ReelAsset[], goal: ReelGoal, house?: HouseStyle) => attempt('write', async () => {
+    const chosen = house?.look ?? look;
+    const { written, article } = await requestWriting(source, chosen, { scenes: photos.length ? Math.min(photos.length, MAX_SCENES) : undefined }, goal);
+    setDoc(d => {
+      const reel = fillPhotos(applyWriting(d.reel, written, chosen !== 'auto'), photos);
+      return { ...d, goal, comment: '', reel: { ...(house ? applyHouseStyle(reel, house) : reel), dateline: d.reel.dateline || datelineFor(article.published) },
+      hooks: written.hooks.slice(0, 4), sourceText: article.text, sourceUrl: article.url, sourceTitle: article.title, sourcePublisher: article.publisher };
+    });
   });
+
+  /**
+   * A copy of this reel rewritten from newer reporting on the same story, opened as a new draft; the reel already
+   * made stays as it is. The caption and first comment are cleared, since they describe the earlier version.
+   */
+  const updateStory = (input: string, mark: boolean) => attempt('write', async () => {
+    const base = docRef.current;
+    const count = Math.min(MAX_SCENES, Math.max(1, base.reel.scenes.filter(scene => scene.kind !== 'end').length));
+    const { written, article } = await requestWriting(input, base.reel.look, { scenes: count }, base.goal);
+    await persist();
+    const next: Doc = { ...base, caption: '', comment: '', hooks: written.hooks.slice(0, 4),
+      reel: updatedStory(base.reel, written, datelineFor(article.published), mark),
+      sourceText: article.text, sourceUrl: article.url, sourceTitle: article.title, sourcePublisher: article.publisher };
+    const id = newId();
+    draftRef.current = { id, revision: 0 };
+    savedHash.current = '';
+    docRef.current = next;
+    setDocState(next); setDraftId(id); setRender(null); setSaveState('');
+    try { localStorage.setItem('reel_creator_draft', id); } catch { /* A remembered draft is a convenience. */ }
+    setNotice('Updated from the new reporting as a new reel. Check every scene, then generate a new caption.');
+  });
+
+  const saveHouseStyle = (name: string) => attempt(null, async () => {
+    setHouseStyles(await reelApi.saveHouseStyle(houseStyleOf(docRef.current.reel, newId(), name)));
+    setNotice(`Saved the house style "${name.trim()}".`);
+  });
+  const deleteHouseStyle = (id: string) => attempt(null, async () => { setHouseStyles(await reelApi.deleteHouseStyle(id)); });
+  const pickHouseStyle = (house: HouseStyle) => setReel(reel => applyHouseStyle(reel, house));
 
   /** Which kind of reel this is. It steers the next hooks and caption; nothing is rewritten automatically. */
   const setGoal = (goal: ReelGoal) => {
@@ -265,9 +299,9 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
   };
 
   return {
-    capabilities, drafts, doc, draftId, loaded, busy, error, notice, saveState, job, fresh,
+    capabilities, drafts, doc, draftId, houseStyles, saveHouseStyle, deleteHouseStyle, pickHouseStyle, loaded, busy, error, notice, saveState, job, fresh,
     setError, setNotice, setReel, setDoc, open, discard,
-    create, moreHooks, rewriteCaption, importImages,
+    create, updateStory, moreHooks, rewriteCaption, importImages,
     setGoal, addPhotos, changePhoto, setBrand, uploadLogo, pickMusic, setMusic, startRender, updateJob, useVideo, saveFile,
     pickHook: (hook: string) => setReel(reel => withHook(reel, hook)),
     moveScene: (from: number, to: number) => setReel(reel => moveScene(reel, from, to)),

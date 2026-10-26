@@ -1,10 +1,13 @@
+import type { ReactNode } from 'react';
 import { Input } from '../ui/Input';
 import type { LookInfo, Reel, ReelLook, ReelRatio } from '../../types/reelCreator';
 
 /** Format and look: two ratios and ready-made layouts; the label is the only thing worth typing over. */
-export function LookPicker({ looks, ratios, reel, onLook, onTag, onRatio }: {
+export function LookPicker({ looks, ratios, reel, onLook, onTag, onRatio, houseStyles }: {
   looks: LookInfo[]; ratios: ReelRatio[]; reel: Reel;
   onLook: (look: ReelLook) => void; onTag: (tag: string | null) => void; onRatio: (ratio: ReelRatio) => void;
+  /** The house style picker, at the end of the format row. */
+  houseStyles?: ReactNode;
 }) {
   const current = looks.find(look => look.id === reel.look);
   return <section aria-label="Look" className="space-y-3">
@@ -15,6 +18,7 @@ export function LookPicker({ looks, ratios, reel, onLook, onTag, onRatio }: {
       </div>
       <Input value={reel.tag ?? ''} onChange={event => onTag(event.target.value.toUpperCase() || null)} maxLength={24}
         aria-label="Label" placeholder={current?.tag ?? 'Label'} className="max-w-[220px]" />
+      {houseStyles && <div className="ml-auto">{houseStyles}</div>}
     </div>
     <div role="radiogroup" aria-label="Look" className="grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-7">
       {looks.map(look => <button key={look.id} type="button" role="radio" aria-checked={reel.look === look.id} onClick={() => onLook(look.id)}

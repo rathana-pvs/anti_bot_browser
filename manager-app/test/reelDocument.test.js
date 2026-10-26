@@ -172,3 +172,45 @@ test('a moved text block counts as scene style and is cleared by a scene reset',
   assert.ok(doc.sceneIsStyled(scene));
   assert.ok(!('text_position' in doc.unstyledScene(scene)));
 });
+
+test('a house style carries the look but never the words, photos or an uploaded track', () => {
+  const base = { ...reel('Flood plan approved'), look: 'wire', tag: 'LATEST', accent: '#ff0000', motion: 'none', music: 'custom', music_id: 'm1',
+    style: { headline: { color: '#ffee00' } } };
+  base.scenes[0].image_id = 'p1';
+  const house = doc.houseStyleOf(base, 'h1', '  Our wire ');
+  assert.equal(house.name, 'Our wire');
+  assert.equal(house.music, 'auto');
+  assert.ok(!('scenes' in house) && !('brand' in house));
+  assert.ok(doc.matchesHouseStyle(base, house));
+  const other = { ...reel('Another story'), look: 'breaking', music: 'urgent_wire' };
+  const applied = doc.applyHouseStyle(other, house);
+  assert.equal(applied.look, 'wire');
+  assert.equal(applied.scenes[0].headline, 'Another story');
+  assert.equal(applied.music, 'auto');
+  assert.ok(doc.matchesHouseStyle(applied, house));
+  assert.equal(doc.applyHouseStyle({ ...other, music: 'custom', music_id: 'mine' }, house).music_id, 'mine');   // an uploaded track stays
+  assert.ok(!doc.matchesHouseStyle({ ...applied, style: { headline: { color: '#000000' } } }, house));
+  assert.ok(doc.matchesHouseStyle({ ...applied, style: { headline: { color: '#ffee00', font: undefined } } }, house));
+});
+
+test('an updated story gets new words but keeps photos, credits, styles and its end card', () => {
+  const base = reel('Old headline', 'Old second');
+  base.tag = null;
+  base.scenes[0] = { ...base.scenes[0], image_id: 'p1', credit: 'Photo: AP', style: { headline: { color: '#ffee00' } }, transition: 'slide' };
+  base.scenes.push({ ...doc.emptyScene(), kind: 'end', headline: 'Old end?', image_id: 'p9', backdrop: '#111111' });
+  const written = { look: 'clean', hooks: [], caption: '', comment: '', source_label: 'Wire', source_fingerprint: 'x',
+    scenes: [{ headline: 'New headline', detail: 'New detail', kind: 'story', stat: '', attribution: '', highlight: 'New' },
+             { headline: 'New second', detail: '', kind: 'stat', stat: '9', attribution: '', highlight: '' }],
+    end: { headline: 'What now?', detail: '', highlight: '' } };
+  const next = doc.updatedStory(base, written, 'Oct 27, 2026', true);
+  assert.deepEqual(next.scenes.map(s => s.headline), ['New headline', 'New second', 'What now?']);
+  assert.equal(next.look, base.look);
+  assert.equal(next.tag, 'UPDATE');
+  assert.equal(next.dateline, 'Oct 27, 2026');
+  assert.equal(next.scenes[0].image_id, 'p1');
+  assert.equal(next.scenes[0].credit, 'Photo: AP');
+  assert.deepEqual(next.scenes[0].style, { headline: { color: '#ffee00' } });
+  assert.equal(next.scenes[2].image_id, 'p9');
+  assert.equal(next.scenes[2].backdrop, '#111111');
+  assert.equal(doc.updatedStory(base, written, '', false).tag, null);
+});

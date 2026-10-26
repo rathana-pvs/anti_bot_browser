@@ -39,6 +39,32 @@ Existing exports must be rendered again.
 
 Drafts save automatically. Brand name, logo and source are remembered for new reels.
 
+## Photo credits
+
+A scene with a photo has a **Photo credit** field (for example "Photo: AP" or "Handout", up to 60 characters). It is
+drawn small on the photo, right-aligned to the text column so it never sits under the Reels buttons: just above
+the text on Breaking and Wire (it follows Text position), above the detail sticker on Hot, at the photo's bottom
+edge on Politics, Clean and Pop Art, and at its top edge on Editorial. Scenes without a photo show no credit. In
+advanced mode **Photo credit** can be recolored or hidden.
+
+## House styles
+
+**Save style** (next to the label) keeps the reel's look as a named house style: look, label, accent, ratio, photo
+motion, progress line, music and advanced styles. It never keeps words, photos, per-scene settings or the brand
+(brand, logo and source are remembered separately), and an uploaded music file is not part of it. Pick a house
+style from the same menu to apply it to the reel, or as a chip on the first screen: the reel is then written for
+that look and styled as saved. The menu shows the style in use, with a button to delete it; reels already made keep
+their look. Up to 20 styles, each with its own name.
+
+## Updating a developing story
+
+**Update story** (top of the editor) takes the updated article or its link and rewrites the reel as a **new**
+reel, so the one already made, and any video of it, stays as it is. The same number of scenes is written for the
+same look; every scene's photo, credit, settings and styles stay in place, and the end card keeps its own. By
+default the label becomes **UPDATE** and the date the new article's (or today's). The caption and first comment are
+cleared, since they described the earlier version: check the scenes, then generate a new caption. The new
+article is read once, like any other.
+
 ## Advanced mode
 
 Switch **Simple / Advanced** at the top right once a reel exists (the choice is remembered on this computer).
@@ -62,9 +88,8 @@ as fractions of the frame.
 | Brand, Logo | Brand | | Brand | | ✓ | ✓ |
 | Ticker (Breaking) | | | ✓ | bar | | ✓ |
 
-Entrance is the animation (fade, rise, slide from left, pop, wipe or appear) plus an extra delay of up to 3 s and
-its length. The first scene opens fully drawn, so its entrances are not played. The scene preview waits until
-late entrances have finished. A scene's own setting wins over the reel's; **Use the reel style** removes it, and
+Entrance is the animation (fade, rise, slide from left, pop, wipe or appear); its timing stays the look's. The first
+scene opens fully drawn, so its entrances are not played. A scene's own setting wins over the reel's; **Use the reel style** removes it, and
 a scene can show an element the reel hides. Brand, logo and ticker are shown for the whole reel and are styled
 for all scenes. **Accent** (all scenes) recolors the look's accent.
 
@@ -196,7 +221,7 @@ hear them), turn music off, or upload your own MP3, WAV, M4A, Ogg or FLAC file (
 - `writer.py` — grounded AI writing; `articles.py` — public-article extraction.
 - `store.py` — SQLite journal (`reels`, `assets`, `jobs`, `settings`).
 
-API: `/api/reel-creator/{capabilities,drafts,article,write,assets,poster,brand,jobs}`; local
+API: `/api/reel-creator/{capabilities,drafts,article,write,assets,poster,layout,brand,house-styles,jobs}`; local
 and authenticated like the rest of the desktop API.
 
 The older template-based studio, its drafts and Remotion tooling were removed; existing

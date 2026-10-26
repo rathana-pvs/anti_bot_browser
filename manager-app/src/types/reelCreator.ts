@@ -5,7 +5,7 @@ export type ReelGoal = 'engage' | 'readmore';
 export type ReelRatio = '9:16' | '4:5';
 
 /** Advanced mode: the elements a look draws, by role. */
-export type StyleRole = 'headline' | 'detail' | 'lead' | 'label' | 'brand' | 'logo' | 'ticker';
+export type StyleRole = 'headline' | 'detail' | 'lead' | 'label' | 'credit' | 'brand' | 'logo' | 'ticker';
 export type StyleFace = 'bold' | 'regular' | 'display' | 'condensed' | 'condensed-semi' | 'serif' | 'serif-italic';
 export type StyleAnimation = 'fade' | 'rise' | 'left' | 'pop' | 'wipe' | 'none';
 export type SceneTransition = 'fade' | 'cut' | 'slide';
@@ -18,9 +18,6 @@ export interface ElementStyle {
   /** A box behind each line, or the fill of a label or ticker. */
   background?: string;
   animation?: StyleAnimation;
-  /** Seconds added to the look's entrance time. */
-  delay?: number;
-  duration?: number;
   hidden?: boolean;
 }
 export type ReelStyles = Partial<Record<StyleRole, ElementStyle>>;
@@ -40,6 +37,8 @@ export interface ReelScene {
   attribution?: string;
   /** Words of the headline drawn in the accent color. */
   highlight?: string;
+  /** Who took or supplied the photo, e.g. "Photo: AP"; drawn only with a photo. Absent in older drafts. */
+  credit?: string;
   /** Advanced mode, all absent in simple reels: this scene's styles over the reel's, and its own backdrop. */
   style?: ReelStyles;
   motion?: Exclude<ReelMotion, 'auto'> | null;
@@ -111,6 +110,9 @@ export interface ReelAsset {
 }
 
 export interface ReelBrand { brand: string; logo_id: string | null; source: string }
+
+/** A newsroom's saved look: how its reels look, never what they say. */
+export type HouseStyle = { id: string; name: string } & Pick<Reel, 'look' | 'tag' | 'accent' | 'ratio' | 'motion' | 'show_progress' | 'music'> & { style: ReelStyles };
 
 export interface LookInfo { id: ReelLook; name: string; tag: string; accent: string; music: string }
 export interface MusicTrack { id: string; name: string; description: string; duration: number }

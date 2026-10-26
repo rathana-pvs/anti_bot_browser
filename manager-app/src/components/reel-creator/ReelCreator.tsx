@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Check, Download, Film, Play, Plus, Send } from 'lucide-react';
+import { Check, Download, Film, Newspaper, Play, Plus, Send } from 'lucide-react';
 import { useReelStudio } from '../../hooks/useReelStudio';
 import { hasContent, reelSeconds, draftTitle, patchStyle, unstyledScene } from '../../services/reelDocument';
 import type { CreatedReelMedia, StyleRole } from '../../types/reelCreator';
@@ -8,6 +8,8 @@ import { Button } from '../ui/Button';
 import { Select } from '../ui/Select';
 import { Spinner } from '../ui/Spinner';
 import { FinishPanel } from './FinishPanel';
+import { HouseStylePicker } from './HouseStylePicker';
+import { UpdateStoryDialog } from './UpdateStoryDialog';
 import { LookPicker } from './LookPicker';
 import { PhonePreview } from './PhonePreview';
 import { SceneList } from './SceneList';
@@ -32,6 +34,7 @@ export function ReelCreator({ active, onUseReel }: Props) {
   const [mode, setModeState] = useState<Mode>(savedMode);
   const [scope, setScope] = useState<'reel' | 'scene'>('reel');
   const [role, setRole] = useState<StyleRole>('headline');
+  const [updating, setUpdating] = useState(false);
   const layout = useSceneLayout(active && studio.loaded, doc.reel, scene);
   const pick = (target: StyleRole) => {
     setMode('advanced'); setRole(target);
@@ -66,6 +69,10 @@ export function ReelCreator({ active, onUseReel }: Props) {
       {recent.length > 0 && <div className="w-80 max-w-full shrink-0"><Select className="whitespace-nowrap [&>span:first-child]:min-w-0 [&>span:first-child]:flex-1 [&>span:first-child]:truncate" value={recent.some(r => r.value === studio.draftId) ? studio.draftId : ''} options={recent}
         placeholder="Recent reels" ariaLabel="Recent reels" onValueChange={id => studio.open(studio.drafts.find(d => d.id === id) ?? null)} /></div>}
       <Button variant="outline" size="sm" disabled={!!busy} onClick={() => studio.open(null)}><Plus className="h-3.5 w-3.5" />New</Button>
+      {hasContent(doc.reel) && <Button variant="outline" size="sm" disabled={!!busy} onClick={() => setUpdating(true)} title="Rewrite this reel from newer reporting as a new reel">
+        <Newspaper className="h-3.5 w-3.5" />Update story</Button>}
+      <UpdateStoryDialog key={studio.draftId} open={updating} busy={writing} onOpenChange={setUpdating}
+        onUpdate={(source, mark) => { void studio.updateStory(source, mark).then(() => setUpdating(false)); }} />
       <span className="ml-auto text-xs text-zinc-500" aria-live="polite">{studio.saveState}</span>
       {hasReel && <div role="radiogroup" aria-label="Editing mode" className="flex rounded-lg border border-zinc-800 p-0.5">
         {(['simple', 'advanced'] as const).map(value => <button key={value} type="button" role="radio" aria-checked={mode === value} onClick={() => setMode(value)}
@@ -77,8 +84,8 @@ export function ReelCreator({ active, onUseReel }: Props) {
     {studio.notice && <Alert variant="success">{studio.notice}</Alert>}
 
     {!hasReel
-      ? <SourceInput looks={capabilities.looks} busy={writing} goal={doc.goal} onGoal={studio.setGoal}
-          onCreate={(source, look, photos, goal) => { void studio.create(source, look, photos, goal); }}
+      ? <SourceInput looks={capabilities.looks} houseStyles={studio.houseStyles} busy={writing} goal={doc.goal} onGoal={studio.setGoal}
+          onCreate={(source, look, photos, goal, house) => { void studio.create(source, look, photos, goal, house); }}
           importImages={studio.importImages} onBlank={() => setStarted(true)} />
       : <div className="grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
         <div className="space-y-4 lg:sticky lg:top-4 lg:self-start">
@@ -104,7 +111,9 @@ export function ReelCreator({ active, onUseReel }: Props) {
         <div className="min-w-0 space-y-6">
           <LookPicker looks={capabilities.looks} ratios={capabilities.ratios} reel={doc.reel}
             onLook={look => studio.setReel(reel => ({ ...reel, look }))} onTag={tag => studio.setReel(reel => ({ ...reel, tag }))}
-            onRatio={ratio => studio.setReel(reel => ({ ...reel, ratio }))} />
+            onRatio={ratio => studio.setReel(reel => ({ ...reel, ratio }))}
+            houseStyles={<HouseStylePicker styles={studio.houseStyles} reel={doc.reel} busy={!!busy} onPick={studio.pickHouseStyle}
+              onSave={name => { void studio.saveHouseStyle(name); }} onDelete={id => { void studio.deleteHouseStyle(id); }} />} />
           <SceneList reel={doc.reel} hooks={doc.hooks} selected={scene} busy={!!busy} writing={busy === 'hooks'} adding={busy === 'scene'} canWrite={canWrite}
             onSelect={setScene} onEdit={edit} onHook={studio.pickHook} onMoreHooks={() => { void studio.moreHooks(); }}
             onPhoto={index => { void studio.changePhoto(index); }} onPhotos={() => { void studio.addPhotos(); }}

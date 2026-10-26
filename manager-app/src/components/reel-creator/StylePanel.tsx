@@ -22,19 +22,20 @@ interface Props {
   layout: SceneLayout | null;
 }
 
-type Field = 'font' | 'scale' | 'color' | 'background' | 'animation' | 'timing' | 'hidden';
+type Field = 'font' | 'scale' | 'color' | 'background' | 'animation' | 'hidden';
 /** Select value for "keep the look's (or reel's) own"; Select options cannot use an empty value. */
 const LOOK = 'look';
 const unset = (value: string) => value === LOOK ? null : value;
 
 /** What each role can change; the renderer ignores anything else. */
 const roles: { id: StyleRole; name: string; fields: Field[] }[] = [
-  { id: 'headline', name: 'Headline', fields: ['font', 'scale', 'color', 'background', 'animation', 'timing', 'hidden'] },
-  { id: 'detail', name: 'Detail', fields: ['font', 'scale', 'color', 'background', 'animation', 'timing', 'hidden'] },
-  { id: 'lead', name: 'Figure / mark', fields: ['color', 'animation', 'timing', 'hidden'] },
-  { id: 'label', name: 'Label', fields: ['font', 'color', 'background', 'animation', 'timing', 'hidden'] },
-  { id: 'brand', name: 'Brand', fields: ['font', 'color', 'animation', 'timing', 'hidden'] },
-  { id: 'logo', name: 'Logo', fields: ['animation', 'timing', 'hidden'] },
+  { id: 'headline', name: 'Headline', fields: ['font', 'scale', 'color', 'background', 'animation', 'hidden'] },
+  { id: 'detail', name: 'Detail', fields: ['font', 'scale', 'color', 'background', 'animation', 'hidden'] },
+  { id: 'lead', name: 'Figure / mark', fields: ['color', 'animation', 'hidden'] },
+  { id: 'label', name: 'Label', fields: ['font', 'color', 'background', 'animation', 'hidden'] },
+  { id: 'credit', name: 'Photo credit', fields: ['color', 'hidden'] },
+  { id: 'brand', name: 'Brand', fields: ['font', 'color', 'animation', 'hidden'] },
+  { id: 'logo', name: 'Logo', fields: ['animation', 'hidden'] },
   { id: 'ticker', name: 'Ticker', fields: ['color', 'background', 'hidden'] },
 ];
 /** The brand row and the ticker are drawn once for the whole reel. */
@@ -68,8 +69,6 @@ export function StylePanel(p: Props) {
   const set = (patch: Partial<Record<keyof ElementStyle, unknown>>) => p.onStyle(role.id, patch);
   const look = p.looks.find(l => l.id === p.reel.look);
   const has = (field: Field) => role.fields.includes(field) && !(field === 'background' && role.id === 'label' && unfilledLabel.includes(p.reel.look));
-  // Shortest scene the style reaches; a later entrance is moved up so it still shows before the scene ends.
-  const shortest = Math.min(...(scope === 'scene' && current ? [current] : p.reel.scenes).map(sceneSeconds));
   const styledRoles = (id: StyleRole) => !!(p.reel.style?.[id] || (scope === 'scene' && current?.style?.[id]));
 
   return <section id="reel-style" aria-label="Style" className="scroll-mt-4 space-y-4 rounded-xl border border-zinc-800 p-4">
@@ -107,14 +106,6 @@ export function StylePanel(p: Props) {
         <ColorField label={`${role.name} background`} value={shown.background ?? null} onChange={background => set({ background })} /></Row>}
       {has('animation') && <Row label="Entrance"><Select value={shown.animation ?? LOOK} options={animations} ariaLabel={`${role.name} entrance`}
         onValueChange={value => set({ animation: unset(value) })} /></Row>}
-      {has('timing') && <Row label="Delay" note={`${(shown.delay ?? 0).toFixed(1)}s`}>
-        <input type="range" min={0} max={3} step={.1} value={shown.delay ?? 0} aria-label={`${role.name} delay`}
-          onChange={event => set({ delay: Number(event.target.value) || null })} className="w-full accent-violet-500" />
-        {!reelOnly.includes(role.id) && (shown.delay ?? 0) + (shown.duration ?? .5) > shortest - 1 &&
-          <p className="text-xs text-amber-400">{scope === 'scene' ? 'Longer than this scene allows' : 'Longer than the shortest scene allows'}: it appears just before the scene ends.</p>}</Row>}
-      {has('timing') && <Row label="Entrance length" note={shown.duration ? `${shown.duration.toFixed(1)}s` : 'Look'}>
-        <input type="range" min={0} max={2} step={.1} value={shown.duration ?? 0} aria-label={`${role.name} entrance length`}
-          onChange={event => set({ duration: Number(event.target.value) >= .1 ? Number(event.target.value) : null })} className="w-full accent-violet-500" /></Row>}
     </div>
 
     <div className="flex items-center gap-4">

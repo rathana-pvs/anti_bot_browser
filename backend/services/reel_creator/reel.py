@@ -24,7 +24,7 @@ Motion = Literal['auto', 'zoom_in', 'zoom_out', 'none']  # auto alternates push-
 Ratio = Literal['9:16', '4:5']
 SceneKind = Literal['story', 'stat', 'quote', 'end']
 # Advanced mode: elements a look draws, by role. A style overrides the look for one role; unset fields keep the look's.
-Role = Literal['headline', 'detail', 'lead', 'label', 'brand', 'logo', 'ticker']
+Role = Literal['headline', 'detail', 'lead', 'label', 'credit', 'brand', 'logo', 'ticker']
 Face = Literal['bold', 'regular', 'display', 'condensed', 'condensed-semi', 'serif', 'serif-italic']
 Anim = Literal['fade', 'rise', 'left', 'pop', 'wipe', 'none']
 Transition = Literal['fade', 'cut', 'slide']
@@ -54,9 +54,13 @@ class ElementStyle(BaseModel):
     color: str | None = None
     background: str | None = None  # a box behind each line of text, or the fill of a label or ticker
     animation: Anim | None = None
-    delay: float | None = Field(default=None, ge=0, le=3, allow_inf_nan=False)  # seconds added to the look's entrance time
-    duration: float | None = Field(default=None, ge=.1, le=2, allow_inf_nan=False)
     hidden: bool | None = None
+
+    @model_validator(mode='before')
+    @classmethod
+    def retired_timing(cls, value):
+        """Entrance delay and length were dropped: news reels keep the look's timing. Older drafts still open."""
+        return {k: v for k, v in value.items() if k not in ('delay', 'duration')} if isinstance(value, dict) else value
 
     @field_validator('color', 'background')
     @classmethod
@@ -91,6 +95,7 @@ class Scene(BaseModel):
     stat: str = Field(default='', max_length=24)
     attribution: str = Field(default='', max_length=60)
     highlight: str = Field(default='', max_length=40)  # words of the headline drawn in the accent color
+    credit: str = Field(default='', max_length=60)  # who took or supplied the photo, e.g. 'Photo: AP'; drawn only with a photo
     # Advanced mode. Unset values follow the reel and the look.
     style: Styles = Field(default_factory=dict)  # this scene only; laid over the reel's styles
     motion: Literal['zoom_in', 'zoom_out', 'none'] | None = None
@@ -121,7 +126,7 @@ class Scene(BaseModel):
             raise ValueError('Unsupported control character')
         return value.strip()
 
-    @field_validator('stat', 'attribution', 'highlight')
+    @field_validator('stat', 'attribution', 'highlight', 'credit')
     @classmethod
     def clean_line(cls, value):
         if any(ord(c) < 32 for c in value):
@@ -252,6 +257,44 @@ class Reel(BaseModel):
 
     def image_ids(self):
         return [s.image_id for s in self.scenes if s.image_id]
+
+
+HOUSE_STYLE_FIELDS = ('look', 'tag', 'accent', 'ratio', 'motion', 'show_progress', 'music', 'style')
+MAX_HOUSE_STYLES = 20
+
+
+class HouseStyle(BaseModel):
+    """A newsroom's saved look: how its reels look, never what they say. Brand and logo are remembered separately."""
+    model_config = ConfigDict(extra='forbid')
+    id: str = Field(pattern=r'^[a-f0-9]{32}$')
+    name: str = Field(min_length=1, max_length=40)
+    look: Look = 'breaking'
+    tag: str | None = Field(default=None, max_length=24)
+    accent: str | None = None
+    ratio: Ratio = '9:16'
+    motion: Motion = 'auto'
+    show_progress: bool = True
+    music: str = 'auto'
+    style: Styles = Field(default_factory=dict)
+
+    @field_validator('name')
+    @classmethod
+    def clean_name(cls, value):
+        if any(ord(c) < 32 for c in value) or not value.strip():
+            raise ValueError('Give the house style a name.')
+        return ' '.join(value.split())
+
+    @field_serializer('style')
+    def compact_style(self, value):
+        return compact(value)
+
+    @model_validator(mode='after')
+    def valid_as_a_reel(self):
+        if self.music == 'custom':
+            raise ValueError('An uploaded music file cannot be part of a house style. Pick a built-in track.')
+        reel = Reel.model_validate(self.model_dump(include=set(HOUSE_STYLE_FIELDS)))  # the same rules as a reel
+        self.tag, self.accent = reel.tag, reel.accent
+        return self
 
 
 class DraftInput(BaseModel):

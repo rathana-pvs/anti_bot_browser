@@ -96,9 +96,9 @@ class Plan:
         self._bases, self._masks = {}, {}
         default, self.page = self._frame()
         # Looks with a page or panel size the photo to the text each scene needs.
-        self.scene_elements, self.rects, self.settle_at, self.positions = [], [], [], []
+        self.scene_elements, self.rects, self.positions = [], [], []
         for index, scene in enumerate(reel.scenes):
-            self._scene_rect, self._lead_plan, self._late, self._length = default, None, 0., self.lengths[index]
+            self._scene_rect, self._lead_plan = default, None
             self._scene = self._shown(scene)
             self.type = self._type_for(scene)
             try:
@@ -106,10 +106,10 @@ class Plan:
             except ValueError as exc:
                 raise ValueError(f'Scene {index + 1}: {exc}') from None
             self.positions.append(self._place(elements, scene.text_position))
+            elements += self._restyle(self._credit(scene, elements))
             self.scene_elements.append(elements)
             self.rects.append(self._scene_rect)
-            self.settle_at.append(max(1.9, self._late))
-        self._scene, self.type, self._length = None, self.look_type, self.duration   # the identity row follows the reel's styles only
+        self._scene, self.type = None, self.look_type   # the identity row follows the reel's styles only
         self.rect = self.rects[0]
         self.mask = self._mask(self.rect)
         self.global_elements = self._restyle(self._identity())
@@ -161,19 +161,14 @@ class Plan:
         return kind
 
     def _restyle(self, elements):
-        """Apply each role's visibility and entrance overrides; the ticker and blinking dots keep their motion."""
+        """Apply each role's visibility and entrance; the ticker and blinking dots keep their motion."""
         out = []
         for element in elements:
             style = self._style(element.role) if element.role else None
             if style and style.hidden:
                 continue
-            if style and element.anim not in ('marquee', 'blink'):
-                element.anim = style.animation or element.anim
-                element.dur = style.duration or element.dur
-                if style.delay:  # a late entrance still finishes before its scene fades out
-                    element.start = min(element.start + style.delay, max(element.start, self._length - SCENE_FADE - element.dur - .1))
-                if style.delay or style.duration:
-                    self._late = max(self._late, element.start + element.dur + .1)
+            if style and style.animation and element.anim not in ('marquee', 'blink'):
+                element.anim = style.animation
             out.append(element)
         return out
 
@@ -197,6 +192,30 @@ class Plan:
         for element in elements:
             element.y += shift
         return position
+
+    def _credit(self, scene, elements):
+        """The photo credit, small and right-aligned to the text column so it stays clear of the Reels buttons.
+
+        Full-bleed looks set it just above their text (Hot: above the detail sticker); page looks at the photo's edge.
+        """
+        if not scene.credit or not scene.image_id or not self._scene_rect[3]:
+            return []
+        px, look = self.px, self.reel.look
+        text, size = self._one_line(scene.credit, 520, 26, 22, 'condensed-semi')
+        tile, _ = self._text(text, size, self._ink('credit', (255, 255, 255, 225)), 'condensed-semi')  # always over the photo
+        x0, y0, rw, rh, _ = self._scene_rect
+        right = min(x0 + rw - px(20), px(DESIGN_W - self.right + 8))
+        if look in ('breaking', 'wire'):
+            y = min(e.y for e in elements) - px(10) - tile.height if elements else px(self.limit) - tile.height
+        elif look == 'hot':
+            sticker = [e for e in elements if e.role == 'detail']
+            y = (sticker[0].y if sticker else px(self.limit)) - px(10) - tile.height
+        elif look == 'editorial':
+            y = y0 + px(10)
+        else:
+            y = y0 + rh - px(12) - tile.height
+        y = max(px(self.inset + 110), min(y, px(self.limit) - tile.height))
+        return [Element(tile, right - tile.width, y, .4, .5, 'fade', role='credit')]
 
     def layout(self, index):
         """Where each styled element sits in the scene preview: role boxes as fractions of the frame, smallest last."""
@@ -234,7 +253,7 @@ class Plan:
 
     def settled(self, index):
         """A time when this scene's text has finished animating in."""
-        return self.starts[index] + min(self.settle_at[index], self.lengths[index] - SCENE_FADE - .05)
+        return self.starts[index] + min(1.9, self.lengths[index] - SCENE_FADE - .05)
 
     def frame(self, t):
         if 0 <= t < 1 / self.fps:

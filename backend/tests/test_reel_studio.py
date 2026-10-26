@@ -851,7 +851,7 @@ def test_styles_validate_and_merge_scene_over_reel():
     assert (merged.color, merged.font, merged.hidden) == ('#222222', 'serif', False)
     assert value.style['headline'].color == '#ffee00'
     assert value.scenes[0].style_for(value.style, 'detail') is None
-    for bad in ({'scale': 2}, {'color': 'red'}, {'font': 'comic'}, {'animation': 'marquee'}, {'delay': -1}, {'shadow': True}):
+    for bad in ({'scale': 2}, {'color': 'red'}, {'font': 'comic'}, {'animation': 'marquee'}, {'shadow': True}):
         with pytest.raises(ValidationError):
             Reel(style={'headline': bad})
     with pytest.raises(ValidationError):
@@ -914,14 +914,20 @@ def test_font_color_size_and_line_box_change_the_headline(creator, reel):
     assert line.x < first(plain).x                                 # the box reaches left; the letters stay on the margin
 
 
-def test_entrance_overrides_keep_the_ticker_moving_and_move_the_poster_time(creator, reel):
+def test_entrance_override_keeps_the_look_timing_and_the_ticker_moving(creator, reel):
     images, logo, _ = creator.validate_assets(reel)
-    plan = Plan(styled(reel, {'headline': {'animation': 'none', 'delay': 2.5, 'duration': 1}, 'ticker': {'background': '#111111'}},
-                       {1: {'seconds': 8}}), 360, images, logo)
+    plain = Plan(reel, 360, images, logo)
+    plan = Plan(styled(reel, {'headline': {'animation': 'none'}, 'ticker': {'background': '#111111'}}), 360, images, logo)
     lines = [e for e in plan.scene_elements[1] if e.role == 'headline']
-    assert lines and all(e.anim == 'none' and e.dur == 1 and e.start >= 2.5 for e in lines)
+    look = [e for e in plain.scene_elements[1] if e.role == 'headline']
+    assert lines and all(e.anim == 'none' for e in lines)
+    assert [(e.start, e.dur) for e in lines] == [(e.start, e.dur) for e in look]
     assert next(e for e in plan.global_elements if e.role == 'ticker').anim == 'marquee'
-    assert plan.settled(1) - plan.starts[1] >= 3.5                 # the scene preview waits for the late headline
+
+
+def test_retired_entrance_timing_in_older_drafts_is_ignored():
+    value = Reel(style={'headline': {'delay': 2.5, 'duration': 1, 'color': '#ffee00'}})
+    assert value.model_dump()['style'] == {'headline': {'color': '#ffee00'}}
 
 
 def test_scene_transition_motion_shade_and_backdrop(creator, reel):
@@ -973,16 +979,6 @@ def test_wire_credit_takes_the_label_color(creator, reel):
                    for x in range(element.tile.width) for y in range(element.tile.height))
 
 
-def test_a_late_entrance_still_appears_before_its_scene_ends(creator, reel):
-    images, logo, _ = creator.validate_assets(reel)
-    plan = Plan(styled(reel, {'headline': {'delay': 3, 'duration': 1}}), 360, images, logo)   # scene 2 lasts 2 seconds
-    plain = Plan(reel, 360, images, logo)
-    for index in (0, 1):
-        for late, look in zip((e for e in plan.scene_elements[index] if e.role == 'headline'),
-                              (e for e in plain.scene_elements[index] if e.role == 'headline')):
-            assert look.start <= late.start and late.start + late.dur <= plan.lengths[index] - .25
-
-
 # --- advanced mode: preview selection and text position --------------------
 
 @pytest.mark.parametrize('look', list(LOOKS))
@@ -1004,10 +1000,9 @@ def test_layout_boxes_cover_what_the_preview_draws(look, creator, reel):
     assert (layout['position'] is not None) == (look in ('breaking', 'wire'))
 
 
-def test_layout_leaves_out_hidden_and_late_elements(creator, reel):
+def test_layout_leaves_out_hidden_elements(creator, reel):
     images, logo, _ = creator.validate_assets(reel)
-    reel.scenes[1].seconds = 8
-    plan = Plan(styled(reel, {'brand': {'hidden': True}}, {1: {'style': {'detail': {'delay': 3}}}}), 540, images, logo)
+    plan = Plan(styled(reel, {'brand': {'hidden': True}}), 540, images, logo)
     roles = {box['role'] for box in plan.layout(1)['boxes']}
     assert 'brand' not in roles and 'headline' in roles
 
@@ -1047,3 +1042,61 @@ def test_api_layout(client, reel):
     assert response.status_code == 200
     assert {'boxes', 'position'} == set(response.json())
     assert client.post('/api/reel-creator/layout?scene=5', json=reel.model_dump()).status_code == 400
+
+
+# --- photo credits and house styles ---------------------------------------
+
+@pytest.mark.parametrize('look', list(LOOKS))
+@pytest.mark.parametrize('ratio', ['9:16', '4:5'])
+def test_photo_credit_sits_on_the_photo_clear_of_text_and_reels_buttons(look, ratio, creator, reel):
+    images, logo, _ = creator.validate_assets(reel)
+    value = styled(reel, scenes={0: {'credit': 'Photo: AP / Jane Doe'}}).model_copy(update=dict(look=look, ratio=ratio))
+    plan = Plan(value, 1080, images, logo)
+    credit = [e for e in plan.scene_elements[0] if e.role == 'credit']
+    assert len(credit) == 1
+    tile, x, y = credit[0].tile, credit[0].x, credit[0].y
+    assert x + tile.width <= plan.W - plan.px(plan.right) + plan.px(10)          # clear of the Reels buttons
+    assert plan.px(plan.inset + 110) <= y and y + tile.height <= plan.px(plan.limit)
+    rx, ry, rw, rh, _ = plan.rects[0]
+    assert rx <= x and x + tile.width <= rx + rw and ry <= y and y + tile.height <= ry + rh   # on the photo
+    for element in plan.scene_elements[0]:
+        if element.role in ('headline', 'detail', 'lead'):                     # never over the words
+            assert y + tile.height <= element.y or element.y + element.tile.height <= y or x >= element.x + element.tile.width, look
+
+
+def test_photo_credit_needs_a_photo_and_can_be_styled(creator, reel):
+    images, logo, _ = creator.validate_assets(reel)
+    value = styled(reel, scenes={0: {'credit': 'Photo: AP'}, 1: {'credit': 'Handout'}})   # scene 2 has no photo
+    plan = Plan(value, 360, images, logo)
+    assert [e.role for e in plan.scene_elements[0]].count('credit') == 1
+    assert 'credit' not in {e.role for e in plan.scene_elements[1]}
+    assert 'credit' in {box['role'] for box in plan.layout(0)['boxes']}
+    hidden = Plan(styled(value, {'credit': {'hidden': True}}), 360, images, logo)
+    assert 'credit' not in {e.role for e in hidden.scene_elements[0]}
+    with pytest.raises(ValidationError):
+        Scene(credit='x' * 61)
+    assert Scene(credit='  Photo:   AP ').credit == 'Photo: AP'
+
+
+def test_house_styles_are_saved_validated_and_deleted(client):
+    style = dict(id='c' * 32, name='  Our  breaking ', look='breaking', tag='LIVE NOW', accent='#FF0000', ratio='4:5',
+                 motion='none', show_progress=False, music='off', style={'headline': {'color': '#ffee00'}})
+    saved = client.put(f'/api/reel-creator/house-styles/{"c" * 32}', json=style)
+    assert saved.status_code == 200, saved.text
+    assert saved.json() == [dict(style, name='Our breaking', accent='#ff0000')]
+    assert client.get('/api/reel-creator/house-styles').json()[0]['style'] == {'headline': {'color': '#ffee00'}}
+    clash = client.put(f'/api/reel-creator/house-styles/{"d" * 32}', json=dict(style, id='d' * 32, name='our BREAKING'))
+    assert clash.status_code == 400 and 'already called' in clash.json()['detail']
+    for bad in (dict(music='custom'), dict(accent='red'), dict(name=''), dict(look='nope'), dict(scenes=[])):
+        assert client.put(f'/api/reel-creator/house-styles/{"e" * 32}', json={**style, 'id': 'e' * 32, 'name': 'Other', **bad}).status_code in (400, 422), bad
+    assert client.put(f'/api/reel-creator/house-styles/{"f" * 32}', json=dict(style, name='Mismatch')).status_code == 400
+    assert client.delete(f'/api/reel-creator/house-styles/{"c" * 32}').json() == []
+
+
+def test_house_styles_are_limited(creator):
+    from backend.services.reel_creator.reel import MAX_HOUSE_STYLES
+    for k in range(MAX_HOUSE_STYLES):
+        creator.store.save_house_style(dict(id=f'{k:032x}', name=f'Style {k}'), MAX_HOUSE_STYLES)
+    with pytest.raises(ValueError, match='up to'):
+        creator.store.save_house_style(dict(id='f' * 32, name='One more'), MAX_HOUSE_STYLES)
+    creator.store.save_house_style(dict(id=f'{0:032x}', name='Renamed'), MAX_HOUSE_STYLES)      # replacing one is fine
