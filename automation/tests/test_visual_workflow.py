@@ -2460,7 +2460,7 @@ class FirstCommentTargetTests(unittest.TestCase):
             warm_down_after_submit=False,
         )
 
-    def test_reel_comment_waits_fifteen_seconds_and_refreshes_once_more(self):
+    def test_reel_comment_checks_profile_then_refreshes_twice_before_stopping(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
         stub_verified_entry(task)
         task.log = Mock()
@@ -2472,6 +2472,7 @@ class FirstCommentTargetTests(unittest.TestCase):
         task.capture_evidence = Mock()
         task._scan_profile_for_latest_reel = Mock(
             side_effect=[
+                (False, task.client.screenshot.return_value),
                 (False, task.client.screenshot.return_value),
                 (False, task.client.screenshot.return_value),
             ]
@@ -2486,8 +2487,8 @@ class FirstCommentTargetTests(unittest.TestCase):
             status, _ = task.post_reel_first_comment_after_refresh("https://example.com/link")
 
         self.assertEqual(status, "failed_input_not_found")
-        self.assertEqual(task.navigate_to.call_count, 2)
-        sleep.assert_called_once_with(15.0)
+        self.assertEqual(task.navigate_to.call_count, 3)
+        sleep.assert_not_called()
         task.post_first_comment.assert_not_called()
 
     def test_latest_reel_scan_scrolls_past_profile_header_and_loading_cards(self):

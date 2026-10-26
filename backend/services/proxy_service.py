@@ -271,12 +271,16 @@ def check_facebook_response(network: dict) -> dict:
             "error": None if success else f"Facebook check returned HTTP {status}"}
 
 
-def check_proxy_speed(network: dict, direction: str) -> dict:
+def check_proxy_speed(network: dict, direction: str, *, sample_bytes: int | None = None) -> dict:
     """Bounded, single-transfer throughput estimate through the configured proxy."""
     if direction not in {"download", "upload"}:
         raise ValueError("Invalid speed test direction")
     lines = _proxy_test_config(network)
     size = 5_000_000 if direction == "download" else 2_000_000
+    if sample_bytes is not None:
+        if not isinstance(sample_bytes, int) or not 250_000 <= sample_bytes <= 5_000_000:
+            raise ValueError("Speed sample must be between 250 KB and 5 MB")
+        size = sample_bytes
     metric = "size_download" if direction == "download" else "size_upload"
     lines += [f'write-out = "%{{http_code}} %{{{metric}}} %{{time_total}}"',
               'header = "Cache-Control: no-cache"']

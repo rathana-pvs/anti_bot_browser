@@ -67,19 +67,30 @@ class FacebookPreparationTask(BaseTask):
                 return self.skip_unverified_session()
             already_open_surface = requested_surface
 
-        requested_surface, warm_surface, fallback_used, surface_screen = (
-            self.select_and_open_warming_surface(
+        for surface_attempt in range(1, 3):
+            requested_surface, warm_surface, fallback_used, surface_screen = self.select_and_open_warming_surface(
                 requested=requested_surface,
-                already_open=already_open_surface,
+                already_open=already_open_surface if surface_attempt == 1 else None,
             )
-        )
-        if warm_surface is None:
-            if getattr(self, "session_check_status", "") == "auth_required":
+            if warm_surface is not None:
+                break
+            self.capture_evidence(
+                f'preparation_surface_not_ready_{surface_attempt}',
+                surface_screen,
+                warming_surface_attempt=surface_attempt,
+                warming_surface_requested=requested_surface,
+                session_check_status=getattr(self, 'session_check_status', 'unverified'),
+            )
+            if getattr(self, "session_check_status", "") in {'auth_required', 'safety_blocked'}:
                 return self.skip_unverified_session()
+            if surface_attempt == 1:
+                self.log('WARN', 'Neither preparation surface was ready; retrying the profile/feed checks once with fresh navigation.')
+        if warm_surface is None:
             return self.set_outcome(
                 "failed_before_publish",
-                "No Facebook warming surface reached a verified ready state.",
+                "No Facebook warming surface reached a verified ready state after two attempts.",
                 warming_surface_requested=requested_surface,
+                warming_surface_attempts=surface_attempt,
             )
 
         rng = self.behavior_session.stream("warming")
@@ -156,6 +167,7 @@ class FacebookPreparationTask(BaseTask):
             warming_surface_requested=requested_surface,
             warming_surface=warm_surface,
             warming_surface_fallback=fallback_used,
+            warming_surface_attempts=surface_attempt,
             session_preflight_navigation_skipped=session_already_stable,
             warming_surface_navigation_skipped=False,
             stable_observations=stable_observations,
@@ -175,4 +187,5 @@ class FacebookPreparationTask(BaseTask):
             warming_surface_requested=requested_surface,
             warming_surface=warm_surface,
             warming_surface_fallback=fallback_used,
+            warming_surface_attempts=surface_attempt,
         )

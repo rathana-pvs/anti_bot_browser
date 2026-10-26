@@ -44,6 +44,21 @@ export interface RunAutomationParams {
 }
 
 export interface QueueExecutionItem {
+  network_recovery?: {
+    state: string;
+    started_at: string;
+    deadline_at: string;
+    next_check_at?: string | null;
+    retry_count: number;
+    check_count: number;
+    last_checked_at?: string;
+    last_measurement?: {
+      upload?: { success: boolean; mbps?: number | null };
+      download?: { success: boolean; mbps?: number | null };
+      facebook?: { success: boolean };
+      error?: string;
+    };
+  };
   elapsed_seconds?: number;
   duration_seconds?: number;
   broadcast_confirmed?: boolean;

@@ -48,9 +48,45 @@ from backend.services.automation_service import (
     execute_queue_item,
     execute_queue_comment_retry,
     dispatch_pending_queue,
+    cancel_all_local_posts,
 )
 
 router = APIRouter(prefix="/api/queue", tags=["queue"])
+
+
+@router.post("/network-recovery/{execution_id}/cancel")
+async def cancel_recovery(execution_id: str):
+    from backend.services.queue_network_recovery import cancel_network_recovery
+    try:
+        return await cancel_network_recovery(execution_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="Execution not found") from error
+    except (ValueError, RuntimeError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except OSError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+
+
+@router.post("/cancel-all")
+async def cancel_all_posts():
+    try:
+        return await cancel_all_local_posts()
+    except RuntimeError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except OSError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+
+
+@router.post("/batch/{batch_id}/cancel")
+async def cancel_batch_posts(batch_id: str):
+    try:
+        return await cancel_all_local_posts(batch_id=batch_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="Batch not found") from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except OSError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
 
 @router.get("")
 def get_queue():
@@ -508,6 +544,75 @@ def delete_execution(execution_id: str):
         return {"success": True, "message": f"Execution {execution_id} removed"}
     raise HTTPException(status_code=404, detail="Execution not found")
 
+@router.post("/batch/{batch_id}/rerun")
+async def rerun_batch(batch_id: str):
+    """Queue safe local retries together; the dispatcher applies normal capacity limits."""
+    from backend.services.network_recovery import safe_to_retry, stop_recovery
+    from backend.services.queue_safety import has_publication_evidence
+    from backend.services import container_lifecycle
+
+    def enqueue():
+        queue = load_posting_queue()
+        batch = next((b for b in queue.get("daily_batches", []) if b.get("batch_id") == batch_id), None)
+        if batch is None:
+            raise HTTPException(status_code=404, detail="Batch not found")
+        queued = 0
+        review = 0
+        blocked = 0
+        finished = 0
+        owners = container_lifecycle.snapshot()
+        now = datetime.now(timezone.utc).isoformat()
+        for post in batch.get("posts", []):
+            if post.get("type") == "live":
+                continue
+            for execution in post.get("executions", []):
+                status = execution.get("status", "")
+                if status in {"published", "completed"}:
+                    finished += 1
+                    continue
+                # Schema v1 ownership lives in the lifecycle registry. Old
+                # terminal queue rows may retain the flag after watchdog cleanup.
+                owned = execution.get("automation_container_owned") and (
+                    execution.get("container_owner_schema") != 1
+                    or execution.get("profile_id") in owners
+                )
+                if (execution.get("cloud_attempt_id") or execution.get("container_cleanup_in_progress")
+                        or owned or execution.get("profile_id") in owners
+                        or status in {"running", "preparing"}):
+                    blocked += 1
+                    continue
+                if status in {"uncertain", "needs_review", "failed_after_publish"} or has_publication_evidence(execution):
+                    review += 1
+                    continue
+                eligible = (safe_to_retry(execution) or status.startswith("skipped_")
+                            or status in {"cancelled", "stopped"})
+                if not eligible:
+                    continue
+                stop_recovery(execution, "cancelled")
+                execution["automation_container_owned"] = False
+                execution.update(status="pending", stage="pending", error=None, scheduled_at=now)
+                execution.pop("cancel_requested_at", None)
+                if execution.get("preparation_mode", "off") != "off":
+                    execution["preparation_status"] = "pending"
+                history = execution.get("stage_history")
+                if not isinstance(history, list):
+                    history = execution["stage_history"] = []
+                history.append({"stage": "pending", "timestamp": now, "reason": "batch_manual_retry"})
+                queued += 1
+        if queued and not save_posting_queue(queue):
+            raise HTTPException(status_code=500, detail="Could not persist batch retries")
+        return {"success": True, "queued": queued, "needs_review": review,
+                "blocked": blocked, "already_finished": finished,
+                "message": (f"Queued {queued} posts. {review} posts require publication review before retrying. "
+                            f"{blocked} posts are active, cleaning up, or cloud-managed. "
+                            f"{finished} posts are already finished.")}
+
+    result = with_queue_claim_lock(enqueue)
+    if result["queued"]:
+        asyncio.create_task(dispatch_pending_queue())
+    return result
+
+
 @router.post("/run-now/{execution_id}")
 async def run_execution_now(execution_id: str):
     queue = load_posting_queue()
@@ -591,6 +696,8 @@ async def run_execution_now(execution_id: str):
     # prevents a rejected run-now request from leaving an execution runnable.
     if is_manual_retry:
         now_iso = datetime.now(timezone.utc).isoformat()
+        from backend.services.network_recovery import stop_recovery
+        stop_recovery(target_exec, "cancelled")
         target_exec["status"] = "pending"
         target_exec["stage"] = "pending"
         target_exec["error"] = None
@@ -641,7 +748,8 @@ def resolve_uncertain(execution_id: str, payload: dict = Body(...)):
     target_exec = match["execution"]
     target_post = match["post"]
 
-    if target_exec.get("status") not in ("uncertain", "needs_review"):
+    from backend.services.network_recovery import reviewable
+    if target_exec.get("status") not in ("uncertain", "needs_review") and not reviewable(target_exec):
         raise HTTPException(status_code=400, detail=f"Execution is in '{target_exec.get('status')}' state, not 'uncertain' or 'needs_review'")
 
     validated_post_url = None

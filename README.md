@@ -396,12 +396,29 @@ normal-run shadow observations.
 
 ### Bounded Scheduler
 
+Local Reel timeouts support [24-hour proxy recovery](docs/NETWORK_RECOVERY.md):
+two passing checks above 1 Mbps can queue a safe retry through normal scheduler
+admission. Uncertain post-click outcomes still require publication review.
+
 Scheduled automation uses persisted, heartbeat-backed leases. Defaults permit
 one publisher, one optional passive preparer, and two total automation workers.
 Only one task may hold a lease for a profile. Lease IDs are fencing tokens, so a
 stale process cannot overwrite the outcome of a newer claim. Expired work is
 recovered using the persisted execution stage: pre-publish interruptions fail
 before publish, while post-click interruptions become `uncertain`.
+
+Passive preparation saves a separate result tied to its execution, scheduler
+lease and container owner. A successful result commits Ready and releases the
+preparer lease in one queue write, before waiting for subprocess exit. Workers
+that hang after reporting completion are stopped after a five-second exit budget.
+If neither the requested profile/feed surface nor its fallback becomes ready,
+preparation repeats that pair once with fresh navigation (up to four page checks,
+each with a 15-second readiness budget). Each unsuccessful pair saves a screenshot.
+Login/checkpoint requirements stop preparation without this retry.
+Recovery reuses preparation only with a matching result and a live container
+handoff; otherwise it queues preparation again. A preparer's `completed` stage
+alone is not publication evidence. Actual publication evidence still requires
+uncertain-outcome review.
 
 Resource Mode is configured from the Posting Queue dashboard and persisted in
 `data/manager_settings.json`. Auto selects the lowest tier supported by both RAM
@@ -492,8 +509,15 @@ Unreadable headers get one enlarged OCR read of the same region. Recognized old
 timestamps report `old_top_post`; a separated trailing privacy-icon OCR suffix
 such as `2h . 0` is ignored without guessing numeric ages.
 Caption text, comment timestamps and second posts cannot supply confirmation.
-If the top post is old/unreadable, the same top position can be rechecked after
-one refresh delay; the task never searches later posts for a newer timestamp.
+If the profile feed or first post shows an avatar-and-two-bars loading placeholder,
+verification rechecks that position every two seconds for up to 15 seconds to
+allow the post to render, without refreshing or scrolling away. An unreadable
+header alone does not trigger this loading wait.
+If the top post stays loading, old or unreadable, the profile is refreshed up to
+twice, repeating the same loading wait and first-post check each time (three
+checks total). There is no extra delay before each refresh. The task never
+searches later posts for a newer timestamp. If still unconfirmed, the result
+remains uncertain and is not automatically republished.
 A Facebook success popup may still establish publication, but commenting still
 requires this top-post check. Timestamp checks alone do not prove media identity.
 

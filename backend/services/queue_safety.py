@@ -1,6 +1,7 @@
 import re
 from datetime import datetime, timezone
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+from backend.services.publication_evidence import has_publication_evidence
 
 UNRESOLVED_EXECUTION_STATUSES = {"uncertain", "needs_review"}
 FINAL_CLICK_STAGES = {"publish_clicked", "verifying"}
@@ -11,6 +12,11 @@ PRE_PUBLISH_STAGES = {
     "composing",
     "ready_to_publish",
 }
+
+
+def is_preparation_attempt(execution: dict) -> bool:
+    return bool((execution.get('scheduler_lease') or {}).get('kind') == 'preparer'
+                and execution.get('preparation_mode') in {'brief', 'extended'})
 
 def is_unresolved_execution(execution: dict | None) -> bool:
     return bool(execution and execution.get("status") in UNRESOLVED_EXECUTION_STATUSES)
@@ -48,7 +54,10 @@ def latest_persisted_stage(execution: dict | None) -> str | None:
 
 def classify_interrupted_execution(execution: dict | None) -> dict:
     interrupted_stage = latest_persisted_stage(execution)
-    if interrupted_stage and interrupted_stage in PRE_PUBLISH_STAGES:
+    execution = execution or {}
+    if not has_publication_evidence(execution) and (
+        interrupted_stage in PRE_PUBLISH_STAGES or is_preparation_attempt(execution)
+    ):
         return {
             "status": "failed_before_publish",
             "stage": "failed_before_publish",

@@ -4,15 +4,19 @@ import { Profile } from '../types/profile';
 import { AppendBatchPostsDialog } from './AppendBatchPostsDialog';
 import { stopLive } from '../services/live';
 import { Checkbox } from './ui/Checkbox';
+import { NetworkRecoveryStatus } from './NetworkRecoveryStatus';
 import { useAppDialog } from './ui/AppDialogProvider';
 import {
   backfillExecutionPermalink,
   downloadSupportBundle,
   fetchQueue,
+  cancelAllQueuePosts,
+  cancelNetworkRecovery,
   deleteBatch,
   deleteExecution,
   retryExecutionComment,
   runExecutionNow,
+  rerunBatch,
   resolveUncertainExecution,
   getSharedMediaUrl,
 } from '../services/api';
@@ -62,6 +66,9 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
   const { showConfirm, showPrompt, showToast } = useAppDialog();
   const [queueData, setQueueData] = useState<QueueDataResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  const [cancellingAll, setCancellingAll] = useState(false);
+  const [cancellingBatchId, setCancellingBatchId] = useState<string | null>(null);
+  const [rerunningBatchId, setRerunningBatchId] = useState<string | null>(null);
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const setActionError = useCallback((message: string | null) => {
     if (message) showToast(message, 'error');
@@ -116,6 +123,27 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
   };
 
 
+  const handleCancelAll = async (batch?: DailyBatch) => {
+    if (cancellingAll) return;
+    const confirmed = await showConfirm(
+      `${batch ? `Stop running posts and preparation, and cancel all pending posts in “${batch.name}”? Other batches will continue.` : 'Stop running posts and preparation, and cancel all pending posts in every local batch?'} This includes posts hidden by filters or pagination. Posts already sent cannot be undone; interrupted publication may need review. Live broadcasts and cloud jobs are excluded.`,
+      { title: batch ? 'Stop and cancel this batch?' : 'Stop and cancel all posts?', confirmLabel: batch ? 'Stop and cancel batch' : 'Stop and cancel all' },
+    );
+    if (!confirmed) return;
+    setCancellingAll(true);
+    setCancellingBatchId(batch?.batch_id || null);
+    try {
+      const result = await cancelAllQueuePosts(batch?.batch_id);
+      setReportSuccess(result.message);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Could not cancel the posting schedule');
+    } finally {
+      await loadQueue();
+      setCancellingAll(false);
+      setCancellingBatchId(null);
+    }
+  };
+
   const handleResolveUncertain = async (resolution: 'published' | 'not_published') => {
     if (!resolvingItem) return;
     if (resolvingItem.post_type === 'live' && !await showConfirm('Check Facebook and confirm this broadcast has ended before resolving its outcome.', { title: 'End confirmation required', confirmLabel: 'Broadcast has ended' })) return;
@@ -154,6 +182,20 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
       await loadQueue();
     } catch (err: any) {
       setActionError(err.message || 'Failed to dispatch execution');
+    }
+  };
+
+  const handleRerunBatch = async (batchId: string) => {
+    setRerunningBatchId(batchId);
+    try {
+      const result = await rerunBatch(batchId);
+      if (result.queued) setReportSuccess(result.message);
+      else showToast(result.message, 'info');
+      await loadQueue();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Failed to re-run batch');
+    } finally {
+      setRerunningBatchId(null);
     }
   };
 
@@ -260,6 +302,8 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
 
   const getStatusBadge = (status: string, executionId?: string) => {
     switch (status) {
+      case 'cancelled':
+        return <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-zinc-900 text-zinc-400 border border-zinc-700 flex items-center gap-1"><X className="w-3 h-3" /> Cancelled</span>;
       case 'published':
         return (
           <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-950 text-emerald-300 border border-emerald-800/80 flex items-center gap-1">
@@ -386,6 +430,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
   }, [uncertainCount, failedCount, showToast]);
   const activeStatuses = new Set(['running', 'preparing']);
   const attentionStatuses = new Set(['failed', 'failed_before_publish', 'failed_after_publish', 'uncertain', 'needs_review']);
+  const hasRecovery = (item: QueueExecutionItem) => ['waiting_network', 'confirming_network', 'waiting_review', 'ready', 'retrying'].includes(item.network_recovery?.state || '');
   const finishedStatuses = new Set(['published', 'completed']);
   // Index once so large queues do not repeatedly scan every execution for each account.
   const batchGroups = useMemo(() => {
@@ -429,6 +474,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
         active: allBatchExecutions.filter((item) => activeStatuses.has(item.status)).length,
         attention: allBatchExecutions.filter((item) => attentionStatuses.has(item.status)).length,
         pending: allBatchExecutions.filter((item) => item.status === 'pending' || item.status === 'ready').length,
+        recovering: allBatchExecutions.filter(hasRecovery).length,
       };
     }).filter((group) => group.executions.length > 0).sort((left, right) => {
       const rank = (group: typeof left) => (
@@ -574,6 +620,18 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
 
         {/* Right side controls: Refresh */}
         <div className="flex items-center gap-2">
+          {postTypeFilter === 'posts' && (
+            <button
+              type="button"
+              onClick={() => handleCancelAll()}
+              disabled={cancellingAll || (stats.pending + stats.running === 0 && !executions.some(hasRecovery))}
+              className="px-3 py-1.5 rounded-xl bg-red-950 hover:bg-red-900 border border-red-800 text-red-200 text-xs font-medium flex items-center gap-1.5 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Stop running posts and cancel all local scheduled posts across every batch"
+            >
+              {cancellingAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <X className="w-3.5 h-3.5" />}
+              <span>{cancellingAll && !cancellingBatchId ? 'Stopping…' : 'Stop & cancel all'}</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={() => openReportDialog(null)}
@@ -686,8 +744,35 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
                         <span>{group.published}/{group.total} done</span>
                         {group.active > 0 && <span className="text-blue-300">{group.active} active</span>}
                         {group.attention > 0 && <span className="text-amber-300">{group.attention} attention</span>}
+                        {group.recovering > 0 && <span className="text-amber-300">{group.recovering} recovering</span>}
                       </div>
                     </button>
+                    {postTypeFilter === 'posts' && (group.attention > 0 || group.pending > 0 || group.published < group.total) && (
+                      <button
+                        type="button"
+                        onClick={() => handleRerunBatch(batchId)}
+                        disabled={rerunningBatchId !== null || cancellingAll}
+                        className="px-2.5 py-1.5 rounded-lg bg-blue-950/80 hover:bg-blue-900 text-blue-200 border border-blue-800/80 text-[11px] font-semibold flex items-center gap-1.5 shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
+                        title="Queue all safe retries in this batch, including hidden posts. Published posts stay completed; uncertain outcomes need review first."
+                        aria-label={`Re-run all eligible posts in ${group.batch.name}`}
+                      >
+                        {rerunningBatchId === batchId ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
+                        <span>{rerunningBatchId === batchId ? 'Queuing…' : 'Retry eligible'}</span>
+                      </button>
+                    )}
+                    {postTypeFilter === 'posts' && (
+                      <button
+                        type="button"
+                        onClick={() => handleCancelAll(group.batch)}
+                        disabled={cancellingAll || group.active + group.pending + group.recovering === 0}
+                        className="px-2.5 py-1.5 rounded-lg bg-red-950/80 hover:bg-red-900 text-red-200 border border-red-800/80 text-[11px] font-semibold flex items-center gap-1.5 shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
+                        title={`Stop running posts and cancel pending posts in ${group.batch.name}`}
+                        aria-label={`Stop and cancel batch ${group.batch.name}`}
+                      >
+                        {cancellingBatchId === batchId ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <X className="w-3.5 h-3.5" />}
+                        <span className="hidden sm:inline">{cancellingBatchId === batchId ? 'Stopping…' : 'Stop & cancel'}</span>
+                      </button>
+                    )}
                     {postTypeFilter !== 'live' && group.attention === 0
                       && (group.active > 0 || group.pending > 0) && (
                       <button
@@ -792,7 +877,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
                       onClick={() =>
                         setLightboxMedia({
                           url: getSharedMediaUrl(item.media_file),
-                          type: item.post_type === 'reel' || item.post_type === 'live' ? 'reel' : 'photo',
+                          type: item.post_type === 'reel' || item.post_type === 'live' || /\.(mp4|mov|webm)$/i.test(item.media_file || '') ? 'reel' : 'photo',
                           name: item.media_file || 'Media',
                           caption: item.spun_caption || item.base_caption,
                           comment: item.first_comment || undefined,
@@ -801,7 +886,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
                       className="shrink-0 w-10 h-10 rounded-lg overflow-hidden border border-zinc-750 hover:border-blue-500 cursor-pointer shadow relative group/thumb bg-black flex items-center justify-center transition-all"
                       title="Click for full size preview"
                     >
-                      {item.post_type === 'reel' || item.post_type === 'live' ? (
+                      {item.post_type === 'reel' || item.post_type === 'live' || /\.(mp4|mov|webm)$/i.test(item.media_file || '') ? (
                         <>
                           <video
                             src={getSharedMediaUrl(item.media_file)}
@@ -850,7 +935,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
                         </span>
                       ) : (
                         <span className="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-blue-950/80 text-blue-300 border border-blue-800/60 flex items-center gap-0.5 shrink-0">
-                          <ImageIcon className="w-2.5 h-2.5" /> Photo
+                          <ImageIcon className="w-2.5 h-2.5" /> {/\.(mp4|mov|webm)$/i.test(item.media_file || '') ? 'Feed video' : 'Photo'}
                         </span>
                       )}
                     </div>
@@ -865,6 +950,18 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
                       <div className="text-[10px] text-zinc-500 truncate max-w-[340px]">
                         💬 {item.first_comment}
                       </div>
+                    )}
+                    <NetworkRecoveryStatus recovery={item.network_recovery} />
+                    {item.network_recovery && !['cancelled', 'completed'].includes(item.network_recovery.state) && !['running', 'preparing'].includes(item.status) && (
+                      <button type="button" className="mt-1 text-[11px] text-zinc-400 hover:text-white underline" onClick={async () => {
+                        try {
+                          await cancelNetworkRecovery(item.execution_id);
+                        } catch (error) {
+                          setActionError(error instanceof Error ? error.message : 'Could not cancel recovery');
+                        } finally {
+                          await loadQueue();
+                        }
+                      }}>Cancel recovery</button>
                     )}
                   </div>
                 </div>
@@ -1012,7 +1109,8 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
                   )}
 
                   {/* Review & Resolve button for Phase 0 safety gated items */}
-                  {(item.status === 'uncertain' || item.status === 'needs_review') && (
+                  {(item.status === 'uncertain' || item.status === 'needs_review' ||
+                    (item.network_recovery && !['cancelled', 'completed'].includes(item.network_recovery.state) && attentionStatuses.has(item.status))) && (
                     <button
                       type="button"
                       onClick={() => {
@@ -1082,6 +1180,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
                     {item.post_type === 'live' && item.pinned_comment && <p className="whitespace-pre-wrap text-zinc-400">Pinned comment: {item.pinned_comment}</p>}
                     {(item.spun_caption || item.base_caption) && <p className="whitespace-pre-wrap text-zinc-200">{item.spun_caption || item.base_caption}</p>}
                     {item.error && <p className="text-red-300">{item.error}</p>}
+                    <NetworkRecoveryStatus recovery={item.network_recovery} details />
                     <p className="text-[10px] font-mono text-zinc-600">{item.execution_id}</p>
                   </div>
                 )}
@@ -1259,7 +1358,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
               <div className="flex items-center gap-2.5">
                 {lightboxMedia.type === 'reel' ? (
                   <span className="px-2.5 py-0.5 rounded text-[11px] font-semibold bg-purple-950 text-purple-300 border border-purple-800/80 flex items-center gap-1.5">
-                    <Film className="w-3.5 h-3.5 text-purple-400" /> Reel Preview
+                    <Film className="w-3.5 h-3.5 text-purple-400" /> Video Preview
                   </span>
                 ) : (
                   <span className="px-2.5 py-0.5 rounded text-[11px] font-semibold bg-blue-950 text-blue-300 border border-blue-800/80 flex items-center gap-1.5">

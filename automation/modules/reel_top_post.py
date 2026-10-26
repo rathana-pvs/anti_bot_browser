@@ -4,6 +4,47 @@ import re
 from .post_timestamp import parse_header_timestamp
 
 
+def profile_feed_is_loading(screen, region=None):
+    """Recognize Facebook's avatar-and-two-bars skeleton, not an OCR miss.
+
+    Restrict detection to the first header when anchored, otherwise the right
+    profile feed column. Require two aligned neutral bars beside an avatar
+    placeholder so a blank card or unreadable text alone is not loading proof.
+    """
+    import cv2
+    import numpy as np
+
+    height, width = screen.shape[:2]
+    scale = height / 1080
+    if region is None:
+        region = (int(width * .54), int(height * .2), int(width * .38), int(height * .74))
+    x, y, w, h = region
+    crop = screen[y:y+h, x:x+w]
+    if not crop.size:
+        return False
+    colors = crop[:, :, :3].astype(np.int16)
+    low, high = colors.min(axis=2), colors.max(axis=2)
+    neutral = (high - low <= 4) & (((low >= 180) & (high <= 248)) |
+                                         ((low >= 45) & (high <= 100)))
+    contours, _ = cv2.findContours(neutral.astype(np.uint8) * 255,
+                                  cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    bars, avatars = [], []
+    for contour in contours:
+        bx, by, bw, bh = cv2.boundingRect(contour)
+        if 30 * scale <= bw <= 240 * scale and 4 * scale <= bh <= 18 * scale and bw / bh >= 2.5:
+            bars.append((bx, by, bw, bh))
+        if (24 * scale <= bw <= 52 * scale and 24 * scale <= bh <= 52 * scale
+                and .75 <= bw / bh <= 1.3 and cv2.contourArea(contour) >= .55 * bw * bh):
+            avatars.append((bx, by, bw, bh))
+    for bx, by, bw, bh in bars:
+        paired = any(abs(px - bx) <= 4 * scale and 2 * scale <= py - (by + bh) <= 16 * scale
+                     for px, py, _, _ in bars)
+        if paired and any(0 <= bx - (ax + aw) <= 28 * scale and ay <= by <= ay + ah
+                          for ax, ay, aw, ah in avatars):
+            return True
+    return False
+
+
 def bounds(item):
     return item.get('bounds')
 

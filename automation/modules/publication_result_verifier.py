@@ -6,12 +6,13 @@ import time
 import re
 from pathlib import Path
 
+from engine.runtime_paths import profiles_dir
 from .post_timestamp import parse_header_timestamp
 from .reel_top_post import first_header_region, retry_unreadable_header
 
 
 class ImagePublicationResultVerifier:
-    """Check the newest card: recent timestamp plus caption OR image, then one retry."""
+    """Check the newest feed card: recent timestamp plus caption OR media, then one retry."""
 
     def __init__(self, task, *, retry_delay: float = 15.0, max_scans: int = 8):
         self.task = task
@@ -28,12 +29,26 @@ class ImagePublicationResultVerifier:
 
         if self._source is None:
             media = Path(self.task.media_path)
-            shared = Path(__file__).resolve().parents[2] / "profiles" / "shared_media"
+            shared = profiles_dir() / "shared_media"
             if str(media).startswith("/data/shared_media/"):
                 media = shared / media.relative_to("/data/shared_media")
             elif not media.is_absolute():
                 media = shared / media
-            self._source = cv2.imread(str(media))
+            if media.suffix.lower() in {".mp4", ".mov", ".webm"}:
+                # Studio videos have a rendered cover at four seconds. Decode
+                # that same frame for identity checks; never pass an MP4 to imread.
+                video = cv2.VideoCapture(str(media))
+                try:
+                    video.set(cv2.CAP_PROP_POS_MSEC, 4000)
+                    ok, frame = video.read()
+                    if not ok:
+                        video.set(cv2.CAP_PROP_POS_MSEC, 0)
+                        ok, frame = video.read()
+                    self._source = frame if ok else None
+                finally:
+                    video.release()
+            else:
+                self._source = cv2.imread(str(media))
         if self._source is None:
             return None
         source = self._source
@@ -169,12 +184,11 @@ class ImagePublicationResultVerifier:
 
 
 class ReelPublicationResultVerifier:
-    """Verify a posted Reel on its profile without knowing its composer template."""
+    """Check the profile once, then refresh up to twice after unconfirmed reads."""
 
-    def __init__(self, task, *, attempts: int = 2, retry_delay: float = 15.0):
+    def __init__(self, task, *, attempts: int = 3):
         self.task = task
         self.attempts = attempts
-        self.retry_delay = retry_delay
 
     def verify_latest_reel(self) -> bool:
         for attempt in range(1, self.attempts + 1):
@@ -182,7 +196,7 @@ class ReelPublicationResultVerifier:
                 return False
             self.task.log(
                 "INFO",
-                f"Refreshing the profile to check for the latest Reel (attempt {attempt}/{self.attempts}).",
+                f"{'Opening' if attempt == 1 else 'Refreshing'} the profile to check for the latest Reel (attempt {attempt}/{self.attempts}).",
             )
             self.task.navigate_to("https://www.facebook.com/me", wait_seconds=3.0)
             visible, screen = self.task._scan_profile_for_latest_reel()
@@ -197,7 +211,6 @@ class ReelPublicationResultVerifier:
             if attempt < self.attempts:
                 self.task.log(
                     "INFO",
-                    f"Latest Reel is not visible yet; waiting {self.retry_delay:g} seconds before one final refresh.",
+                    "Latest Reel is still unconfirmed after the profile check; refreshing and repeating the loading wait and timestamp read.",
                 )
-                time.sleep(self.retry_delay)
         return False

@@ -34,6 +34,7 @@ from backend.services.queue_scheduler import (
 )
 from backend.services.queue_safety import (
     classify_interrupted_execution,
+    has_publication_evidence,
     is_execution_deletion_locked,
     batch_contains_unresolved_execution,
     validate_facebook_permalink,
@@ -187,7 +188,7 @@ def persist_queue_execution_stage(execution_id: str, stage: str, timestamp: str 
         return False
 
     execution = match["execution"]
-    if lease_id and execution.get("scheduler_lease", {}).get("lease_id") != lease_id:
+    if lease_id and (execution.get("scheduler_lease") or {}).get("lease_id") != lease_id:
         return False
 
     history = execution.get("stage_history")
@@ -202,6 +203,39 @@ def persist_queue_execution_stage(execution_id: str, stage: str, timestamp: str 
     execution["stage"] = stage
     execution["stage_updated_at"] = timestamp
     return save_posting_queue(queue)
+
+
+def complete_queue_preparation(execution_id: str, lease_id: str, result: dict) -> bool:
+    """Commit preparation readiness and release its lease in the same queue write."""
+    if result.get('status') != 'completed' or result.get('success') is not True or result.get('error'):
+        return False
+    with _QUEUE_IO_LOCK:
+        queue = load_posting_queue()
+        match = find_queue_execution(queue, execution_id)
+        if not match:
+            return False
+        execution = match['execution']
+        lease = execution.get('scheduler_lease') or {}
+        if (lease.get('lease_id') != lease_id or lease.get('kind') != 'preparer'
+                or execution.get('status') not in {'preparing', 'running'}
+                or has_publication_evidence(execution)):
+            return False
+        now = datetime.now(timezone.utc).isoformat()
+        execution.update(status='ready', stage='ready', preparation_status='ready',
+                         preparation_ended_at=now, ended_at=now, error=None,
+                         preparation_telemetry=result.get('telemetry'),
+                         preparation_evidence_dir=result.get('evidence_dir'),
+                         logs=result.get('logs') or [])
+        # Container ownership stays active until the subprocess is reaped and
+        # the lifecycle wrapper performs its fenced handoff.
+        execution['container_handoff_expires_at'] = None
+        execution.setdefault('stage_history', []).append({
+            'stage': 'ready', 'timestamp': now, 'reason': 'preparation_result_received',
+            'lease_id': lease_id,
+        })
+        execution['stage_updated_at'] = now
+        release_execution_lease(execution, lease_id)
+        return save_posting_queue(queue)
 
 def apply_interrupted_execution_recovery(execution: dict, now: str | None = None):
     if now is None:

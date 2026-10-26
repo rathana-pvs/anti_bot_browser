@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import cv2
@@ -108,6 +109,38 @@ class ImagePublicationVerifierTests(unittest.TestCase):
         verifier._matching_image_bounds = Mock(return_value=None)
         self.assertFalse(verifier._post_visible(np.zeros((1080, 1920, 3), dtype=np.uint8)))
         self.assertEqual(verifier.last_check["reason"], "first_post_content_not_matched")
+
+    def test_feed_video_frame_can_identify_media_without_a_caption(self):
+        verifier = self.make_verifier()
+        verifier.task.media_path = "/data/shared_media/reel_test.mp4"
+        source = np.random.default_rng(4).integers(0, 256, (350, 450, 3), dtype=np.uint8)
+        screen = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        screen[420:770, 700:1150] = source
+        video = Mock()
+        video.read.return_value = (True, source)
+        with patch("modules.publication_result_verifier.profiles_dir", return_value=Path('/runtime/profiles')), \
+                patch("cv2.VideoCapture", return_value=video) as capture:
+            self.assertIsNotNone(verifier._matching_image_bounds(screen))
+        capture.assert_called_once_with('/runtime/profiles/shared_media/reel_test.mp4')
+        video.set.assert_called_once_with(cv2.CAP_PROP_POS_MSEC, 4000)
+        video.release.assert_called_once()
+
+    def test_short_video_uses_first_frame_and_unreadable_video_fails_closed(self):
+        for readable in (True, False):
+            with self.subTest(readable=readable):
+                verifier = self.make_verifier()
+                verifier.task.media_path = 'short.mp4'
+                video = Mock()
+                frame = np.zeros((100, 100, 3), dtype=np.uint8)
+                video.read.side_effect = [(False, None), (readable, frame if readable else None)]
+                with patch('cv2.VideoCapture', return_value=video):
+                    self.assertIsNone(verifier._matching_image_bounds(np.zeros((1080, 1920, 3), dtype=np.uint8)))
+                self.assertEqual(video.set.call_args.args, (cv2.CAP_PROP_POS_MSEC, 0))
+                video.release.assert_called_once()
+                if readable:
+                    self.assertIs(verifier._source, frame)
+                else:
+                    self.assertIsNone(verifier._source)
 
     def test_old_header_cannot_borrow_new_timestamp_from_later_post(self):
         verifier = self.make_verifier()

@@ -20,7 +20,7 @@ from engine.runtime_paths import automation_dir
 from engine.text_matcher import OcrTextMatcher
 from engine.vision import VisionEngine
 from modules.publication_result_verifier import ReelPublicationResultVerifier
-from modules.reel_top_post import first_header_region, retry_unreadable_header
+from modules.reel_top_post import first_header_region, retry_unreadable_header, profile_feed_is_loading
 from modules.reel_post_click_verifier import ReelPostClickVerifier
 from .base_task import BaseTask
 
@@ -32,6 +32,8 @@ class FacebookReelTask(BaseTask):
     DEFAULT_FINAL_POST_BUTTON_WAIT_TIMEOUT = 90.0
     POST_CLICK_VERIFICATION_TIMEOUT = 90.0
     POST_CONFIRMATION_POPUP_TIMEOUT = 30.0
+    PROFILE_POST_LOADING_TIMEOUT = 15.0
+    PROFILE_POST_LOADING_POLL_INTERVAL = 2.0
     RIGHT_REEL_SIDEBAR = "reel_sidebar"
     LEFT_REEL_SIDEBAR = (0.00, 0.08, 0.34, 1.0)
     LEFT_PUBLICATION_REGION = (0.00, 0.50, 0.40, 1.0)
@@ -1502,6 +1504,7 @@ class FacebookReelTask(BaseTask):
         """Confirm only the first card's author/header timestamp, never its body."""
         self._reel_top_post_found = False
         self._reel_posts_toolbar_seen = False
+        self.latest_reel_timestamp_check = None
         if screen is None:
             return False
         height, width = screen.shape[:2]
@@ -1511,10 +1514,14 @@ class FacebookReelTask(BaseTask):
         region, seen = first_header_region(items, width, height)
         self._reel_posts_toolbar_seen = seen
         if region is None:
+            if profile_feed_is_loading(screen):
+                self.latest_reel_timestamp_check = {'accepted': False, 'reason': 'profile_feed_loading'}
             return False
         self._reel_top_post_found = True
         header_items = self.vision.read_text(screen, region=region, min_confidence=.55)
         header_items, result = retry_unreadable_header(self.vision, screen, region, header_items)
+        if result['reason'] == 'top_header_unreadable' and profile_feed_is_loading(screen, region):
+            result = {'accepted': False, 'reason': 'profile_feed_loading'}
         self.latest_reel_timestamp_check = result
         self.log('INFO', 'Top post timestamp check: ' + str(result))
         return result['accepted']
@@ -1539,7 +1546,24 @@ class FacebookReelTask(BaseTask):
             if self._latest_reel_is_visible(last_screen):
                 self.log("INFO", f"Latest Reel found in the profile feed on scan {scan}/{max_scans}.")
                 return True, last_screen
-            if getattr(self, '_reel_top_post_found', False):
+            check = getattr(self, 'latest_reel_timestamp_check', None) or {}
+            if getattr(self, '_reel_top_post_found', False) or check.get('reason') == 'profile_feed_loading':
+                if check.get('reason') == 'profile_feed_loading':
+                    # Keep the detected loading feed/card fixed while it renders.
+                    deadline = time.monotonic() + self.PROFILE_POST_LOADING_TIMEOUT
+                    self.log('INFO', f'Profile feed loading placeholders detected; waiting up to {self.PROFILE_POST_LOADING_TIMEOUT:g} seconds without refreshing or scrolling.')
+                    while time.monotonic() < deadline:
+                        time.sleep(min(self.PROFILE_POST_LOADING_POLL_INTERVAL,
+                                       max(0.0, deadline - time.monotonic())))
+                        last_screen = self.client.screenshot()
+                        if self._latest_reel_is_visible(last_screen):
+                            self.log('INFO', 'The first post finished loading with a recent timestamp.')
+                            return True, last_screen
+                        check = getattr(self, 'latest_reel_timestamp_check', None) or {}
+                        if check.get('reason') != 'profile_feed_loading':
+                            break
+                    else:
+                        self.log('WARN', 'The first post header did not become readable within the loading wait.')
                 self.log('WARN', 'The first post timestamp is old or unreadable; no later post will be checked.')
                 return False, last_screen
             if scan < max_scans:
@@ -1555,7 +1579,7 @@ class FacebookReelTask(BaseTask):
         if not reel_already_confirmed and not self._refresh_until_latest_reel_visible():
             self.log(
                 "WARN",
-                "Latest Reel was not found after two refreshes; skipping submission and marking the first comment incomplete.",
+                "Latest Reel was not found after three profile checks; skipping submission and marking the first comment incomplete.",
             )
             return "failed_input_not_found", self.permalink_not_requested()
 
@@ -1952,7 +1976,7 @@ class FacebookReelTask(BaseTask):
             if result != "published" and comment_status == "failed_input_not_found":
                 return self._uncertain(
                     "reel_publish_not_found_after_verification",
-                    "Post was clicked, but publication could not be confirmed after two profile checks. Review Facebook before retrying.",
+                    "Post was clicked, but publication could not be confirmed after three profile checks. Review Facebook before retrying.",
                     final_screen,
                 )
             else:
@@ -1972,7 +1996,7 @@ class FacebookReelTask(BaseTask):
                 return False
             return self._uncertain(
                 "reel_publish_not_found_after_verification",
-                "Post was clicked, but publication could not be confirmed after two profile checks. Review Facebook before retrying.",
+                "Post was clicked, but publication could not be confirmed after three profile checks. Review Facebook before retrying.",
                 final_screen,
             )
 

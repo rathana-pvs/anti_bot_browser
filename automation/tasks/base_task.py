@@ -637,6 +637,8 @@ class BaseTask:
                     + (f" (fallback from {requested})" if used_fallback else ""),
                 )
                 return requested, surface, used_fallback, screen
+            if getattr(self, 'session_check_status', '') in {'auth_required', 'safety_blocked'}:
+                return requested, None, attempt == 2, screen
             if attempt == 1:
                 self.log("WARN", f"Warming surface '{requested}' was not ready; trying '{fallback}' once.")
         return requested, None, True, screen

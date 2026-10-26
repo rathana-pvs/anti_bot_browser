@@ -13,6 +13,7 @@ from backend.services.automation_service import (
     cleanup_orphaned_automation_containers,
 )
 from backend.services.host_metrics_service import sample_windows_host
+from backend.services.queue_network_recovery import check_network_recovery
 
 scheduler = AsyncIOScheduler()
 
@@ -34,6 +35,7 @@ def setup_background_tasks():
     scheduler.add_job(sample_windows_host, "interval", seconds=5, id="sample_windows_host", replace_existing=True)
     scheduler.add_job(heartbeat_scheduler_leases, "interval", seconds=15, id="heartbeat_scheduler_leases", replace_existing=True)
     scheduler.add_job(dispatch_pending_queue, "interval", seconds=25, id="dispatch_pending_queue", replace_existing=True)
+    scheduler.add_job(check_network_recovery, "interval", seconds=15, id="check_network_recovery", replace_existing=True, max_instances=1, coalesce=True)
     scheduler.add_job(cleanup_orphaned_automation_containers, "interval", seconds=15, id="cleanup_orphaned_automation_containers", replace_existing=True)
 
     scheduler.start()
