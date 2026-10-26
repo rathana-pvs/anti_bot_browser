@@ -7,6 +7,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Body
+from fastapi.responses import FileResponse
 
 from backend.config import PROFILES_DIR
 from backend.services.caption_hook import prepare_scheduled_post
@@ -805,6 +806,53 @@ def resolve_uncertain(execution_id: str, payload: dict = Body(...)):
         live_service.clear_review(target_exec["profile_id"], from_queue=True)
 
     return {"success": True, "message": f"Execution resolved as {resolution}", "execution": target_exec}
+
+EVIDENCE_IMAGE_LIMIT_BYTES = 20 * 1024 * 1024
+
+
+def _execution_evidence_dir(execution_id: str) -> Path | None:
+    """Return the execution's evidence folder, only if it is inside its own profile's evidence root."""
+    match = find_queue_execution(load_posting_queue(), execution_id)
+    if not match:
+        raise HTTPException(status_code=404, detail="Execution not found")
+    execution = match["execution"]
+    raw = execution.get("evidence_dir")
+    profile_id = str(execution.get("profile_id") or "")
+    if not raw or not profile_id or Path(profile_id).name != profile_id:
+        return None
+    root = (PROFILES_DIR / profile_id / "automation_evidence").resolve()
+    directory = Path(raw).resolve()
+    if directory == root or not directory.is_relative_to(root) or not directory.is_dir():
+        return None
+    return directory
+
+
+@router.get("/execution/{execution_id}/evidence")
+def list_execution_evidence(execution_id: str):
+    directory = _execution_evidence_dir(execution_id)
+    if directory is None:
+        return {"images": []}
+    images = sorted(
+        path.name for path in directory.glob("*.png")
+        if path.is_file() and not path.is_symlink()
+    )
+    return {"images": images}
+
+
+@router.get("/execution/{execution_id}/evidence/{filename}")
+def get_execution_evidence_image(execution_id: str, filename: str):
+    directory = _execution_evidence_dir(execution_id)
+    if directory is None:
+        raise HTTPException(status_code=404, detail="No evidence for this execution")
+    if Path(filename).name != filename or not filename.endswith(".png"):
+        raise HTTPException(status_code=400, detail="Only PNG screenshots can be viewed")
+    file = directory / filename
+    if file.is_symlink() or not file.is_file() or not file.resolve().is_relative_to(directory):
+        raise HTTPException(status_code=404, detail="Screenshot not found")
+    if file.stat().st_size > EVIDENCE_IMAGE_LIMIT_BYTES:
+        raise HTTPException(status_code=413, detail="Screenshot is too large")
+    return FileResponse(file, media_type="image/png", headers={"Cache-Control": "private, max-age=300"})
+
 
 @router.post("/backfill-permalink/{execution_id}")
 def backfill_permalink(execution_id: str, payload: dict = Body(...)):

@@ -618,6 +618,19 @@ export async function cancelNetworkRecovery(executionId: string): Promise<{ succ
   return res.json();
 }
 
+export async function fetchExecutionEvidence(executionId: string): Promise<string[]> {
+  const res = await fetch(`${API_BASE}/queue/execution/${encodeURIComponent(executionId)}/evidence`);
+  if (!res.ok) throw await apiError(res, 'Failed to load evidence screenshots');
+  return (await res.json()).images || [];
+}
+
+/** Loads a screenshot with the authenticated fetch and returns an object URL the caller must revoke. */
+export async function fetchExecutionEvidenceImage(executionId: string, filename: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/queue/execution/${encodeURIComponent(executionId)}/evidence/${encodeURIComponent(filename)}`);
+  if (!res.ok) throw await apiError(res, 'Failed to load screenshot');
+  return URL.createObjectURL(await res.blob());
+}
+
 export async function runExecutionNow(executionId: string): Promise<{ success: boolean; queued?: boolean; message?: string }> {
   const res = await fetch(`${API_BASE}/queue/run-now/${executionId}`, {
     method: 'POST',

@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Select } from './ui/Select';
 import { AppUpdates } from './AppUpdates';
-import { Check, Eye, EyeOff, KeyRound, Settings, X } from 'lucide-react';
+import { ResourceModeControl } from './ResourceModeControl';
+import { Check, Cpu, Eye, EyeOff, KeyRound, Settings, X } from 'lucide-react';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -9,7 +10,7 @@ interface SettingsModalProps {
   onOpenSetup?: () => void;
 }
 
-type Section = 'api-keys' | 'updates';
+type Section = 'api-keys' | 'updates' | 'resources';
 
 const API_KEY_FIELDS = [
   { id: 'gemini', label: 'Google Gemini', placeholder: 'API key' },
@@ -31,6 +32,12 @@ const GEMINI_MODELS = [
   { value: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash-Lite (Legacy)' },
   { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro (Legacy)' },
 ];
+
+const SECTION_COPY: Record<Section, { title: string; description: string }> = {
+  'api-keys': { title: 'API keys', description: 'Manage your Gemini API key and model.' },
+  updates: { title: 'App updates', description: 'Check published versions and update the whole app.' },
+  resources: { title: 'Resources', description: 'Control how much automation runs at once and which OCR engine it uses.' },
+};
 
 const STORAGE_KEY = 'app_api_keys';
 const EMPTY_KEYS: ApiKeys = { gemini: '', gemini_model: 'gemini-3.8-flash' };
@@ -117,6 +124,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
             <button type="button" onClick={() => setSection('api-keys')} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition-colors ${section === 'api-keys' ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'}`}>
               <KeyRound className="h-4 w-4" /> API keys
             </button>
+            <button type="button" onClick={() => setSection('resources')} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition-colors ${section === 'resources' ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'}`}>
+              <Cpu className="h-4 w-4" /> Resources
+            </button>
             {onOpenSetup && <button type="button" onClick={onOpenSetup} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200">
               <Settings className="h-4 w-4" /> Setup and repair
             </button>}
@@ -126,8 +136,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
         <section className="flex min-w-0 flex-1 flex-col">
           <header className="flex h-14 shrink-0 items-center justify-between border-b border-zinc-800 px-6">
             <div>
-              <h3 className="text-sm font-semibold text-zinc-100">{section === 'api-keys' ? 'API keys' : 'App updates'}</h3>
-              <p className="mt-0.5 text-[11px] text-zinc-500">{section === 'api-keys' ? 'Manage your Gemini API key and model.' : 'Check published versions and update the whole app.'}</p>
+              <h3 className="text-sm font-semibold text-zinc-100">{SECTION_COPY[section].title}</h3>
+              <p className="mt-0.5 text-[11px] text-zinc-500">{SECTION_COPY[section].description}</p>
             </div>
             <button type="button" onClick={onClose} aria-label="Close settings" className="rounded-md p-2 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"><X className="h-4 w-4" /></button>
           </header>
@@ -173,6 +183,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                   {saved && <span role="status" className="flex items-center gap-1.5 text-xs text-emerald-400"><Check className="h-3.5 w-3.5" />Saved</span>}
                   <button type="button" onClick={saveKeys} className="rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-500">Save settings</button>
                 </div>
+              </div>
+            ) : section === 'resources' ? (
+              <div className="max-w-xl space-y-4">
+                <p className="text-xs leading-5 text-zinc-400">Resource mode sets how many browsers can run, warm up, and post at the same time. Auto picks a level from this computer’s memory and CPU.</p>
+                <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4"><ResourceModeControl /></div>
               </div>
             ) : <AppUpdates />}
           </div>

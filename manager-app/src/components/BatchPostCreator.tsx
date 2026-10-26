@@ -1,15 +1,15 @@
 import { CaptionHookEditor, HookDraft, hookIsApproved } from "./CaptionHookEditor";
 import { LivePlaybackSettings, LivePlaybackMode } from './LivePlaybackSettings';
 import { GroupedProfileSelector } from './GroupedProfileSelector';
-import React, { useState, useEffect } from 'react';
+import { WarmingSettings, defaultWarmingOptions } from './WarmingSettings';
+import { MediaLightbox, LightboxMedia } from './MediaLightbox';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Profile } from '../types/profile';
-import { CreateBatchParams } from '../types/automation';
+import { CreateBatchParams, WarmingOptions } from '../types/automation';
 import type { CreatedReelMedia } from '../types/reelCreator';
-import { createBatch, uploadMediaFiles, getSharedMediaUrl } from '../services/api';
+import { createBatch, uploadMediaFiles, getSharedMediaUrl, fetchQueue } from '../services/api';
 import {
   UploadCloud,
-  Film,
-  Image as ImageIcon,
   Trash2,
   Calendar,
   ShieldCheck,
@@ -21,24 +21,31 @@ import {
   Play,
   Paperclip,
   Zap,
-  Edit2,
-  Check,
   ChevronDown,
   ChevronRight,
   Users,
   Plus,
+  Flame,
 } from 'lucide-react';
 import { Checkbox } from './ui/Checkbox';
 import { Select } from './ui/Select';
+import { ActionMenu } from './ui/ActionMenu';
+import { useAppDialog } from './ui/AppDialogProvider';
 import { useFileDrop } from '../hooks/useFileDrop';
+
+export type CampaignKind = 'posts' | 'live' | 'warmup';
 
 interface BatchPostCreatorProps {
   profiles: Profile[];
   onBatchCreated: () => void;
-  mode?: 'posts' | 'live';
+  mode?: CampaignKind;
   incomingReel?: CreatedReelMedia | null;
   onIncomingReelConsumed?: () => void;
+  onEditProfile?: (profileId: string) => void;
 }
+
+const STORAGE_PREFIX: Record<CampaignKind, string> = { posts: 'batch_creator', live: 'live_creator', warmup: 'warmup_creator' };
+const DEFAULT_NAME: Record<CampaignKind, string> = { posts: 'Daily batch', live: 'Live batch', warmup: 'Warm-up' };
 
 interface DraftPostRow {
   id: string;
@@ -53,23 +60,23 @@ interface DraftPostRow {
   hook?: HookDraft;
 }
 
-interface LightboxMedia {
-  url: string;
-  type: 'photo' | 'reel';
-  name: string;
-  caption?: string;
-  comment?: string;
-}
-
 export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
   profiles,
   onBatchCreated,
   mode = 'posts',
   incomingReel,
   onIncomingReelConsumed,
+  onEditProfile,
 }) => {
+  const { showToast } = useAppDialog();
   const liveMode = mode === 'live';
-  const storageKey = (name: string) => `${liveMode ? 'live_creator' : 'batch_creator'}_${name}`;
+  const warmupMode = mode === 'warmup';
+  const storageKey = (name: string) => `${STORAGE_PREFIX[mode]}_${name}`;
+  const [scrolls, setScrolls] = useState(() => Math.max(1, Number(localStorage.getItem(storageKey('scrolls'))) || 4));
+  const [warmingOptions, setWarmingOptions] = useState<WarmingOptions>(() => {
+    try { return { ...defaultWarmingOptions, ...JSON.parse(localStorage.getItem(storageKey('warming_options')) || '{}') }; }
+    catch (_) { return defaultWarmingOptions; }
+  });
   const [playbackMode, setPlaybackMode] = useState<LivePlaybackMode>(() => localStorage.getItem(storageKey('playback_mode')) === 'manual' ? 'manual' : 'auto');
   const [loopVideo, setLoopVideo] = useState(() => localStorage.getItem(storageKey('loop')) === 'true');
   const [durationMinutes, setDurationMinutes] = useState(() => localStorage.getItem(storageKey('duration_minutes')) || '');
@@ -79,10 +86,9 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
   const [batchName, setBatchName] = useState(() => {
     return (
       localStorage.getItem(storageKey('batch_name')) ||
-      `${liveMode ? 'Live Batch' : 'Daily Batch'} ${new Date().toLocaleDateString()}`
+      `${DEFAULT_NAME[mode]} ${new Date().toLocaleDateString()}`
     );
   });
-  const [isEditingName, setIsEditingName] = useState(false);
 
   // Selected Target Profiles
   const [savedProfileIds, setSelectedProfileIds] = useState<string[]>(() => {
@@ -167,8 +173,29 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
   const [isUploading, setIsUploading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const setSuccessMsg = (message: string) => showToast(message, 'success');
   const [lightboxMedia, setLightboxMedia] = useState<LightboxMedia | null>(null);
+
+  // Accounts that already have queued or running work start this batch only after it.
+  const [busyProfileIds, setBusyProfileIds] = useState<string[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const queue = await fetchQueue();
+        if (!cancelled) setBusyProfileIds([...new Set(queue.executions
+          .filter(item => ['pending', 'ready', 'running', 'preparing'].includes(item.status)).map(item => item.profile_id))]);
+      } catch (_) {}
+    };
+    load();
+    const interval = setInterval(load, 10000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem(storageKey('scrolls'), String(scrolls));
+    localStorage.setItem(storageKey('warming_options'), JSON.stringify(warmingOptions));
+  }, [scrolls, warmingOptions]);
 
   useEffect(() => {
     localStorage.setItem(storageKey('playback_mode'), playbackMode);
@@ -231,7 +258,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
       }));
 
       setPosts((prev) => [...prev, ...newRows]);
-      setSuccessMsg(`Added ${res.files.length} media item(s) to draft!`);
+      setSuccessMsg(`Added ${res.files.length} file${res.files.length === 1 ? '' : 's'}.`);
     } catch (err: any) {
       setErrorMsg(err.message || 'Failed to upload media files');
     } finally {
@@ -269,7 +296,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
               : row
           )
         );
-        setSuccessMsg(`Attached ${uploaded.original_name} to post!`);
+        setSuccessMsg(`Attached ${uploaded.original_name}.`);
       }
     } catch (err: any) {
       setErrorMsg(err.message || 'Failed to attach media to post');
@@ -322,7 +349,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
         });
 
         setPosts((prev) => [...prev, ...importedRows]);
-        setSuccessMsg(`📄 Imported ${importedRows.length} posts from ${file.name}!`);
+        setSuccessMsg(`Imported ${importedRows.length} posts from ${file.name}.`);
       } catch (err: any) {
         setErrorMsg(`Failed to parse JSON: ${err.message}`);
       } finally {
@@ -364,38 +391,26 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
     );
   };
 
-  // Submit Batch
+  // Everything that would stop the batch from being created, shown in the summary before submitting.
+  const problems = useMemo(() => {
+    const list: string[] = [];
+    if (selectedProfileIds.length === 0) list.push('Choose at least one account.');
+    if (warmupMode) return list;
+    if (posts.length === 0) list.push(liveMode ? 'Add at least one video.' : 'Add at least one post.');
+    if (posts.some(p => p.type === 'live' && (!(p.title || '').trim() || !p.caption.trim()))) list.push('Enter a title and caption for each Live video.');
+    if (posts.some(p => p.type === 'live' && !p.media_file)) list.push('Attach a video to every Live item.');
+    if (liveMode && playbackMode === 'manual' && ((loopVideo && !durationMinutes) || (durationMinutes !== '' && (!Number.isInteger(Number(durationMinutes)) || Number(durationMinutes) < 1 || Number(durationMinutes) > 240)))) {
+      list.push('Set a duration between 1 and 240 minutes. Loop needs a duration.');
+    }
+    if (posts.some(p => !p.caption.trim() && !p.media_file)) list.push('Each post needs a photo, video, or caption.');
+    if (posts.some(p => !hookIsApproved(p.caption, p.media_file, p.type, p.hook))) list.push('Preview and approve each caption hook, or keep the original caption.');
+    return list;
+  }, [selectedProfileIds.length, warmupMode, liveMode, posts, playbackMode, loopVideo, durationMinutes]);
+
   const handleSubmitBatch = async () => {
     setErrorMsg(null);
-    setSuccessMsg(null);
-
-    if (selectedProfileIds.length === 0) {
-      setErrorMsg('Please select at least one target account.');
-      return;
-    }
-    if (posts.length === 0) {
-      setErrorMsg('Please add at least one post before launching.');
-      return;
-    }
-
-    if (posts.some(p => p.type === 'live' && (!(p.title || '').trim() || !p.caption.trim()))) {
-      setErrorMsg('Enter a title and caption for each Live video.');
-      return;
-    }
-    if (posts.some(p => p.type === 'live' && !p.media_file)) {
-      setErrorMsg('Attach a video to every Live row.'); return;
-    }
-    if (liveMode && playbackMode === 'manual' && ((loopVideo && !durationMinutes) || (durationMinutes !== '' && (!Number.isInteger(Number(durationMinutes)) || Number(durationMinutes) < 1 || Number(durationMinutes) > 240)))) {
-      setErrorMsg('Set a duration between 1 and 240 minutes. Loop requires a duration.'); return;
-    }
-    const emptyRow = posts.find((p) => !p.caption.trim() && !p.media_file);
-    if (emptyRow) {
-      setErrorMsg('Each post must have either an attached image/video or a caption.');
-      return;
-    }
-
-    if (posts.some(p => !hookIsApproved(p.caption, p.media_file, p.type, p.hook))) {
-      setErrorMsg('Preview and approve each enabled caption hook, or choose Keep original caption.');
+    if (problems.length) {
+      setErrorMsg(problems[0]);
       return;
     }
     setIsSubmitting(true);
@@ -403,7 +418,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
 
     try {
       const payload: CreateBatchParams = {
-        name: batchName.trim() || `${liveMode ? 'Live Batch' : 'Daily Batch'} ${new Date().toLocaleDateString()}`,
+        name: batchName.trim() || `${DEFAULT_NAME[mode]} ${new Date().toLocaleDateString()}`,
         target_profiles: selectedProfileIds,
         start_now: startNow,
         schedule_window: {
@@ -411,141 +426,109 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
           end_time: endTime,
           profile_stagger_seconds: staggerSeconds,
           batch_iteration_delay_seconds: iterationDelaySeconds,
-          session_preparation_mode: liveMode ? 'off' : preparationMode,
+          session_preparation_mode: liveMode || warmupMode ? 'off' : preparationMode,
           start_now: startNow,
         },
-        posts: posts.map((p) => ({
-          type: p.type,
-          ...(p.type === 'live' ? {title: (p.title || '').trim(), pinned_comment: (p.pinned_comment || '').trim(), playback_mode: playbackMode, loop: playbackMode === 'manual' && loopVideo, muted, max_duration_seconds: playbackMode === 'manual' && durationMinutes ? Number(durationMinutes) * 60 : undefined} : {}),
-          media_file: p.media_file,
-          base_caption: p.caption,
-          ...(p.hook?.enabled ? { hook_approval: p.hook.approval } : {}),
-          first_comment: p.type === 'live' ? undefined : p.first_comment.trim() || undefined,
-          ai_spin: p.type === 'live' || p.hook?.enabled ? false : aiSpinAll,
-        })),
+        posts: warmupMode
+          ? [{ type: 'warming', media_file: '', base_caption: '', scrolls: Math.max(1, scrolls), warming_options: warmingOptions, ai_spin: false }]
+          : posts.map((p) => ({
+            type: p.type,
+            ...(p.type === 'live' ? {title: (p.title || '').trim(), pinned_comment: (p.pinned_comment || '').trim(), playback_mode: playbackMode, loop: playbackMode === 'manual' && loopVideo, muted, max_duration_seconds: playbackMode === 'manual' && durationMinutes ? Number(durationMinutes) * 60 : undefined} : {}),
+            media_file: p.media_file,
+            base_caption: p.caption,
+            ...(p.hook?.enabled ? { hook_approval: p.hook.approval } : {}),
+            first_comment: p.type === 'live' ? undefined : p.first_comment.trim() || undefined,
+            ai_spin: p.type === 'live' || p.hook?.enabled ? false : aiSpinAll,
+          })),
       };
 
       const res = await createBatch(payload);
-      setSuccessMsg(
-        `✅ Successfully launched batch "${res.batch.name}" with ${res.total_executions} scheduled posts!`
-      );
-      setPosts([]);
-      localStorage.removeItem(storageKey('draft_posts'));
+      setSuccessMsg(`Created “${res.batch.name}” with ${res.total_executions} jobs.`);
+      if (!warmupMode) {
+        setPosts([]);
+        localStorage.removeItem(storageKey('draft_posts'));
+      }
       onBatchCreated();
     } catch (err: any) {
-      setErrorMsg(err.message || 'Failed to schedule campaign');
+      setErrorMsg(err.message || 'Couldn’t create the campaign.');
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const totalExecutions = selectedProfileIds.length * posts.length;
-  const runningProfilesCount = profiles.filter((p) => p.status === 'running').length;
+  const itemCount = warmupMode ? 1 : posts.length;
+  const totalExecutions = selectedProfileIds.length * itemCount;
+  const selectedProfiles = profiles.filter(p => selectedProfileIds.includes(p.id));
+  const busySelected = selectedProfiles.filter(p => busyProfileIds.includes(p.id));
+  const erroredSelected = selectedProfiles.filter(p => p.status === 'error');
+  const liveSetupMissing = hasLive ? profiles.filter(p => !p.live?.configured) : [];
 
+
+  const startLabel = executionMode === 'now' ? 'Starts now' : `Starts at ${startTime}`;
+  const submitLabel = `${executionMode === 'now' ? 'Start' : 'Schedule'} ${totalExecutions} ${warmupMode ? 'warm-up' : liveMode ? 'broadcast' : 'job'}${totalExecutions === 1 ? '' : 's'}`;
+  const sectionTitle = 'text-[11px] font-semibold text-zinc-400 uppercase tracking-wider';
+  const card = 'p-4 rounded-2xl bg-zinc-900/60 border border-zinc-800/80';
+  const jsonInput = React.useRef<HTMLInputElement>(null);
 
   return (
-    <div className="space-y-4 max-w-7xl mx-auto">
-      {/* Notifications */}
-      {errorMsg && (
-        <div className="p-3 bg-red-950/70 border border-red-800 text-red-200 text-xs rounded-xl flex items-center justify-between gap-2 shadow-sm animate-in fade-in duration-150">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
-            <span>{errorMsg}</span>
-          </div>
-          <button onClick={() => setErrorMsg(null)} className="text-red-400 hover:text-white font-bold ml-2">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
-
-      {successMsg && (
-        <div className="p-3 bg-emerald-950/70 border border-emerald-800 text-emerald-200 text-xs rounded-xl flex items-center justify-between gap-2 shadow-sm animate-in fade-in duration-150">
-          <div className="flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-            <span>{successMsg}</span>
-          </div>
-          <button onClick={() => setSuccessMsg(null)} className="text-emerald-400 hover:text-white font-bold ml-2">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
-
-      {/* Main 2-Column Grid */}
+    <div className="max-w-7xl mx-auto">
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
 
-        {/* ============================================================
-            LEFT COLUMN: CONTENT STUDIO (65% width)
-            ============================================================ */}
+        {/* Left: what will be posted */}
         <div className="lg:col-span-7 xl:col-span-8 space-y-4">
-
-          {/* Content Header & Upload Area */}
-          <div className="p-4 rounded-2xl bg-zinc-900/60 border border-zinc-800/80 space-y-3">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <h3 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
-                  <span>{liveMode ? 'Live videos' : 'Content Studio'}</span>
-                  <span className="text-xs font-normal text-zinc-400">
-                    ({posts.length} {liveMode ? posts.length === 1 ? 'video' : 'videos' : posts.length === 1 ? 'post' : 'posts'} drafted)
-                  </span>
-                </h3>
-                <p className="text-xs text-zinc-400 mt-0.5">
-                  {liveMode ? 'Upload videos to broadcast with each profile’s saved streaming settings.' : 'Upload videos or photos. Videos default to Reels; choose Feed post to use the feed composer.'}
-                </p>
+          {warmupMode ? (
+            <div className={`${card} space-y-3`}>
+              <div className="flex items-start gap-3">
+                <div className="p-2 rounded-lg bg-orange-950/40 border border-orange-900/60 text-orange-400"><Flame className="w-4 h-4" /></div>
+                <div>
+                  <h3 className="text-sm font-semibold text-zinc-100">Warm-up only</h3>
+                  <p className="text-xs text-zinc-400 mt-0.5">Each account browses its feed or profile like a person would, with varied scrolling, reading pace, and breaks. Nothing is posted.</p>
+                </div>
               </div>
-
-              {/* Action buttons: Import JSON & Add Manual */}
-              <div className="flex items-center gap-2">
-                <label className={`${liveMode ? 'hidden' : ''} px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-xs text-zinc-300 flex items-center gap-1.5 cursor-pointer transition-colors shadow-sm`} title="Import posts from a JSON file">
-                  <FileCode className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Import JSON</span>
-                  <input
-                    type="file"
-                    accept=".json,application/json"
-                    onChange={handleJsonUpload}
-                    className="hidden"
-                  />
-                </label>
-
-                <button
-                  type="button"
-                  onClick={handleAddEmptyRow}
-                  className="px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-xs text-zinc-300 flex items-center gap-1.5 transition-colors shadow-sm"
-                  title="Add a manual post without uploading media"
-                >
-                  <Plus className="w-3.5 h-3.5 text-blue-400" />
-                  <span>{liveMode ? 'Add video' : 'Add Post'}</span>
-                </button>
+              <div className="p-3 rounded-xl bg-zinc-950 border border-zinc-800">
+                <WarmingSettings scrolls={scrolls} onScrollsChange={setScrolls} value={warmingOptions} onChange={setWarmingOptions} />
               </div>
             </div>
-
-            {/* Drag & Drop Upload Zone */}
-            <label {...mediaDrop.handlers} className={`border-2 border-dashed rounded-xl p-6 flex flex-col items-center justify-center cursor-pointer transition-all group ${mediaDrop.dragging ? 'border-blue-400 bg-blue-500/10 ring-1 ring-blue-400/30' : 'border-zinc-750 hover:border-blue-500 bg-zinc-950/40 hover:bg-zinc-900/40'}`}>
-              <input
-                type="file"
-                multiple
-                accept={liveMode ? ".mp4,.mov,.webm" : "image/*,video/mp4,video/quicktime,video/webm"}
-                onChange={handleBulkMediaUpload}
-                className="hidden"
-                disabled={isUploading}
-              />
-              {isUploading ? (
-                <div className="flex items-center gap-2 text-xs text-zinc-400">
-                  <Loader2 className="w-6 h-6 text-blue-400 animate-spin" />
-                  <span>Uploading media to shared storage...</span>
+          ) : <>
+            <div className={`${card} space-y-3`}>
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-zinc-100">
+                    {liveMode ? 'Videos to broadcast' : 'Content'} <span className="text-xs font-normal text-zinc-500">· {posts.length} {posts.length === 1 ? 'item' : 'items'}</span>
+                  </h3>
+                  <p className="text-xs text-zinc-400 mt-0.5">
+                    {liveMode ? 'Each account broadcasts with its own saved streaming settings.' : 'Videos become Reels by default. Switch an item to Feed post to use the feed composer.'}
+                  </p>
                 </div>
-              ) : (
-                <>
-                  <UploadCloud className="w-8 h-8 text-zinc-400 group-hover:text-blue-400 transition-colors mb-2" />
+                <div className="flex items-center gap-2">
+                  <button type="button" onClick={handleAddEmptyRow}
+                    className="px-2.5 py-1.5 rounded-lg border border-zinc-700 text-xs text-zinc-300 hover:bg-zinc-800 flex items-center gap-1.5 transition-colors">
+                    <Plus className="w-3.5 h-3.5" /><span>{liveMode ? 'Add video' : 'Add text post'}</span>
+                  </button>
+                  {!liveMode && <>
+                    <input ref={jsonInput} type="file" accept=".json,application/json" onChange={handleJsonUpload} className="hidden" />
+                    <ActionMenu ariaLabel="More content options" items={[
+                      { label: 'Import posts from JSON', icon: <FileCode className="w-3.5 h-3.5" />, onSelect: () => jsonInput.current?.click() },
+                      ...(posts.length ? [{ label: 'Clear all items', icon: <Trash2 className="w-3.5 h-3.5" />, danger: true, onSelect: () => setPosts([]) }] : []),
+                    ]} />
+                  </>}
+                </div>
+              </div>
+
+              <label {...mediaDrop.handlers} className={`border-2 border-dashed rounded-xl p-5 flex flex-col items-center justify-center cursor-pointer transition-all group ${mediaDrop.dragging ? 'border-blue-400 bg-blue-500/10' : 'border-zinc-800 hover:border-blue-500 bg-zinc-950/40'}`}>
+                <input type="file" multiple accept={liveMode ? ".mp4,.mov,.webm" : "image/*,video/mp4,video/quicktime,video/webm"}
+                  onChange={handleBulkMediaUpload} className="hidden" disabled={isUploading} />
+                {isUploading ? (
+                  <span className="flex items-center gap-2 text-xs text-zinc-400"><Loader2 className="w-5 h-5 text-blue-400 animate-spin" />Uploading…</span>
+                ) : <>
+                  <UploadCloud className="w-7 h-7 text-zinc-500 group-hover:text-blue-400 transition-colors mb-1.5" />
                   <span className="text-xs font-semibold text-zinc-200">
-                    {mediaDrop.dragging ? 'Release to add your files' : liveMode ? 'Drop videos here, or click to browse' : 'Drop videos or photos here, or click to browse'}
+                    {mediaDrop.dragging ? 'Release to add your files' : liveMode ? 'Drop videos here, or click to browse' : 'Drop photos or videos here, or click to browse'}
                   </span>
-                  <span className="text-[11px] text-zinc-400 mt-1">
-                    .mp4 / .mov / .webm videos assigned as <strong className="text-purple-400 font-medium">{videoUploadType === 'live' ? 'Live' : 'Reels'}</strong> {!liveMode && <>· images auto-assigned as <strong className="text-blue-400 font-medium">Photos</strong></>}
-                  </span>
-                </>
-              )}
-            </label>
-          </div>
+                  <span className="text-[11px] text-zinc-500 mt-1">{liveMode ? 'MP4, MOV, or WebM' : 'Photos · MP4, MOV, or WebM videos'}</span>
+                </>}
+              </label>
+            </div>
 
           {/* Posts List */}
           {posts.length > 0 ? (
@@ -721,295 +704,142 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
             </div>
           ) : (
             <div className="p-8 rounded-2xl border border-dashed border-zinc-800/80 text-center text-zinc-500 text-xs">
-              {liveMode ? 'Upload videos or add a video row to start a broadcast batch.' : 'Drop videos/photos above or click Add Post to start.'}
+              {liveMode ? 'Drop videos above or add a video to start.' : 'Drop photos or videos above, or add a text post.'}
             </div>
           )}
+          </>}
         </div>
 
-        {/* ============================================================
-            RIGHT COLUMN: CAMPAIGN SIDEBAR (35% width)
-            ============================================================ */}
+        {/* Right: who, when, and a summary of what will happen */}
         <div className="lg:col-span-5 xl:col-span-4 space-y-4">
-
-          <div className="p-5 rounded-2xl bg-zinc-900/60 border border-zinc-800/80 space-y-5">
-
-            {/* 1. Campaign Name (Inline editable) */}
-            <div>
-              <label className="block text-[11px] font-semibold text-zinc-400 uppercase tracking-wider mb-1.5">
-                {liveMode ? 'Live batch name' : 'Campaign Name'}
-              </label>
-              {isEditingName ? (
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    value={batchName}
-                    onChange={(e) => setBatchName(e.target.value)}
-                    onBlur={() => setIsEditingName(false)}
-                    onKeyDown={(e) => e.key === 'Enter' && setIsEditingName(false)}
-                    autoFocus
-                    className="flex-1 px-3 py-1.5 text-xs rounded-lg bg-zinc-950 border border-zinc-700 text-white focus:outline-none"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setIsEditingName(false)}
-                    className="p-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-white border border-zinc-700"
-                  >
-                    <Check className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              ) : (
-                <div
-                  onClick={() => setIsEditingName(true)}
-                  className="flex items-center justify-between p-2.5 rounded-lg bg-zinc-950/70 border border-zinc-800 hover:border-zinc-700 cursor-pointer group transition-colors"
-                >
-                  <span className="text-xs font-medium text-zinc-200 truncate">{batchName}</span>
-                  <Edit2 className="w-3.5 h-3.5 text-zinc-500 group-hover:text-zinc-300 transition-colors" />
-                </div>
-              )}
+          <div className={`${card} space-y-3`}>
+            <div className="flex items-center justify-between">
+              <span className={sectionTitle}>Accounts</span>
+              <button type="button" onClick={() => setShowProfileModal(true)} className="text-xs text-blue-400 hover:text-blue-300">Choose</button>
             </div>
-
-            {/* 2. Target Profiles Selector Card */}
-            <div>
-              <div className="flex items-center justify-between mb-1.5">
-                <label className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">
-                  Target Profiles
-                </label>
-                <button
-                  type="button"
-                  onClick={() => setShowProfileModal(true)}
-                  className="text-xs text-zinc-400 hover:text-zinc-200 font-medium"
-                >
-                  Customize
-                </button>
-              </div>
-
-              <div
-                onClick={() => setShowProfileModal(true)}
-                className="p-3 rounded-xl bg-zinc-950/70 border border-zinc-800 hover:border-zinc-700 cursor-pointer transition-colors flex items-center justify-between"
-              >
-                <div className="flex items-center gap-2.5">
-                  <Users className="w-4 h-4 text-zinc-400 shrink-0" />
-                  <div>
-                    <div className="text-xs font-semibold text-zinc-200">
-                      {selectedProfileIds.length} of {profiles.length} Accounts
-                    </div>
-                    <div className="text-[11px] text-zinc-500">
-                      {selectedProfileIds.length === runningProfilesCount && runningProfilesCount > 0
-                        ? 'All running accounts active'
-                        : `${selectedProfileIds.length} ${liveMode ? 'profiles will broadcast' : 'accounts will post'}`}
-                    </div>
-                  </div>
-                </div>
-
-                <span className="px-2 py-1 rounded bg-zinc-800 text-[11px] font-medium text-zinc-300">
-                  Edit
+            <button type="button" onClick={() => setShowProfileModal(true)}
+              className="w-full p-3 rounded-xl bg-zinc-950/70 border border-zinc-800 hover:border-zinc-700 transition-colors flex items-center gap-2.5 text-left">
+              <Users className="w-4 h-4 text-zinc-400 shrink-0" />
+              <span className="min-w-0 flex-1">
+                <span className="block text-xs font-semibold text-zinc-200">{selectedProfileIds.length} of {profiles.length} accounts</span>
+                <span className="block truncate text-[11px] text-zinc-500">
+                  {selectedProfiles.length ? selectedProfiles.slice(0, 3).map(p => p.name).join(', ') + (selectedProfiles.length > 3 ? ` +${selectedProfiles.length - 3}` : '') : 'None selected'}
                 </span>
-              </div>
-            </div>
+              </span>
+              <ChevronRight className="w-4 h-4 text-zinc-500" />
+            </button>
+            {liveSetupMissing.length > 0 && (
+              <details className="text-[11px] text-amber-300">
+                <summary className="cursor-pointer">{liveSetupMissing.length} account{liveSetupMissing.length === 1 ? ' needs' : 's need'} Live setup first</summary>
+                <ul className="mt-2 space-y-1">
+                  {liveSetupMissing.slice(0, 8).map(p => <li key={p.id} className="flex items-center justify-between gap-2 text-zinc-300">
+                    <span className="truncate">{p.name}</span>
+                    {onEditProfile && <button type="button" className="shrink-0 text-blue-400 hover:text-blue-300" onClick={() => onEditProfile(p.id)}>Set up</button>}
+                  </li>)}
+                </ul>
+              </details>
+            )}
+          </div>
 
-            {/* 3. Execution Mode Segmented Control */}
-            <div>
-              <label className="block text-[11px] font-semibold text-zinc-400 uppercase tracking-wider mb-2">
-                {liveMode ? 'Start time' : 'Posting Schedule Mode'}
+          <div className={`${card} space-y-3`}>
+            <span className={sectionTitle}>When</span>
+            <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-zinc-950 border border-zinc-800">
+              {(['now', 'scheduled'] as const).map(option => <button key={option} type="button" onClick={() => setExecutionMode(option)}
+                className={`py-2 px-3 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-all ${executionMode === option ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}>
+                {option === 'now' ? <Zap className="w-3.5 h-3.5" /> : <Calendar className="w-3.5 h-3.5" />}
+                <span>{option === 'now' ? 'Start now' : 'Schedule'}</span>
+              </button>)}
+            </div>
+            {executionMode === 'scheduled' && (
+              <label className="block text-xs text-zinc-400">
+                <span className="mb-1 block">First job at</span>
+                <input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)}
+                  className="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-white focus:outline-none focus:border-blue-500" />
               </label>
-
-              <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-zinc-950 border border-zinc-800">
-                <button
-                  type="button"
-                  onClick={() => setExecutionMode('now')}
-                  className={`py-2 px-3 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-all ${
-                    executionMode === 'now'
-                      ? 'bg-zinc-800 text-white border border-zinc-600 font-semibold'
-                      : 'text-zinc-500 hover:text-zinc-300'
-                  }`}
-                >
-                  <Zap className="w-3.5 h-3.5" />
-                  <span>Start Now</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setExecutionMode('scheduled')}
-                  className={`py-2 px-3 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-all ${
-                    executionMode === 'scheduled'
-                      ? 'bg-zinc-800 text-white border border-zinc-600 font-semibold'
-                      : 'text-zinc-500 hover:text-zinc-300'
-                  }`}
-                >
-                  <Calendar className="w-3.5 h-3.5" />
-                  <span>Scheduled</span>
-                </button>
+            )}
+            {!liveMode && !warmupMode && (
+              <div className="space-y-1.5">
+                <span className="block text-xs text-zinc-400">Warm up before posting</span>
+                <Select value={preparationMode} onValueChange={(value) => setPreparationMode(value as 'off' | 'brief' | 'extended')} ariaLabel="Warm up before posting"
+                  options={[
+                    { value: 'brief', label: 'Short browse, 40–55s (recommended)' },
+                    { value: 'extended', label: 'Longer browse, 55–70s' },
+                    { value: 'off', label: 'Don’t warm up' },
+                  ]} />
               </div>
-
-              <p className="text-[11px] text-zinc-500 mt-2 leading-relaxed">
-                {executionMode === 'now'
-                  ? 'Each account runs independently: finish, close its container, wait its iteration delay, then start the next iteration.'
-                  : `The batch starts at ${startTime}. Each account advances independently after its own iteration delay, within Resource Mode limits.`}
-              </p>
-            </div>
-
+            )}
             {liveMode && <LivePlaybackSettings mode={playbackMode} onMode={setPlaybackMode}
               loop={loopVideo} onLoop={setLoopVideo} minutes={durationMinutes} onMinutes={setDurationMinutes}
               muted={muted} onMuted={setMuted} />}
-            {/* 4. Global AI Caption Spin Toggle */}
-            <div className={`${liveMode ? 'hidden' : ''} pt-1 border-t border-zinc-800/80`}>
-              <label htmlFor="ai-caption-spinning" className="flex items-center justify-between cursor-pointer py-1">
-                <div>
-                  <div className="text-xs font-medium text-zinc-200">
-                    Legacy caption variations
-                  </div>
-                  <div className="text-[11px] text-zinc-500">
-                    Adds canned text per account. Approved hook captions are excluded.
-                  </div>
-                </div>
-                <Checkbox
-                  id="ai-caption-spinning"
-                  disabled={posts.length > 0 && posts.every(post => post.type === 'live')}
-                  checked={aiSpinAll}
-                  onCheckedChange={setAiSpinAll}
-                />
-              </label>
-            </div>
 
-            {/* 5. Collapsible Advanced Settings */}
             <div className="pt-1 border-t border-zinc-800/80">
-              <button
-                type="button"
-                onClick={() => setShowAdvanced(!showAdvanced)}
-                className="w-full flex items-center justify-between text-xs font-semibold text-zinc-400 hover:text-zinc-200 transition-colors py-1"
-              >
-                <span>Advanced Schedule & Pacing</span>
-                {showAdvanced ? (
-                  <ChevronDown className="w-4 h-4" />
-                ) : (
-                  <ChevronRight className="w-4 h-4" />
-                )}
+              <button type="button" onClick={() => setShowAdvanced(!showAdvanced)} aria-expanded={showAdvanced}
+                className="w-full flex items-center justify-between text-xs text-zinc-400 hover:text-zinc-200 transition-colors py-1">
+                <span>Pacing · {staggerSeconds}s between accounts · {iterationDelaySeconds}s rest</span>
+                {showAdvanced ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
               </button>
-
               {showAdvanced && (
-                <div className="space-y-3 pt-3 animate-in fade-in duration-150 text-xs">
-                  {executionMode === 'scheduled' ? (
-                    <div>
-                      <label className="block text-zinc-400 mb-1">Batch Start Time</label>
-                      <input
-                        type="time"
-                        value={startTime}
-                        onChange={(e) => setStartTime(e.target.value)}
-                        className="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-white focus:outline-none focus:border-zinc-600"
-                      />
-                      <p className="text-[10px] text-zinc-500 mt-1">
-                        This gates the first post only. Accounts run within Resource Mode limits, and posts advance in order.
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="px-2.5 py-2 rounded-lg bg-zinc-950 border border-zinc-800 text-[11px] text-zinc-500">
-                      The first iteration is eligible immediately.
-                    </div>
+                <div className="space-y-3 pt-3 text-xs">
+                  <label className="block">
+                    <span className="block text-zinc-400 mb-1">Seconds between accounts starting</span>
+                    <input type="number" min={0} max={3600} step={10} value={staggerSeconds}
+                      onChange={(e) => { const val = parseInt(e.target.value, 10); setStaggerSeconds(Number.isNaN(val) ? 60 : Math.max(0, val)); }}
+                      className="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-white focus:outline-none focus:border-blue-500" />
+                  </label>
+                  <label className="block">
+                    <span className="block text-zinc-400 mb-1">Seconds each account rests between jobs</span>
+                    <input type="number" min={0} max={3600} step={10} value={iterationDelaySeconds}
+                      onChange={(e) => { const val = parseInt(e.target.value, 10); setIterationDelaySeconds(Number.isNaN(val) ? 60 : Math.max(0, val)); }}
+                      className="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-white focus:outline-none focus:border-blue-500" />
+                  </label>
+                  {!liveMode && !warmupMode && (
+                    <label htmlFor="ai-caption-spinning" className="flex items-center justify-between gap-3 cursor-pointer">
+                      <span>
+                        <span className="block text-zinc-200">Vary captions per account</span>
+                        <span className="block text-[11px] text-zinc-500">Adds canned text to each copy. Approved hook captions are left alone.</span>
+                      </span>
+                      <Checkbox id="ai-caption-spinning" checked={aiSpinAll} onCheckedChange={setAiSpinAll} />
+                    </label>
                   )}
-
-                  <div>
-                    <label className="block text-zinc-400 mb-1">
-                      Profile Stagger Delay (Seconds)
-                    </label>
-                    <input
-                      type="number"
-                      min={0}
-                      max={3600}
-                      step={10}
-                      value={staggerSeconds}
-                      onChange={(e) => {
-                        const val = parseInt(e.target.value, 10);
-                        setStaggerSeconds(Number.isNaN(val) ? 60 : Math.max(0, val));
-                      }}
-                      className="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-white focus:outline-none focus:border-blue-500"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-zinc-400 mb-1">
-                      Per-account Iteration Delay (Seconds)
-                    </label>
-                    <input
-                      type="number"
-                      min={0}
-                      max={3600}
-                      step={10}
-                      value={iterationDelaySeconds}
-                      onChange={(e) => {
-                        const val = parseInt(e.target.value, 10);
-                        setIterationDelaySeconds(Number.isNaN(val) ? 60 : Math.max(0, val));
-                      }}
-                      className="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-white focus:outline-none focus:border-blue-500"
-                    />
-                    <p className="text-[10px] text-zinc-500 mt-1">
-                      Pause after each account's task finishes before preparing or running its next iteration.
-                    </p>
-                  </div>
-
-                  <div className={liveMode ? 'hidden' : ''}>
-                    <label className="block text-zinc-400 mb-1">
-                      {liveMode ? 'Session preparation (skipped for Live)' : 'Rolling Session Preparation'}
-                    </label>
-                    <Select
-                      disabled={liveMode} value={liveMode ? 'off' : preparationMode}
-                      onValueChange={(value) => setPreparationMode(value as 'off' | 'brief' | 'extended')}
-                      ariaLabel="Rolling session preparation"
-                      options={[
-                        { value: 'brief', label: 'Brief browsing (40–55s) [Recommended]' },
-                        { value: 'extended', label: 'Extended browsing (55–70s)' },
-                        { value: 'off', label: 'Off' },
-                      ]}
-                    />
-                  </div>
                 </div>
               )}
             </div>
+          </div>
 
-            {/* 6. Campaign Summary & Primary Launch Button */}
-            <div className="pt-2 border-t border-zinc-800/80 space-y-3">
-              <div className="p-3 rounded-xl bg-zinc-950/80 border border-zinc-800 text-xs text-zinc-400">
-                <strong className="text-zinc-200">{selectedProfileIds.length} profiles</strong>
-                {' '}×{' '}
-                <strong className="text-zinc-200">{posts.length} {liveMode ? 'videos' : 'posts'}</strong>
-                {' '}={' '}
-                <strong className="text-white">{totalExecutions} total executions</strong>
-              </div>
-
-              <button
-                type="button"
-                onClick={handleSubmitBatch}
-                disabled={isSubmitting || selectedProfileIds.length === 0 || posts.length === 0}
-                className="w-full py-3 px-4 rounded-xl font-semibold text-xs flex items-center justify-center gap-2 transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm"
-              >
-                {isSubmitting ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : executionMode === 'now' ? (
-                  <Zap className="w-4 h-4" />
-                ) : (
-                  <Calendar className="w-4 h-4" />
-                )}
-                <span>
-                  {executionMode === 'now'
-                    ? liveMode ? `Start Live (${totalExecutions} broadcasts)` : `Start Campaign Now (${totalExecutions} Posts)`
-                    : liveMode ? `Schedule Live (${totalExecutions} broadcasts)` : `Schedule Campaign (${totalExecutions} Posts)`}
-                </span>
-              </button>
+          <div className={`${card} space-y-3`}>
+            <span className={sectionTitle}>Summary</span>
+            <input value={batchName} onChange={(e) => setBatchName(e.target.value)} aria-label="Campaign name" maxLength={120}
+              className="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-zinc-100 focus:outline-none focus:border-blue-500" />
+            <div className="text-xs text-zinc-400">
+              <p>{itemCount} {warmupMode ? 'warm-up' : itemCount === 1 ? 'item' : 'items'} × {selectedProfileIds.length} accounts</p>
+              <p className="mt-1 text-2xl font-semibold text-zinc-100">{totalExecutions} <span className="text-sm font-normal text-zinc-400">{warmupMode ? 'warm-ups' : liveMode ? 'broadcasts' : 'jobs'}</span></p>
+              <p className="mt-1">{startLabel}</p>
             </div>
-
+            <ul className="space-y-1.5 text-[11px]">
+              {problems.map(problem => <li key={problem} className="flex items-start gap-1.5 text-red-300"><X className="w-3.5 h-3.5 shrink-0" />{problem}</li>)}
+              {busySelected.length > 0 && <li className="flex items-start gap-1.5 text-amber-300"><AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                {busySelected.length === 1 ? `${busySelected[0].name} is busy` : `${busySelected.length} accounts are busy`} with other queued work. They’ll start this after it.</li>}
+              {erroredSelected.length > 0 && <li className="flex items-start gap-1.5 text-amber-300"><AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                {erroredSelected.length === 1 ? `${erroredSelected[0].name} has an error` : `${erroredSelected.length} accounts have errors`}. Check them on the Profiles page.</li>}
+              {problems.length === 0 && busySelected.length === 0 && erroredSelected.length === 0 && <li className="flex items-start gap-1.5 text-emerald-300"><CheckCircle2 className="w-3.5 h-3.5 shrink-0" />Ready to go</li>}
+            </ul>
+            {errorMsg && <p role="alert" className="flex items-start gap-1.5 rounded-lg border border-red-900 bg-red-950/50 p-2 text-[11px] text-red-200"><AlertTriangle className="w-3.5 h-3.5 shrink-0" />{errorMsg}</p>}
+            <button type="button" onClick={handleSubmitBatch} disabled={isSubmitting}
+              className="w-full py-2.5 px-4 rounded-xl font-semibold text-xs flex items-center justify-center gap-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-blue-600 hover:bg-blue-500 text-white">
+              {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : executionMode === 'now' ? <Zap className="w-4 h-4" /> : <Calendar className="w-4 h-4" />}
+              <span>{submitLabel}</span>
+            </button>
           </div>
         </div>
       </div>
 
-      {/* ============================================================
-          PROFILE SELECTION MODAL
-          ============================================================ */}
       {showProfileModal && (
         <div
           className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
           onClick={() => setShowProfileModal(false)}
         >
           <div
-            role="dialog" aria-modal="true" aria-label="Choose batch profiles"
+            role="dialog" aria-modal="true" aria-label="Choose accounts"
             className="bg-zinc-950 border border-zinc-800 rounded-2xl w-full max-w-xl max-h-[85vh] flex flex-col shadow-2xl animate-in fade-in zoom-in-95 duration-150"
             onClick={(e) => e.stopPropagation()}
           >
@@ -1018,10 +848,10 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
               <div>
                 <h3 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
                   <ShieldCheck className="w-4 h-4 text-blue-400" />
-                  Choose batch profiles
+                  Choose accounts
                 </h3>
                 <p className="text-xs text-zinc-400 mt-0.5">
-                  Select which accounts will publish this daily batch.
+                  Pick the accounts that will run this campaign.
                 </p>
               </div>
 
@@ -1036,13 +866,13 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
             </div>
 
             <div className="overflow-y-auto p-4">
-              <GroupedProfileSelector disabledProfileIds={hasLive ? profiles.filter(p => !p.live?.configured).map(p => p.id) : []} profiles={profiles} selectedIds={selectedProfileIds} onChange={setSelectedProfileIds} />
+              <GroupedProfileSelector busyProfileIds={busyProfileIds} disabledProfileIds={hasLive ? profiles.filter(p => !p.live?.configured).map(p => p.id) : []} profiles={profiles} selectedIds={selectedProfileIds} onChange={setSelectedProfileIds} />
             </div>
 
             {/* Modal Footer */}
             <div className="p-4 border-t border-zinc-800 flex items-center justify-between">
               <span className="text-xs text-zinc-400 font-medium">
-                {selectedProfileIds.length} profiles selected
+                {selectedProfileIds.length} accounts selected
               </span>
               <button
                 type="button"
@@ -1056,83 +886,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
         </div>
       )}
 
-      {/* ============================================================
-          MEDIA LIGHTBOX MODAL
-          ============================================================ */}
-      {lightboxMedia && (
-        <div
-          className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 sm:p-6"
-          onClick={() => setLightboxMedia(null)}
-        >
-          <div
-            className="relative max-w-4xl w-full max-h-[90vh] bg-zinc-950 border border-zinc-800 rounded-2xl overflow-hidden shadow-2xl flex flex-col animate-in fade-in zoom-in-95 duration-150"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Header */}
-            <div className="flex items-center justify-between p-3.5 border-b border-zinc-800 bg-zinc-900/80">
-              <div className="flex items-center gap-2.5">
-                {lightboxMedia.type === 'reel' ? (
-                  <span className="px-2.5 py-0.5 rounded text-[11px] font-semibold bg-purple-950 text-purple-300 border border-purple-800/80 flex items-center gap-1.5">
-                    <Film className="w-3.5 h-3.5 text-purple-400" /> Reel Preview
-                  </span>
-                ) : (
-                  <span className="px-2.5 py-0.5 rounded text-[11px] font-semibold bg-blue-950 text-blue-300 border border-blue-800/80 flex items-center gap-1.5">
-                    <ImageIcon className="w-3.5 h-3.5 text-blue-400" /> Photo Preview
-                  </span>
-                )}
-                <span className="text-xs text-zinc-300 font-mono truncate max-w-md">
-                  {lightboxMedia.name}
-                </span>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => setLightboxMedia(null)}
-                className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors"
-                title="Close preview"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Media View */}
-            <div className="flex-1 flex items-center justify-center bg-black/95 p-4 overflow-hidden min-h-[350px]">
-              {lightboxMedia.type === 'reel' ? (
-                <video
-                  src={lightboxMedia.url}
-                  controls
-                  autoPlay
-                  className="max-h-[65vh] max-w-full rounded-lg shadow-xl"
-                />
-              ) : (
-                <img
-                  src={lightboxMedia.url}
-                  alt={lightboxMedia.name}
-                  className="max-h-[65vh] max-w-full object-contain rounded-lg shadow-xl"
-                />
-              )}
-            </div>
-
-            {/* Caption & First Comment */}
-            {(lightboxMedia.caption || lightboxMedia.comment) && (
-              <div className="p-3.5 border-t border-zinc-800 bg-zinc-900/80 space-y-1.5 text-xs">
-                {lightboxMedia.caption && (
-                  <div className="text-zinc-200">
-                    <strong className="text-zinc-400 font-medium">Caption:</strong>{' '}
-                    <span>{lightboxMedia.caption}</span>
-                  </div>
-                )}
-                {lightboxMedia.comment && (
-                  <div className="text-blue-400 text-[11px]">
-                    <strong className="text-zinc-400 font-medium">1st Comment:</strong>{' '}
-                    <span>{lightboxMedia.comment}</span>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      <MediaLightbox media={lightboxMedia} onClose={() => setLightboxMedia(null)} />
     </div>
   );
 };
