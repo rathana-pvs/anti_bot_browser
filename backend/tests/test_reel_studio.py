@@ -790,3 +790,12 @@ def test_an_end_card_without_a_photo_is_the_page_itself():
 def test_a_figure_too_wide_for_the_card_is_reported():
     with pytest.raises(ValueError, match='figure is too wide'):
         Plan(Reel(scenes=[Scene(kind='stat', stat='W' * 24, headline='Label')]), 360, {}, None)
+
+
+def test_gemini_is_asked_for_scene_kinds_highlights_and_the_end_card():
+    """Gemini skips optional schema fields; these must be required in what it receives, while the parser keeps defaults."""
+    from backend.services.reel_creator.writer import ReelCopy
+    schema = ReelCopy.model_json_schema()
+    assert 'end_card' in schema['required']
+    assert {'kind', 'stat', 'attribution', 'highlight'} <= set(schema['$defs']['SceneCopy']['required'])
+    assert ReelCopy.model_validate(dict(scenes=[dict(headline='Vote passes', source_quote='voted 7 to 2 on Tuesday')])).end_card is None

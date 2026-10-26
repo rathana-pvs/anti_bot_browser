@@ -21,7 +21,8 @@ Return JSON:
   detail is an optional supporting line of up to 18 words. Every scene needs source_quote: a verbatim
   passage from the article (12+ characters) that supports it.
   Each scene has a kind. Scene 1 is always story. Use at most one stat and one quote per reel, and only when
-  the article supports them:
+  the article supports them; when it has a clear key figure or a strong direct quotation, use it for one of
+  scenes 2 onward rather than writing another story scene:
   - story: headline and detail as above.
   - stat: the scene's point is one specific figure. stat is that figure exactly as the article gives it (up to
     12 characters, e.g. "7-2", "$1.2bn", "300,000"); headline is a short label of 3-8 words saying what it counts.
@@ -29,7 +30,7 @@ Return JSON:
     (no quotation marks, up to 110 characters); attribution is the speaker's name and role as the article gives them.
   highlight: 1-3 consecutive words copied exactly from that scene's headline that carry the news (a number, a
   name, the key action). Never the whole headline; empty if nothing stands out.
-- end_card: only when existing_headlines is not given; otherwise null. A closing card in the goal's spirit:
+- end_card: always give one unless existing_headlines is given; then null. A closing card in the goal's spirit:
   headline of at most 12 words, optional detail of at most 14 words, and a highlight as above.
 - hook_alternatives: exactly 2 other hook headlines for scene 1 in different styles (question, number,
   consequence), each fully supported by the article. Empty when existing_headlines is given.
@@ -55,8 +56,15 @@ The operator's goal decides how the hook, scenes and caption are written:
 If the text is a login page, paywall, error page or has no substantive news, return an empty object.'''
 
 
+def asks_for(*fields):
+    """Gemini tends to leave out optional fields, so the schema it receives requires these; they keep their defaults here."""
+    def extra(schema):
+        schema['required'] = [*schema.get('required', []), *(f for f in fields if f not in schema.get('required', []))]
+    return extra
+
+
 class SceneCopy(BaseModel):
-    model_config = ConfigDict(extra='forbid')
+    model_config = ConfigDict(extra='forbid', json_schema_extra=asks_for('detail', 'kind', 'stat', 'attribution', 'highlight'))
     headline: str = Field(min_length=3, max_length=110)
     detail: str = Field(default='', max_length=150)
     source_quote: str = Field(min_length=12, max_length=500)
@@ -67,14 +75,15 @@ class SceneCopy(BaseModel):
 
 
 class EndCopy(BaseModel):
-    model_config = ConfigDict(extra='forbid')
+    model_config = ConfigDict(extra='forbid', json_schema_extra=asks_for('detail', 'highlight'))
     headline: str = Field(min_length=3, max_length=90)
     detail: str = Field(default='', max_length=120)
     highlight: str = Field(default='', max_length=40)
 
 
 class ReelCopy(BaseModel):
-    model_config = ConfigDict(extra='forbid')
+    model_config = ConfigDict(extra='forbid', json_schema_extra=asks_for('end_card', 'hook_alternatives', 'look', 'post_caption',
+                                                                        'comment_lead', 'hashtags'))
     scenes: list[SceneCopy] = Field(min_length=1, max_length=8)
     end_card: EndCopy | None = None
     hook_alternatives: list[str] = Field(default_factory=list, max_length=3)
