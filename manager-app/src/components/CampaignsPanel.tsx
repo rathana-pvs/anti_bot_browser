@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { Profile } from '../types/profile';
 import { BatchPostCreator, CampaignKind } from './BatchPostCreator';
 import { ReelCreator } from './reel-creator/ReelCreator';
@@ -6,14 +6,16 @@ import { ReelCreatorBoundary } from './reel-creator/ReelCreatorBoundary';
 import type { CreatedReelMedia } from '../types/reelCreator';
 import { PostingQueuePanel } from './PostingQueuePanel';
 import { cn } from './ui/cn';
-import { Clock, Film, Flame, PanelLeft, PanelLeftClose, Plus, Radio, Send } from 'lucide-react';
+import { Clock, Film, Flame, Plus, Radio, Send } from 'lucide-react';
 
 interface CampaignsPanelProps {
   profiles: Profile[];
   onSelectProfile: (profileId: string) => void;
   onEditProfile: (profileId: string) => void;
-  isSidebarOpen?: boolean;
-  onToggleSidebar?: () => void;
+  onOpenAccount?: (profileId: string) => void;
+  onAttentionChange?: (count: number) => void;
+  /** Bumped by other pages to bring the Queue tab forward. */
+  showQueueRequest?: number;
 }
 
 type CampaignTab = 'queue' | 'create' | 'reel_studio';
@@ -28,8 +30,9 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
   profiles,
   onSelectProfile,
   onEditProfile,
-  isSidebarOpen,
-  onToggleSidebar,
+  onOpenAccount,
+  onAttentionChange,
+  showQueueRequest = 0,
 }) => {
   const [tab, setTab] = useState<CampaignTab>('queue');
   const [kind, setKind] = useState<CampaignKind>(() => {
@@ -37,6 +40,8 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
     return saved === 'live' || saved === 'warmup' ? saved : 'posts';
   });
   const [attention, setAttention] = useState(0);
+  useEffect(() => { onAttentionChange?.(attention); }, [attention, onAttentionChange]);
+  useEffect(() => { if (showQueueRequest) setTab('queue'); }, [showQueueRequest]);
   const [incomingReel, setIncomingReel] = useState<CreatedReelMedia | null>(null);
   const consumeIncomingReel = useCallback(() => setIncomingReel(null), []);
   const chooseKind = (next: CampaignKind) => {
@@ -59,12 +64,6 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
     <div className="flex-1 flex flex-col h-full bg-background overflow-hidden">
       <header className="flex shrink-0 items-end gap-4 border-b border-border bg-surface/50 px-6 pt-3">
         <div className="flex items-center gap-2 pb-2.5">
-          {onToggleSidebar && (
-            <button onClick={onToggleSidebar} aria-label={isSidebarOpen ? 'Collapse profiles' : 'Expand profiles'}
-              className="p-1.5 rounded text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors">
-              {isSidebarOpen ? <PanelLeftClose className="w-4 h-4" /> : <PanelLeft className="w-4 h-4" />}
-            </button>
-          )}
           <h2 className="text-sm font-semibold text-zinc-100">Campaigns</h2>
         </div>
         <nav role="tablist" aria-label="Campaign sections" className="flex items-end gap-1 overflow-x-auto">
@@ -80,7 +79,7 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
 
       <div className={`min-h-0 flex-1 overflow-hidden p-6 ${tab === 'queue' ? '' : 'hidden'}`}>
         <PostingQueuePanel profiles={profiles} onAttentionChange={setAttention}
-          onWatchProfile={onSelectProfile} onCreate={() => setTab('create')} />
+          onWatchProfile={onSelectProfile} onOpenAccount={onOpenAccount} onCreate={() => setTab('create')} />
       </div>
 
       <div className={`flex-1 overflow-y-auto p-6 ${tab === 'create' ? '' : 'hidden'}`}>

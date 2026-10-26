@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Clock, Download, Loader2, Plus, RotateCcw, Search, Trash2, X,
+  AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Clock, Copy, Download, ExternalLink, Eye, Loader2, MessageCircle, Play, Plus,
+  RotateCcw, Search, ShieldAlert, Square, Trash2, User, X,
 } from 'lucide-react';
 import { DailyBatch, QueueDataResponse, QueueExecutionItem } from '../types/automation';
 import { Profile } from '../types/profile';
@@ -9,6 +10,8 @@ import { MediaLightbox, LightboxMedia } from './MediaLightbox';
 import { stopLive } from '../services/live';
 import { useAppDialog } from './ui/AppDialogProvider';
 import { ActionMenu, ActionMenuItem } from './ui/ActionMenu';
+import { useContextMenu } from './ui/ContextMenu';
+import { writeHostClipboardText } from '../services/clipboard';
 import { Button } from './ui/Button';
 import { EmptyState } from './ui/EmptyState';
 import { Input } from './ui/Input';
@@ -18,8 +21,8 @@ import { QueueRow, QueueRowActions } from './queue/QueueRow';
 import { QueueDetailDrawer, DrawerActions } from './queue/QueueDetailDrawer';
 import { SupportReportDialog } from './queue/SupportReportDialog';
 import {
-  ACTIVE_STATUSES, QueueSectionKey, QueueTypeFilter, UNCERTAIN_STATUSES, WAITING_STATUSES, hasOpenRecovery, isVideoFile, itemKind,
-  matchesSearch, sectionOf,
+  ACTIVE_STATUSES, QueueSectionKey, QueueTypeFilter, UNCERTAIN_STATUSES, WAITING_STATUSES, commentNeedsRetry, hasOpenRecovery, isVideoFile,
+  itemKind, kindLabel, matchesSearch, sectionOf,
 } from './queue/queueModel';
 import {
   backfillExecutionPermalink, cancelAllQueuePosts, cancelNetworkRecovery, deleteBatch, deleteExecution, fetchQueue,
@@ -32,6 +35,7 @@ interface PostingQueuePanelProps {
   onAttentionChange?: (count: number) => void;
   /** Opens the profile's browser so the user can watch a running job. */
   onWatchProfile?: (profileId: string) => void;
+  onOpenAccount?: (profileId: string) => void;
   onCreate?: () => void;
 }
 
@@ -49,7 +53,7 @@ const FINISHED_PAGE = 25;
 const sortTime = (item: QueueExecutionItem) => new Date(item.published_at || item.stage_updated_at || item.scheduled_at).getTime() || 0;
 const scheduledTime = (item: QueueExecutionItem) => new Date(item.scheduled_at).getTime() || 0;
 
-export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, onAttentionChange, onWatchProfile, onCreate }) => {
+export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, onAttentionChange, onWatchProfile, onOpenAccount, onCreate }) => {
   const { showConfirm, showPrompt, showToast } = useAppDialog();
   const [queueData, setQueueData] = useState<QueueDataResponse | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -66,6 +70,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
   const [appendBatch, setAppendBatch] = useState<DailyBatch | null>(null);
   const [report, setReport] = useState<{ open: boolean; item: QueueExecutionItem | null }>({ open: false, item: null });
   const lastAttention = useRef(0);
+  const menu = useContextMenu();
 
   const fail = useCallback((err: unknown, fallback: string) => {
     showToast(err instanceof Error && err.message ? err.message : fallback, 'error');
@@ -285,9 +290,38 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
   menuItems.push({ label: 'Export diagnostics', icon: <Download className="h-3.5 w-3.5" />, onSelect: () => setReport({ open: true, item: null }) });
 
   const filtersActive = typeFilter !== 'all' || batchFilter !== ALL_BATCHES || search.trim() !== '';
+  // Right-click mirrors what the row and its detail panel offer; nothing is right-click only.
+  const itemMenu = (item: QueueExecutionItem): ActionMenuItem[] => {
+    const uncertain = UNCERTAIN_STATUSES.has(item.status);
+    const icon = 'h-3.5 w-3.5';
+    const items: ActionMenuItem[] = [{ label: 'View details', icon: <Eye className={icon} />, onSelect: () => setSelectedId(item.execution_id) }];
+    if (uncertain) items.push({ label: item.post_type === 'live' ? 'Confirm outcome…' : 'Was it posted?…', icon: <ShieldAlert className={icon} />, onSelect: () => setSelectedId(item.execution_id) });
+    if (item.status === 'pending') items.push({ label: 'Run now', icon: <Play className={icon} />, onSelect: () => runNow(item) });
+    if (['failed', 'failed_before_publish'].includes(item.status)) items.push({ label: 'Retry', icon: <RotateCcw className={icon} />, onSelect: () => runNow(item) });
+    if (uncertain && item.post_type !== 'live') items.push({ label: 'Re-run anyway', icon: <RotateCcw className={icon} />, onSelect: () => runNow(item) });
+    if (item.status.startsWith('skipped')) items.push({ label: 'Re-run', icon: <RotateCcw className={icon} />, onSelect: () => runNow(item) });
+    if (commentNeedsRetry(item)) items.push({ label: 'Retry comment only', icon: <MessageCircle className={icon} />, onSelect: () => retryComment(item) });
+    if (item.post_type === 'live' && item.status === 'running') items.push({ label: 'Stop Live', icon: <Square className={icon} />, onSelect: () => stopLiveItem(item) });
+    if (item.post_url) {
+      const url = item.post_url;
+      items.push(
+        { label: 'View on Facebook', icon: <ExternalLink className={icon} />, divider: true, onSelect: () => { window.open(url, '_blank', 'noreferrer'); } },
+        { label: 'Copy post link', icon: <Copy className={icon} />, onSelect: () => {
+          writeHostClipboardText(url).then(() => showToast('Post link copied.', 'success')).catch(() => showToast('Clipboard access was blocked.', 'error'));
+        } },
+      );
+    }
+    if (ACTIVE_STATUSES.has(item.status) && onWatchProfile) items.push({ label: 'Watch browser', icon: <Eye className={icon} />, divider: !item.post_url, onSelect: () => onWatchProfile(item.profile_id) });
+    if (onOpenAccount) items.push({ label: 'Open account', icon: <User className={icon} />, divider: !item.post_url && !ACTIVE_STATUSES.has(item.status), onSelect: () => onOpenAccount(item.profile_id) });
+    if (!['running', 'uncertain', 'needs_review'].includes(item.status)) items.push({ label: 'Remove from queue', icon: <Trash2 className={icon} />, danger: true, divider: true, onSelect: () => remove(item) });
+    return items;
+  };
+
   const renderRows = (items: QueueExecutionItem[]) => <div className="divide-y divide-zinc-800/70">
     {items.map(item => <QueueRow key={item.execution_id} item={item} profileName={profileName(item.profile_id)}
-      selected={item.execution_id === selectedId} actions={rowActions} busy={busyId === item.execution_id} />)}
+      selected={item.execution_id === selectedId} actions={rowActions} busy={busyId === item.execution_id}
+      onContextMenu={(e) => menu.open(e, itemMenu(item), `${profileName(item.profile_id)} · ${kindLabel(item)}`)}
+      onMenuKey={menu.keyboardTrigger(() => itemMenu(item), `${profileName(item.profile_id)} · ${kindLabel(item)}`)} />)}
   </div>;
 
   return (
@@ -365,6 +399,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
         onSaved={(location) => { setReport({ open: false, item: null }); showToast(`Support ZIP saved to ${location}. Review it before sending.`, 'success'); }}
         onError={(message) => showToast(message, 'error')} />
       <MediaLightbox media={lightbox} onClose={() => setLightbox(null)} />
+      {menu.element}
     </div>
   );
 };

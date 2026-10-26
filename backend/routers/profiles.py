@@ -7,7 +7,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
-from backend.services.profile_groups import list_groups, create_group
+from backend.services.profile_groups import list_groups, create_group, rename_group, delete_group
 
 from backend.config import CPU_THREADS, PROFILES_DIR, TOTAL_MEMORY_GB, FALLBACK_TIMEZONE
 from backend.models.profile import NetworkIntent, ProfileCreateRequest, ProfileUpdateRequest
@@ -121,6 +121,24 @@ def add_profile_group(request: GroupCreateRequest):
         return {"name": create_group(request.name)}
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.put("/groups/{name:path}")
+def rename_profile_group(name: str, request: GroupCreateRequest):
+    try:
+        return rename_group(name, request.name)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.delete("/groups/{name:path}")
+def delete_profile_group(name: str):
+    try:
+        return delete_group(name)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/detect-timezone")

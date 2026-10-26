@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { formatProxyGeography, ProxyItem } from '../types/proxy';
 import { checkProxyGeography, importProxies, refreshProxyStatuses, testProxyPing, deleteSelectedProxies } from '../services/api';
-import { Globe, Plus, Trash2, Activity, MapPin, X, PanelLeftOpen, Loader2, Search, Lock } from 'lucide-react';
+import { Globe, Plus, Trash2, Activity, MapPin, X, Loader2, Search, Lock } from 'lucide-react';
 import { useAppDialog } from './ui/AppDialogProvider';
 import { Checkbox } from './ui/Checkbox';
 import { Select } from './ui/Select';
@@ -10,16 +10,12 @@ interface ProxyPanelProps {
   proxies: ProxyItem[];
   onRefresh: () => void;
   onSelectProfile?: (profileId: string) => void;
-  isSidebarOpen?: boolean;
-  onToggleSidebar?: () => void;
 }
 
 export const ProxyPanel: React.FC<ProxyPanelProps> = ({
   proxies,
   onRefresh,
   onSelectProfile,
-  isSidebarOpen = true,
-  onToggleSidebar,
 }) => {
   const { showAlert, showConfirm } = useAppDialog();
   const [isImportOpen, setIsImportOpen] = useState(false);
@@ -152,15 +148,9 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
     <div className="flex h-full min-w-0 flex-1 flex-col gap-4 overflow-hidden bg-background p-4 sm:p-5 select-none">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          {!isSidebarOpen && onToggleSidebar && (
-            <button onClick={onToggleSidebar} aria-label="Expand sidebar"
-              className="rounded-md border border-border p-2 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200">
-              <PanelLeftOpen className="h-4 w-4" />
-            </button>
-          )}
           <div>
-            <h1 className="flex items-center gap-2 text-base font-semibold text-zinc-100"><Globe className="h-4 w-4 text-zinc-400" />Proxy Pool</h1>
-            <p className="mt-1 text-xs text-zinc-500">Manage connections for your profiles.</p>
+            <h1 className="flex items-center gap-2 text-base font-semibold text-zinc-100"><Globe className="h-4 w-4 text-zinc-400" />Proxies</h1>
+            <p className="mt-1 text-xs text-zinc-500">Proxies your accounts connect through.</p>
           </div>
         </div>
         <div className="flex items-center gap-2">

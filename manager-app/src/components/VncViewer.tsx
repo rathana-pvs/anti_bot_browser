@@ -11,10 +11,6 @@ import {
   RotateCcw,
   Maximize2,
   ShieldCheck,
-  PanelRightClose,
-  PanelRightOpen,
-  PanelLeftClose,
-  PanelLeftOpen,
   ClipboardPaste,
   ClipboardCopy,
   Send,
@@ -28,19 +24,14 @@ import { useAppDialog } from './ui/AppDialogProvider';
 interface VncViewerProps {
   profile: Profile | null;
   onAction: (profileId: string, action: 'start' | 'stop' | 'pause' | 'unpause') => void;
-  isInspectorOpen?: boolean;
-  onToggleInspector?: () => void;
-  isSidebarOpen?: boolean;
-  onToggleSidebar?: () => void;
+  /** Inside an account page, which already shows the name and start/pause/stop. */
+  embedded?: boolean;
 }
 
 export const VncViewer: React.FC<VncViewerProps> = ({
   profile,
   onAction,
-  isInspectorOpen = true,
-  onToggleInspector,
-  isSidebarOpen = true,
-  onToggleSidebar,
+  embedded = false,
 }) => {
   const { showAlert } = useAppDialog();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -247,17 +238,7 @@ export const VncViewer: React.FC<VncViewerProps> = ({
   if (!profile) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center bg-background text-zinc-500 relative">
-        {!isSidebarOpen && onToggleSidebar && (
-          <button
-            onClick={onToggleSidebar}
-            className="absolute top-3 left-3 p-1.5 rounded bg-zinc-800 border border-zinc-700 text-zinc-400 hover:text-zinc-200 transition-colors flex items-center gap-1.5 text-xs"
-            title="Expand Sidebar"
-          >
-            <PanelLeftOpen className="w-3.5 h-3.5" />
-            <span>Profiles</span>
-          </button>
-        )}
-        <p className="text-sm">Select a profile from the sidebar to view browser session</p>
+        <p className="text-sm">Choose an account to see its browser</p>
       </div>
     );
   }
@@ -270,20 +251,7 @@ export const VncViewer: React.FC<VncViewerProps> = ({
       {/* Top Bar for Active Profile */}
       <div className="h-11 px-4 border-b border-border bg-surface flex items-center justify-between shrink-0">
         <div className="flex items-center gap-3">
-          {onToggleSidebar && (
-            <button
-              onClick={onToggleSidebar}
-              className={`p-1.5 rounded border transition-colors ${
-                isSidebarOpen
-                  ? 'bg-zinc-800/80 border-zinc-700 text-zinc-400 hover:text-zinc-200'
-                  : 'bg-zinc-800 border-zinc-600 text-zinc-200 hover:bg-zinc-700'
-              }`}
-              title={isSidebarOpen ? "Collapse Sidebar (Get more space)" : "Expand Sidebar"}
-            >
-              {isSidebarOpen ? <PanelLeftClose className="w-3.5 h-3.5" /> : <PanelLeftOpen className="w-3.5 h-3.5" />}
-            </button>
-          )}
-          <div className="flex items-center gap-2">
+          {!embedded && <><div className="flex items-center gap-2">
             <span
               className={`w-2 h-2 rounded-full ${
                 profile.status === 'running'
@@ -295,7 +263,7 @@ export const VncViewer: React.FC<VncViewerProps> = ({
             />
             <span className="font-medium text-xs text-zinc-100">{profile.name}</span>
           </div>
-          <span className="text-zinc-600">|</span>
+          <span className="text-zinc-600">|</span></>}
           <div className="flex items-center gap-1.5 text-xs text-zinc-400">
             <ShieldCheck className="w-3.5 h-3.5 text-zinc-400" />
             <span className="font-mono">{profile.fingerprint.screen_resolution}</span>
@@ -308,7 +276,7 @@ export const VncViewer: React.FC<VncViewerProps> = ({
 
         {/* Action Controls Toolbar */}
         <div className="flex items-center gap-1.5">
-          {profile.status === 'stopped' ? (
+          {profile.status === 'stopped' ? (!embedded &&
             <button
               onClick={() => onAction(profile.id, 'start')}
               className="flex items-center gap-1 px-3 py-1 rounded bg-white text-zinc-950 font-semibold text-xs hover:bg-zinc-200 transition-colors shadow-sm"
@@ -318,7 +286,7 @@ export const VncViewer: React.FC<VncViewerProps> = ({
             </button>
           ) : (
             <>
-              {profile.status === 'running' ? (
+              {!embedded && <>{profile.status === 'running' ? (
                 <button
                   onClick={() => onAction(profile.id, 'pause')}
                   className="flex items-center gap-1 px-2.5 py-1 rounded bg-zinc-800 border border-zinc-700 text-zinc-300 hover:text-white text-xs transition-colors"
@@ -344,7 +312,7 @@ export const VncViewer: React.FC<VncViewerProps> = ({
               >
                 <Square className="w-3 h-3" />
                 <span>Stop</span>
-              </button>
+              </button></>}
 
               <button
                 onClick={handleReconnect}
@@ -540,28 +508,6 @@ export const VncViewer: React.FC<VncViewerProps> = ({
             </>
           )}
 
-          {/* Inspector Toggle Button */}
-          {onToggleInspector && (
-            <>
-              <span className="text-zinc-700 mx-0.5">|</span>
-              <button
-                onClick={onToggleInspector}
-                className={`px-2 py-1 rounded border text-xs flex items-center gap-1.5 transition-colors ${
-                  isInspectorOpen
-                    ? 'bg-zinc-800 border-zinc-600 text-zinc-200 hover:bg-zinc-700'
-                    : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'
-                }`}
-                title={isInspectorOpen ? "Collapse Inspector (Get more space)" : "Expand Inspector"}
-              >
-                {isInspectorOpen ? (
-                  <PanelRightClose className="w-3.5 h-3.5" />
-                ) : (
-                  <PanelRightOpen className="w-3.5 h-3.5" />
-                )}
-                <span className="text-[11px] font-medium hidden sm:inline">Inspector</span>
-              </button>
-            </>
-          )}
         </div>
       </div>
 

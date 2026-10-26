@@ -92,6 +92,20 @@ export async function fetchProfileGroups(): Promise<string[]> {
   return res.json();
 }
 
+export async function renameProfileGroup(name: string, newName: string): Promise<{ name: string; moved: number }> {
+  const res = await fetch(`${API_BASE}/profiles/groups/${encodeURIComponent(name)}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: newName }),
+  });
+  if (!res.ok) throw await apiError(res, 'Failed to rename folder');
+  return res.json();
+}
+
+export async function deleteProfileGroup(name: string): Promise<{ name: string; unfiled: number }> {
+  const res = await fetch(`${API_BASE}/profiles/groups/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  if (!res.ok) throw await apiError(res, 'Failed to delete folder');
+  return res.json();
+}
+
 export async function createProfileGroup(name: string): Promise<{ name: string }> {
   const res = await fetch(`${API_BASE}/profiles/groups`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),

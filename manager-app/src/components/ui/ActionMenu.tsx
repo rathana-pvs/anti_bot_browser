@@ -9,6 +9,8 @@ export interface ActionMenuItem {
   danger?: boolean;
   disabled?: boolean;
   hint?: string;
+  /** Draws a separator line above this item. */
+  divider?: boolean;
 }
 
 /** Small overflow menu for secondary actions that should not crowd a toolbar. */
@@ -32,12 +34,12 @@ export function ActionMenu({ items, ariaLabel, label, className }: {
       {label}<MoreHorizontal className="h-4 w-4" />
     </button>
     {open && <div role="menu" className="absolute right-0 top-full z-50 mt-1 min-w-52 rounded-xl border border-zinc-700 bg-zinc-950 p-1 shadow-xl">
-      {items.map(item => <button key={item.label} type="button" role="menuitem" disabled={item.disabled} title={item.hint}
+      {items.map((item, index) => <div key={`${item.label}-${index}`}>{item.divider && index > 0 && <div className="my-1 border-t border-zinc-800" role="separator" />}<button type="button" role="menuitem" disabled={item.disabled} title={item.hint}
         onClick={() => { setOpen(false); item.onSelect(); }}
         className={cn('flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40',
           item.danger ? 'text-red-300 hover:bg-red-950/60' : 'text-zinc-200 hover:bg-zinc-800')}>
         {item.icon}<span>{item.label}</span>
-      </button>)}
+      </button></div>)}
     </div>}
   </div>;
 }

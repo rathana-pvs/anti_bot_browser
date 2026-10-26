@@ -40,8 +40,9 @@ export function QueueThumb({ item, onPreview, size = 'sm' }: { item: QueueExecut
 }
 
 
-export function QueueRow({ item, profileName, selected, actions, busy }: {
+export function QueueRow({ item, profileName, selected, actions, busy, onContextMenu, onMenuKey }: {
   item: QueueExecutionItem; profileName: string; selected: boolean; actions: QueueRowActions; busy?: boolean;
+  onContextMenu?: (event: React.MouseEvent) => void; onMenuKey?: (event: React.KeyboardEvent) => void;
 }) {
   const kind = itemKind(item);
   const KindIcon = KIND_ICON[kind];
@@ -81,7 +82,11 @@ export function QueueRow({ item, profileName, selected, actions, busy }: {
 
   return <div tabIndex={0} aria-current={selected || undefined} aria-label={`${profileName}, ${kindLabel(item)}, ${statusLabel(item.status)}`}
     onClick={() => actions.open(item)}
-    onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); actions.open(item); } }}
+    onContextMenu={onContextMenu}
+    onKeyDown={(e) => {
+      onMenuKey?.(e);
+      if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); actions.open(item); }
+    }}
     className={cn('grid cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500 grid-cols-[4.5rem_2.5rem_minmax(0,1fr)_auto] items-center gap-3 px-3 py-2.5 transition-colors',
       selected ? 'bg-blue-950/30' : 'hover:bg-zinc-900/60')}>
     <span className={cn('whitespace-nowrap font-mono text-xs', timeTone)}>{active ? 'now' : formatTime(item.published_at || item.scheduled_at)}</span>

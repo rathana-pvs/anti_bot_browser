@@ -197,7 +197,7 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
       <div className="flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-2xl">
         <div className="flex items-center justify-between border-b border-border px-5 py-4">
           <div>
-            <h2 className="text-sm font-semibold text-zinc-100">Create Isolated Profile</h2>
+            <h2 className="text-sm font-semibold text-zinc-100">New account</h2>
             <p className="mt-0.5 text-[11px] text-zinc-500">Identity and ports are allocated safely by the manager.</p>
           </div>
           <button type="button" disabled={isSaving} onClick={onClose} aria-label="Close create profile" className="text-zinc-400 hover:text-white disabled:opacity-40"><X className="h-4 w-4" /></button>
@@ -207,7 +207,7 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
           <div className="flex-1 space-y-4 overflow-y-auto p-5 text-xs">
             <fieldset disabled={isSaving} className="contents space-y-4">
             <label className="block text-zinc-400">
-              <span className="mb-1.5 block font-medium">Profile name</span>
+              <span className="mb-1.5 block font-medium">Account name</span>
               <input required value={name} onChange={(e) => setName(e.target.value)}
                 className="w-full rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2 text-zinc-100 focus:border-zinc-600 focus:outline-none" />
             </label>
@@ -339,7 +339,7 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
               <button type="button" disabled={isSaving} onClick={onClose} className="rounded border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-zinc-300 disabled:opacity-40">Cancel</button>
               <button disabled={isSaving} type="submit" className="flex items-center gap-2 rounded bg-white px-4 py-1.5 font-semibold text-zinc-950 disabled:opacity-50">
                 {isSaving && !awaitingTimezoneConfirmation && <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />}
-                {isSaving ? awaitingTimezoneConfirmation ? 'Confirm timezone…' : creationStage === 'timezone' ? 'Checking timezone…' : 'Creating…' : 'Create profile'}
+                {isSaving ? awaitingTimezoneConfirmation ? 'Confirm timezone…' : creationStage === 'timezone' ? 'Checking timezone…' : 'Creating…' : 'Create account'}
               </button>
             </div>
           </div>

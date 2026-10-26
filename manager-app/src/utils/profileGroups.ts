@@ -9,5 +9,5 @@ export function groupProfiles(profiles: Profile[], names: string[] = []) {
   }
   return [...groups.entries()]
     .sort(([a], [b]) => a === '' ? 1 : b === '' ? -1 : a.localeCompare(b))
-    .map(([name, members]) => ({ name, label: name || 'Ungrouped', members }));
+    .map(([name, members]) => ({ name, label: name || 'No folder', members }));
 }

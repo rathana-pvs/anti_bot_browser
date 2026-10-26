@@ -33,7 +33,7 @@ export function GroupedProfileSelector({ profiles, selectedIds, onChange, busyPr
         const groupId = `${selectorId}-group-${encodeURIComponent(group.name)}`;
         return <section key={group.name} className="overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/30">
           <div className="flex items-center gap-2 bg-zinc-900/70 px-3 py-2">
-            <Checkbox disabled={!ids.length} checked={ids.length > 0 && count === ids.length ? true : count > 0 ? 'indeterminate' : false} onCheckedChange={() => toggle(ids)} ariaLabel={`Select all profiles in ${group.label}`} />
+            <Checkbox disabled={!ids.length} checked={ids.length > 0 && count === ids.length ? true : count > 0 ? 'indeterminate' : false} onCheckedChange={() => toggle(ids)} ariaLabel={`Select all accounts in ${group.label}`} />
             <button type="button" aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${group.label}`} aria-expanded={!collapsed} aria-controls={groupId}
               onClick={() => setExpandedGroups((previous) => {
                 const next = new Set(previous);
@@ -61,6 +61,6 @@ export function GroupedProfileSelector({ profiles, selectedIds, onChange, busyPr
       })}
       {!groups.length && <p className="py-8 text-center text-xs text-zinc-500">Create a profile to choose batch targets.</p>}
     </div>
-    <p className="text-[11px] text-zinc-500">Group checkboxes select the entire group. Uncheck individual profiles to customize your batch.</p>
+    <p className="text-[11px] text-zinc-500">Folder checkboxes select every account in that folder. Uncheck individual accounts to fine-tune.</p>
   </div>;
 }

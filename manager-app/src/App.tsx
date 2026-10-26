@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Profile, ProfileCreateRequest, ProfileUpdateRequest, SystemStats } from './types/profile';
 import { ProxyItem } from './types/proxy';
 import {
@@ -6,6 +6,8 @@ import {
   probeBackendConnection,
   fetchProfileGroups,
   createProfileGroup,
+  renameProfileGroup,
+  deleteProfileGroup,
   createProfile,
   updateProfile,
   executeProfileAction,
@@ -13,23 +15,25 @@ import {
   fetchSystemStats,
   fetchProxies,
 } from './services/api';
+import { writeHostClipboardText } from './services/clipboard';
 import { waitForBackend } from './services/backendStartup';
 import { BackendConnectionScreen } from './components/BackendConnectionScreen';
-import { Sidebar } from './components/Sidebar';
-import { VncViewer } from './components/VncViewer';
-import { ProfileDetails } from './components/ProfileDetails';
 import { ProxyPanel } from './components/ProxyPanel';
 import { CampaignsPanel } from './components/CampaignsPanel';
 import { CreateProfileModal } from './components/CreateProfileModal';
-import { EditProfileModal } from './components/EditProfileModal';
 import { TelemetryFooter } from './components/TelemetryFooter';
 import { ProfileActionErrorModal } from './components/ProfileActionErrorModal';
 import { SetupCenter } from './components/SetupCenter';
 import { SettingsModal } from './components/SettingsModal';
+import { NavRail, AppPage } from './components/NavRail';
+import { AccountsPage } from './components/accounts/AccountsPage';
+import { AccountPage } from './components/accounts/AccountPage';
+import { MoveToGroupDialog } from './components/accounts/MoveToGroupDialog';
+import { AccountHandlers, FolderHandlers, ProfileAction } from './components/accounts/accountActions';
+import { FolderNameDialog, FolderDialogState } from './components/accounts/FolderNameDialog';
+import { AccountTab, useQueueExecutions } from './components/accounts/accountModel';
 import { fetchSetupStatus, isDesktopApp, SetupSnapshot } from './services/setup';
 import { useAppDialog } from './components/ui/AppDialogProvider';
-
-type ProfileAction = 'start' | 'stop' | 'pause' | 'unpause';
 
 interface ProfileActionError {
   profileId: string;
@@ -38,8 +42,14 @@ interface ProfileActionError {
   reason: string;
 }
 
+const ACTION_VERB: Record<ProfileAction, string> = { start: 'Started', stop: 'Stopped', pause: 'Paused', unpause: 'Resumed' };
+
+/** Text fields keep the normal copy/paste menu; everything else uses the app's own menus or none. */
+const allowsNativeMenu = (target: EventTarget | null) =>
+  target instanceof HTMLElement && Boolean(target.closest('input, textarea, [contenteditable="true"]'));
+
 export const App: React.FC = () => {
-  const { showAlert } = useAppDialog();
+  const { showAlert, showConfirm, showToast } = useAppDialog();
   const [setupStatus, setSetupStatus] = useState<SetupSnapshot | null | undefined>(
     () => isDesktopApp() ? undefined : null,
   );
@@ -50,37 +60,16 @@ export const App: React.FC = () => {
   const [profileGroups, setProfileGroups] = useState<string[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [proxies, setProxies] = useState<ProxyItem[]>([]);
-  const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'profiles' | 'proxies' | 'campaigns'>('profiles');
+  const [page, setPage] = useState<AppPage>('accounts');
+  const [openAccount, setOpenAccount] = useState<{ id: string; tab: AccountTab } | null>(null);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
-  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [moveTargets, setMoveTargets] = useState<Profile[] | null>(null);
+  const [folderDialog, setFolderDialog] = useState<FolderDialogState>(null);
+  const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
+  const [campaignAttention, setCampaignAttention] = useState(0);
+  const [queueRequest, setQueueRequest] = useState(0);
   const [profileActionError, setProfileActionError] = useState<ProfileActionError | null>(null);
-  const [isInspectorOpen, setIsInspectorOpen] = useState<boolean>(() => {
-    const saved = localStorage.getItem('inspector_open');
-    return saved !== null ? saved === 'true' : true;
-  });
-
-  const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(() => {
-    const saved = localStorage.getItem('sidebar_open');
-    return saved !== null ? saved === 'true' : true;
-  });
-
-  const toggleInspector = () => {
-    setIsInspectorOpen((prev) => {
-      const next = !prev;
-      localStorage.setItem('inspector_open', String(next));
-      return next;
-    });
-  };
-
-  const toggleSidebar = () => {
-    setIsSidebarOpen((prev) => {
-      const next = !prev;
-      localStorage.setItem('sidebar_open', String(next));
-      return next;
-    });
-  };
 
   const [systemStats, setSystemStats] = useState<SystemStats>({
     docker_running: false,
@@ -102,17 +91,8 @@ export const App: React.FC = () => {
     if (profilesResult.status === 'fulfilled') {
       const profilesData = profilesResult.value;
       setProfiles(profilesData);
-      // Auto-select first profile ONLY if none is currently selected
-      setSelectedProfileId((prev) => {
-        if (!prev && profilesData.length > 0) {
-          return profilesData[0].id;
-        }
-        // If currently selected profile was removed, fallback to first
-        if (prev && !profilesData.some((p) => p.id === prev)) {
-          return profilesData.length > 0 ? profilesData[0].id : null;
-        }
-        return prev;
-      });
+      // Leave an account page whose account was deleted elsewhere.
+      setOpenAccount((current) => current && profilesData.some((p) => p.id === current.id) ? current : null);
     } else {
       console.error('Failed to load profiles:', profilesResult.reason);
     }
@@ -136,7 +116,7 @@ export const App: React.FC = () => {
   };
 
   const isModalOpenRef = React.useRef(false);
-  isModalOpenRef.current = isCreateModalOpen || isEditModalOpen;
+  isModalOpenRef.current = isCreateModalOpen;
 
   useEffect(() => {
     if (!isDesktopApp()) return;
@@ -179,56 +159,144 @@ export const App: React.FC = () => {
     return () => clearInterval(interval);
   }, [setupStatus, backendReady]);
 
-  const selectedProfile = profiles.find((p) => p.id === selectedProfileId) || null;
+  const executions = useQueueExecutions(backendReady && page === 'accounts');
 
-  const handleAction = async (profileId: string, action: ProfileAction) => {
+  const openAccountPage = useCallback((profileId: string, tab: AccountTab = 'overview') => {
+    setPage('accounts');
+    setOpenAccount({ id: profileId, tab });
+  }, []);
+
+  const runProfiles = async (targets: Profile[], action: ProfileAction) => {
+    if (!targets.length) return;
+    setBusyIds((current) => new Set([...current, ...targets.map((p) => p.id)]));
+    setProfileActionError(null);
+    const failures: ProfileActionError[] = [];
+    // One at a time, so local resource admission sees each start in order.
+    for (const profile of targets) {
+      try {
+        await executeProfileAction(profile.id, action);
+      } catch (err: any) {
+        failures.push({ profileId: profile.id, profileName: profile.name, action, reason: err?.message || `Couldn’t ${action} this account` });
+      } finally {
+        setBusyIds((current) => { const next = new Set(current); next.delete(profile.id); return next; });
+      }
+    }
+    await loadData();
+    if (targets.length === 1 && failures.length === 1) {
+      setProfileActionError(failures[0]);
+    } else if (failures.length) {
+      showToast(`${ACTION_VERB[action]} ${targets.length - failures.length} of ${targets.length}. ${failures.map((f) => `${f.profileName}: ${f.reason}`).join(' · ')}`, 'error');
+    } else if (targets.length > 1) {
+      showToast(`${ACTION_VERB[action]} ${targets.length} accounts.`, 'success');
+    }
+  };
+
+  const removeProfiles = async (targets: Profile[]) => {
+    if (!targets.length) return;
+    const confirmed = await showConfirm(
+      targets.length === 1
+        ? `Delete “${targets[0].name}”? Its browser data, cookies, and saved sessions are deleted too. This can’t be undone.`
+        : `Delete ${targets.length} accounts? Their browser data, cookies, and saved sessions are deleted too. This can’t be undone.`,
+      { title: targets.length === 1 ? 'Delete account' : 'Delete accounts', confirmLabel: 'Delete', variant: 'danger' },
+    );
+    if (!confirmed) return;
+    const failures: string[] = [];
+    const deleted = new Set<string>();
+    for (const profile of targets) {
+      try { await deleteProfile(profile.id, true); deleted.add(profile.id); }
+      catch (err: any) { failures.push(`${profile.name}: ${err?.message || 'failed'}`); }
+    }
+    setOpenAccount((current) => current && deleted.has(current.id) ? null : current);
+    await loadData();
+    if (failures.length) await showAlert(`Couldn’t delete: ${failures.join(' · ')}`, { title: 'Delete failed', variant: 'danger' });
+  };
+
+  const moveProfiles = async (targets: Profile[], group: string, isNew: boolean) => {
     try {
-      setProfileActionError(null);
-      await executeProfileAction(profileId, action);
-      await loadData();
+      if (isNew && !profileGroups.includes(group)) await createProfileGroup(group);
+      for (const profile of targets) await updateProfile(profile.id, { group });
+      const who = targets.length === 1 ? targets[0].name : `${targets.length} accounts`;
+      showToast(group ? `Moved ${who} to ${group}.` : `Moved ${who} out of their folder.`, 'success');
     } catch (err: any) {
-      const profile = profiles.find((item) => item.id === profileId);
-      setProfileActionError({
-        profileId,
-        profileName: profile?.name || profileId,
-        action,
-        reason: err?.message || `Failed to ${action} profile`,
-      });
+      showToast(err?.message || 'Couldn’t move these accounts.', 'error');
+      throw err;
+    } finally {
       await loadData();
     }
+  };
+
+  const handlers: AccountHandlers = {
+    open: openAccountPage,
+    run: (targets, action) => { void runProfiles(targets, action); },
+    moveToGroup: setMoveTargets,
+    remove: (targets) => { void removeProfiles(targets); },
+    copyId: (profile) => {
+      writeHostClipboardText(profile.id)
+        .then(() => showToast('Account ID copied.', 'success'))
+        .catch(() => showToast('Clipboard access was blocked.', 'error'));
+    },
+  };
+
+  const submitFolderName = async (name: string) => {
+    if (!folderDialog) return;
+    try {
+      if (folderDialog.mode === 'create') {
+        await createProfileGroup(name);
+        showToast(`Created folder ${name}.`, 'success');
+      } else {
+        await renameProfileGroup(folderDialog.name, name);
+        showToast(`Renamed folder to ${name}.`, 'success');
+      }
+    } finally {
+      await loadData();
+    }
+  };
+
+  const deleteFolder = async (name: string) => {
+    const count = profiles.filter((p) => p.group === name).length;
+    const confirmed = await showConfirm(
+      count
+        ? `Delete the folder “${name}”? Its ${count} account${count === 1 ? ' is' : 's are'} kept and moved to No folder.`
+        : `Delete the empty folder “${name}”?`,
+      { title: 'Delete folder', confirmLabel: 'Delete folder', variant: 'danger' },
+    );
+    if (!confirmed) return;
+    try {
+      await deleteProfileGroup(name);
+      showToast(`Deleted folder ${name}.`, 'success');
+    } catch (err: any) {
+      showToast(err?.message || 'Couldn’t delete this folder.', 'error');
+    } finally {
+      await loadData();
+    }
+  };
+
+  const folderHandlers: FolderHandlers = {
+    create: () => setFolderDialog({ mode: 'create' }),
+    rename: (name) => setFolderDialog({ mode: 'rename', name }),
+    remove: (name) => { void deleteFolder(name); },
+    // Errors are already shown as a toast by moveProfiles.
+    moveTo: (targets, folder) => { void moveProfiles(targets, folder, false).catch(() => undefined); },
   };
 
   const handleCreate = async (profileData: ProfileCreateRequest) => {
     try {
       const newProfile = await createProfile(profileData);
       await loadData();
-      setSelectedProfileId(newProfile.id);
-      setActiveTab('profiles');
+      openAccountPage(newProfile.id, 'overview');
     } catch (err: any) {
-      await showAlert(`Failed to create profile: ${err.message}`, { title: 'Profile creation failed', variant: 'danger' });
+      await showAlert(`Couldn’t create the account: ${err.message}`, { title: 'Account not created', variant: 'danger' });
     }
   };
 
+  // Rethrows so the settings form can show the error next to its Save button.
   const handleUpdate = async (profileId: string, updates: ProfileUpdateRequest) => {
-    try {
-      await updateProfile(profileId, updates);
-      await loadData();
-    } catch (err: any) {
-      await showAlert(`Failed to update profile: ${err.message}`, { title: 'Profile update failed', variant: 'danger' });
-    }
+    await updateProfile(profileId, updates);
+    await loadData();
   };
 
-  const handleDelete = async (profileId: string) => {
-    try {
-      await deleteProfile(profileId, true);
-      if (selectedProfileId === profileId) {
-        setSelectedProfileId(null);
-      }
-      await loadData();
-    } catch (err: any) {
-      await showAlert(`Failed to delete profile: ${err.message}`, { title: 'Profile deletion failed', variant: 'danger' });
-    }
-  };
+  const accountsAttention = useMemo(() => profiles.filter((p) => p.status === 'error').length, [profiles]);
+  const currentAccount = openAccount ? profiles.find((p) => p.id === openAccount.id) || null : null;
 
   if (setupStatus === undefined) {
     return (
@@ -263,85 +331,47 @@ export const App: React.FC = () => {
 
   return (
     <div
-      onContextMenu={(e) => e.preventDefault()}
+      onContextMenu={(e) => { if (!allowsNativeMenu(e.target)) e.preventDefault(); }}
       className="w-screen h-screen flex flex-col bg-background text-zinc-100 overflow-hidden font-sans"
     >
-      {/* Main Layout Area */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Left: Profiles Sidebar with Tab Switcher */}
-        <Sidebar
-          profiles={profiles}
-          groups={profileGroups}
-          onCreateGroup={async (name) => {
-            await createProfileGroup(name);
-            await loadData();
-          }}
-          selectedProfileId={selectedProfileId}
-          activeTab={activeTab}
-          onTabChange={setActiveTab}
-          proxyCount={proxies.length}
-          onSelectProfile={(p) => setSelectedProfileId(p.id)}
-          onOpenCreateModal={() => setIsCreateModalOpen(true)}
+        <NavRail page={page} onPageChange={(next) => { setPage(next); if (next === 'accounts' && page === 'accounts') setOpenAccount(null); }}
           onOpenSettings={() => setIsSettingsOpen(true)}
-          onAction={handleAction}
-          isOpen={isSidebarOpen}
-          onToggle={toggleSidebar}
-        />
+          badges={{ accounts: accountsAttention, campaigns: campaignAttention }} />
 
-        {/* Center / Right Content Area */}
-        <div className={`flex-1 flex overflow-hidden ${activeTab === 'proxies' ? '' : 'hidden'}`}>
+        <main className={`flex-1 flex min-w-0 overflow-hidden ${page === 'accounts' ? '' : 'hidden'}`}>
+          {currentAccount && openAccount
+            ? <AccountPage key={currentAccount.id} profile={currentAccount} tab={openAccount.tab}
+              onTabChange={(tab) => setOpenAccount({ id: currentAccount.id, tab })}
+              onBack={() => setOpenAccount(null)} handlers={handlers} busy={busyIds.has(currentAccount.id)}
+              executions={executions} proxies={proxies} groups={profileGroups} onSave={handleUpdate}
+              onOpenQueue={() => { setPage('campaigns'); setQueueRequest((n) => n + 1); }} />
+            : <AccountsPage profiles={profiles} groups={profileGroups} executions={executions} handlers={handlers} folderHandlers={folderHandlers}
+              busyIds={busyIds} onCreate={() => setIsCreateModalOpen(true)} />}
+        </main>
+
+        <main className={`flex-1 flex min-w-0 overflow-hidden ${page === 'campaigns' ? '' : 'hidden'}`}>
+          <CampaignsPanel
+            profiles={profiles}
+            showQueueRequest={queueRequest}
+            onAttentionChange={setCampaignAttention}
+            onEditProfile={(profileId) => openAccountPage(profileId, 'settings')}
+            onSelectProfile={(profileId) => openAccountPage(profileId, 'browser')}
+            onOpenAccount={(profileId) => openAccountPage(profileId, 'overview')}
+          />
+        </main>
+
+        <main className={`flex-1 flex min-w-0 overflow-hidden ${page === 'proxies' ? '' : 'hidden'}`}>
           <ProxyPanel
             proxies={proxies}
             onRefresh={loadData}
-            onSelectProfile={(profileId) => {
-              setSelectedProfileId(profileId);
-              setActiveTab('profiles');
-            }}
-            isSidebarOpen={isSidebarOpen}
-            onToggleSidebar={toggleSidebar}
+            onSelectProfile={(profileId) => openAccountPage(profileId, 'settings')}
           />
-        </div>
-
-        <div className={`flex-1 flex overflow-hidden ${activeTab === 'campaigns' ? '' : 'hidden'}`}>
-          <CampaignsPanel
-            profiles={profiles}
-            onEditProfile={(profileId) => { setSelectedProfileId(profileId); setIsEditModalOpen(true); }}
-            onSelectProfile={(profileId) => {
-              setSelectedProfileId(profileId);
-              setActiveTab('profiles');
-            }}
-            isSidebarOpen={isSidebarOpen}
-            onToggleSidebar={toggleSidebar}
-          />
-        </div>
-
-        <div className={`flex-1 flex overflow-hidden ${activeTab === 'profiles' ? '' : 'hidden'}`}>
-          {/* Center: Interactive noVNC Viewer */}
-          <VncViewer
-            profile={selectedProfile}
-            onAction={handleAction}
-            isInspectorOpen={isInspectorOpen}
-            onToggleInspector={toggleInspector}
-            isSidebarOpen={isSidebarOpen}
-            onToggleSidebar={toggleSidebar}
-          />
-
-          {/* Right: Inspector Details */}
-          <ProfileDetails
-            profile={selectedProfile}
-            onDelete={handleDelete}
-            onEdit={() => setIsEditModalOpen(true)}
-            isOpen={isInspectorOpen}
-            onToggle={toggleInspector}
-            onRefresh={loadData}
-          />
-        </div>
+        </main>
       </div>
 
-      {/* Persistent Bottom Telemetry */}
       <TelemetryFooter stats={systemStats} loading={!statsLoaded} />
 
-      {/* Creation Modal */}
       <CreateProfileModal
         isOpen={isCreateModalOpen}
         onClose={() => setIsCreateModalOpen(false)}
@@ -351,15 +381,9 @@ export const App: React.FC = () => {
         groups={profileGroups}
       />
 
-      {/* Edit Profile Modal */}
-      <EditProfileModal
-        profile={selectedProfile}
-        isOpen={isEditModalOpen}
-        onClose={() => setIsEditModalOpen(false)}
-        onSave={handleUpdate}
-        proxies={proxies}
-        groups={profileGroups}
-      />
+      <FolderNameDialog state={folderDialog} onSubmit={submitFolderName} onClose={() => setFolderDialog(null)} />
+
+      <MoveToGroupDialog profiles={moveTargets} groups={profileGroups} onMove={moveProfiles} onClose={() => setMoveTargets(null)} />
 
       <SettingsModal
         isOpen={isSettingsOpen}
