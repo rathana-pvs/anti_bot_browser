@@ -143,3 +143,32 @@ test('reading time counts a quote credit and a figure like the renderer', () => 
   assert.ok(doc.sceneSeconds(quote) > doc.sceneSeconds({ ...doc.emptyScene(), headline: 'a b' }));
   assert.equal(doc.sceneSeconds({ ...doc.emptyScene(), kind: 'stat', stat: '7-2', headline: 'a b c d' }), 4.1);
 });
+
+test('advanced styles drop cleared fields and empty roles, so a reset reel matches simple mode', () => {
+  let styles = doc.patchStyle(undefined, 'headline', { color: '#ffee00', scale: 1.2 });
+  assert.deepEqual(styles, { headline: { color: '#ffee00', scale: 1.2 } });
+  styles = doc.patchStyle(styles, 'headline', { color: null });
+  assert.deepEqual(styles, { headline: { scale: 1.2 } });
+  assert.deepEqual(doc.patchStyle(styles, 'headline', { scale: null }), {});
+  assert.deepEqual(doc.patchStyle(styles, 'headline', null), {});
+  assert.deepEqual(doc.patchStyle({}, 'detail', { hidden: false }), { detail: { hidden: false } });   // a scene can show what the reel hides
+});
+
+test('a scene style lays over the reel style, and resetting a scene keeps its words and photo', () => {
+  const base = reel('a');
+  base.style = { headline: { color: '#111111', font: 'serif' } };
+  base.scenes[0] = { ...base.scenes[0], image_id: 'p1', style: { headline: { color: '#222222' } }, transition: 'slide', shade: 1.5 };
+  assert.deepEqual(doc.effectiveStyle(base, base.scenes[0], 'headline'), { color: '#222222', font: 'serif' });
+  assert.ok(doc.sceneIsStyled(base.scenes[0]));
+  const plain = doc.unstyledScene(base.scenes[0]);
+  assert.ok(!doc.sceneIsStyled(plain));
+  assert.equal(plain.headline, 'a');
+  assert.equal(plain.image_id, 'p1');
+  assert.ok(!doc.sceneIsStyled(doc.emptyScene()));
+});
+
+test('a moved text block counts as scene style and is cleared by a scene reset', () => {
+  const scene = { ...doc.emptyScene(), headline: 'a', text_position: 0 };
+  assert.ok(doc.sceneIsStyled(scene));
+  assert.ok(!('text_position' in doc.unstyledScene(scene)));
+});

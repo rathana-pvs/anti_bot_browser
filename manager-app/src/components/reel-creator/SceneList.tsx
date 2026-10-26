@@ -1,9 +1,9 @@
-import { ArrowDown, ArrowUp, Frame, ImagePlus, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, Frame, ImagePlus, Paintbrush, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { IconButton } from '../ui/IconButton';
 import { Input } from '../ui/Input';
 import { Select } from '../ui/Select';
-import { MAX_SCENES, sceneSeconds } from '../../services/reelDocument';
+import { MAX_SCENES, sceneIsStyled, sceneSeconds } from '../../services/reelDocument';
 import type { Reel, ReelScene, SceneKind } from '../../types/reelCreator';
 import { Thumb } from './Thumb';
 
@@ -71,7 +71,8 @@ export function SceneList(p: Props) {
           </div>
         </div>
         <div className="flex shrink-0 flex-col items-center justify-between">
-          <span className="text-[11px] tabular-nums text-zinc-500">{sceneSeconds(scene)}s</span>
+          <span className="flex items-center gap-1 text-[11px] tabular-nums text-zinc-500">
+            {sceneIsStyled(scene) && <Paintbrush className="h-3 w-3 text-violet-400" aria-label="Has its own style" />}{sceneSeconds(scene)}s</span>
           <div className="flex">
             {scene.image_id && <IconButton aria-label="Show whole photo" title="Show whole photo (blurred fill)" aria-pressed={scene.fit === 'blur'}
               className={scene.fit === 'blur' ? 'text-violet-300' : undefined}

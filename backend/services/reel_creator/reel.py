@@ -1,8 +1,8 @@
-"""The reel document: a list of scenes plus a look. Simple mode fills it in for the user."""
+"""The reel document: a list of scenes plus a look. Simple mode fills it in; advanced mode adds styles over the look."""
 import re
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 
 from .audio_presets import PRESETS
 
@@ -23,6 +23,18 @@ Look = Literal['breaking', 'hot', 'politics', 'clean', 'wire', 'editorial', 'pop
 Motion = Literal['auto', 'zoom_in', 'zoom_out', 'none']  # auto alternates push-in and pull-out by scene
 Ratio = Literal['9:16', '4:5']
 SceneKind = Literal['story', 'stat', 'quote', 'end']
+# Advanced mode: elements a look draws, by role. A style overrides the look for one role; unset fields keep the look's.
+Role = Literal['headline', 'detail', 'lead', 'label', 'brand', 'logo', 'ticker']
+Face = Literal['bold', 'regular', 'display', 'condensed', 'condensed-semi', 'serif', 'serif-italic']
+Anim = Literal['fade', 'rise', 'left', 'pop', 'wipe', 'none']
+Transition = Literal['fade', 'cut', 'slide']
+HEX = r'#[a-f0-9]{6}'
+
+
+def hex_color(value):
+    if value is not None and not re.fullmatch(HEX, value.lower()):
+        raise ValueError('Choose a six-digit color')
+    return value.lower() if value else None
 
 
 def highlight_span(text, phrase):
@@ -32,6 +44,36 @@ def highlight_span(text, phrase):
         return None
     match = re.search(r'(?<!\w)' + re.escape(phrase) + r'(?!\w)', text, re.IGNORECASE)
     return match.span() if match else None
+
+
+class ElementStyle(BaseModel):
+    """One role's overrides. None keeps the look's own value, so an empty style draws exactly the simple-mode reel."""
+    model_config = ConfigDict(extra='forbid')
+    font: Face | None = None
+    scale: float | None = Field(default=None, ge=.7, le=1.3, allow_inf_nan=False)  # times the look's preferred size; text still shrinks to fit
+    color: str | None = None
+    background: str | None = None  # a box behind each line of text, or the fill of a label or ticker
+    animation: Anim | None = None
+    delay: float | None = Field(default=None, ge=0, le=3, allow_inf_nan=False)  # seconds added to the look's entrance time
+    duration: float | None = Field(default=None, ge=.1, le=2, allow_inf_nan=False)
+    hidden: bool | None = None
+
+    @field_validator('color', 'background')
+    @classmethod
+    def color_value(cls, value):
+        return hex_color(value)
+
+    def over(self, base):
+        """This style laid over `base`: set fields win."""
+        return base.model_copy(update=self.model_dump(exclude_none=True)) if base else self
+
+
+Styles = dict[Role, ElementStyle]
+
+
+def compact(styles):
+    """Only the fields a style sets: an unset field must not read as an override when merged in the app."""
+    return {role: style.model_dump(exclude_none=True) for role, style in styles.items()}
 
 
 class Scene(BaseModel):
@@ -49,6 +91,28 @@ class Scene(BaseModel):
     stat: str = Field(default='', max_length=24)
     attribution: str = Field(default='', max_length=60)
     highlight: str = Field(default='', max_length=40)  # words of the headline drawn in the accent color
+    # Advanced mode. Unset values follow the reel and the look.
+    style: Styles = Field(default_factory=dict)  # this scene only; laid over the reel's styles
+    motion: Literal['zoom_in', 'zoom_out', 'none'] | None = None
+    transition: Transition | None = None  # how this scene replaces the one before it; None = crossfade
+    shade: float | None = Field(default=None, ge=0, le=2, allow_inf_nan=False)  # times the look's darkening behind text
+    backdrop: str | None = None  # color behind a scene with no photo; None = the accent-tinted dark gradient
+    # Where the text block sits in the safe area, 0 = highest, 1 = lowest; None = where the look puts it. Breaking and Wire only.
+    text_position: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+
+    @field_validator('backdrop')
+    @classmethod
+    def backdrop_color(cls, value):
+        return hex_color(value)
+
+    @field_serializer('style')
+    def compact_style(self, value):
+        return compact(value)
+
+    def style_for(self, reel_styles, role):
+        """The merged style of one role here, or None when neither the reel nor this scene sets one."""
+        base, own = reel_styles.get(role), self.style.get(role)
+        return own.over(base) if own else base
 
     @field_validator('headline', 'detail')
     @classmethod
@@ -112,6 +176,11 @@ class Reel(BaseModel):
     show_progress: bool = True
     music: str = 'auto'  # auto = the look's own track | off | a bundled track id | custom
     music_id: str | None = None  # the uploaded audio asset when music is 'custom'
+    style: Styles = Field(default_factory=dict)  # advanced mode: every scene, unless a scene sets its own
+
+    @field_serializer('style')
+    def compact_style(self, value):
+        return compact(value)
 
     @field_validator('logo_id', 'music_id')
     @classmethod

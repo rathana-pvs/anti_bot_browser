@@ -4,6 +4,27 @@ export type ReelMotion = 'auto' | 'zoom_in' | 'zoom_out' | 'none';
 export type ReelGoal = 'engage' | 'readmore';
 export type ReelRatio = '9:16' | '4:5';
 
+/** Advanced mode: the elements a look draws, by role. */
+export type StyleRole = 'headline' | 'detail' | 'lead' | 'label' | 'brand' | 'logo' | 'ticker';
+export type StyleFace = 'bold' | 'regular' | 'display' | 'condensed' | 'condensed-semi' | 'serif' | 'serif-italic';
+export type StyleAnimation = 'fade' | 'rise' | 'left' | 'pop' | 'wipe' | 'none';
+export type SceneTransition = 'fade' | 'cut' | 'slide';
+/** One role's overrides; an absent field keeps the look's own value. */
+export interface ElementStyle {
+  font?: StyleFace;
+  /** Times the look's preferred size, 0.7–1.3; text still shrinks to fit. */
+  scale?: number;
+  color?: string;
+  /** A box behind each line, or the fill of a label or ticker. */
+  background?: string;
+  animation?: StyleAnimation;
+  /** Seconds added to the look's entrance time. */
+  delay?: number;
+  duration?: number;
+  hidden?: boolean;
+}
+export type ReelStyles = Partial<Record<StyleRole, ElementStyle>>;
+
 export interface ReelScene {
   headline: string;
   detail: string;
@@ -19,6 +40,24 @@ export interface ReelScene {
   attribution?: string;
   /** Words of the headline drawn in the accent color. */
   highlight?: string;
+  /** Advanced mode, all absent in simple reels: this scene's styles over the reel's, and its own backdrop. */
+  style?: ReelStyles;
+  motion?: Exclude<ReelMotion, 'auto'> | null;
+  /** How this scene replaces the one before it; absent = crossfade. */
+  transition?: SceneTransition | null;
+  /** Times the look's darkening behind text, 0–2. */
+  shade?: number | null;
+  /** Color behind a scene with no photo. */
+  backdrop?: string | null;
+  /** Text block height in the safe area, 0 highest to 1 lowest; absent = the look's place. Breaking and Wire only. */
+  text_position?: number | null;
+}
+
+/** Where a scene preview draws each styled element, as fractions of the frame; smaller boxes come last. */
+export interface SceneLayout {
+  boxes: { role: StyleRole; x: number; y: number; w: number; h: number }[];
+  /** Where the text block sits on the text_position scale, or null when this look cannot move it. */
+  position: number | null;
 }
 
 export type SceneKind = 'story' | 'stat' | 'quote' | 'end';
@@ -40,6 +79,8 @@ export interface Reel {
   /** auto = the look's own track, off, a bundled track id, or custom (an uploaded file). */
   music: string;
   music_id: string | null;
+  /** Advanced mode: styles for every scene. Absent in older drafts. */
+  style?: ReelStyles;
 }
 
 export interface ReelDraft {

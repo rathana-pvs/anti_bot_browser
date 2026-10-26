@@ -24,6 +24,8 @@ RIGHT_REELS = 150    # Reels lays its like, comment and share buttons over the r
 STAT_SIZES = (330, 280, 236, 196, 160, 130)  # design px tried for a stat figure, largest first
 MARK_SIZES = (210, 176, 148, 124)            # the quote mark and the end card's ? or →
 LEAD_GAP = 14
+BOX_PAD = 14         # extra room around a line drawn on a box
+MOVABLE = ('breaking', 'wire')  # looks whose text block floats over a full-bleed photo, so it can move up or down
 
 # Type per look, in design px at 1080 wide: (face, preferred size, smallest size). Headline and detail
 # shrink together until the block fits; the smallest sizes stay readable on a phone held at arm's length.
@@ -66,6 +68,7 @@ class Element:
     fades_out: bool = True       # scene elements fade before the scene ends
     shine: bool = False          # periodic light sweep across the tile
     period: int = 0              # marquee: width of one repeat, in pixels
+    role: str = ''               # what advanced-mode styles call this element; '' for backgrounds and rules
 
 
 class Plan:
@@ -83,7 +86,7 @@ class Plan:
         self.limit = self.DH - (380 if portrait else 100)  # text must end above this line
         self.right = RIGHT_REELS if portrait else LEFT     # text keeps clear of the Reels button column
         self.text_w = DESIGN_W - LEFT - self.right
-        self.type = TYPE[reel.look]
+        self.look_type = self.type = TYPE[reel.look]
         self.ink = INK + (255,) if reel.look in LIGHT_PAGE else WHITE
         self.images, self.logo_path = images, logo
         self.lengths = [scene.length() for scene in reel.scenes]
@@ -93,20 +96,132 @@ class Plan:
         self._bases, self._masks = {}, {}
         default, self.page = self._frame()
         # Looks with a page or panel size the photo to the text each scene needs.
-        self.scene_elements, self.rects = [], []
+        self.scene_elements, self.rects, self.settle_at, self.positions = [], [], [], []
         for index, scene in enumerate(reel.scenes):
-            self._scene_rect, self._scene, self._lead_plan = default, scene, None
+            self._scene_rect, self._lead_plan, self._late, self._length = default, None, 0., self.lengths[index]
+            self._scene = self._shown(scene)
+            self.type = self._type_for(scene)
             try:
-                self.scene_elements.append(self._layout(scene))
+                elements = self._restyle(self._layout(self._scene))
             except ValueError as exc:
                 raise ValueError(f'Scene {index + 1}: {exc}') from None
+            self.positions.append(self._place(elements, scene.text_position))
+            self.scene_elements.append(elements)
             self.rects.append(self._scene_rect)
+            self.settle_at.append(max(1.9, self._late))
+        self._scene, self.type, self._length = None, self.look_type, self.duration   # the identity row follows the reel's styles only
         self.rect = self.rects[0]
         self.mask = self._mask(self.rect)
-        self.global_elements = self._identity()
+        self.global_elements = self._restyle(self._identity())
 
     def px(self, value):
         return round(value * self.s)
+
+    # ---- advanced-mode styles --------------------------------------------
+    def _style(self, role, scene=None):
+        """The role's merged style for this scene, or the reel's own while drawing the identity row."""
+        scene = scene or self._scene
+        return scene.style_for(self.reel.style, role) if scene else self.reel.style.get(role)
+
+    def _hidden(self, role, scene=None):
+        style = self._style(role, scene)
+        return bool(style and style.hidden)
+
+    def _ink(self, role, default):
+        style = self._style(role)
+        return rgb(style.color) + (255,) if style and style.color else default
+
+    def _fill(self, role, default=None):
+        style = self._style(role)
+        return rgb(style.background) + (255,) if style and style.background else default
+
+    def _face(self, role, default):
+        style = self._style(role)
+        return style.font if style and style.font else default
+
+    def _shown(self, scene):
+        """The scene as laid out: hidden headline or detail text gives its room to the rest."""
+        update = {}
+        if self._hidden('headline', scene):
+            update.update(headline='', highlight='')
+        if self._hidden('detail', scene):
+            update.update(detail='', attribution='')
+        return scene.model_copy(update=update) if update else scene
+
+    def _type_for(self, scene):
+        """The look's type with this scene's font and size overrides; the smallest sizes stay the look's."""
+        kind = dict(self.look_type)
+        for key, role in (('head', 'headline'), ('detail', 'detail')):
+            style = self._style(role, scene)
+            if style and (style.font or style.scale):
+                face, preferred, smallest = kind[key]
+                kind[key] = (style.font or face, max(smallest, round(preferred * (style.scale or 1))), smallest)
+        label = self._style('label', scene)
+        kind['label'] = label.font if label and label.font else kind['label']
+        return kind
+
+    def _restyle(self, elements):
+        """Apply each role's visibility and entrance overrides; the ticker and blinking dots keep their motion."""
+        out = []
+        for element in elements:
+            style = self._style(element.role) if element.role else None
+            if style and style.hidden:
+                continue
+            if style and element.anim not in ('marquee', 'blink'):
+                element.anim = style.animation or element.anim
+                element.dur = style.duration or element.dur
+                if style.delay:  # a late entrance still finishes before its scene fades out
+                    element.start = min(element.start + style.delay, max(element.start, self._length - SCENE_FADE - element.dur - .1))
+                if style.delay or style.duration:
+                    self._late = max(self._late, element.start + element.dur + .1)
+            out.append(element)
+        return out
+
+    def _place(self, elements, position):
+        """Move the scene's text block to `position` (0 top to 1 bottom of the room it has), inside the safe area.
+
+        Returns where the block now sits on that scale, or None when this look or scene cannot move its text.
+        """
+        if self.reel.look not in MOVABLE or not elements:
+            return None
+        top = min(e.y for e in elements)
+        bottom = max(e.y + e.tile.height for e in elements)
+        # Below the logo row and above the ticker; the look's own place is always in range, padding and all.
+        highest = min(top, self.px(self.inset + 120))
+        lowest = max(top, self.px(self.limit - (80 if self.reel.look == 'breaking' else 0)) - (bottom - top))
+        if lowest - highest < self.px(40):
+            return None
+        if position is None:
+            return round(clamp((top - highest) / (lowest - highest)), 3)
+        shift = round(highest + position * (lowest - highest)) - top
+        for element in elements:
+            element.y += shift
+        return position
+
+    def layout(self, index):
+        """Where each styled element sits in the scene preview: role boxes as fractions of the frame, smallest last."""
+        settled = self.settled(index) - self.starts[index]
+        boxes = {}
+        for element in self.scene_elements[index] + self.global_elements:
+            if not element.role or (index and element.start > settled):
+                continue
+            x0, y0 = max(0, element.x), max(0, element.y)
+            x1, y1 = min(self.W, element.x + element.tile.width), min(self.H, element.y + element.tile.height)
+            if element.anim == 'marquee':
+                x0, x1 = 0, self.W
+            if x1 <= x0 or y1 <= y0:
+                continue
+            old = boxes.get(element.role)
+            boxes[element.role] = (min(x0, old[0]), min(y0, old[1]), max(x1, old[2]), max(y1, old[3])) if old else (x0, y0, x1, y1)
+        out = [dict(role=role, x=round(a / self.W, 4), y=round(b / self.H, 4), w=round((c - a) / self.W, 4), h=round((d - b) / self.H, 4))
+               for role, (a, b, c, d) in boxes.items()]
+        return dict(boxes=sorted(out, key=lambda box: -box['w'] * box['h']), position=self.positions[index])
+
+    @staticmethod
+    def _role(role, elements):
+        for element in elements:
+            element.role = role
+        return elements
 
     # ---- timeline -------------------------------------------------------
     def locate(self, t):
@@ -119,7 +234,7 @@ class Plan:
 
     def settled(self, index):
         """A time when this scene's text has finished animating in."""
-        return self.starts[index] + min(1.9, self.lengths[index] - SCENE_FADE - .05)
+        return self.starts[index] + min(self.settle_at[index], self.lengths[index] - SCENE_FADE - .05)
 
     def frame(self, t):
         if 0 <= t < 1 / self.fps:
@@ -140,9 +255,13 @@ class Plan:
             local = max(0., local - OPENING_COVER_HOLD) * length / (length - OPENING_COVER_HOLD)
             clock = local
         image = self.background(index, local)
-        if index + 1 < len(self.lengths) and local > length - CROSSFADE:
+        following = self.reel.scenes[index + 1].transition if index + 1 < len(self.lengths) else 'cut'
+        if following != 'cut' and local > length - CROSSFADE:
             blend = ease_out((local - (length - CROSSFADE)) / CROSSFADE)
-            image = Image.blend(image, self.background(index + 1, 0), blend)
+            if following == 'slide':  # the next photo pushes in from the right
+                image.paste(self.background(index + 1, 0), (round(self.W * (1 - blend)), 0))
+            else:
+                image = Image.blend(image, self.background(index + 1, 0), blend)
         for element in self.scene_elements[index]:
             self._draw(image, element, local, local, length, entrance_complete=index == 0)
         for element in self.global_elements:
@@ -180,11 +299,11 @@ class Plan:
     def background(self, index, local):
         scene, rect = self.reel.scenes[index], self.rects[index]
         if not rect[2] or not rect[3]:
-            return Image.new('RGB', (self.W, self.H), self.page or PANEL)
+            return Image.new('RGB', (self.W, self.H), rgb(scene.backdrop) if scene.backdrop else self.page or PANEL)
         base = self._base(index)
         x0, y0, rw, rh, _ = rect
         progress = clamp(local / self.lengths[index])
-        motion = self.reel.motion
+        motion = scene.motion or self.reel.motion
         if motion == 'none':
             push = .5
         else:  # simple zoom: in, out, or alternating by scene
@@ -216,11 +335,13 @@ class Plan:
                 base = self._blur_fill(photo, size)
             else:
                 base = ImageOps.fit(photo, size, Image.Resampling.LANCZOS, centering=(scene.focal_x, scene.focal_y))
+        elif scene.backdrop:
+            base = Image.new('RGB', size, rgb(scene.backdrop))
         elif self.reel.look == 'pop_art':
             base = self._collage_photo(None, size, scene)
         else:
             base = self._plain_background(size)
-        base = self._scrim(base)
+        base = self._scrim(base, 1 if scene.shade is None else scene.shade)
         if len(self._bases) >= 3:  # long reels would otherwise hold every scene in memory
             self._bases.pop(next(iter(self._bases)))
         self._bases[index] = base
@@ -293,15 +414,16 @@ class Plan:
         glow = glow.filter(ImageFilter.GaussianBlur(size[0] * .12))
         return Image.composite(Image.new('RGB', size, self.accent), base, glow)
 
-    def _scrim(self, base):
-        """Darken where text sits so it stays readable on any photo. Clean needs none."""
+    def _scrim(self, base, shade=1):
+        """Darken where text sits so it stays readable on any photo; `shade` scales it. Clean needs none."""
         spec = {'breaking': ((.40, .78, .86), (.2, .55), (6, 8, 14)),
                 'hot': ((.60, .92, .78), (.5, .72), (6, 8, 14)),          # both ends: headline on top, detail below
                 'wire': ((.45, .86, .9), (.2, .5), (6, 8, 14)),
                 'politics': ((.74, 1.0, 1.0), (.25, .5), PANEL)}.get(self.reel.look)  # photo melts into the panel
-        if not spec:
+        if not spec or not shade:
             return base
         (start, end, strength), (reach, top_strength), color = spec
+        strength, top_strength = min(1, strength * shade), min(1, top_strength * shade)
         height = base.height
         bottom = Image.new('L', (1, height))
         bottom.putdata([round(255 * strength * clamp((y / height - start) / (end - start))) for y in range(height)])
@@ -378,11 +500,21 @@ class Plan:
             draw.rectangle((0, 0, round(self.W * clamp(t / self.duration)), height), fill=accent)
 
     # ---- tiles ----------------------------------------------------------
-    def _text(self, text, size, color, face=True, stroke=0, shadow=True, spacing=0, mark=None):
+    def _text(self, text, size, color, face=True, stroke=0, shadow=True, spacing=0, mark=None, box=None):
         """One line of text as a transparent tile; returns (tile, baseline offset).
 
         mark is a (start, end) span drawn in the accent color, or on an accent marker where color alone would not read.
+        box is drawn behind the letters (advanced mode); callers shift the tile left by BOX_PAD so the text stays put.
         """
+        if box:
+            tile, base = self._text(text, size, color, face, stroke, False, spacing, mark)
+            inset, cap = self.px(BOX_PAD), -font_at(max(1, round(size)), resolve(text, face)).getbbox('H', anchor='ls')[1]
+            boxed = Image.new('RGBA', (tile.width + 2 * inset, tile.height))
+            # Cap height to just under the baseline, so stacked lines do not cover each other's letters.
+            ImageDraw.Draw(boxed).rounded_rectangle((self.px(4), max(0, base - cap - self.px(8)), boxed.width - 1 - self.px(4),
+                                                     min(boxed.height - 1, base + self.px(14))), self.px(10), fill=box)
+            boxed.alpha_composite(tile, (inset, 0))
+            return boxed, base
         pad = self.px(8) + stroke
         size = max(1, round(size))
         face = resolve(text, face)
@@ -430,33 +562,43 @@ class Plan:
         ImageDraw.Draw(tile).rounded_rectangle((0, 0, size[0] - 1, size[1] - 1), radius, fill=color)
         return tile
 
-    def _stack(self, lines, size, color, x, top, start, step=.12, face=True, pitch=1.3, anim='rise', marks=None, **style):
-        """Left-aligned lines from `top` (line-box top). Returns elements and the y below the last line."""
+    def _stack(self, lines, size, color, x, top, start, step=.12, face=True, pitch=1.3, anim='rise', marks=None, role='', **style):
+        """Left-aligned lines from `top` (line-box top). Returns elements and the y below the last line.
+
+        With a role, its advanced-mode color and line box apply.
+        """
         elements, step_px = [], round(size * pitch)
+        color, box = (self._ink(role, color), self._fill(role)) if role else (color, None)
+        if box:
+            style = {**style, 'box': box}
         for k, line in enumerate(lines):
             tile, base = self._text(line, size, color, face, mark=marks[k] if marks else None, **style)
             baseline = top + k * step_px + round(size * 1.0)
-            elements.append(Element(tile, x - self.px(8) - style.get('stroke', 0), baseline - base,
-                                    start + k * step, .45, anim))
+            left = x - self.px(8) - style.get('stroke', 0) - (self.px(BOX_PAD) if box else 0)
+            elements.append(Element(tile, left, baseline - base, start + k * step, .45, anim, role=role))
         return elements, top + len(lines) * step_px
+
+    def _lead(self, x, y, start, centered=False, **style):
+        """The scene's large figure, quote mark or end-card sign, as planned by _fit. Returns (element, height)."""
+        mark, face, size, height, rise = self._lead_plan
+        tile, base = self._text(mark, size, self._ink('lead', self.accent + (255,)), face, **style)
+        left = (self.px(DESIGN_W - self.right + LEFT) - tile.width) // 2 if centered else x - self.px(8) - style.get('stroke', 0)
+        return Element(tile, left, y - (base - rise), start, .5, 'pop', role='lead'), height
 
     def _headline(self, lines, size, color, x, top, start, **style):
         """The scene's lead (figure or mark) if it has one, then the headline with its highlighted words."""
         out = []
         if self._lead_plan:
-            mark, face, lead_size, height, rise = self._lead_plan
-            lead_style = {key: value for key, value in style.items() if key in ('stroke', 'shadow')}
-            tile, base = self._text(mark, lead_size, self.accent + (255,), face, **lead_style)
-            out.append(Element(tile, x - self.px(8) - lead_style.get('stroke', 0), top - (base - rise),
-                               max(0, start - .1), .5, 'pop'))
+            element, height = self._lead(x, top, max(0, start - .1), **{key: value for key, value in style.items() if key in ('stroke', 'shadow')})
+            out.append(element)
             top += height + (self.px(LEAD_GAP) if lines else 0)
         elements, bottom = self._stack(lines, size, color, x, top, start, face=self.type['head'][0],
-                                       pitch=self.type['head_pitch'], marks=self._highlights(lines), **style)
+                                       pitch=self.type['head_pitch'], marks=self._highlights(lines), role='headline', **style)
         return out + elements, bottom
 
     def _details(self, lines, size, color, x, top, start, step=.1, pitch=1.38):
         return self._stack(lines, size, color, x, top, start, step=step, face=self.type['detail'][0],
-                           pitch=pitch, anim='fade', shadow=False)
+                           pitch=pitch, anim='fade', role='detail', shadow=False)
 
     # ---- looks ----------------------------------------------------------
     def _layout(self, scene):
@@ -471,7 +613,9 @@ class Plan:
         """
         px = self.px
         (hface, h0, h1), (dface, d0, d1) = head or self.type['head'], detail_type or self.type['detail']
-        mark = self._scene.lead if lead else ''
+        if self._fill('headline') or self._fill('detail'):  # a line box reaches BOX_PAD past the letters on each side
+            width -= 2 * BOX_PAD
+        mark = self._scene.lead if lead and not self._hidden('lead') else ''
         if not headline and not detail and not mark:
             return [], 0, [], 0, 0
         runs(headline, 10, hface)  # a character no font has is its own error, not 'too long'
@@ -528,6 +672,12 @@ class Plan:
         box.alpha_composite(tile, (self.px(pad) - self.px(8), (box.height + round(size * .7)) // 2 - base))
         return box
 
+    def _tag(self, text, size, fg, bg, radius, height, pad, face=None):
+        """The look's label (strap, pill or chip) in its advanced-mode colors and font."""
+        fill = self._fill('label', bg)
+        ink = self._ink('label', self._ink_on(fill[:3]) if fill is not bg else fg)
+        return self._label(text, size, ink, fill, radius, height, pad, face=self._face('label', face or self.type['label']))
+
     def _ink_on(self, color):
         r, g, b = color
         return (12, 12, 12, 255) if .2126 * r + .7152 * g + .0722 * b > 150 else WHITE
@@ -546,9 +696,9 @@ class Plan:
         out = [Element(self._box((self.W, height), (10, 12, 18, 232)), 0, top, .05, .5, 'rise'),
                Element(self._box((px(16), height), accent), 0, top, .05, .5, 'rise')]
         if tag:
-            bar = self._label(tag, px(46), WHITE, accent, 0, 84, 66)
-            out.append(Element(bar, 0, top - px(84), 0, .4, 'left', fades_out=False))
-            out.append(Element(self._box((px(20), px(20)), WHITE, px(10)), px(30), top - px(84) + px(32), .4, .3, 'blink', fades_out=False))
+            bar = self._tag(tag, px(46), WHITE, accent, 0, 84, 66)
+            out += self._role('label', [Element(bar, 0, top - px(84), 0, .4, 'left', fades_out=False),
+                                        Element(self._box((px(20), px(20)), WHITE, px(10)), px(30), top - px(84) + px(32), .4, .3, 'blink', fades_out=False)])
         lines, y = self._headline(hl, hs, WHITE, px(LEFT), top + px(30), .2)
         out += lines
         if dl:
@@ -561,22 +711,23 @@ class Plan:
         px, accent = self.px, self.accent + (255,)
         out, y = [], self.inset + 130
         if self.reel.tag_text:
-            pill = self._label(self.reel.tag_text, px(42), self._ink_on(self.accent), accent, 14, 72, 24)
-            out.append(Element(pill, px(LEFT), px(y), 0, .5, 'pop'))
+            pill = self._tag(self.reel.tag_text, px(42), self._ink_on(self.accent), accent, 14, 72, 24)
+            out.append(Element(pill, px(LEFT), px(y), 0, .5, 'pop', role='label'))
             if self.reel.source:
-                tile, base = self._text(self.reel.source.upper(), px(32), WHITE, 'condensed-semi', spacing=px(2))
-                out.append(Element(tile, px(LEFT) + pill.width + px(16), px(y) + (px(72) + round(px(32) * .7)) // 2 - base, .3, .5, 'fade'))
+                tile, base = self._text(self.reel.source.upper(), px(32), WHITE, self._face('label', 'condensed-semi'), spacing=px(2))
+                out.append(Element(tile, px(LEFT) + pill.width + px(16), px(y) + (px(72) + round(px(32) * .7)) // 2 - base, .3, .5, 'fade', role='label'))
             y += 72 + 34
         reserve = 0
         if scene.detail_text:  # the sticker claims the bottom first; the headline gets what is left
             face, d0, d1 = self.type['detail']
             _, _, dl, ds, block = self._fit('', scene.detail_text, self.text_w - 52, 400, detail_type=(face, d0, d1), det_pitch=1.32, lead=False)
             pad, widest = px(26), max(text_width(line, ds, face) for line in dl)
-            sticker = self._box((round(widest) + 2 * pad, block + 2 * px(22)), accent, px(18))
+            fill = self._fill('detail', accent)
+            sticker = self._box((round(widest) + 2 * pad, block + 2 * px(22)), fill, px(18))
             for k, line in enumerate(dl):
-                tile, base = self._text(line, ds, self._ink_on(self.accent), face, shadow=False)
+                tile, base = self._text(line, ds, self._ink('detail', self._ink_on(fill[:3])), face, shadow=False)
                 sticker.alpha_composite(tile, (pad - px(8), px(22) + k * round(ds * 1.32) + round(ds) - base))
-            out.append(Element(sticker, px(LEFT), px(self.limit) - sticker.height, .6, .5, 'rise'))
+            out.append(Element(sticker, px(LEFT), px(self.limit) - sticker.height, .6, .5, 'rise', role='detail'))
             reserve = sticker.height / self.s + 44
         hl, hs, _, _, block = self._fit(scene.headline, '', self.text_w, self.limit - y - reserve)
         if block:
@@ -585,7 +736,7 @@ class Plan:
         if hl:
             widest = max(text_width(line, hs, self.type['head'][0]) for line in hl)
             out.append(Element(self._box((min(px(self.text_w), round(widest * .6) + px(40)), px(14)), accent, px(7)),
-                               px(LEFT), bottom + px(10), .15 + len(hl) * .12, .5, 'wipe'))
+                               px(LEFT), bottom + px(10), .15 + len(hl) * .12, .5, 'wipe', role='headline'))
         return out
 
     def _politics(self, scene):
@@ -603,9 +754,9 @@ class Plan:
         top = split + header
         out = []
         if label:
-            out.append(Element(self._box((px(72), px(5)), accent), px(LEFT + 8), px(split + 44), 0, .9, 'wipe'))
-            tile, base = self._text(label, px(32), accent, self.type['label'], spacing=px(4), shadow=False)
-            out.append(Element(tile, px(LEFT), px(split + 86) - base, .1, .9, 'fade'))
+            out.append(Element(self._box((px(72), px(5)), accent), px(LEFT + 8), px(split + 44), 0, .9, 'wipe', role='label'))
+            tile, base = self._text(label, px(32), self._ink('label', accent), self.type['label'], spacing=px(4), shadow=False)
+            out.append(Element(tile, px(LEFT), px(split + 86) - base, .1, .9, 'fade', role='label'))
         lines, y = self._headline(hl, hs, WHITE, px(LEFT), px(top), .3, step=.2, shadow=False)
         out += lines
         if dl:
@@ -634,16 +785,16 @@ class Plan:
         card_end = card_top + (round((self.limit - card_top - below - block / self.s) / 2) if self._bare_end(scene) else card_h)
         out = []
         if self.reel.tag_text:
-            chip = self._label(self.reel.tag_text, px(30), self._ink_on(self.accent), accent, 12, 58, 20)
-            out.append(Element(chip, px(LEFT), px(card_end - 29), .2, .5, 'pop'))
+            chip = self._tag(self.reel.tag_text, px(30), self._ink_on(self.accent), accent, 12, 58, 20)
+            out.append(Element(chip, px(LEFT), px(card_end - 29), .2, .5, 'pop', role='label'))
         lines, y = self._headline(hl, hs, INK + (255,), px(LEFT), px(card_end + 66), .3, shadow=False)
         out += lines
         if dl:
             details, y = self._details(dl, ds, MUTED + (255,), px(LEFT), y + px(14), .3 + len(hl) * .12 + .1, pitch=1.4)
             out += details
         if source:
-            tile, base = self._text(source.upper(), px(28), accent, 'condensed-semi', shadow=False, spacing=px(2))
-            out.append(Element(tile, px(LEFT - 8), y + px(20), .8, .5, 'fade'))
+            tile, base = self._text(source.upper(), px(28), self._ink('label', accent), self._face('label', 'condensed-semi'), shadow=False, spacing=px(2))
+            out.append(Element(tile, px(LEFT - 8), y + px(20), .8, .5, 'fade', role='label'))
         return out
 
     def _one_line(self, text, width, pref, floor, face=True):
@@ -666,12 +817,12 @@ class Plan:
         top = px(self.limit) - (px(26 + 62) + block)
         out = [Element(self._box((px(self.text_w), px(6)), accent, px(3)), px(LEFT), top, .05, .6, 'wipe')]
         if self.reel.tag_text:
-            tag, base = self._text(self.reel.tag_text, px(42), accent, 'condensed', spacing=px(3))
-            out.append(Element(tag, px(LEFT - 8), top + px(26 + 34) - base, .15, .5, 'fade'))
+            tag, base = self._text(self.reel.tag_text, px(42), self._ink('label', accent), self._face('label', 'condensed'), spacing=px(3))
+            out.append(Element(tag, px(LEFT - 8), top + px(26 + 34) - base, .15, .5, 'fade', role='label'))
         credit = '  |  '.join(filter(None, [self.reel.source.upper(), self.reel.dateline.upper()]))
         if credit:
-            tile, base = self._text(credit, px(34), (255, 255, 255, 230), self.type['label'], spacing=px(1))
-            out.append(Element(tile, px(DESIGN_W - self.right + 8) - tile.width, top + px(26 + 34) - base, .25, .5, 'fade'))
+            tile, base = self._text(credit, px(34), self._ink('label', (255, 255, 255, 230)), self.type['label'], spacing=px(1))
+            out.append(Element(tile, px(DESIGN_W - self.right + 8) - tile.width, top + px(26 + 34) - base, .25, .5, 'fade', role='label'))
         lines, y = self._headline(hl, hs, WHITE, px(LEFT), top + px(26 + 62), .25)
         out += lines
         if dl:
@@ -692,14 +843,14 @@ class Plan:
             return []
         photo_top = self.DH if self._bare_end(scene) else max(low, min(high, round(text_top + block / self.s + 56)))
         self._scene_rect = (0, px(photo_top), self.W, self.H - px(photo_top), 0)
-        out = [Element(self._box((px(56), px(34)), accent), px(LEFT), px(top), 0, .4, 'wipe', fades_out=False)]
+        out = [Element(self._box((px(56), px(34)), self._fill('label', accent)), px(LEFT), px(top), 0, .4, 'wipe', fades_out=False, role='label')]
         if kicker:
-            tile, base = self._text(kicker, px(32), accent, self.type['label'], spacing=px(4), shadow=False)
-            out.append(Element(tile, px(LEFT + 56 + 10), px(top + 30) - base, .1, .5, 'fade', fades_out=False))
+            tile, base = self._text(kicker, px(32), self._ink('label', accent), self.type['label'], spacing=px(4), shadow=False)
+            out.append(Element(tile, px(LEFT + 56 + 10), px(top + 30) - base, .1, .5, 'fade', fades_out=False, role='label'))
         lines, y = self._headline(hl, hs, INK + (255,), px(LEFT), px(text_top), .2, shadow=False)
         out += lines
         if dl:
-            out.append(Element(self._box((px(self.text_w), px(2)), (17, 24, 39, 70)), px(LEFT), y + px(16), .3 + len(hl) * .1, .5, 'wipe'))
+            out.append(Element(self._box((px(self.text_w), px(2)), (17, 24, 39, 70)), px(LEFT), y + px(16), .3 + len(hl) * .1, .5, 'wipe', role='detail'))
             details, y = self._details(dl, ds, MUTED + (255,), px(LEFT), y + px(36), .4 + len(hl) * .1, pitch=1.4)
             out += details
         return out
@@ -714,24 +865,22 @@ class Plan:
         self._scene_rect = (0, 0, self.W, px(split), 0)
         out, y = [], px(split + 40)
         if self._lead_plan:
-            mark, face, size, height, rise = self._lead_plan
-            tile, base = self._text(mark, size, self.accent + (255,), face, shadow=False)
-            out.append(Element(tile, (px(DESIGN_W - self.right + LEFT) - tile.width) // 2,
-                               y - (base - rise), .1, .5, 'pop'))
+            element, height = self._lead(0, y, .1, centered=True, shadow=False)
+            out.append(element)
             y += height + px(LEAD_GAP)
         marks = self._highlights(hl)
-        for index, line in enumerate(hl):
-            tile, base = self._text(line, hs, WHITE, 'bold', shadow=False, mark=marks[index])
-            out.append(Element(tile, (px(DESIGN_W - self.right + LEFT) - tile.width) // 2,
-                               y + hs - base, .2 + index * .12, .45, 'rise'))
-            y += round(hs * self.type['head_pitch'])
-        if dl:
-            y += px(24)
-            for index, line in enumerate(dl):
-                tile, base = self._text(line, ds, WHITE, 'regular', shadow=False)
-                out.append(Element(tile, (px(DESIGN_W - self.right + LEFT) - tile.width) // 2,
-                                   y + ds - base, .5 + index * .1, .45, 'fade'))
-                y += round(ds * 1.38)
+        middle = px(DESIGN_W - self.right + LEFT)
+        for role, lines, size, face, pitch, start, step, anim in (
+                ('headline', hl, hs, self.type['head'][0], self.type['head_pitch'], .2, .12, 'rise'),
+                ('detail', dl, ds, self.type['detail'][0], 1.38, .5, .1, 'fade')):
+            if lines and role == 'detail':
+                y += px(24)
+            color, box = self._ink(role, WHITE), self._fill(role)
+            for index, line in enumerate(lines):
+                tile, base = self._text(line, size, color, face, shadow=False, box=box,
+                                        mark=marks[index] if role == 'headline' else None)
+                out.append(Element(tile, (middle - tile.width) // 2, y + size - base, start + index * step, .45, anim, role=role))
+                y += round(size * pitch)
         return out
 
     def _identity(self):
@@ -740,26 +889,28 @@ class Plan:
         if self.reel.look == 'pop_art':
             label = self.reel.tag if self.reel.tag is not None else self.reel.brand or self.reel.tag_text
             if label:
-                text, size = self._one_line(label, self.text_w - 60, 64, 30, 'bold')
-                tile = self._label(text, size, WHITE, (86, 108, 11, 235), 28, size / self.s + 34, 36, face='bold')
+                face = self._face('label', 'bold')
+                text, size = self._one_line(label, self.text_w - 60, 64, 30, face)
+                tile = self._tag(text, size, WHITE, (86, 108, 11, 235), 28, size / self.s + 34, 36, face=face)
                 out.append(Element(tile, (self.W - tile.width) // 2, px(self.inset),
-                                   0, .5, 'fade', fades_out=False))
+                                   0, .5, 'fade', fades_out=False, role='label'))
             return out
         right = DESIGN_W - 56
         badge = None
         if self.reel.look == 'breaking':
             badge = self._label('LIVE', px(36), WHITE, self.accent + (255,), 10, 56, 46, face='condensed')
             right -= badge.width / self.s + 24            # the brand must never run under the badge
-        if self.logo_path:
+        if self.logo_path and not self._hidden('logo'):
             with Image.open(self.logo_path) as raw:
                 logo = ImageOps.contain(raw.convert('RGBA'), (px(104), px(104)), Image.Resampling.LANCZOS)
-            out.append(Element(logo, px(x), px(self.inset), 0, .7, 'pop', fades_out=False, shine=True))
+            out.append(Element(logo, px(x), px(self.inset), 0, .7, 'pop', fades_out=False, shine=True, role='logo'))
             x += 104 + 22
         if self.reel.brand:  # the whole width that is left, on a single line
-            text, size = self._one_line(self.reel.brand, right - x, 56, 30, 'condensed')
-            tile, base = self._text(text, size, self.ink, 'condensed', shadow=self.reel.look not in LIGHT_PAGE)
-            middle = px(self.inset) + (px(104) if self.logo_path else px(44)) // 2
-            out.append(Element(tile, px(x - 8), middle + round(size * .36) - base, .15, .5, 'rise', fades_out=False))
+            face = self._face('brand', 'condensed')
+            text, size = self._one_line(self.reel.brand, right - x, 56, 30, face)
+            tile, base = self._text(text, size, self._ink('brand', self.ink), face, shadow=self.reel.look not in LIGHT_PAGE)
+            middle = px(self.inset) + (px(104) if self.logo_path and not self._hidden('logo') else px(44)) // 2
+            out.append(Element(tile, px(x - 8), middle + round(size * .36) - base, .15, .5, 'rise', fades_out=False, role='brand'))
         if badge:
             bx, by = self.W - px(56) - badge.width, px(self.inset + 24)
             out.append(Element(badge, bx, by, .3, .4, 'pop', fades_out=False))
@@ -773,8 +924,8 @@ class Plan:
         words = ' | '.join(filter(None, [self.reel.source.upper(), self.reel.dateline.upper(), self.reel.brand.upper(), self.reel.tag_text])) or 'NEWS'
         unit = words + '        '
         period = math.ceil(text_width(unit, size, 'condensed-semi'))
-        bar = self._box((self.W + period, px(80)), self.accent + (255,))
+        bar = self._box((self.W + period, px(80)), self._fill('ticker', self.accent + (255,)))
         draw = ImageDraw.Draw(bar)
         for k in range(math.ceil((self.W + period) / period)):
-            draw_line(draw, (k * period + px(30), px(80) // 2 + round(size * .36)), unit, size, WHITE, 'condensed-semi')
-        return Element(bar, 0, px(self.limit - 80), 0, .5, 'marquee', fades_out=False, period=period)
+            draw_line(draw, (k * period + px(30), px(80) // 2 + round(size * .36)), unit, size, self._ink('ticker', WHITE), 'condensed-semi')
+        return Element(bar, 0, px(self.limit - 80), 0, .5, 'marquee', fades_out=False, period=period, role='ticker')

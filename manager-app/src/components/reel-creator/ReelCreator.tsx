@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Check, Download, Film, Play, Plus, Send } from 'lucide-react';
 import { useReelStudio } from '../../hooks/useReelStudio';
-import { hasContent, reelSeconds, draftTitle } from '../../services/reelDocument';
-import type { CreatedReelMedia } from '../../types/reelCreator';
+import { hasContent, reelSeconds, draftTitle, patchStyle, unstyledScene } from '../../services/reelDocument';
+import type { CreatedReelMedia, StyleRole } from '../../types/reelCreator';
 import { Alert } from '../ui/Alert';
 import { Button } from '../ui/Button';
 import { Select } from '../ui/Select';
@@ -12,6 +12,8 @@ import { LookPicker } from './LookPicker';
 import { PhonePreview } from './PhonePreview';
 import { SceneList } from './SceneList';
 import { SourceInput } from './SourceInput';
+import { reelOnly, StylePanel } from './StylePanel';
+import { useSceneLayout } from '../../hooks/useSceneLayout';
 import './reelCreator.css';
 
 interface Props {
@@ -19,11 +21,27 @@ interface Props {
   onUseReel: (media: CreatedReelMedia) => void;
 }
 
+type Mode = 'simple' | 'advanced';
+const savedMode = (): Mode => { try { return localStorage.getItem('reel_creator_mode') === 'advanced' ? 'advanced' : 'simple'; } catch { return 'simple'; } };
+
 export function ReelCreator({ active, onUseReel }: Props) {
   const studio = useReelStudio(active, onUseReel);
   const { doc, capabilities, busy, job, fresh } = studio;
   const [scene, setScene] = useState(0);
   const [started, setStarted] = useState(false);
+  const [mode, setModeState] = useState<Mode>(savedMode);
+  const [scope, setScope] = useState<'reel' | 'scene'>('reel');
+  const [role, setRole] = useState<StyleRole>('headline');
+  const layout = useSceneLayout(active && studio.loaded, doc.reel, scene);
+  const pick = (target: StyleRole) => {
+    setMode('advanced'); setRole(target);
+    setScope(reelOnly.includes(target) ? 'reel' : 'scene');
+    window.requestAnimationFrame(() => document.getElementById('reel-style')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }));
+  };
+  const setMode = (next: Mode) => {
+    setModeState(next);
+    try { localStorage.setItem('reel_creator_mode', next); } catch { /* The mode is a per-viewer convenience. */ }
+  };
   const hasReel = hasContent(doc.reel) || doc.reel.scenes.some(s => s.image_id) || started;
   useEffect(() => { setScene(0); setStarted(false); }, [studio.draftId]);
   useEffect(() => { setScene(index => Math.min(index, doc.reel.scenes.length - 1)); }, [doc.reel.scenes.length]);
@@ -49,6 +67,10 @@ export function ReelCreator({ active, onUseReel }: Props) {
         placeholder="Recent reels" ariaLabel="Recent reels" onValueChange={id => studio.open(studio.drafts.find(d => d.id === id) ?? null)} /></div>}
       <Button variant="outline" size="sm" disabled={!!busy} onClick={() => studio.open(null)}><Plus className="h-3.5 w-3.5" />New</Button>
       <span className="ml-auto text-xs text-zinc-500" aria-live="polite">{studio.saveState}</span>
+      {hasReel && <div role="radiogroup" aria-label="Editing mode" className="flex rounded-lg border border-zinc-800 p-0.5">
+        {(['simple', 'advanced'] as const).map(value => <button key={value} type="button" role="radio" aria-checked={mode === value} onClick={() => setMode(value)}
+          className={`rounded-md px-3 py-1.5 text-xs capitalize transition-colors ${mode === value ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-zinc-200'}`}>{value}</button>)}
+      </div>}
     </header>
 
     {studio.error && <Alert variant="danger" role="alert">{studio.error}</Alert>}
@@ -61,7 +83,8 @@ export function ReelCreator({ active, onUseReel }: Props) {
       : <div className="grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
         <div className="space-y-4 lg:sticky lg:top-4 lg:self-start">
           <PhonePreview active={active} reel={doc.reel} scene={scene} onScene={setScene} job={job} fresh={fresh}
-            onCancel={() => { void studio.updateJob('cancel'); }} onRetry={() => { void studio.updateJob('retry'); }} />
+            onCancel={() => { void studio.updateJob('cancel'); }} onRetry={() => { void studio.updateJob('retry'); }}
+            layout={layout} selected={mode === 'advanced' ? role : null} onPick={pick} />
           <div className="mx-auto flex max-w-[300px] flex-col gap-2">
             {done?.kind === 'final'
               ? <>
@@ -86,6 +109,13 @@ export function ReelCreator({ active, onUseReel }: Props) {
             onSelect={setScene} onEdit={edit} onHook={studio.pickHook} onMoreHooks={() => { void studio.moreHooks(); }}
             onPhoto={index => { void studio.changePhoto(index); }} onPhotos={() => { void studio.addPhotos(); }}
             onMove={studio.moveScene} onRemove={studio.removeScene} onAdd={studio.addScene} />
+          {mode === 'advanced' && <StylePanel reel={doc.reel} looks={capabilities.looks} scene={scene} scope={scope} onScope={setScope} role={role} onRole={setRole}
+            onStyle={(target, patch) => {
+              if (scope === 'reel' || ['brand', 'logo', 'ticker'].includes(target)) studio.setReel(reel => ({ ...reel, style: patchStyle(reel.style, target, patch) }));
+              else edit(scene, { style: patchStyle(doc.reel.scenes[scene]?.style, target, patch) });
+            }}
+            onScene={patch => edit(scene, patch)} onAccent={accent => studio.setReel(reel => ({ ...reel, accent }))}
+            onResetScene={() => studio.setReel(reel => ({ ...reel, scenes: reel.scenes.map((s, i) => i === scene ? unstyledScene(s) : s) }))} layout={layout} />}
           <FinishPanel reel={doc.reel} goal={doc.goal} onGoal={studio.setGoal} comment={doc.comment} onComment={comment => studio.setDoc(d => ({ ...d, comment }))} looks={capabilities.looks} tracks={capabilities.music} caption={doc.caption} busy={!!busy} writing={busy === 'caption'} canWrite={canWrite}
             onBrand={studio.setBrand} onDate={dateline => studio.setReel(reel => ({ ...reel, dateline }))} onProgress={show_progress => studio.setReel(reel => ({ ...reel, show_progress }))}
             onMotion={motion => studio.setReel(reel => ({ ...reel, motion }))}

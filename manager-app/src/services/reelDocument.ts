@@ -1,4 +1,4 @@
-import type { Reel, ReelAsset, ReelBrand, ReelScene, WrittenReel, WrittenScene } from '../types/reelCreator';
+import type { ElementStyle, Reel, ReelAsset, ReelBrand, ReelScene, ReelStyles, StyleRole, WrittenReel, WrittenScene } from '../types/reelCreator';
 
 export const MAX_SCENES = 8;
 export const MAX_SECONDS = 90;
@@ -126,3 +126,23 @@ export function sourceKind(input: string): 'url' | 'text' | 'empty' {
   if (!value) return 'empty';
   return /^https?:\/\/\S+$/i.test(value) ? 'url' : 'text';
 }
+
+/** A role's style with `patch` applied; cleared fields and emptied roles are dropped so a reset reel matches simple mode. */
+export function patchStyle(styles: ReelStyles | undefined, role: StyleRole, patch: Partial<Record<keyof ElementStyle, unknown>> | null): ReelStyles {
+  const next: ReelStyles = { ...styles };
+  const merged = Object.fromEntries(Object.entries(patch ? { ...next[role], ...patch } : {})
+    .filter(([, value]) => value !== undefined && value !== null && value !== '')) as ElementStyle;
+  if (Object.keys(merged).length) next[role] = merged; else delete next[role];
+  return next;
+}
+
+/** What a role looks like in one scene: the scene's own overrides laid over the reel's. */
+export const effectiveStyle = (reel: Reel, scene: ReelScene | undefined, role: StyleRole): ElementStyle =>
+  ({ ...reel.style?.[role], ...scene?.style?.[role] });
+
+/** Whether a scene sets anything of its own in advanced mode. */
+export const sceneIsStyled = (scene: ReelScene): boolean =>
+  !!(Object.keys(scene.style ?? {}).length || scene.motion || scene.transition || scene.shade != null || scene.backdrop || scene.text_position != null);
+
+/** Advanced settings of a scene removed, leaving its words, photo and timing. */
+export const unstyledScene = ({ style: _style, motion: _motion, transition: _transition, shade: _shade, backdrop: _backdrop, text_position: _position, ...scene }: ReelScene): ReelScene => scene;

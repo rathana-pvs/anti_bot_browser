@@ -3,7 +3,8 @@ import { Play } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { Spinner } from '../ui/Spinner';
 import { reelApi } from '../../services/reelCreator';
-import type { Reel, ReelJob } from '../../types/reelCreator';
+import type { Reel, ReelJob, SceneLayout, StyleRole } from '../../types/reelCreator';
+import { roleName } from './StylePanel';
 
 interface Props {
   active: boolean;
@@ -14,10 +15,14 @@ interface Props {
   fresh: boolean;
   onCancel: () => void;
   onRetry: () => void;
+  /** Boxes of the elements in the scene preview; clicking one selects it for styling. */
+  layout: SceneLayout | null;
+  selected: StyleRole | null;
+  onPick: (role: StyleRole) => void;
 }
 
 /** Shows the selected scene exactly as rendered, or the finished video while it matches the edits. */
-export function PhonePreview({ active, reel, scene, onScene, job, fresh, onCancel, onRetry }: Props) {
+export function PhonePreview({ active, reel, scene, onScene, job, fresh, onCancel, onRetry, layout, selected, onPick }: Props) {
   const [poster, setPoster] = useState('');
   const [problem, setProblem] = useState('');
   const [video, setVideo] = useState('');
@@ -91,6 +96,12 @@ export function PhonePreview({ active, reel, scene, onScene, job, fresh, onCance
           className={`${shape} w-full bg-black`} />
         : previewImage ? <img src={previewImage} alt={`Scene ${scene + 1} preview`} className={`${shape} w-full object-cover`} draggable={false} />
         : <div className={`flex ${shape} w-full items-center justify-center`}><Spinner className="text-zinc-600" /></div>}
+      {!video && !shown && !working && poster && layout && <div className="absolute inset-0" role="group" aria-label="Elements in this scene">
+        {layout.boxes.map(box => <button key={box.role} type="button" onClick={() => onPick(box.role)}
+          aria-label={`Style ${roleName(box.role).toLowerCase()}, scene ${scene + 1}`} title={roleName(box.role)}
+          style={{ left: `${box.x * 100}%`, top: `${box.y * 100}%`, width: `${box.w * 100}%`, height: `${box.h * 100}%` }}
+          className={`absolute rounded-sm outline-none ring-inset transition-shadow hover:ring-2 hover:ring-violet-400/80 focus-visible:ring-2 focus-visible:ring-violet-400 ${selected === box.role ? 'ring-1 ring-violet-400/60' : ''}`} />)}
+      </div>}
       {video && !playing && previewImage && <img src={previewImage} alt="Completed video cover" className="absolute inset-0 h-full w-full object-cover" draggable={false} />}
       {shown && !playing && <div className="absolute inset-0 flex items-center justify-center">
         {videoLoading || playPending ? <div role="status" className="rounded-full bg-black/70 p-4"><Spinner label={videoLoading ? 'Loading video preview' : 'Starting playback'} className="text-white" /></div>

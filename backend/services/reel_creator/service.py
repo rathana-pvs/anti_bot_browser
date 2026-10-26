@@ -263,6 +263,13 @@ class ReelCreator:
             self._posters[key] = result
             return result
 
+    def scene_layout(self, reel, scene_index=0):
+        """Element boxes for the scene preview, so the app can select what was clicked. Photos do not move them."""
+        if not 0 <= scene_index < len(reel.scenes):
+            raise ValueError('That scene does not exist.')
+        _, logo, _ = self.validate_assets(reel)
+        return Plan(reel, PREVIEW_WIDTH, {}, logo, FPS).layout(scene_index)
+
     def enqueue(self, value):
         if self.thread and not self.thread.is_alive():
             raise Conflict('The local renderer stopped. Restart the app or backend before rendering.')
@@ -600,6 +607,7 @@ class ReelCreator:
                 raise RuntimeError('At least 512 MB of free disk space is required to render.')
             reel = Reel(**job['reel'])
             images, logo, music = self.validate_assets(reel)
+            images = self._prepare_images(reel, images)
             output = workdir / 'output.mp4'
             self._encode(job, reel, images, logo, music, output)
             self.store.update(job['id'], state='verifying', progress=0.99)

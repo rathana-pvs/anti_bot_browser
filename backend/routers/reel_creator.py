@@ -101,6 +101,11 @@ def poster(value: Reel, scene: int = Query(default=0, ge=0, le=7)):
     return Response(image, media_type='image/jpeg', headers={'Cache-Control': 'no-store'})
 
 
+@router.post('/layout')
+def layout(value: Reel, scene: int = Query(default=0, ge=0, le=7)):
+    return checked(get_service().scene_layout, value, scene)
+
+
 @router.get('/music/{track}/preview')
 def preview_music(track: str):
     return FileResponse(checked(preset_path, track), media_type='audio/wav')

@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { API_BASE } from './api';
 import { isDesktopApp } from './desktopEnvironment';
-import type { ArticleText, PhotoImport, Reel, ReelAsset, ReelGoal, ReelBrand, ReelCapabilities, ReelDraft, ReelJob, WrittenReel } from '../types/reelCreator';
+import type { ArticleText, PhotoImport, Reel, ReelAsset, ReelGoal, ReelBrand, ReelCapabilities, ReelDraft, ReelJob, SceneLayout, WrittenReel } from '../types/reelCreator';
 
 async function request(path: string, init?: RequestInit): Promise<Response> {
   const response = await fetch(`${API_BASE}/reel-creator${path}`, init);
@@ -80,6 +80,8 @@ export const reelApi = {
   thumbnail: async (id: string): Promise<Blob> => (await request(`/assets/${id}/thumbnail`)).blob(),
   poster: async (reel: Reel, scene: number, signal?: AbortSignal): Promise<Blob> =>
     (await request(`/poster?scene=${scene}`, { ...json('POST', reel), signal })).blob(),
+  layout: async (reel: Reel, scene: number, signal?: AbortSignal): Promise<SceneLayout> =>
+    (await request(`/layout?scene=${scene}`, { ...json('POST', reel), signal })).json(),
   brand: async (): Promise<ReelBrand | null> => (await request('/brand')).json(),
   saveBrand: async (reel: Reel): Promise<ReelBrand> => (await request('/brand', json('PUT', reel))).json(),
   jobs: async (): Promise<ReelJob[]> => (await request('/jobs')).json(),

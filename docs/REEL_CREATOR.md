@@ -39,6 +39,46 @@ Existing exports must be rendered again.
 
 Drafts save automatically. Brand name, logo and source are remembered for new reels.
 
+## Advanced mode
+
+Switch **Simple / Advanced** at the top right once a reel exists (the choice is remembered on this computer).
+Advanced mode adds a **Style** panel under the scenes. It edits the same reel: the look still lays out every
+scene, keeps text inside the Reels safe area and shrinks it to fit; styles only override what the look draws.
+A reel with no styles renders exactly as in simple mode, and AI rewrites change the words but keep the styles.
+
+Advanced mode stays a news-reel tool, not a general video editor: it tunes the newsroom looks rather than
+offering a free canvas, timeline, keyframes or extra layers.
+
+Pick **All scenes** or the selected **Scene N**, then an element. You can also **click an element on the phone
+preview**: that switches to advanced mode and selects it (brand, logo and ticker for all scenes, the rest for the
+scene shown). The click targets come from `POST /api/reel-creator/layout?scene=N`, which returns each element's box
+as fractions of the frame.
+
+| Element | Font | Size | Color | Background | Entrance | Hide |
+| --- | --- | --- | --- | --- | --- | --- |
+| Headline, Detail | ✓ | 70–130 % of the look's size | ✓ | a box behind each line (Hot: the detail sticker) | ✓ | ✓ (its room goes to the photo or the other text) |
+| Figure / mark (the big figure, quote mark, end-card ? or →) | | | ✓ | | ✓ | ✓ |
+| Label (strap, pill, chip or kicker) | ✓ | | ✓ | fill of strap, pill or chip | ✓ | ✓ |
+| Brand, Logo | Brand | | Brand | | ✓ | ✓ |
+| Ticker (Breaking) | | | ✓ | bar | | ✓ |
+
+Entrance is the animation (fade, rise, slide from left, pop, wipe or appear) plus an extra delay of up to 3 s and
+its length. The first scene opens fully drawn, so its entrances are not played. The scene preview waits until
+late entrances have finished. A scene's own setting wins over the reel's; **Use the reel style** removes it, and
+a scene can show an element the reel hides. Brand, logo and ticker are shown for the whole reel and are styled
+for all scenes. **Accent** (all scenes) recolors the look's accent.
+
+Per scene: photo motion (zoom in, zoom out or still, instead of the reel's), how it **comes in** (crossfade, slide
+or cut), **shade behind text** (0–200 % of the look's darkening, on Breaking, Hot, Wire and Politics), a background
+color when it has no photo, and its length (auto from reading time, or 2–20 s). On Breaking and Wire, **Text
+position** moves the scene's whole text block (label, strap, figure, headline and detail together) higher or lower,
+between the logo row and the area Reels covers (or the ticker). Looks that size the photo to the text, and Hot and
+Pop Art, keep their own placement. **Reset scene style** clears all
+of these for the scene.
+
+The document stores styles as `Reel.style` and `Scene.style` (role → overrides; unset fields are left out) and
+`Scene.motion`, `transition`, `shade`, `backdrop` and `text_position` (unset is `null`).
+
 ## Goal: engage or read more
 
 Pick the reel's goal before creating it (and change it later; nothing is rewritten until you ask).
@@ -159,6 +199,5 @@ hear them), turn music off, or upload your own MP3, WAV, M4A, Ogg or FLAC file (
 API: `/api/reel-creator/{capabilities,drafts,article,write,assets,poster,brand,jobs}`; local
 and authenticated like the rest of the desktop API.
 
-Advanced mode (per-element font, color, background and animation) will edit the same document.
 The older template-based studio, its drafts and Remotion tooling were removed; existing
 drafts and render records from it are not migrated, and already exported videos stay in shared media.
