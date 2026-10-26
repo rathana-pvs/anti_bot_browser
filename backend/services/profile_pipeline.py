@@ -1,6 +1,7 @@
 import random
 import time
 from datetime import datetime
+from backend.services.network_recovery import retry_admitted
 
 def shuffled_profile_order(profile_ids: list, previous_last_profile: str | None = None, rand_fn=random.random) -> list:
     order = list(dict.fromkeys(profile_ids or []))
@@ -69,7 +70,9 @@ def batch_iteration_availability(
                  and not execution.get("automation_container_owned"))
     ]
     if any(
-        execution.get("status") in ("pending", "ready", "running", "preparing", "uncertain", "needs_review")
+        execution.get("status") in ("pending", "ready", "running", "preparing")
+        or execution.get("container_cleanup_in_progress")
+        or execution.get("automation_container_owned")
         for execution in previous_executions
     ):
         return {
@@ -158,6 +161,9 @@ def ordered_due_executions(queue: dict | None, now_ms: float | None = None) -> l
             for execution in post.get("executions", []):
                 if execution.get("status") not in ("pending", "ready"):
                     continue
+                # Recovery gates only this execution, not other posts on its account.
+                if not retry_admitted(execution, now_ms / 1000):
+                    continue
                 profile_rank = profile_ranks.get(execution.get("profile_id"), 0)
                 sched_time = batch_start_ms + profile_rank * profile_stagger_ms
                 if sched_time > now_ms:
@@ -175,6 +181,7 @@ def ordered_due_executions(queue: dict | None, now_ms: float | None = None) -> l
                 })
 
     due.sort(key=lambda item: (
+        bool(item["execution"].get("network_recovery") and item["execution"]["network_recovery"].get("state") == "ready"),
         item["batchStartMs"],
         item["batchCreatedAtMs"],
         -item["batchIndex"],

@@ -10,7 +10,7 @@ pydantic>=2.9.0
 pytest>=8.0.0
 websockets>=15.0,<18
 Pillow>=12.1,<13
+moderngl>=5.12,<6
 fonttools>=4.55,<5
 opencv-python-headless==4.10.0.84
 trafilatura>=2.0,<3
-edge-tts>=7.2,<8

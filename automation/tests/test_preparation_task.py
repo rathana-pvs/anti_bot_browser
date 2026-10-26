@@ -162,6 +162,57 @@ class FacebookPreparationTaskTests(unittest.TestCase):
         self.assertEqual(result[:3], ("profile", "profile", False))
         task.open_warming_surface.assert_called_once_with("profile", navigate=False)
 
+    def test_preparation_retries_surfaces_once_and_recovers(self):
+        task = self.make_task()
+        screen = task.client.screenshot.return_value
+        task.select_and_open_warming_surface.side_effect = [
+            ('profile', None, True, screen), ('profile', 'news_feed', True, screen),
+        ]
+        with patch.object(FacebookPreparationTask, 'DURATION_RANGES', {'brief': (0.0, 0.0)}):
+            self.assertTrue(task.run())
+        self.assertEqual(task.select_and_open_warming_surface.call_args_list, [
+            unittest.mock.call(requested=None, already_open=None),
+            unittest.mock.call(requested='profile', already_open=None),
+        ])
+        self.assertEqual(task.set_outcome.call_args.args[0], 'completed')
+        self.assertEqual(task.set_outcome.call_args.kwargs['warming_surface_attempts'], 2)
+        self.assertEqual(task.capture_evidence.call_args_list[0].args[0], 'preparation_surface_not_ready_1')
+        task.human.click.assert_not_called()
+
+    def test_second_attempt_reloads_original_page_and_stops_after_four_checks(self):
+        task = self.make_task()
+        task._current_session_is_stable.return_value = False
+        task.select_and_open_warming_surface = BaseTask.select_and_open_warming_surface.__get__(task)
+        task.open_warming_surface = Mock(return_value=(False, task.client.screenshot.return_value))
+        task.set_outcome.return_value = False
+        with patch('tasks.facebook_preparation.random.choice', return_value='profile'):
+            self.assertFalse(task.run())
+        self.assertEqual(task.open_warming_surface.call_args_list, [
+            unittest.mock.call('profile', navigate=False), unittest.mock.call('news_feed'),
+            unittest.mock.call('profile'), unittest.mock.call('news_feed'),
+        ])
+        self.assertEqual(task.set_outcome.call_args.args[0], 'failed_before_publish')
+        self.assertEqual(task.set_outcome.call_args.kwargs['warming_surface_attempts'], 2)
+        self.assertEqual([c.args[0] for c in task.capture_evidence.call_args_list], [
+            'preparation_surface_not_ready_1', 'preparation_surface_not_ready_2',
+        ])
+        task.human.scroll.assert_not_called()
+
+    def test_checkpoint_during_surface_check_skips_without_fallback_or_retry(self):
+        task = self.make_task()
+        task.select_and_open_warming_surface = BaseTask.select_and_open_warming_surface.__get__(task)
+
+        def blocked(*args, **kwargs):
+            task.session_check_status = 'auth_required'
+            return False, task.client.screenshot.return_value
+
+        task.open_warming_surface = Mock(side_effect=blocked)
+        task.set_outcome.return_value = False
+        with patch('tasks.base_task.random.choice', return_value='profile'):
+            self.assertFalse(task.run())
+        task.open_warming_surface.assert_called_once_with('profile')
+        self.assertEqual(task.set_outcome.call_args.args[0], 'skipped_auth_required')
+
 
 if __name__ == "__main__":
     unittest.main()

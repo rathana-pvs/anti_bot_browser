@@ -170,7 +170,7 @@ class PublicationResultVerifierModule:
                 return _task_result(self.task, success_reason="publication_unconfirmed")
             self.task._uncertain(
                 "reel_publish_not_found_after_verification",
-                "Post was clicked, but publication could not be confirmed after two profile checks. Review Facebook before retrying.",
+                "Post was clicked, but publication could not be confirmed after three profile checks. Review Facebook before retrying.",
             )
             return ModuleResult(
                 UNCERTAIN,

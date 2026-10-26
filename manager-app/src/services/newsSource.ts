@@ -1,11 +1,3 @@
-import type { EditorialDraft } from '../types/reelCreator';
-
-export async function newsSourceFingerprint(value: Pick<EditorialDraft, 'text' | 'source_url' | 'language'>): Promise<string> {
-  const bytes = new TextEncoder().encode(JSON.stringify([value.text, value.source_url, value.language]));
-  const hash = await crypto.subtle.digest('SHA-256', bytes);
-  return Array.from(new Uint8Array(hash), n => n.toString(16).padStart(2, '0')).join('');
-}
-
 export function configuredGemini(): { api_key: string; model: string } {
   let saved: { gemini?: string; gemini_model?: string } = {};
   try { saved = JSON.parse(localStorage.getItem('app_api_keys') || '{}'); } catch { /* Report the missing setting below. */ }

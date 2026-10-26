@@ -477,6 +477,16 @@ export async function fetchQueue(): Promise<import('../types/automation').QueueD
   return res.json();
 }
 
+export async function cancelAllQueuePosts(batchId?: string): Promise<{ success: boolean; cancelled: number; message: string }> {
+  const endpoint = batchId === undefined ? '/queue/cancel-all' : `/queue/batch/${encodeURIComponent(batchId)}/cancel`;
+  const res = await fetch(`${API_BASE}${endpoint}`, { method: 'POST' });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.detail || 'Could not stop and cancel the posting schedule');
+  }
+  return res.json();
+}
+
 export interface SupportBundleOptions {
   executionId?: string;
   description?: string;
@@ -602,6 +612,12 @@ export async function deleteExecution(executionId: string): Promise<{ success: b
   return res.json();
 }
 
+export async function cancelNetworkRecovery(executionId: string): Promise<{ success: boolean; message: string }> {
+  const res = await fetch(`${API_BASE}/queue/network-recovery/${encodeURIComponent(executionId)}/cancel`, { method: 'POST' });
+  if (!res.ok) throw await apiError(res, 'Could not cancel network recovery');
+  return res.json();
+}
+
 export async function runExecutionNow(executionId: string): Promise<{ success: boolean; queued?: boolean; message?: string }> {
   const res = await fetch(`${API_BASE}/queue/run-now/${executionId}`, {
     method: 'POST',
@@ -609,6 +625,12 @@ export async function runExecutionNow(executionId: string): Promise<{ success: b
   if (!res.ok) {
     throw await apiError(res, 'Failed to run execution now');
   }
+  return res.json();
+}
+
+export async function rerunBatch(batchId: string): Promise<{ success: boolean; queued: number; needs_review: number; message: string }> {
+  const res = await fetch(`${API_BASE}/queue/batch/${encodeURIComponent(batchId)}/rerun`, { method: 'POST' });
+  if (!res.ok) throw await apiError(res, 'Failed to re-run batch');
   return res.json();
 }
 

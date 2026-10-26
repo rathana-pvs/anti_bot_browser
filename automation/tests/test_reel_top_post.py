@@ -1,8 +1,9 @@
 """Only the first post header may authorize Reel profile verification."""
 from unittest.mock import Mock, patch
 import numpy as np
+import cv2
 import pytest
-from modules.reel_top_post import first_header_region, evaluate_header, retry_unreadable_header
+from modules.reel_top_post import first_header_region, evaluate_header, retry_unreadable_header, profile_feed_is_loading
 from tasks.facebook_reel import FacebookReelTask
 
 
@@ -130,6 +131,88 @@ def test_scan_stops_after_old_first_post_without_scrolling_to_second():
     assert not visible
     task.human.scroll.assert_not_called()
     assert task.client.screenshot.call_count == 1
+
+
+@pytest.mark.parametrize('final_age,expected', [('1m', True), ('2h', False), (None, False)])
+@pytest.mark.parametrize('toolbar_loading', [False, True])
+def test_loading_first_post_waits_in_place_with_fifteen_second_limit(final_age, expected, toolbar_loading):
+    task = FacebookReelTask.__new__(FacebookReelTask)
+    task.client = Mock()
+    task.vision = Mock()
+    task.vision.read_text_with_fallback = None
+    task.log = Mock()
+    task.human = Mock()
+    clock = [0.0]
+    screenshots_at = []
+    screen = np.zeros((1080, 1920, 3), dtype=np.uint8)
+
+    def screenshot():
+        screenshots_at.append(clock[0])
+        screen[:] = 255
+        if not final_age or clock[0] < 12.8:
+            cv2.circle(screen, (1078, 610), 20, (240, 240, 240), -1)
+            cv2.rectangle(screen, (1106, 600), (1194, 609), (221, 221, 221), -1)
+            cv2.rectangle(screen, (1106, 616), (1206, 625), (221, 221, 221), -1)
+        return screen
+
+    def read_text(image, region, **kwargs):
+        if region == (int(1920 * .28), int(1080 * .16), int(1920 * .67), int(1080 * .78)):
+            if toolbar_loading and (not final_age or clock[0] < 12.8):
+                return []
+            return toolbar()
+        # The first card has no readable text until its loading placeholder
+        # disappears, after 12 seconds. Enlarged OCR also sees an empty header.
+        if final_age and clock[0] >= 12.8 and image is screen:
+            return header(final_age)
+        return []
+
+    def sleep(seconds):
+        clock[0] += seconds
+
+    task.client.screenshot.side_effect = screenshot
+    task.vision.read_text.side_effect = read_text
+    with patch('tasks.facebook_reel.time.sleep', side_effect=sleep), \
+         patch('tasks.facebook_reel.time.monotonic', side_effect=lambda: clock[0]):
+        visible, last_screen = task._scan_profile_for_latest_reel()
+
+    assert visible is expected
+    assert last_screen is screen
+    assert screenshots_at[-1] - screenshots_at[0] == pytest.approx(12 if final_age else 15)
+    task.human.scroll.assert_not_called()
+    if final_age:
+        assert task.latest_reel_timestamp_check['reason'] == ('recent_top_post' if expected else 'old_top_post')
+    else:
+        assert task.latest_reel_timestamp_check['reason'] == 'profile_feed_loading'
+
+
+@pytest.mark.parametrize('color,background', [(221, 255), (58, 36)])
+def test_loading_detector_requires_avatar_and_paired_bars(color, background):
+    screen = np.full((1080, 1920, 3), background, dtype=np.uint8)
+    assert not profile_feed_is_loading(screen)
+    cv2.rectangle(screen, (1106, 847), (1194, 856), (color,) * 3, -1)
+    cv2.rectangle(screen, (1106, 863), (1206, 872), (color,) * 3, -1)
+    assert not profile_feed_is_loading(screen)  # Bars alone are insufficient.
+    cv2.circle(screen, (1078, 860), 20, (color,) * 3, -1)
+    assert profile_feed_is_loading(screen)  # Feed may load before its toolbar.
+    assert profile_feed_is_loading(screen, (1030, 823, 700, 129))
+    assert not profile_feed_is_loading(screen, (1030, 200, 700, 129))
+
+
+def test_empty_unreadable_header_without_skeleton_does_not_wait():
+    task = FacebookReelTask.__new__(FacebookReelTask)
+    task.client = Mock()
+    task.client.screenshot.return_value = np.full((1080, 1920, 3), 255, dtype=np.uint8)
+    task.vision = Mock()
+    task.vision.read_text.side_effect = [toolbar(), [], []]
+    task.vision.read_text_with_fallback = None
+    task.log = Mock()
+    task.human = Mock()
+    with patch('tasks.facebook_reel.time.sleep') as sleep:
+        visible, _ = task._scan_profile_for_latest_reel()
+    assert not visible
+    sleep.assert_called_once_with(.8)  # Existing scroll reset, no loading wait.
+    task.human.scroll.assert_not_called()
+    assert task.latest_reel_timestamp_check['reason'] == 'top_header_unreadable'
 
 
 def test_unknown_timestamp_does_not_fall_through_to_nearby_caption():

@@ -22,7 +22,8 @@ from tasks.facebook_reel import FacebookReelTask
 from tasks.facebook_comment import FacebookCommentTask
 from tasks.facebook_preparation import FacebookPreparationTask
 from engine.brain_runtime import BrainRegistry
-from engine.runtime_paths import automation_dir
+from engine.runtime_paths import automation_dir, profiles_dir
+from preparation_result import write_result as write_preparation_result
 from modules import build_publishing_pipeline
 
 
@@ -182,6 +183,11 @@ def main():
                 },
             }
 
+        if args.task == 'preparation' and os.environ.get('AUTOMATION_PREPARATION_CONTEXT'):
+            context = json.loads(os.environ['AUTOMATION_PREPARATION_CONTEXT'])
+            if context['profile_id'] != args.profile:
+                raise RuntimeError('Preparation result profile does not match its lease')
+            write_preparation_result(profiles_dir(), context, result)
         print(json.dumps(result), flush=True)
         if result["status"] in ("uncertain", "needs_review"):
             sys.exit(2)

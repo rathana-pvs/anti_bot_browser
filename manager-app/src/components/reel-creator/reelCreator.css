@@ -1,65 +1,13 @@
 .reel-creator-shell {
   container-type: inline-size;
-  height: 100%;
-  min-height: 0;
-  overflow: hidden;
 }
 
-.reel-creator-shell > :not(.reel-creator-grid) {
-  flex-shrink: 0;
+.reel-phone {
+  box-shadow: 0 20px 50px -20px rgb(0 0 0 / .8);
 }
 
-.reel-creator-grid {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-}
-
-.reel-creator-grid,
-.reel-creator-editor-content,
-.reel-creator-preview {
-  scrollbar-width: none;
-}
-
-.reel-creator-grid::-webkit-scrollbar,
-.reel-creator-editor-content::-webkit-scrollbar,
-.reel-creator-preview::-webkit-scrollbar {
-  display: none;
-}
-
-.reel-creator-preview {
-  grid-row: auto;
-  width: 100%;
-  max-width: 480px;
-  margin-inline: auto;
-}
-
-@container (min-width: 850px) {
-  .reel-creator-grid {
-    grid-template-columns: minmax(0, 1fr) 380px;
-    grid-template-rows: minmax(0, 1fr);
-    overflow: hidden;
-  }
-
-  .reel-creator-editor,
-  .reel-creator-preview {
-    height: 100%;
-    min-height: 0;
-    overflow-y: auto;
-    overscroll-behavior-y: contain;
-    padding: 2px 6px 12px 2px;
-  }
-}
-
-@container (min-width: 850px) {
-  .reel-creator-editor {
-    overflow: hidden;
-  }
-
-  .reel-creator-editor-content {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-    overscroll-behavior-y: contain;
+@media (prefers-reduced-motion: reduce) {
+  .reel-creator-shell * {
+    transition: none !important;
   }
 }

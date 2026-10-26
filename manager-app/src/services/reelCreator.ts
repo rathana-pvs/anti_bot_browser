@@ -1,11 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { API_BASE } from './api';
 import { isDesktopApp } from './desktopEnvironment';
-import { normalizeTiming } from './storyComposition';
-import { emptyComposition, emptyEditorial } from '../types/reelCreator';
-import type { ContentFit, TemplateNewsGeneration, ArticleText, AudioPreset, EditorialDraft, NewsGeneration, PhotoImport, ReelAsset, ReelCapabilities, ReelComposition, ReelDraft, ReelJob } from '../types/reelCreator';
-
-const normalizeComposition = (value: ReelComposition): ReelComposition => ({ ...emptyComposition(), ...value, news_design: value.news_design ?? 'classic', slide_seconds: value.slide_seconds ?? null, version: value.version ?? 1, photos: value.photos ?? [], audio_preset: value.audio_preset ?? 'none' });
+import type { ArticleText, PhotoImport, Reel, ReelAsset, ReelGoal, ReelBrand, ReelCapabilities, ReelDraft, ReelJob, WrittenReel } from '../types/reelCreator';
 
 async function request(path: string, init?: RequestInit): Promise<Response> {
   const response = await fetch(`${API_BASE}/reel-creator${path}`, init);
@@ -25,48 +21,74 @@ function json(method: string, value: unknown): RequestInit {
   return { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) };
 }
 
+export interface WriteRequest {
+  api_key: string; model: string; text: string; source_url: string; source_title: string; publisher: string;
+  look: 'auto' | Reel['look'];
+  goal?: ReelGoal;
+  /** One scene per photo; omit to let the AI choose. */
+  scenes?: number;
+  /** Headlines already in the reel, when adding scenes to it. */
+  existing?: string[];
+  /** The post caption is written only when this is true. */
+  caption?: boolean;
+}
+
 export const reelApi = {
-  narrationScript: async (value: {api_key: string; model: string; text: string; source_url: string; source_title: string; publisher: string; language: 'English'; duration: number}, signal?: AbortSignal): Promise<{script:string;source_quotes:string[];word_limit:number}> => (await request('/narration/script', {...json('POST', value), signal})).json(),
-  narrationVoice: async (value: {text:string;voice:NonNullable<ReelComposition['narration_voice']>;rate:NonNullable<ReelComposition['narration_rate']>}, signal?: AbortSignal): Promise<ReelAsset> => (await request('/narration/voice', {...json('POST', value), signal})).json(),
-  narrationAudio: async (id: string, signal?: AbortSignal): Promise<Blob> => (await request(`/narration/${id}/audio`, {signal})).blob(),
-  autoFraming: async (id: string, crop?: import('../types/reelCreator').PhotoCrop|null, aspectRatio: import('../types/reelCreator').ReelAspectRatio = '9:16'): Promise<import('../types/reelCreator').FramingSuggestion> => (await request(`/assets/${id}/framing?aspect_ratio=${encodeURIComponent(aspectRatio)}`,  crop ? json('POST', crop) : undefined)).json(),
-  cropPreview: async (id: string, signal?: AbortSignal): Promise<Blob> => (await request(`/assets/${id}/crop-preview`, {signal})).blob(),
   capabilities: async (refresh = false): Promise<ReelCapabilities> => (await request(`/capabilities?refresh=${refresh}`)).json(),
-  drafts: async (): Promise<ReelDraft[]> => ((await (await request('/drafts')).json()) as ReelDraft[]).map(d => ({
-    ...d, composition: normalizeTiming(normalizeComposition(d.composition)), editorial: { ...emptyEditorial(), ...d.editorial },
-  })),
-  saveDraft: async (id: string, revision: number, composition: ReelComposition, editorial: EditorialDraft): Promise<ReelDraft> =>
-    (await request(`/drafts/${id}`, json('PUT', { revision, composition, editorial }))).json(),
-  asset: async (id: string): Promise<ReelAsset> => (await request(`/assets/${id}`)).json(),
+  drafts: async (): Promise<ReelDraft[]> => (await request('/drafts')).json(),
+  saveDraft: async (id: string, revision: number, draft: Pick<ReelDraft, 'reel' | 'caption' | 'goal' | 'comment' | 'hooks' | 'source_text' | 'source_url' | 'source_title' | 'source_publisher'>): Promise<ReelDraft> =>
+    (await request(`/drafts/${id}`, json('PUT', { revision, ...draft }))).json(),
+  deleteDraft: async (id: string): Promise<void> => { await request(`/drafts/${id}`, { method: 'DELETE' }); },
+  article: async (url: string, signal?: AbortSignal): Promise<ArticleText> => (await request('/article', { ...json('POST', { url }), signal })).json(),
+  write: async (value: WriteRequest, signal?: AbortSignal): Promise<WrittenReel> => (await request('/write', { ...json('POST', value), signal })).json(),
   upload: async (kind: ReelAsset['kind'], file: File): Promise<ReelAsset> => {
     const data = new FormData();
     data.append('file', file);
     return (await request(`/assets/${kind}`, { method: 'POST', body: data })).json();
   },
-  pickAudio: async (): Promise<ReelAsset | null> => invoke<ReelAsset | null>('pick_reel_audio'),
-  thumbnail: async (id: string): Promise<Blob> => (await request(`/assets/${id}/thumbnail`)).blob(),
-  pickImages: async (maxFiles: number): Promise<PhotoImport | null> => invoke<PhotoImport | null>('pick_reel_images', { maxFiles }),
-  poster: async (composition: ReelComposition, signal?: AbortSignal, photoIndex = 0) => {
-    const response = await request(`/poster?photo_index=${photoIndex}`, { ...json('POST', composition), signal });
-    return { blob: await response.blob(), warnings: JSON.parse(response.headers.get('X-Reel-Warnings') || '[]') as string[] };
+  /** Desktop uses the native picker; a browser falls back to a file input. Returns null when cancelled. */
+  asset: async (id: string): Promise<ReelAsset> => (await request(`/assets/${id}`)).json(),
+  musicPreview: async (track: string): Promise<Blob> => (await request(`/music/${track}/preview`)).blob(),
+  pickAudio: async (): Promise<ReelAsset | null> => {
+    if (isDesktopApp()) return invoke<ReelAsset | null>('pick_reel_audio');
+    const file = await new Promise<File | undefined>(resolve => {
+      const input = document.createElement('input');
+      input.type = 'file'; input.accept = 'audio/*';
+      input.onchange = () => resolve(input.files?.[0]);
+      input.oncancel = () => resolve(undefined);
+      input.click();
+    });
+    return file ? reelApi.upload('audio', file) : null;
   },
-  jobs: async (): Promise<ReelJob[]> => ((await (await request('/jobs')).json()) as ReelJob[]).map(j => ({ ...j, composition: normalizeComposition(j.composition) })),
-  render: async (composition: ReelComposition, kind: ReelJob['kind'], request_id: string, post_caption = ''): Promise<ReelJob> =>
-    (await request('/jobs', json('POST', { composition, kind, request_id, post_caption }))).json(),
-  article: async (url: string, signal?: AbortSignal): Promise<ArticleText> => (await request('/article', { ...json('POST', { url }), signal })).json(),
-  generateNews: async (value: { api_key: string; model: string; text: string; source_url: string; source_title: string; publisher: string; language: EditorialDraft['language']; category_hint: string }, signal?: AbortSignal): Promise<NewsGeneration> =>
-    (await request('/generate-news', { ...json('POST', value), signal })).json(),
-  contentFit: async (composition: ReelComposition, signal?: AbortSignal): Promise<ContentFit> =>
-    (await request('/content-fit', {...json('POST', composition), signal})).json(),
-  generateTemplateNews: async (value: {api_key:string; model:string; text:string; source_url:string; source_title:string; publisher:string; language:'English'; category_hint:string; composition:ReelComposition; tone:NonNullable<EditorialDraft['tone']>; word_count?:NonNullable<EditorialDraft['word_count']>; intent:'generate'|'adapt'|'shorten'; scene_index:number|null}, signal?:AbortSignal): Promise<TemplateNewsGeneration> =>
-    (await request('/generate-template-news', {...json('POST',value),signal})).json(),
-  audioPresets: async (): Promise<AudioPreset[]> => (await request('/audio-presets')).json(),
-  audioPreview: async (id: string): Promise<Blob> => (await request(`/audio-presets/${id}/preview`)).blob(),
+  pickImages: async (maxFiles: number): Promise<PhotoImport | null> => {
+    if (isDesktopApp()) return invoke<PhotoImport | null>('pick_reel_images', { maxFiles });
+    const files = await new Promise<File[]>(resolve => {
+      const input = document.createElement('input');
+      input.type = 'file'; input.accept = 'image/*'; input.multiple = maxFiles > 1;
+      input.onchange = () => resolve(Array.from(input.files ?? []).slice(0, maxFiles));
+      input.oncancel = () => resolve([]);
+      input.click();
+    });
+    if (!files.length) return null;
+    const result: PhotoImport = { assets: [], errors: [] };
+    for (const file of files) {
+      try { result.assets.push(await reelApi.upload('image', file)); }
+      catch (err) { result.errors.push(`${file.name}: ${err instanceof Error ? err.message : 'Could not import.'}`); }
+    }
+    return result;
+  },
+  thumbnail: async (id: string): Promise<Blob> => (await request(`/assets/${id}/thumbnail`)).blob(),
+  poster: async (reel: Reel, scene: number, signal?: AbortSignal): Promise<Blob> =>
+    (await request(`/poster?scene=${scene}`, { ...json('POST', reel), signal })).blob(),
+  brand: async (): Promise<ReelBrand | null> => (await request('/brand')).json(),
+  saveBrand: async (reel: Reel): Promise<ReelBrand> => (await request('/brand', json('PUT', reel))).json(),
+  jobs: async (): Promise<ReelJob[]> => (await request('/jobs')).json(),
+  render: async (reel: Reel, kind: ReelJob['kind'], request_id: string, caption = ''): Promise<ReelJob> =>
+    (await request('/jobs', json('POST', { reel, kind, request_id, caption }))).json(),
   cancel: async (id: string): Promise<ReelJob> => (await request(`/jobs/${id}/cancel`, { method: 'POST' })).json(),
   retry: async (id: string): Promise<ReelJob> => (await request(`/jobs/${id}/retry`, { method: 'POST' })).json(),
+  jobThumbnail: async (id: string): Promise<Blob> => (await request(`/jobs/${id}/thumbnail`)).blob(),
   video: async (id: string): Promise<Blob> => (await request(`/jobs/${id}/video`)).blob(),
-  brand: async (): Promise<Pick<ReelComposition, 'brand' | 'accent' | 'logo_id'> | null> => (await request('/brand')).json(),
-  saveBrand: async (composition: ReelComposition) => (await request('/brand', json('PUT', composition))).json(),
   export: async (id: string, filename: string): Promise<string> => {
     if (isDesktopApp()) return invoke<string>('export_reel_video', { jobId: id });
     const blob = await (await request(`/jobs/${id}/download`)).blob();

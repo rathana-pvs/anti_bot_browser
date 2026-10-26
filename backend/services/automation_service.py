@@ -1,4 +1,5 @@
 from automation.warming_options import normalize_warming_options
+from automation.preparation_result import read_result as read_preparation_result
 import asyncio
 import json
 import os
@@ -45,6 +46,8 @@ from backend.services.queue_safety import (
     apply_comment_retry_result,
     apply_warming_result,
     can_retry_first_comment,
+    has_publication_evidence,
+    is_preparation_attempt,
 )
 from backend.services.profile_pipeline import (
     ordered_due_executions,
@@ -58,9 +61,11 @@ from backend.services.queue_service import (
     with_queue_claim_lock,
     persist_queue_execution_stage,
     apply_interrupted_execution_recovery,
+    complete_queue_preparation,
 )
 
 from backend.services import container_lifecycle as lifecycle
+from backend.services import network_recovery
 
 # Brain CLI wrapper
 def run_brain_cli(args: list[str]) -> dict:
@@ -99,8 +104,74 @@ def resolve_brain_pin(brain_id: str, requested_version: str | None = None) -> di
 
 # In-memory tasks registry
 active_automation_tasks: dict[str, dict] = {}
+_queue_execution_tasks: dict[str, asyncio.Task] = {}
+
+
+async def cancel_all_local_posts(batch_id: str | None = None) -> dict:
+    """Cancel local posts in one batch or the entire schedule, excluding cloud and Live."""
+    def cancel_schedule():
+        queue = load_posting_queue()
+        batches = queue.get("daily_batches", [])
+        if batch_id is not None:
+            batches = [batch for batch in batches if batch.get("batch_id") == batch_id]
+            if not batches:
+                raise KeyError("Batch not found")
+        selected = []
+        for batch in batches:
+            for post in batch.get("posts", []):
+                if post.get("type") == "live":
+                    continue
+                for execution in post.get("executions", []):
+                    if (not execution.get("cloud_attempt_id")
+                            and (execution.get("network_recovery") or {}).get("state") in network_recovery.ACTIVE_STATES):
+                        network_recovery.stop_recovery(execution, "cancelled")
+                        execution["cancel_requested_at"] = datetime.now(timezone.utc).isoformat()
+                        if execution.get("status") not in ("pending", "ready", "running", "preparing"):
+                            selected.append(execution)
+                    if not execution.get("cloud_attempt_id") and execution.get("status") in ("pending", "ready", "running", "preparing"):
+                        selected.append(execution)
+        if any(e.get("status") in ("running", "preparing") and e["execution_id"] not in _queue_execution_tasks for e in selected):
+            raise RuntimeError("An interrupted execution is awaiting recovery. Refresh the queue and try again.")
+        now = datetime.now(timezone.utc).isoformat()
+        for execution in selected:
+            execution["cancel_requested_at"] = now
+            if execution.get("status") in ("pending", "ready"):
+                execution["status"] = "cancelled"
+                execution["stage"] = "cancelled"
+                execution["ended_at"] = now
+                execution.setdefault("stage_history", []).append({"stage": "cancelled", "timestamp": now, "reason": "user_cancel_all"})
+        if selected and not save_posting_queue(queue):
+            raise OSError("Could not persist schedule cancellation")
+        return selected
+
+    selected = with_queue_claim_lock(cancel_schedule)
+    prepared = [e for e in selected if e.get("status") == "cancelled" and e.get("container_owner_token")]
+    tasks = [_queue_execution_tasks[e["execution_id"]] for e in selected if e["execution_id"] in _queue_execution_tasks]
+    for task in tasks:
+        if not task.cancelling():
+            task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    # Ready preparations can retain an owned container between scheduler slots.
+    for execution in prepared:
+        await lifecycle.release(execution["profile_id"], execution["container_owner_token"], _stop_container_with_retries)
+    updated_queue = load_posting_queue()
+    for execution in selected:
+        updated = find_queue_execution(updated_queue, execution["execution_id"])
+        if updated and updated["execution"].get("status") in ("pending", "ready", "running", "preparing"):
+            raise OSError("Some cancellation results could not be persisted. Refresh the queue to check their recovery status.")
+    return {"success": True, "cancelled": len(selected), "message": f"Stopped and cancelled {len(selected)} scheduled executions. Interrupted publication may require review."}
+
+
 PREPARATION_HANDOFF_SECONDS = 120.0
 CONTAINER_STOP_RETRY_DELAYS = (0.0, 2.0, 5.0)
+PREPARATION_EXIT_TIMEOUT = 5.0
+
+
+def preparation_result_context(execution):
+    lease = execution.get('scheduler_lease') or {}
+    return dict(execution_id=execution['execution_id'], profile_id=execution['profile_id'],
+                lease_id=lease['lease_id'], owner_token=execution.get('container_owner_token'))
 
 def is_task_process_active(record: dict | None) -> bool:
     # Live owns its publisher slot until encoder/container cleanup completes,
@@ -543,6 +614,21 @@ def claim_queue_execution(execution_id: str, kind: str = "publisher") -> dict:
         target_post = match["post"]
         target_batch = match["batch"]
 
+        if target_exec.get("status") == "cancelled":
+            raise RuntimeError("Execution was cancelled")
+
+        from backend.services.queue_network_recovery import proxy_measurement_active
+        if proxy_measurement_active(queue, target_exec, time.time()):
+            raise RuntimeError("Proxy measurement is in progress")
+
+        if target_exec.get("network_recovery"):
+            from backend.services.queue_network_recovery import current_fingerprint
+            recovery = target_exec["network_recovery"]
+            if (not network_recovery.retry_admitted(target_exec, time.time())
+                    or (recovery.get("state") == "ready"
+                        and current_fingerprint(target_exec) != recovery.get("proxy_fingerprint"))):
+                raise RuntimeError("Network recovery is not ready for dispatch")
+
         if not cloud_execution_allowed(target_exec):
             raise RuntimeError("Cloud attempt is not authorized for dispatch")
 
@@ -600,6 +686,10 @@ def claim_queue_execution(execution_id: str, kind: str = "publisher") -> dict:
         target_exec["ended_at"] = None
         target_exec["error"] = None
         target_exec["logs"] = []
+        recovery = target_exec.get("network_recovery")
+        if kind == "publisher" and recovery and recovery.get("state") == "ready":
+            recovery.update(state="retrying", retry_count=recovery["retry_count"] + 1,
+                            retry_started_at=now_iso, retry_id=str(uuid.uuid4()))
 
         history = target_exec.get("stage_history")
         if not isinstance(history, list):
@@ -691,17 +781,25 @@ async def _execute_queue_preparation_inner(execution_id: str):
         asyncio.create_task(_delayed_dispatch(100))
         return {"success": False, "status": "failed_before_publish", "error": str(error)}
 
+    # The worker writes this lease-fenced result before emitting final stdout,
+    # so a manager interruption cannot lose a successful preparation result.
+    worker_env = automation_worker_env()
+    worker_env['AUTOMATION_PREPARATION_CONTEXT'] = json.dumps(preparation_result_context(target_exec))
+    terminal_result = asyncio.Event()
+    preparation_committed = False
+
     # Spawn process
     proc = await asyncio.create_subprocess_exec(
         str(AUTOMATION_PYTHON), *args,
         cwd=str(ROOT_DIR),
-        env=automation_worker_env(),
+        env=worker_env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
     task_record["process"] = proc
 
     async def read_out():
+        nonlocal preparation_committed
         while True:
             line_b = await proc.stdout.readline()
             if not line_b:
@@ -715,14 +813,18 @@ async def _execute_queue_preparation_inner(execution_id: str):
                     parsed = json.loads(line)
                     if isinstance(parsed, dict) and ("status" in parsed or "success" in parsed):
                         task_record["result"] = parsed
+                        if parsed.get('status') == 'completed' and parsed.get('success') is True:
+                            preparation_committed = complete_queue_preparation(execution_id, lease_id, parsed)
+                            terminal_result.set()
                         continue
                 except Exception:
                     pass
             task_record["logs"].append(normalize_stored_log(line, profile_id))
             stage_match = re.match(r"^\[(.*?)\]\s*\[(.*?)\]\s*\[STAGE\]\s*Execution stage:\s*([a-z_]+)\s*$", line, re.IGNORECASE)
             if stage_match:
-                task_record["current_stage"] = stage_match.group(3)
-                persist_queue_execution_stage(execution_id, stage_match.group(3), stage_match.group(1), lease_id)
+                stage = 'ready' if stage_match.group(3) == 'completed' else stage_match.group(3)
+                task_record["current_stage"] = stage
+                persist_queue_execution_stage(execution_id, stage, stage_match.group(1), lease_id)
 
     async def read_err():
         while True:
@@ -735,8 +837,42 @@ async def _execute_queue_preparation_inner(execution_id: str):
             task_record["last_activity_at"] = datetime.now(timezone.utc).isoformat()
             task_record["logs"].append(normalize_stored_log(f"[STDERR] {line}", profile_id))
 
-    await asyncio.gather(read_out(), read_err())
-    code = await proc.wait()
+    readers = asyncio.gather(read_out(), read_err())
+
+    async def finish_worker():
+        await readers
+        return await proc.wait()
+
+    worker_wait = asyncio.create_task(finish_worker())
+    terminal_wait = asyncio.create_task(terminal_result.wait())
+    code = None
+    try:
+        await asyncio.wait((worker_wait, terminal_wait), return_when=asyncio.FIRST_COMPLETED)
+        if terminal_result.is_set():
+            try:
+                await asyncio.wait_for(asyncio.shield(worker_wait), PREPARATION_EXIT_TIMEOUT)
+            except asyncio.TimeoutError:
+                task_record['logs'].append('Preparation reported completion; stopping worker that did not exit after completion.')
+                if proc.returncode is None:
+                    proc.terminate()
+                try:
+                    await asyncio.wait_for(asyncio.shield(worker_wait), timeout=2)
+                except asyncio.TimeoutError:
+                    if proc.returncode is None:
+                        proc.kill()
+                    code = await asyncio.wait_for(proc.wait(), timeout=2)
+                    # A descendant can inherit a pipe after the worker exits.
+                    # Do not let that pipe delay the completed preparation.
+                    readers.cancel()
+                    worker_wait.cancel()
+        if code is None:
+            code = await worker_wait
+    finally:
+        terminal_wait.cancel()
+        if not worker_wait.done():
+            worker_wait.cancel()
+        if not readers.done():
+            readers.cancel()
 
     ended_at = datetime.now(timezone.utc).isoformat()
     task_record["ended_at"] = ended_at
@@ -744,63 +880,79 @@ async def _execute_queue_preparation_inner(execution_id: str):
     res = task_record.get("result") or {}
     reported_status = res.get("status")
 
-    task_record["status"] = reported_status if reported_status and reported_status.startswith("skipped_") else ("completed" if code == 0 else "failed")
+    if not preparation_committed:
+        preparation_committed = complete_queue_preparation(execution_id, lease_id, res)
+    if preparation_committed:
+        task_record['status'] = 'completed'
+        task_record['scheduler_lease'] = None
+        asyncio.create_task(_delayed_dispatch(100))
+        return {'success': True, 'status': 'completed', 'code': code}
+
+    task_record["status"] = reported_status if reported_status and reported_status.startswith("skipped_") else "failed"
 
     updated_queue = load_posting_queue()
     match = find_queue_execution(updated_queue, execution_id)
-    if match and match["execution"].get("scheduler_lease", {}).get("lease_id") == lease_id:
+    if match and (match["execution"].get("scheduler_lease") or {}).get("lease_id") == lease_id:
         ex = match["execution"]
         ex["ended_at"] = ended_at
         ex["preparation_telemetry"] = res.get("telemetry") or None
+        ex['preparation_evidence_dir'] = res.get('evidence_dir')
+        ex['evidence_dir'] = res.get('evidence_dir')
+        ex['logs'] = res.get('logs') or task_record['logs']
 
         if reported_status and reported_status.startswith("skipped_"):
             ex["status"] = reported_status
             ex["stage"] = reported_status
             ex["preparation_status"] = "skipped"
             ex["error"] = res.get("error") or None
-        elif code == 0:
-            ex["status"] = "ready"
-            ex["stage"] = "ready"
-            ex["preparation_status"] = "ready"
-            ex["preparation_ended_at"] = ended_at
-            ex["container_handoff_expires_at"] = datetime.fromtimestamp(
-                time.time() + PREPARATION_HANDOFF_SECONDS,
-                tz=timezone.utc,
-            ).isoformat()
-            ex["error"] = None
+        elif has_publication_evidence(ex):
+            apply_interrupted_execution_recovery(ex)
         else:
             ex["status"] = "failed_before_publish"
             ex["stage"] = "failed_before_publish"
             ex["preparation_status"] = "failed"
-            ex["error"] = res.get("error") or f"Preparation exited with code {code}"
+            ex["error"] = res.get("error") or f"Preparation did not provide a safely committed completion result (exit code {code})"
 
         release_execution_lease(ex, lease_id)
         save_posting_queue(updated_queue)
 
-        if code != 0:
+        if ex['status'] != 'ready':
             try:
                 await stop_profile_container_after_report(profile_id)
             except Exception:
                 pass
 
         asyncio.create_task(_delayed_dispatch(100))
-    return {"success": code == 0, "status": reported_status or "completed", "code": code}
+    return {"success": False, "status": task_record['status'], "code": code}
 
 
 async def _run_owned_queue(execution_id, action, *args, preparation=False):
+    if execution_id in _queue_execution_tasks:
+        raise RuntimeError("Execution is already running")
     queue = load_posting_queue()
     match = find_queue_execution(queue, execution_id)
     profile_id = match["execution"].get("profile_id") if match else None
     token = uuid.uuid4().hex
     context_token = lifecycle.OWNER_TOKEN.set(token)
     hold = False
+    cancelled = False
+    _queue_execution_tasks[execution_id] = asyncio.current_task()
     try:
         result = await action(execution_id, *args)
         if preparation and result.get("success") and profile_id:
-            prepared = find_queue_execution(load_posting_queue(), execution_id)
+            prepared_queue = load_posting_queue()
+            prepared = find_queue_execution(prepared_queue, execution_id)
             if prepared and prepared["execution"].get("status") == "ready":
                 hold = lifecycle.handoff(profile_id, token)
+                if hold:
+                    prepared['execution']['container_handoff_expires_at'] = datetime.fromtimestamp(
+                        time.time() + PREPARATION_HANDOFF_SECONDS, tz=timezone.utc,
+                    ).isoformat()
+                    save_posting_queue(prepared_queue)
         return result
+    except asyncio.CancelledError:
+        cancelled = True
+        raise
     finally:
         try:
             if profile_id and not hold:
@@ -813,6 +965,30 @@ async def _run_owned_queue(execution_id, action, *args, preparation=False):
                 except Exception as error:
                     print(f"Container cleanup failed for {profile_id}: {error}")
         finally:
+            if cancelled:
+                queue = load_posting_queue()
+                interrupted = find_queue_execution(queue, execution_id)
+                if interrupted:
+                    ex = interrupted["execution"]
+                    if ex.get("container_owner_token") == token and (
+                        ex.get("status") in ("running", "preparing")
+                        or (preparation and ex.get('status') == 'ready')
+                    ):
+                        apply_interrupted_execution_recovery(ex)
+                        if ex["status"] == "failed_before_publish" or interrupted["post"].get("type") == "warming":
+                            ex["status"] = ex["stage"] = "cancelled"
+                        ex["stage_history"][-1]["reason"] = "user_cancel_all"
+                        lease_id = (ex.get("scheduler_lease") or {}).get("lease_id")
+                        if lease_id:
+                            release_execution_lease(ex, lease_id)
+                        if not save_posting_queue(queue):
+                            print(f"Could not persist cancellation result for {execution_id}")
+                    record = active_automation_tasks.get(profile_id)
+                    if record and record.get("container_owner_token") == token:
+                        record["status"] = ex.get("status", "stopped")
+                        record["ended_at"] = datetime.now(timezone.utc).isoformat()
+                        record["scheduler_lease"] = None
+            _queue_execution_tasks.pop(execution_id, None)
             lifecycle.OWNER_TOKEN.reset(context_token)
 
 
@@ -1029,6 +1205,7 @@ async def _execute_queue_item_inner(execution_id: str, scheduler_kind: str = "pu
             ex["telemetry"] = res["telemetry"]
 
         ex["logs"] = [l["message"] for l in task_record["logs"]]
+        network_recovery.refresh_recovery(ex, target_post.get("type"), time.time())
         release_execution_lease(ex, lease_id)
         save_posting_queue(updated_queue)
 
@@ -1242,6 +1419,52 @@ async def _delayed_dispatch(delay_ms: int = 100):
         print(f"Delayed dispatch error: {err}")
 
 # Background loops
+def recover_preparation_attempt(execution):
+    """Reuse only a matching completed attempt with a live, fenced handoff."""
+    attempt = execution
+    if execution.get('status') == 'ready' and not execution.get('scheduler_lease'):
+        attempt = dict(execution, scheduler_lease=execution.get('last_scheduler_lease'))
+    if not is_preparation_attempt(attempt) or has_publication_evidence(execution):
+        return False
+    context = preparation_result_context(attempt)
+    result = read_preparation_result(PROFILES_DIR, context)
+    completed = bool(result and result.get('status') == 'completed'
+                     and result.get('success') is True and not result.get('error'))
+    owner = lifecycle.snapshot().get(execution['profile_id']) or {}
+    now = time.time()
+    reusable = bool(completed and owner.get('state') == 'handoff'
+                    and owner.get('token') == context['owner_token']
+                    and owner.get('execution_id') == context['execution_id']
+                    and owner.get('manager_id') == MANAGER_INSTANCE_ID
+                    and min(owner.get('heartbeat_expires_at', 0), owner.get('hard_deadline_at', 0)) > now
+                    and get_container_status(execution['profile_id']) == 'running')
+    if reusable and execution.get('status') == 'ready':
+        return False
+    execution['last_active_stage'] = execution.get('stage')
+    execution['status'] = execution['stage'] = 'ready' if reusable else 'pending'
+    execution['preparation_status'] = 'ready' if reusable else 'pending'
+    execution['error'] = None
+    execution['ended_at'] = None
+    execution['recovered_at'] = datetime.now(timezone.utc).isoformat()
+    execution['stage_updated_at'] = execution['recovered_at']
+    execution['container_handoff_expires_at'] = (
+        datetime.fromtimestamp(owner['heartbeat_expires_at'], tz=timezone.utc).isoformat() if reusable else None
+    )
+    if completed:
+        execution['preparation_telemetry'] = result.get('telemetry')
+        execution['preparation_evidence_dir'] = result.get('evidence_dir')
+    if reusable:
+        execution['preparation_ended_at'] = execution['recovered_at']
+    else:
+        execution.pop('preparation_ended_at', None)
+    execution.setdefault('stage_history', []).append({
+        'stage': execution['stage'], 'timestamp': execution['recovered_at'],
+        'reason': 'preparation_handoff_recovered' if reusable else 'preparation_retry_required',
+        'interrupted_stage': execution['last_active_stage'], 'lease_id': context['lease_id'],
+    })
+    return True
+
+
 def recover_stale_queue_executions(reason: str = "expired_scheduler_lease"):
     try:
         queue = load_posting_queue()
@@ -1269,12 +1492,27 @@ def recover_stale_queue_executions(reason: str = "expired_scheduler_lease"):
                 marker = DATA_DIR / "worker" / "publish-intents" / (exec_item["execution_id"] + ".json")
                 if marker.exists():
                     exec_item["stage"] = "publish_clicked"
-            apply_interrupted_execution_recovery(exec_item)
+            if not recover_preparation_attempt(exec_item):
+                apply_interrupted_execution_recovery(exec_item)
             exec_item["scheduler_recovery_reason"] = reason
             exec_item["last_scheduler_lease"] = stale_lease
             exec_item["scheduler_lease"] = None
             print(f"[Scheduler] Recovered stale execution {exec_item.get('execution_id')} as {exec_item.get('status')} (stage: {exec_item.get('last_active_stage')})")
             modified = True
+
+        # Ready may have been committed just before a manager interruption,
+        # after its lease was released but before container ownership handoff.
+        for batch in queue.get('daily_batches', []):
+            for post in batch.get('posts', []):
+                for execution in post.get('executions', []):
+                    record = active_automation_tasks.get(execution.get('profile_id'))
+                    if (execution.get('status') != 'ready' or execution.get('preparation_status') != 'ready'
+                            or (record and record.get('queue_execution_id') == execution.get('execution_id')
+                                and is_task_process_active(record))):
+                        continue
+                    if recover_preparation_attempt(execution):
+                        execution['scheduler_recovery_reason'] = 'prepared_session_unavailable'
+                        modified = True
 
         if modified:
             save_posting_queue(queue)
@@ -1373,6 +1611,9 @@ async def _run_dispatched_queue_task(execution_id: str, kind: str):
             "Execution not found",
             "queue_claim_in_progress",
             "Container cleanup is in progress",
+            "Network recovery is not ready for dispatch",
+            "Proxy measurement is in progress",
+            "Execution was cancelled",
         )
         if isinstance(err, RuntimeError) and message.startswith(expected_prefixes):
             print(f"[Queue Dispatcher] Deferred {execution_id}: {message}")
@@ -1415,6 +1656,9 @@ async def dispatch_pending_queue():
             if not cloud_execution_allowed(match["execution"]):
                 continue
             if match["execution"].get("container_cleanup_in_progress"):
+                continue
+            from backend.services.queue_network_recovery import proxy_measurement_active
+            if proxy_measurement_active(current_q, match["execution"], time.time()):
                 continue
 
             pid = match["execution"]["profile_id"]

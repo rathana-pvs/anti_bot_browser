@@ -54,7 +54,7 @@ fn import_selection(path: Option<PathBuf>, port: u16, token: &str) -> Result<Opt
 }
 
 fn import_images(paths: Option<Vec<PathBuf>>, max_files: u8, port: u16, token: &str) -> Result<Option<Value>, String> {
-    if !(1..=5).contains(&max_files) { return Err("Choose between one and five photos.".into()); }
+    if !(1..=8).contains(&max_files) { return Err("Choose between one and eight photos.".into()); }
     let Some(paths) = paths else { return Ok(None); };
     if paths.is_empty() { return Ok(None); }
     if paths.len() > max_files as usize { return Err(format!("Choose up to {max_files} photos for this action.")); }
@@ -72,7 +72,7 @@ fn import_images(paths: Option<Vec<PathBuf>>, max_files: u8, port: u16, token: &
 
 #[tauri::command]
 pub async fn pick_reel_images(app: AppHandle, window: tauri::WebviewWindow, session: State<'_, ApiSession>, max_files: u8) -> Result<Option<Value>, String> {
-    if !(1..=5).contains(&max_files) { return Err("Choose between one and five photos.".into()); }
+    if !(1..=8).contains(&max_files) { return Err("Choose between one and eight photos.".into()); }
     let (send, receive) = tokio::sync::oneshot::channel();
     app.dialog().file().set_parent(&window).set_title("Choose news photos")
         .add_filter("Photos", &["jpg", "jpeg", "jpe", "jfif", "png", "webp", "avif", "gif", "bmp", "tif", "tiff"])
@@ -145,7 +145,7 @@ mod tests {
         assert_eq!(import_images(None, 5, 0, "test-token").unwrap(), None);
         assert_eq!(import_images(Some(vec![]), 5, 0, "test-token").unwrap(), None);
         assert!(import_images(Some(vec![PathBuf::from("one"); 6]), 5, 0, "test-token").is_err());
-        assert!(import_images(None, 6, 0, "test-token").is_err());
+        assert!(import_images(None, 9, 0, "test-token").is_err());
     }
 
     #[test]

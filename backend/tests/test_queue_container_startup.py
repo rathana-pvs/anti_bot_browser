@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from backend.services import automation_service as svc
+from backend.services import queue_service
 
 
 @pytest.mark.parametrize("worker,post_type,kind", [
@@ -16,7 +17,7 @@ from backend.services import automation_service as svc
 ])
 @pytest.mark.parametrize("startup_fails", [False, True])
 def test_queue_worker_reaches_container_startup(monkeypatch, worker, post_type, kind, startup_fails):
-    lease = {"lease_id": "lease-test"}
+    lease = {"lease_id": "lease-test", "kind": kind}
     execution = {
         "execution_id": "exec-test", "profile_id": "profile-test",
         "status": "running", "scheduler_lease": lease,
@@ -31,6 +32,8 @@ def test_queue_worker_reaches_container_startup(monkeypatch, worker, post_type, 
     monkeypatch.setattr(svc, "claim_queue_execution", claim)
     monkeypatch.setattr(svc, "load_posting_queue", lambda: queue)
     monkeypatch.setattr(svc, "save_posting_queue", Mock(return_value=True))
+    monkeypatch.setattr(queue_service, "load_posting_queue", lambda: queue)
+    monkeypatch.setattr(queue_service, "save_posting_queue", Mock(return_value=True))
     monkeypatch.setattr(svc, "active_automation_tasks", {})
     monkeypatch.setattr(svc, "resolve_brain_pin", lambda *_: None)
     monkeypatch.setattr(svc, "automation_worker_env", lambda: {})
@@ -44,7 +47,7 @@ def test_queue_worker_reaches_container_startup(monkeypatch, worker, post_type, 
     status = "published" if post_type == "photo" and worker == "item" else "completed"
     proc = SimpleNamespace(
         stdout=SimpleNamespace(readline=AsyncMock(side_effect=[
-            ('{"status": "' + status + '"}\n').encode(), b"",
+            ('{"status": "' + status + '", "success": true}\n').encode(), b"",
         ])),
         stderr=SimpleNamespace(readline=AsyncMock(return_value=b"")),
         wait=AsyncMock(return_value=0),

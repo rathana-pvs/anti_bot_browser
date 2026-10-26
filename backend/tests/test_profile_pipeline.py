@@ -152,8 +152,8 @@ def test_same_post_allows_another_profile_while_publisher_is_running():
     }
 
 
-@pytest.mark.parametrize("status", ["pending", "ready", "running", "preparing", "uncertain", "needs_review"])
-def test_later_posts_wait_for_unfinished_or_unverified_earlier_posts(status):
+@pytest.mark.parametrize("status", ["pending", "ready", "running", "preparing"])
+def test_later_posts_wait_for_unfinished_earlier_posts(status):
     target = _execution("post-3")
     batch = _batch(delay_seconds=0, posts=[
         {"executions": [_execution("post-1", status)]},
@@ -163,6 +163,16 @@ def test_later_posts_wait_for_unfinished_or_unverified_earlier_posts(status):
     result = batch_iteration_availability(batch, target_execution=target)
     assert result["allowed"] is False
     assert result["reason"] == "batch_iteration_waiting_for_profiles"
+
+
+@pytest.mark.parametrize("status", ["uncertain", "needs_review", "failed_before_publish"])
+def test_finished_attempt_recovery_does_not_hold_a_different_post(status):
+    previous = _execution("previous", status, "2026-09-28T12:00:00+00:00")
+    previous["network_recovery"] = {"state": "waiting_review"}
+    target = _execution("next")
+    batch = _batch(posts=[{"executions": [previous]}, {"executions": [target]}])
+    assert batch_iteration_availability(
+        batch, _timestamp_ms("2026-09-28T12:01:00"), target)["allowed"]
 
 
 def test_legacy_batch_without_iteration_delay_remains_ready():

@@ -56,6 +56,24 @@ def test_download_rejects_incomplete_measurement(monkeypatch):
     assert not result['success'] and result['mbps'] is None
 
 
+@pytest.mark.parametrize('direction', ['download', 'upload'])
+def test_recovery_sample_can_measure_just_above_one_mbps_within_timeout(monkeypatch, direction):
+    calls = stub(monkeypatch, '200 1000000 7')
+    result = service.check_proxy_speed(NETWORK, direction, sample_bytes=1_000_000)
+    assert result['success'] and 1 < result['mbps'] < 1.2
+    assert result['bytes'] == 1_000_000
+    if direction == 'download':
+        assert '__down?bytes=1000000' in calls[0][1]['input']
+
+
+@pytest.mark.parametrize('size', [0, 249999, 5000001, '1000000'])
+def test_speed_sample_bounds(monkeypatch, size):
+    calls = stub(monkeypatch, '200 1000000 7')
+    with pytest.raises(ValueError, match='Speed sample'):
+        service.check_proxy_speed(NETWORK, 'download', sample_bytes=size)
+    assert not calls
+
+
 def test_facebook_http_error_keeps_timing(monkeypatch):
     stub(monkeypatch, '403 0.2')
     result = service.check_facebook_response(NETWORK)

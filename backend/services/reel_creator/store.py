@@ -24,9 +24,9 @@ class Store:
             db.execute('PRAGMA journal_mode=WAL')
             db.execute('PRAGMA synchronous=FULL')
             db.executescript('''
-                CREATE TABLE IF NOT EXISTS drafts (
+                CREATE TABLE IF NOT EXISTS reels (
                     id TEXT PRIMARY KEY, revision INTEGER NOT NULL,
-                    composition TEXT NOT NULL, updated REAL NOT NULL);
+                    payload TEXT NOT NULL, updated REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS assets (
                     id TEXT PRIMARY KEY, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS jobs (
@@ -36,8 +36,11 @@ class Store:
                     id TEXT PRIMARY KEY, payload TEXT NOT NULL);
             ''')
             db.execute('BEGIN IMMEDIATE')
-            if 'editorial' not in {row['name'] for row in db.execute('PRAGMA table_info(drafts)')}:
-                db.execute("ALTER TABLE drafts ADD COLUMN editorial TEXT NOT NULL DEFAULT '{}'")
+            if db.execute('PRAGMA user_version').fetchone()[0] < 4:
+                # The template-based studio is gone: its drafts and render records no longer open.
+                db.execute('DROP TABLE IF EXISTS drafts')
+                db.execute("DELETE FROM jobs WHERE payload NOT LIKE '%\"reel\":%'")
+                db.execute('PRAGMA user_version=4')
             yield db
             db.commit()
         except BaseException:
@@ -46,23 +49,36 @@ class Store:
         finally:
             db.close()
 
+    @staticmethod
+    def _draft(row):
+        payload = json.loads(row['payload'])
+        return dict(id=row['id'], revision=row['revision'], updated_at=row['updated'], **payload)
+
     def drafts(self):
         with self.db() as db:
-            return [dict(id=r['id'], revision=r['revision'],
-                         composition=json.loads(r['composition']), editorial=json.loads(r['editorial']), updated_at=r['updated'])
-                    for r in db.execute('SELECT * FROM drafts ORDER BY updated DESC LIMIT 50')]
+            return [self._draft(r) for r in db.execute('SELECT * FROM reels ORDER BY updated DESC LIMIT 50')]
 
-    def save_draft(self, draft_id, revision, composition, editorial=None):
+    def draft(self, draft_id):
         with self.db() as db:
-            old = db.execute('SELECT revision,editorial FROM drafts WHERE id=?', (draft_id,)).fetchone()
+            row = db.execute('SELECT * FROM reels WHERE id=?', (draft_id,)).fetchone()
+        if not row:
+            raise FileNotFoundError('Draft not found')
+        return self._draft(row)
+
+    def save_draft(self, draft_id, revision, payload):
+        """payload: reel, caption, source_text, source_url."""
+        with self.db() as db:
+            old = db.execute('SELECT revision FROM reels WHERE id=?', (draft_id,)).fetchone()
             if revision != (old['revision'] if old else 0):
-                raise Conflict('This draft changed in another window. Reload it before saving.')
-            value = dict(id=draft_id, revision=revision + 1,
-                         composition=composition, updated_at=time.time(),
-                         editorial=editorial if editorial is not None else json.loads(old['editorial']) if old else {})
-            db.execute('INSERT OR REPLACE INTO drafts(id,revision,composition,updated,editorial) VALUES(?,?,?,?,?)',
-                       (draft_id, value['revision'], json.dumps(composition), value['updated_at'], json.dumps(value['editorial'])))
+                raise Conflict('This reel changed in another window. Reload it before saving.')
+            value = dict(id=draft_id, revision=revision + 1, updated_at=time.time(), **payload)
+            db.execute('INSERT OR REPLACE INTO reels(id,revision,payload,updated) VALUES(?,?,?,?)',
+                       (draft_id, value['revision'], json.dumps(payload), value['updated_at']))
         return value
+
+    def delete_draft(self, draft_id):
+        with self.db() as db:
+            db.execute('DELETE FROM reels WHERE id=?', (draft_id,))
 
     def put_asset(self, value):
         with self.db() as db:
@@ -79,14 +95,14 @@ class Store:
             raise ValueError('Wrong asset type')
         return value
 
-    def create_job(self, request_id, fingerprint, composition, kind, post_caption=''):
+    def create_job(self, request_id, fingerprint, reel, kind, post_caption=''):
         with self.db() as db:
             old = db.execute('SELECT * FROM jobs WHERE request_id=?', (request_id,)).fetchone()
             if old:
                 if old['fingerprint'] != fingerprint:
                     raise Conflict('The render request ID was already used for different settings.')
                 return json.loads(old['payload'])
-            value = dict(id=uuid.uuid4().hex, composition=composition, kind=kind,
+            value = dict(id=uuid.uuid4().hex, reel=reel, kind=kind,
                          state='queued', progress=0, reason=None, error=None,
                          created_at=time.time(), updated_at=time.time(), attempt=0,
                          cancel_requested=False, output=None, process=None, post_caption=post_caption)

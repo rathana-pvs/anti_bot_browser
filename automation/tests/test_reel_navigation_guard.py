@@ -3,6 +3,7 @@ from unittest.mock import Mock, patch
 
 from modules.publication_result_verifier import ReelPublicationResultVerifier
 from modules.publishing_pipeline import PublicationResultVerifierModule
+from tasks.facebook_reel import FacebookReelTask
 
 
 class ReelNavigationGuardTests(unittest.TestCase):
@@ -37,6 +38,49 @@ class ReelNavigationGuardTests(unittest.TestCase):
         self.assertEqual(result.outcome, "uncertain")
         self.assertEqual(task.result_status, "uncertain")
         task._failed_after_publish.assert_not_called()
+
+    def test_each_refresh_gets_fresh_fifteen_second_loading_budget(self):
+        for success_on in (None, 2, 3):
+            with self.subTest(success_on=success_on):
+                task = FacebookReelTask.__new__(FacebookReelTask)
+                task.client = Mock()
+                task.log = Mock()
+                task.human = Mock()
+                task.capture_evidence = Mock()
+                task._allow_reel_profile_navigation = Mock(return_value=True)
+                task.execute_publish_gate = Mock()
+                clock = [0.0]
+                navigations = []
+                task.navigate_to = Mock(side_effect=lambda *a, **k: navigations.append(clock[0]))
+
+                def read(screen):
+                    recent = len(navigations) == success_on and clock[0] - navigations[-1] >= 12
+                    task._reel_top_post_found = True
+                    task.latest_reel_timestamp_check = {
+                        'accepted': recent,
+                        'reason': 'recent_top_post' if recent else 'profile_feed_loading',
+                    }
+                    return recent
+
+                task._latest_reel_is_visible = Mock(side_effect=read)
+
+                def sleep(seconds):
+                    clock[0] += seconds
+
+                with patch('tasks.facebook_reel.time.sleep', side_effect=sleep), \
+                     patch('tasks.facebook_reel.time.monotonic', side_effect=lambda: clock[0]):
+                    visible = ReelPublicationResultVerifier(task).verify_latest_reel()
+
+                self.assertEqual(visible, success_on is not None)
+                attempts = success_on or 3
+                self.assertEqual(len(navigations), attempts)
+                for index, started in enumerate(navigations):
+                    self.assertAlmostEqual(started, index * 15.8)
+                self.assertAlmostEqual(clock[0], (attempts - 1) * 15.8 + (12.8 if success_on else 15.8))
+                self.assertEqual(task.capture_evidence.call_count, attempts)
+                self.assertEqual(task._allow_reel_profile_navigation.call_count, attempts)
+                task.human.scroll.assert_not_called()
+                task.execute_publish_gate.assert_not_called()
 
 
 if __name__ == "__main__":
