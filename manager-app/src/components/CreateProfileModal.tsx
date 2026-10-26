@@ -43,7 +43,7 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
   const [cpuOptions, setCpuOptions] = useState([1, 2, 4, 6, 8]);
   const [memoryOptions, setMemoryOptions] = useState([1024, 2048, 3072, 4096, 6144, 8192]);
   const [resolutions, setResolutions] = useState(RESOLUTION_OPTIONS.map((item) => item.value));
-  const [networkChoice, setNetworkChoice] = useState(() => proxies.find((proxy) => !proxy.assigned)?.id || 'direct');
+  const [networkChoice, setNetworkChoice] = useState(() => proxies.find((proxy) => !proxy.assigned && !proxy.profile_id && proxy.group !== 'Poor proxy')?.id || 'direct');
   const networkChoiceRef = useRef(networkChoice);
   const networkTouched = useRef(false);
   const proxiesRef = useRef(proxies);
@@ -64,7 +64,7 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
     setName(`Account ${existingCountRef.current + 1}`);
     setGroup('');
     networkTouched.current = false;
-    const defaultChoice = proxiesRef.current.find((proxy) => !proxy.assigned)?.id || 'direct';
+    const defaultChoice = proxiesRef.current.find((proxy) => !proxy.assigned && !proxy.profile_id && proxy.group !== 'Poor proxy')?.id || 'direct';
     networkChoiceRef.current = defaultChoice;
     setNetworkChoice(defaultChoice);
     setAdvancedOpen(false);
@@ -105,7 +105,7 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
 
   useEffect(() => {
     if (!isOpen || isSaving || networkTouched.current) return;
-    const firstAvailable = proxies.find((proxy) => !proxy.assigned);
+    const firstAvailable = proxies.find((proxy) => !proxy.assigned && !proxy.profile_id && proxy.group !== 'Poor proxy');
     const choice = firstAvailable?.id || 'direct';
     if (choice === networkChoiceRef.current) return;
     networkChoiceRef.current = choice;
@@ -119,7 +119,7 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
 
   if (!isOpen) return null;
 
-  const availableProxies = proxies.filter((proxy) => !proxy.assigned);
+  const availableProxies = proxies.filter((proxy) => !proxy.assigned && !proxy.profile_id && proxy.group !== 'Poor proxy');
   const selectedProxy = availableProxies.find((proxy) => proxy.id === networkChoice);
 
   const speedTestNetwork = networkChoice === 'custom'

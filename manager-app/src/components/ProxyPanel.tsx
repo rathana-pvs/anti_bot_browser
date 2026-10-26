@@ -1,10 +1,12 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { formatProxyGeography, ProxyItem } from '../types/proxy';
-import { checkProxyGeography, importProxies, refreshProxyStatuses, testProxyPing, deleteSelectedProxies } from '../services/api';
-import { Globe, Plus, Trash2, Activity, MapPin, X, Loader2, Search, Lock } from 'lucide-react';
+import { checkProxyGeography, importProxies, refreshProxyStatuses, testProxyPing, deleteSelectedProxies, testSavedProxySpeed, NetworkSpeedResult } from '../services/api';
+import { Globe, Plus, Trash2, Activity, MapPin, X, Loader2, Search, Lock, Folder, Gauge } from 'lucide-react';
 import { useAppDialog } from './ui/AppDialogProvider';
 import { Checkbox } from './ui/Checkbox';
 import { Select } from './ui/Select';
+import { FolderList, ALL_FOLDERS } from './accounts/FolderList';
+import { PROXY_FOLDERS } from '../types/proxy';
 
 interface ProxyPanelProps {
   proxies: ProxyItem[];
@@ -18,6 +20,14 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
   onSelectProfile,
 }) => {
   const { showAlert, showConfirm } = useAppDialog();
+  const [folder, setFolder] = useState(ALL_FOLDERS);
+  const folderEntries = PROXY_FOLDERS.map(name => ({ name, count: proxies.filter(p => p.group === name).length }));
+  const [speedRun, setSpeedRun] = useState<{ total: number; done: number; id: string } | null>(null);
+  const [speedResults, setSpeedResults] = useState<Record<string, NetworkSpeedResult>>({});
+  const [speedErrors, setSpeedErrors] = useState<Record<string, string>>({});
+  const stopSpeed = useRef(false);
+  const speedActive = useRef(false);
+  useEffect(() => () => { stopSpeed.current = true; }, []);
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [importText, setImportText] = useState('');
   const [isImporting, setIsImporting] = useState(false);
@@ -29,23 +39,26 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
   const [isDeleting, setIsDeleting] = useState(false);
-  const busy = isDeleting || isImporting || isRefreshingStatus;
+  const busy = isDeleting || isImporting || isRefreshingStatus || Boolean(speedRun);
   const inUse = (proxy: ProxyItem) => Boolean(proxy.assigned || proxy.profile_id);
   const assigned = proxies.filter(inUse).length;
-  const available = proxies.length - assigned;
+  const available = proxies.filter(p => p.group === 'Available').length;
+  const poor = proxies.filter(p => p.group === 'Poor proxy').length;
   const query = search.trim().toLowerCase();
   const visibleProxies = proxies.filter((proxy) => {
+    if (folder !== ALL_FOLDERS && proxy.group !== folder) return false;
     if (filter === 'available' && inUse(proxy)) return false;
     if (filter === 'assigned' && !inUse(proxy)) return false;
     return !query || [proxy.host, String(proxy.port), proxy.username, proxy.profile_id,
-      proxy.exit_ip, formatProxyGeography(proxy)].filter(Boolean).join(' ').toLowerCase().includes(query);
+      proxy.exit_ip, proxy.group, formatProxyGeography(proxy)].filter(Boolean).join(' ').toLowerCase().includes(query);
   }).sort((a, b) => Number(inUse(b)) - Number(inUse(a)));
-  const selectableIds = visibleProxies.filter((proxy) => !inUse(proxy)).map((proxy) => proxy.id);
+  const selectableIds = visibleProxies.map((proxy) => proxy.id);
+  const groups = PROXY_FOLDERS.filter(group => visibleProxies.some(p => p.group === group));
   const selectedVisible = selectableIds.filter((id) => selectedIds.has(id)).length;
   const allVisibleSelected = selectableIds.length > 0 && selectedVisible === selectableIds.length;
 
   useEffect(() => {
-    const availableIds = new Set(proxies.filter((proxy) => !proxy.assigned && !proxy.profile_id).map((proxy) => proxy.id));
+    const availableIds = new Set(proxies.map((proxy) => proxy.id));
     setSelectedIds((current) => {
       const next = new Set([...current].filter((id) => availableIds.has(id)));
       return next.size === current.size ? current : next;
@@ -58,6 +71,30 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
       ids.forEach((id) => checked ? next.add(id) : next.delete(id));
       return next;
     });
+  };
+
+  const checkSpeeds = async (ids: string[]) => {
+    if (speedActive.current || !ids.length) return;
+    speedActive.current = true;
+    stopSpeed.current = false;
+    try {
+      for (let index = 0; index < ids.length && !stopSpeed.current; index++) {
+        const id = ids[index];
+        setSpeedRun({ total: ids.length, done: index, id });
+        setSpeedErrors(previous => { const next = { ...previous }; delete next[id]; return next; });
+        try {
+          const result = await testSavedProxySpeed(id);
+          setSpeedResults(previous => ({ ...previous, [id]: result }));
+          onRefresh();
+        } catch (err) {
+          setSpeedErrors(previous => ({ ...previous, [id]: err instanceof Error ? err.message : 'Speed check failed' }));
+        }
+      }
+    } finally {
+      speedActive.current = false;
+      setSpeedRun(null);
+      onRefresh();
+    }
   };
 
   const handleImport = async (e: React.FormEvent) => {
@@ -145,15 +182,23 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
   };
 
   return (
-    <div className="flex h-full min-w-0 flex-1 flex-col gap-4 overflow-hidden bg-background p-4 sm:p-5 select-none">
+    <div className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden bg-background select-none">
+      <FolderList automatic value={folder} onChange={setFolder} folders={folderEntries} total={proxies.length} attention={0}
+        unfiled={0} onCreate={() => {}} onDropAccounts={() => {}} allLabel="All proxies"
+        onFolderMenu={() => {}} onBlankMenu={() => {}} menuKey={() => () => {}} />
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-hidden p-4 sm:p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <div>
-            <h1 className="flex items-center gap-2 text-base font-semibold text-zinc-100"><Globe className="h-4 w-4 text-zinc-400" />Proxies</h1>
+            <h1 className="flex items-center gap-2 text-base font-semibold text-zinc-100"><Globe className="h-4 w-4 text-zinc-400" />{folder === ALL_FOLDERS ? 'Proxies' : folder}</h1>
             <p className="mt-1 text-xs text-zinc-500">Proxies your accounts connect through.</p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <button onClick={() => checkSpeeds(proxies.map(p => p.id))} disabled={busy || !proxies.length}
+            className="flex items-center gap-1.5 rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 disabled:opacity-40">
+            <Gauge className="h-3.5 w-3.5" />Check all download/upload
+          </button>
           <button onClick={handleRefreshStatus} disabled={busy || proxies.length === 0}
             className="flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-40">
             {isRefreshingStatus ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Activity className="h-3.5 w-3.5" />}
@@ -169,15 +214,20 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
       <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-zinc-500">
         <span><strong className="font-medium text-zinc-200">{proxies.length}</strong> total</span>
         <span><strong className="font-medium text-emerald-400">{available}</strong> available</span>
-        <span><strong className="font-medium text-zinc-300">{assigned}</strong> assigned</span>
+        <span><strong className="font-medium text-zinc-300">{assigned}</strong> used</span>
+        <span><strong className="font-medium text-amber-400">{poor}</strong> poor</span>
       </div>
 
+      <div className="text-[11px] text-zinc-500" aria-live="polite">
+        {speedRun ? <span>Checking proxy {speedRun.done + 1} of {speedRun.total}… <button className="ml-2 text-blue-300" onClick={() => { stopSpeed.current = true; }}>Stop after current proxy</button></span>
+          : 'Used proxies stay locked to their profiles. Unassigned proxies move to Poor proxy if download or upload fails or is below 1 Mbps. Both must pass to recover. Untested proxies are marked in Available.'}
+      </div>
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-surface">
         <div className="flex flex-wrap items-center gap-2 border-b border-border p-3">
           <div className="relative min-w-40 flex-1">
             <Search aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500" />
             <input value={search} onChange={(event) => setSearch(event.target.value)} aria-label="Search proxies"
-              placeholder="Search host, location, or profile…"
+              placeholder="Search host, folder, location, or profile…"
               className="w-full rounded-lg border border-zinc-800 bg-zinc-950 py-2 pl-8 pr-3 text-xs text-zinc-200 outline-none focus:border-blue-500" />
           </div>
           <div className="w-36">
@@ -186,8 +236,9 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
           </div>
           {selectedIds.size > 0 && (
             <>
+              <button onClick={() => checkSpeeds([...selectedIds])} disabled={busy} className="px-2 py-1.5 text-xs text-blue-300 disabled:opacity-40">Check selected download/upload</button>
               <button onClick={() => setSelectedIds(new Set())} disabled={busy} className="px-2 py-1.5 text-xs text-zinc-400 hover:text-white disabled:opacity-40">Clear selection</button>
-              <button onClick={() => handleDelete([...selectedIds])} disabled={busy}
+              <button onClick={() => handleDelete([...selectedIds])} disabled={busy || !proxies.some(p => selectedIds.has(p.id) && !inUse(p))}
                 className="flex items-center gap-1.5 rounded-md border border-red-900/60 bg-red-950/30 px-3 py-1.5 text-xs text-red-300 hover:bg-red-950/60 disabled:opacity-40">
                 {isDeleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
                 {isDeleting ? 'Deleting…' : `Delete selected (${selectedIds.size})`}
@@ -201,7 +252,7 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
             <thead className="sticky top-0 z-10 bg-zinc-950 text-[10px] uppercase tracking-wide text-zinc-500">
               <tr className="border-b border-border">
                 <th className="w-10 py-2.5 pl-3 font-medium">
-                  <Checkbox ariaLabel="Select all available proxies in view" disabled={busy || selectableIds.length === 0}
+                  <Checkbox ariaLabel="Select all proxies in view" disabled={busy || selectableIds.length === 0}
                     checked={allVisibleSelected ? true : selectedVisible > 0 ? 'indeterminate' : false}
                     onCheckedChange={(checked) => toggleSelection(selectableIds, checked)} />
                 </th>
@@ -209,15 +260,29 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
                 <th className="px-3 py-2.5 font-medium">Location / timezone</th>
                 <th className="px-3 py-2.5 font-medium">Assignment</th>
                 <th className="px-3 py-2.5 font-medium">Latency</th>
+                <th className="px-3 py-2.5 font-medium">Download / upload</th>
                 <th className="w-28 px-3 py-2.5 text-right font-medium">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border/60">
-              {visibleProxies.map((proxy) => (
+              {groups.map(group => <React.Fragment key={group}>
+                <tr className="bg-zinc-900/80"><td colSpan={7} className="px-3 py-2">
+                  <div className="flex items-center gap-3">
+                    <Folder className="h-3.5 w-3.5 text-blue-300" />
+                    <span className="font-medium text-zinc-200">{group}</span>
+                    <span className="text-zinc-500">{proxies.filter(p => (p.group || '') === group).length} proxies</span>
+                    <button disabled={busy} onClick={() => checkSpeeds(proxies.filter(p => (p.group || '') === group).map(p => p.id))}
+                      className="ml-auto flex items-center gap-1.5 text-blue-300 disabled:opacity-40"><Gauge className="h-3.5 w-3.5" />Check folder download/upload</button>
+                  </div>
+                </td></tr>
+              {visibleProxies.filter(p => (p.group || '') === group).map((proxy) => {
+                const result = speedResults[proxy.id] || proxy.speed_test;
+                const speed = (measurement: NetworkSpeedResult['download'] | undefined) => !measurement ? '—' : measurement.success ? `${measurement.mbps} Mbps` : 'Failed';
+                return (
                 <tr key={proxy.id} className={selectedIds.has(proxy.id) ? 'bg-blue-500/5' : 'hover:bg-zinc-800/30'}>
-                  <td className="py-2.5 pl-3" title={inUse(proxy) ? 'Assigned proxies cannot be deleted' : undefined}>
+                  <td className="py-2.5 pl-3">
                     <Checkbox ariaLabel={`Select ${proxy.host}:${proxy.port}`} checked={selectedIds.has(proxy.id)}
-                      disabled={busy || inUse(proxy)} onCheckedChange={(checked) => toggleSelection([proxy.id], checked)} />
+                      disabled={busy} onCheckedChange={(checked) => toggleSelection([proxy.id], checked)} />
                   </td>
                   <td className="px-3 py-2.5">
                     <div className="flex items-center gap-2">
@@ -238,13 +303,29 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
                         className="inline-flex items-center gap-1.5 text-[11px] text-blue-300 hover:text-blue-200 disabled:text-zinc-400">
                         <Lock className="h-3 w-3" />{proxy.profile_id || 'Assigned'}
                       </button>
-                    ) : <span className="text-[11px] text-zinc-400">Available</span>}
+                    ) : <span className="text-[11px] text-zinc-400">Unassigned</span>}
                   </td>
                   <td className="whitespace-nowrap px-3 py-2.5 font-mono text-[11px] text-zinc-400">
                     {proxy.latency_ms !== null ? `${proxy.latency_ms} ms` : '—'}
                   </td>
+                  <td className="px-3 py-2.5 text-[11px] text-zinc-300">
+                    {speedRun?.id === proxy.id ? <span className="text-blue-300">Checking…</span> : <>
+                      <p>↓ {speed(result?.download)} · ↑ {speed(result?.upload)}</p>
+                      <p className={`mt-1 text-[10px] ${proxy.speed_quality === 'poor' ? 'text-amber-400' : proxy.speed_quality === 'good' ? 'text-emerald-400' : 'text-zinc-500'}`}>
+                        {proxy.speed_quality === 'good' ? 'Both ≥ 1 Mbps' : proxy.speed_quality === 'poor' ? 'Below 1 Mbps' : proxy.speed_quality === 'check_failed' ? 'Test failed — retest' : 'Untested'}
+                      </p>
+                      {result && <p className="mt-1 text-[10px] text-zinc-500">{new Date(result.last_checked).toLocaleString()}</p>}
+                      {result?.session_only && <p className="mt-1 max-w-64 text-[10px] text-amber-400">Result available for this session. Restart the backend to save future checks.</p>}
+                    </>}
+                    {[speedErrors[proxy.id], result?.download.error && `Download: ${result.download.error}`, result?.upload.error && `Upload: ${result.upload.error}`].filter(Boolean).map((error, i) => <p key={i} className="mt-1 max-w-64 text-[10px] text-amber-400">{error}</p>)}
+                  </td>
                   <td className="px-3 py-2.5">
                     <div className="flex justify-end gap-1">
+                      <button onClick={() => checkSpeeds([proxy.id])} disabled={busy}
+                        aria-label={`Check download/upload for ${proxy.host}:${proxy.port}`} title="Check download and upload"
+                        className="flex items-center gap-1 whitespace-nowrap rounded p-1.5 text-blue-300 hover:bg-zinc-800 disabled:opacity-30">
+                        <Gauge className="h-3.5 w-3.5" />Download/upload
+                      </button>
                       <button onClick={() => handleTestPing(proxy.id)} disabled={busy || testingId === proxy.id}
                         aria-label={`Test ${proxy.host}:${proxy.port}`} title="Test connection"
                         className="rounded p-1.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-30">
@@ -256,20 +337,21 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
                         {geoCheckingId === proxy.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <MapPin className="h-3.5 w-3.5" />}
                       </button>
                       <button onClick={() => handleDelete([proxy.id])} disabled={busy || inUse(proxy)}
-                        aria-label={`Delete ${proxy.host}:${proxy.port}`} title={inUse(proxy) ? 'Assigned proxies cannot be deleted' : 'Delete proxy'}
+                        aria-label={`Delete ${proxy.host}:${proxy.port}`} title={inUse(proxy) ? 'Unassign this proxy from its profile before deleting it' : 'Delete proxy'}
                         className="rounded p-1.5 text-zinc-500 hover:bg-zinc-800 hover:text-red-400 disabled:opacity-30">
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
                     </div>
                   </td>
                 </tr>
-              ))}
+              ); })}
+              </React.Fragment>)}
               {visibleProxies.length === 0 && (
-                <tr><td colSpan={6} className="py-16 text-center">
-                  <p className="text-xs text-zinc-400">{proxies.length === 0 ? 'Your proxy pool is empty.' : 'No proxies match your search.'}</p>
+                <tr><td colSpan={7} className="py-16 text-center">
+                  <p className="text-xs text-zinc-400">{proxies.length === 0 ? 'Your proxy pool is empty.' : folder !== ALL_FOLDERS ? 'No proxies in this folder match your filters.' : 'No proxies match your search.'}</p>
                   {proxies.length === 0 ? (
                     <button onClick={() => setIsImportOpen(true)} disabled={busy} className="mt-3 text-xs text-blue-300 hover:text-blue-200">Import your first proxies</button>
-                  ) : <button onClick={() => { setSearch(''); setFilter('all'); }} className="mt-3 text-xs text-blue-300 hover:text-blue-200">Clear filters</button>}
+                  ) : <button onClick={() => { setSearch(''); setFilter('all'); setFolder(ALL_FOLDERS); }} className="mt-3 text-xs text-blue-300 hover:text-blue-200">Clear filters</button>}
                 </td></tr>
               )}
             </tbody>
@@ -277,10 +359,11 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
         </div>
         <div role="status" className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-3 py-2 text-[10px] text-zinc-500">
           <span>{visibleProxies.length} of {proxies.length} proxies{selectedIds.size > 0 ? ` · ${selectedIds.size} selected${selectedIds.size > selectedVisible ? ` (${selectedIds.size - selectedVisible} outside this view)` : ''}` : ''}</span>
-          <span>Assigned proxies are protected.</span>
+          <span>Automatic folders · Speed checks use about 7 MB per proxy · Assigned proxies stay locked.</span>
         </div>
       </div>
 
+      </div>
       {/* Import Modal */}
       {isImportOpen && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -297,6 +380,7 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
             </div>
 
             <form onSubmit={handleImport} className="p-5 space-y-4 text-xs">
+              <p className="text-zinc-500">New proxies appear in Available with an Untested badge. Run a download/upload check to measure their quality.</p>
               <div>
                 <label className="block text-zinc-400 font-medium mb-1.5">
                   Paste Proxies (one per line):

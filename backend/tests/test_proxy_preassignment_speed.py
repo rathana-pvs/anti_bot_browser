@@ -14,6 +14,8 @@ def speed_client(monkeypatch):
              "assigned": False, "profile_id": None}]
     original = deepcopy(pool)
     calls = []
+    saved = []
+    monkeypatch.setattr(proxies, "update_proxy_metadata", lambda ids, **changes: saved.append((ids, changes)) or {"updated_ids": ids})
     monkeypatch.setattr(proxies, "load_proxy_pool", lambda: pool)
 
     def forbid_save(*args, **kwargs):
@@ -35,6 +37,11 @@ def speed_client(monkeypatch):
     with TestClient(app) as client:
         yield client, calls
     assert pool == original
+    if calls and calls[0][0]["mode"] == "pool":
+        assert saved and saved[0][0] == ["proxy_1"]
+        assert "speed_test" in saved[0][1]
+    else:
+        assert not saved
 
 
 def test_pool_speed_before_assignment(speed_client):

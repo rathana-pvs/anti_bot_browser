@@ -1,4 +1,4 @@
-import { Copy, Eye, FolderInput, FolderMinus, FolderPlus, Pause, PencilLine, Play, Settings2, Square, Trash2, ExternalLink } from 'lucide-react';
+import { Copy, Eye, Eraser, FolderInput, FolderMinus, FolderPlus, ListChecks, Pause, PencilLine, Play, Settings2, Square, Trash2, ExternalLink } from 'lucide-react';
 import { Profile } from '../../types/profile';
 import type { ActionMenuItem } from '../ui/ActionMenu';
 import type { AccountTab } from './accountModel';
@@ -11,6 +11,10 @@ export interface AccountHandlers {
   moveToGroup: (profiles: Profile[]) => void;
   remove: (profiles: Profile[]) => void;
   copyId: (profile: Profile) => void;
+  /** Opens the Queue showing only this account's items. */
+  openQueue: (profileId: string) => void;
+  /** Removes failed-before-posting items older than `before` (all of them when omitted). */
+  clearFailures: (profile: Profile, before?: number) => void;
 }
 
 export interface FolderHandlers {
@@ -24,7 +28,7 @@ export interface FolderHandlers {
 const icon = 'h-3.5 w-3.5';
 
 /** The same list backs the ⋯ button and the right-click menu, so they never drift apart. */
-export function accountMenu(profile: Profile, handlers: AccountHandlers, { includeOpen = true } = {}): ActionMenuItem[] {
+export function accountMenu(profile: Profile, handlers: AccountHandlers, { includeOpen = true, failureCutoff }: { includeOpen?: boolean; failureCutoff?: number } = {}): ActionMenuItem[] {
   const items: ActionMenuItem[] = [];
   if (includeOpen) {
     items.push(
@@ -41,6 +45,8 @@ export function accountMenu(profile: Profile, handlers: AccountHandlers, { inclu
     items.push({ label: 'Stop', icon: <Square className={icon} />, onSelect: () => handlers.run([profile], 'stop') });
   }
   items.push(
+    { label: 'Show in queue', icon: <ListChecks className={icon} />, onSelect: () => handlers.openQueue(profile.id), divider: true },
+    { label: 'Clear old failures…', icon: <Eraser className={icon} />, hint: 'Removes failed-before-posting items. Unconfirmed posts are never removed.', onSelect: () => handlers.clearFailures(profile, failureCutoff) },
     { label: 'Edit settings', icon: <Settings2 className={icon} />, onSelect: () => handlers.open(profile.id, 'settings'), divider: true },
     { label: 'Move to folder…', icon: <FolderInput className={icon} />, onSelect: () => handlers.moveToGroup([profile]) },
     { label: 'Copy account ID', icon: <Copy className={icon} />, onSelect: () => handlers.copyId(profile) },

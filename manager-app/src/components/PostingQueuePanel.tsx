@@ -37,6 +37,8 @@ interface PostingQueuePanelProps {
   onWatchProfile?: (profileId: string) => void;
   onOpenAccount?: (profileId: string) => void;
   onCreate?: () => void;
+  /** Set from other pages to show one account's items; a new `key` re-applies it. */
+  focusAccount?: { profileId: string; key: number } | null;
 }
 
 const TYPE_FILTERS: { value: QueueTypeFilter; label: string }[] = [
@@ -53,13 +55,18 @@ const FINISHED_PAGE = 25;
 const sortTime = (item: QueueExecutionItem) => new Date(item.published_at || item.stage_updated_at || item.scheduled_at).getTime() || 0;
 const scheduledTime = (item: QueueExecutionItem) => new Date(item.scheduled_at).getTime() || 0;
 
-export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, onAttentionChange, onWatchProfile, onOpenAccount, onCreate }) => {
+export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, onAttentionChange, onWatchProfile, onOpenAccount, onCreate, focusAccount }) => {
   const { showConfirm, showPrompt, showToast } = useAppDialog();
   const [queueData, setQueueData] = useState<QueueDataResponse | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [typeFilter, setTypeFilter] = useState<QueueTypeFilter>('all');
-  const [batchFilter, setBatchFilter] = useState(ALL_BATCHES);
+  const [chosenBatch, setBatchFilter] = useState<string | null>(null);
+  const batches = useMemo(() => [...(queueData?.batches || [])].sort((a, b) =>
+    (Date.parse(b.created_at) || 0) - (Date.parse(a.created_at) || 0)), [queueData?.batches]);
+  // Follow the newest batch until the user explicitly chooses another view.
+  const batchFilter = chosenBatch ?? batches[0]?.batch_id ?? ALL_BATCHES;
   const [search, setSearch] = useState('');
+  const [accountFilter, setAccountFilter] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [nextLimit, setNextLimit] = useState(NEXT_PAGE);
   const [finishedLimit, setFinishedLimit] = useState(FINISHED_PAGE);
@@ -92,17 +99,27 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
     return () => clearInterval(interval);
   }, [loadQueue]);
 
-  useEffect(() => { setNextLimit(NEXT_PAGE); setFinishedLimit(FINISHED_PAGE); }, [typeFilter, batchFilter, search]);
+  useEffect(() => { setNextLimit(NEXT_PAGE); setFinishedLimit(FINISHED_PAGE); }, [typeFilter, batchFilter, search, accountFilter]);
+
+  // Arriving from an account: show only its items, with nothing else filtered out.
+  useEffect(() => {
+    if (!focusAccount) return;
+    setAccountFilter(focusAccount.profileId);
+    setTypeFilter('all');
+    setBatchFilter(ALL_BATCHES);
+    setSearch('');
+    setSelectedId(null);
+  }, [focusAccount?.key]);
 
   const profileById = useMemo(() => new Map(profiles.map(p => [p.id, p])), [profiles]);
   const profileName = useCallback((id: string) => profileById.get(id)?.name || id, [profileById]);
   const executions = queueData?.executions || [];
-  const batches = queueData?.batches || [];
 
   const filtered = useMemo(() => executions.filter(item =>
     (typeFilter === 'all' || itemKind(item) === typeFilter)
     && (batchFilter === ALL_BATCHES || item.batch_id === batchFilter)
-    && matchesSearch(item, search.trim(), profileName(item.profile_id))), [executions, typeFilter, batchFilter, search, profileName]);
+    && (!accountFilter || item.profile_id === accountFilter)
+    && matchesSearch(item, search.trim(), profileName(item.profile_id))), [executions, typeFilter, batchFilter, search, accountFilter, profileName]);
 
   const sections = useMemo(() => {
     const result: Record<QueueSectionKey, QueueExecutionItem[]> = { attention: [], now: [], next: [], finished: [] };
@@ -254,7 +271,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
     if (!await showConfirm(`Remove “${batch.name}” and everything still waiting in it?`, { title: 'Remove batch', confirmLabel: 'Remove batch', variant: 'danger' })) return;
     try {
       await deleteBatch(batch.batch_id);
-      setBatchFilter(ALL_BATCHES);
+      setBatchFilter(null);
     } catch (err) { fail(err, 'Couldn’t remove this batch.'); }
     await loadQueue();
   };
@@ -289,7 +306,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
   }
   menuItems.push({ label: 'Export diagnostics', icon: <Download className="h-3.5 w-3.5" />, onSelect: () => setReport({ open: true, item: null }) });
 
-  const filtersActive = typeFilter !== 'all' || batchFilter !== ALL_BATCHES || search.trim() !== '';
+  const filtersActive = typeFilter !== 'all' || batchFilter !== ALL_BATCHES || search.trim() !== '' || accountFilter !== null;
   // Right-click mirrors what the row and its detail panel offer; nothing is right-click only.
   const itemMenu = (item: QueueExecutionItem): ActionMenuItem[] => {
     const uncertain = UNCERTAIN_STATUSES.has(item.status);
@@ -335,12 +352,16 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
             {option.label}
           </button>)}
         </div>
-        <Select value={batchFilter} onValueChange={setBatchFilter} options={batchOptions} ariaLabel="Filter by batch" className="min-h-8 w-56 py-1" />
+        <Select value={batchFilter} onValueChange={setBatchFilter} options={batchOptions} ariaLabel="Filter by batch" className="min-h-8 w-full shrink-0 whitespace-nowrap py-1 sm:w-80 [&>span:first-child]:truncate" />
         <div className="relative w-full sm:w-56">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500" />
           <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Account or caption" aria-label="Search the queue" className="min-h-8 py-1 pl-8" />
         </div>
-        {filtersActive && <button type="button" className="text-xs text-blue-400 hover:text-blue-300" onClick={() => { setTypeFilter('all'); setBatchFilter(ALL_BATCHES); setSearch(''); }}>Clear filters</button>}
+        {accountFilter && <span className="inline-flex items-center gap-1 rounded-full border border-blue-800 bg-blue-950/40 py-0.5 pl-2.5 pr-1 text-xs text-blue-200">
+          Account: {profileName(accountFilter)}
+          <button type="button" aria-label="Show all accounts" onClick={() => setAccountFilter(null)} className="rounded-full p-0.5 hover:bg-blue-900"><X className="h-3 w-3" /></button>
+        </span>}
+        {filtersActive && <button type="button" className="text-xs text-blue-400 hover:text-blue-300" onClick={() => { setTypeFilter('all'); setBatchFilter(ALL_BATCHES); setSearch(''); setAccountFilter(null); }}>Clear filters</button>}
         <div className="ml-auto flex items-center gap-3">
           <span className="text-xs text-zinc-400">
             {remaining.length > 0

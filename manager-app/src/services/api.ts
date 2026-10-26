@@ -309,11 +309,11 @@ export async function fetchProxies(): Promise<ProxyItem[]> {
   return res.json();
 }
 
-export async function importProxies(text: string): Promise<{ added: number; total: number; status_checked: number; online: number; offline: number; geo_checked: number; geo_failed: number }> {
+export async function importProxies(text: string, group = ''): Promise<{ added: number; total: number; status_checked: number; online: number; offline: number; geo_checked: number; geo_failed: number }> {
   const res = await fetch(`${API_BASE}/proxies/import`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({ text, group }),
   });
   if (!res.ok) throw new Error('Failed to import proxies');
   return res.json();
@@ -381,10 +381,56 @@ export interface ProxySpeedResult {
 }
 
 export interface NetworkSpeedResult {
+  session_only?: boolean;
   latency: { success: boolean; latency_ms: number | null; error?: string };
   download: Omit<ProxySpeedResult, 'last_checked'>;
   upload: Omit<ProxySpeedResult, 'last_checked'>;
   last_checked: string;
+}
+
+export async function fetchProxyGroups(): Promise<string[]> {
+  const res = await fetch(`${API_BASE}/proxies/groups`);
+  if (!res.ok) throw await apiError(res, 'Failed to load proxy folders');
+  return res.json();
+}
+
+export async function createProxyGroup(name: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/proxies/groups`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
+  });
+  if (!res.ok) throw await apiError(res, 'Failed to create proxy folder');
+}
+
+export async function renameProxyGroup(name: string, replacement: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/proxies/groups/${encodeURIComponent(name)}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: replacement }),
+  });
+  if (!res.ok) throw await apiError(res, 'Failed to rename proxy folder');
+}
+
+export async function deleteProxyGroup(name: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/proxies/groups/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  if (!res.ok) throw await apiError(res, 'Failed to delete proxy folder');
+}
+
+export async function setProxyGroup(proxyIds: string[], group: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/proxies/set-group`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ proxy_ids: proxyIds, group }),
+  });
+  if (!res.ok) throw await apiError(res, 'Failed to move proxies');
+}
+
+export async function testSavedProxySpeed(proxyId: string): Promise<NetworkSpeedResult> {
+  const res = await fetch(`${API_BASE}/proxies/${encodeURIComponent(proxyId)}/speed-test`, { method: 'POST' });
+  const detail = (res.status === 404 || res.status === 405)
+    ? (await res.clone().json().catch(() => null))?.detail : undefined;
+  // Older running backends can measure a pool proxy but cannot persist its result.
+  if ((res.status === 404 && detail === 'Not Found') || res.status === 405) {
+    return { ...await testNetworkSpeed({ mode: 'pool', proxy_id: proxyId }), session_only: true };
+  }
+  if (!res.ok) throw await apiError(res, 'Failed to test proxy speed');
+  return res.json();
 }
 
 export async function testNetworkSpeed(network: NetworkIntent): Promise<NetworkSpeedResult> {

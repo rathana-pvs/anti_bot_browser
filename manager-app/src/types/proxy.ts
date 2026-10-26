@@ -1,5 +1,11 @@
+export const PROXY_FOLDERS = ['Used', 'Available', 'Poor proxy'] as const;
+
 export interface ProxyItem {
   id: string;
+  group?: string;
+  speed_quality?: 'good' | 'poor' | 'untested' | 'check_failed';
+  last_speed_quality?: 'good' | 'poor';
+  speed_test?: import('../services/api').NetworkSpeedResult;
   host: string;
   port: number;
   username: string;

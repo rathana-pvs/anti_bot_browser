@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from backend.config import ROOT_DIR
+from backend.services.proxy_quality import normalize_proxy
 
 PROXY_POOL_FILE = ROOT_DIR / "proxies" / "proxy_pool.json"
 _proxy_assignment_lock = threading.Lock()
@@ -26,6 +27,7 @@ def load_proxy_pool(*, raise_errors: bool = False) -> list:
             data = json.load(f)
             needs_save = False
             for p in data:
+                normalize_proxy(p)
                 # Older imports fabricated Los Angeles metadata whenever the
                 # proxy provider supplied no geography. Do not present those
                 # defaults as observed facts.
@@ -59,6 +61,8 @@ def load_proxy_pool(*, raise_errors: bool = False) -> list:
 
 def save_proxy_pool(pool: list, *, raise_errors: bool = False):
     try:
+        for proxy in pool:
+            normalize_proxy(proxy)
         PROXY_POOL_FILE.parent.mkdir(parents=True, exist_ok=True)
         tmp = f"{PROXY_POOL_FILE}.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -70,66 +74,83 @@ def save_proxy_pool(pool: list, *, raise_errors: bool = False):
         print(f"Error saving proxy pool: {err}")
 
 def import_proxies_from_text(text: str) -> dict:
-    pool = load_proxy_pool()
-    existing_keys = {f"{p.get('host')}:{p.get('port')}" for p in pool}
-    lines = text.splitlines()
-    added_count = 0
-    added_ids = []
+    with _proxy_assignment_lock:
+        pool = load_proxy_pool()
+        existing_keys = {f"{p.get('host')}:{p.get('port')}" for p in pool}
+        lines = text.splitlines()
+        added_count = 0
+        added_ids = []
 
-    for raw_line in lines:
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-
-        parts = line.split(":")
-        if len(parts) >= 2:
-            host = parts[0].strip()
-            try:
-                port = int(parts[1].strip())
-            except ValueError:
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
                 continue
 
-            username = parts[2].strip() if len(parts) >= 4 else ""
-            password = parts[3].strip() if len(parts) >= 4 else ""
+            parts = line.split(":")
+            if len(parts) >= 2:
+                host = parts[0].strip()
+                try:
+                    port = int(parts[1].strip())
+                except ValueError:
+                    continue
 
-            key = f"{host}:{port}"
-            if key not in existing_keys and port > 0:
-                existing_keys.add(key)
-                now_id = int(time.time() * 1000)
-                proxy_id = f"proxy_{now_id}_{str(time.time())[-4:]}"
-                pool.append({
-                    "id": proxy_id,
-                    "host": host,
-                    "port": port,
-                    "username": username,
-                    "password": password,
-                    "type": "socks5",
-                    "assigned": False,
-                    "profile_id": None,
-                    "latency_ms": None,
-                    "last_checked": None,
-                    "timezone": None,
-                    "country": None,
-                    "country_code": None,
-                    "region": None,
-                    "city": None,
-                    "geo_source": "unknown",
-                })
-                added_ids.append(proxy_id)
-                added_count += 1
+                username = parts[2].strip() if len(parts) >= 4 else ""
+                password = parts[3].strip() if len(parts) >= 4 else ""
 
-    save_proxy_pool(pool)
-    return {"added": added_count, "total": len(pool), "added_ids": added_ids}
+                key = f"{host}:{port}"
+                if key not in existing_keys and port > 0:
+                    existing_keys.add(key)
+                    now_id = int(time.time() * 1000)
+                    proxy_id = f"proxy_{now_id}_{str(time.time())[-4:]}"
+                    pool.append({
+                        "id": proxy_id,
+                        "host": host,
+                        "port": port,
+                        "username": username,
+                        "password": password,
+                        "type": "socks5",
+                        "assigned": False,
+                        "profile_id": None,
+                        "latency_ms": None,
+                        "last_checked": None,
+                        "timezone": None,
+                        "country": None,
+                        "country_code": None,
+                        "region": None,
+                        "city": None,
+                        "geo_source": "unknown",
+                    })
+                    added_ids.append(proxy_id)
+                    added_count += 1
+
+        save_proxy_pool(pool)
+        return {"added": added_count, "total": len(pool), "added_ids": added_ids}
+
+def update_proxy_metadata(proxy_ids: list[str], **changes) -> dict:
+    """Merge metadata into the latest pool without changing reservations."""
+    with _proxy_assignment_lock:
+        pool = load_proxy_pool(raise_errors=True)
+        wanted = set(proxy_ids)
+        updated = []
+        for proxy in pool:
+            if proxy.get("id") in wanted:
+                proxy.update(changes)
+                updated.append(proxy["id"])
+        if updated:
+            save_proxy_pool(pool, raise_errors=True)
+        return {"updated_ids": updated, "missing_ids": sorted(wanted - set(updated))}
+
 
 def assign_proxy(profile_id: str) -> dict | None:
-    pool = load_proxy_pool()
-    for proxy in pool:
-        if not proxy.get("assigned"):
-            proxy["assigned"] = True
-            proxy["profile_id"] = profile_id
-            save_proxy_pool(pool)
-            return proxy
-    return None
+    with _proxy_assignment_lock:
+        pool = load_proxy_pool()
+        for proxy in pool:
+            if not (proxy.get("assigned") or proxy.get("profile_id")) and proxy.get("group") != "Poor proxy":
+                proxy["assigned"] = True
+                proxy["profile_id"] = profile_id
+                save_proxy_pool(pool)
+                return proxy
+        return None
 
 def assign_proxy_by_id(profile_id: str, proxy_id: str) -> dict:
     """Atomically reserve one explicit pool proxy for a profile."""
@@ -138,7 +159,7 @@ def assign_proxy_by_id(profile_id: str, proxy_id: str) -> dict:
         selected = next((p for p in pool if p.get("id") == proxy_id), None)
         if not selected:
             raise ValueError("Selected proxy does not exist")
-        if selected.get("assigned") and selected.get("profile_id") != profile_id:
+        if (selected.get("assigned") or selected.get("profile_id")) and selected.get("profile_id") != profile_id:
             raise ValueError("Selected proxy is already assigned")
         for proxy in pool:
             if proxy.get("profile_id") == profile_id and proxy.get("id") != proxy_id:
@@ -150,43 +171,45 @@ def assign_proxy_by_id(profile_id: str, proxy_id: str) -> dict:
         return dict(selected)
 
 def release_proxy(profile_id: str) -> bool:
-    pool = load_proxy_pool()
-    released = False
-    for proxy in pool:
-        if proxy.get("profile_id") == profile_id:
-            proxy["assigned"] = False
-            proxy["profile_id"] = None
-            released = True
-    if released:
-        save_proxy_pool(pool)
-    return released
-
-def sync_proxy_assignment(profile_id: str, host: str, port: int | str | None) -> dict | None:
-    pool = load_proxy_pool()
-    modified = False
-
-    # Release any existing proxy that was assigned to this profile but no longer matches
-    for proxy in pool:
-        if proxy.get("profile_id") == profile_id:
-            if not host or proxy.get("host") != host or str(proxy.get("port")) != str(port):
+    with _proxy_assignment_lock:
+        pool = load_proxy_pool()
+        released = False
+        for proxy in pool:
+            if proxy.get("profile_id") == profile_id:
                 proxy["assigned"] = False
                 proxy["profile_id"] = None
-                modified = True
+                released = True
+        if released:
+            save_proxy_pool(pool)
+        return released
 
-    matched = None
-    if host and port:
+def sync_proxy_assignment(profile_id: str, host: str, port: int | str | None) -> dict | None:
+    with _proxy_assignment_lock:
+        pool = load_proxy_pool()
+        modified = False
+
+        # Release any existing proxy that was assigned to this profile but no longer matches
         for proxy in pool:
-            if proxy.get("host") == host and str(proxy.get("port")) == str(port):
-                if not proxy.get("assigned") or proxy.get("profile_id") != profile_id:
-                    proxy["assigned"] = True
-                    proxy["profile_id"] = profile_id
+            if proxy.get("profile_id") == profile_id:
+                if not host or proxy.get("host") != host or str(proxy.get("port")) != str(port):
+                    proxy["assigned"] = False
+                    proxy["profile_id"] = None
                     modified = True
-                matched = proxy
-                break
 
-    if modified:
-        save_proxy_pool(pool)
-    return matched
+        matched = None
+        if host and port:
+            for proxy in pool:
+                if proxy.get("host") == host and str(proxy.get("port")) == str(port):
+                    if not proxy.get("assigned") or proxy.get("profile_id") != profile_id:
+                        proxy["assigned"] = True
+                        proxy["profile_id"] = profile_id
+                        modified = True
+                    matched = proxy
+                    break
+
+        if modified:
+            save_proxy_pool(pool)
+        return matched
 
 def delete_proxy(proxy_id: str) -> bool:
     result = delete_proxies([proxy_id])

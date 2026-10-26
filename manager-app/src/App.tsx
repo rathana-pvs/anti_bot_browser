@@ -12,6 +12,7 @@ import {
   updateProfile,
   executeProfileAction,
   deleteProfile,
+  deleteExecution,
   fetchSystemStats,
   fetchProxies,
 } from './services/api';
@@ -31,7 +32,7 @@ import { AccountPage } from './components/accounts/AccountPage';
 import { MoveToGroupDialog } from './components/accounts/MoveToGroupDialog';
 import { AccountHandlers, FolderHandlers, ProfileAction } from './components/accounts/accountActions';
 import { FolderNameDialog, FolderDialogState } from './components/accounts/FolderNameDialog';
-import { AccountTab, useQueueExecutions } from './components/accounts/accountModel';
+import { AccountTab, clearableFailures, useQueueExecutions } from './components/accounts/accountModel';
 import { fetchSetupStatus, isDesktopApp, SetupSnapshot } from './services/setup';
 import { useAppDialog } from './components/ui/AppDialogProvider';
 
@@ -68,7 +69,7 @@ export const App: React.FC = () => {
   const [folderDialog, setFolderDialog] = useState<FolderDialogState>(null);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [campaignAttention, setCampaignAttention] = useState(0);
-  const [queueRequest, setQueueRequest] = useState(0);
+  const [queueRequest, setQueueRequest] = useState<{ profileId?: string; key: number } | null>(null);
   const [profileActionError, setProfileActionError] = useState<ProfileActionError | null>(null);
 
   const [systemStats, setSystemStats] = useState<SystemStats>({
@@ -159,7 +160,7 @@ export const App: React.FC = () => {
     return () => clearInterval(interval);
   }, [setupStatus, backendReady]);
 
-  const executions = useQueueExecutions(backendReady && page === 'accounts');
+  const { executions, reload: reloadExecutions } = useQueueExecutions(backendReady && page === 'accounts');
 
   const openAccountPage = useCallback((profileId: string, tab: AccountTab = 'overview') => {
     setPage('accounts');
@@ -225,7 +226,36 @@ export const App: React.FC = () => {
     }
   };
 
+  const openQueue = (profileId?: string) => {
+    setPage('campaigns');
+    setQueueRequest({ profileId, key: Date.now() });
+  };
+
+  const clearFailures = async (profile: Profile, before?: number) => {
+    const items = clearableFailures(profile.id, executions, before);
+    const when = before === undefined ? '' : new Date(before).toDateString() === new Date().toDateString()
+      ? ' from before today' : ` from before ${new Date(before).toLocaleDateString()}`;
+    if (!items.length) {
+      showToast(`${profile.name} has no failed items${when} to clear.`, 'info');
+      return;
+    }
+    const confirmed = await showConfirm(
+      `Remove ${items.length} failed item${items.length === 1 ? '' : 's'}${when} for ${profile.name}? These stopped before posting, so nothing went out. Unconfirmed posts are kept.`,
+      { title: 'Clear old failures', confirmLabel: 'Remove', variant: 'danger' },
+    );
+    if (!confirmed) return;
+    let removed = 0;
+    for (const item of items) {
+      try { await deleteExecution(item.execution_id); removed += 1; } catch (_) { /* reported below */ }
+    }
+    reloadExecutions();
+    showToast(removed === items.length ? `Removed ${removed} failed item${removed === 1 ? '' : 's'}.` : `Removed ${removed} of ${items.length}. Some couldn’t be removed.`,
+      removed === items.length ? 'success' : 'error');
+  };
+
   const handlers: AccountHandlers = {
+    openQueue,
+    clearFailures: (profile, before) => { void clearFailures(profile, before); },
     open: openAccountPage,
     run: (targets, action) => { void runProfiles(targets, action); },
     moveToGroup: setMoveTargets,
@@ -345,15 +375,15 @@ export const App: React.FC = () => {
               onTabChange={(tab) => setOpenAccount({ id: currentAccount.id, tab })}
               onBack={() => setOpenAccount(null)} handlers={handlers} busy={busyIds.has(currentAccount.id)}
               executions={executions} proxies={proxies} groups={profileGroups} onSave={handleUpdate}
-              onOpenQueue={() => { setPage('campaigns'); setQueueRequest((n) => n + 1); }} />
-            : <AccountsPage profiles={profiles} groups={profileGroups} executions={executions} handlers={handlers} folderHandlers={folderHandlers}
+              onOpenQueue={() => openQueue(currentAccount.id)} />
+            : <AccountsPage profiles={profiles} proxies={proxies} groups={profileGroups} executions={executions} handlers={handlers} folderHandlers={folderHandlers}
               busyIds={busyIds} onCreate={() => setIsCreateModalOpen(true)} />}
         </main>
 
         <main className={`flex-1 flex min-w-0 overflow-hidden ${page === 'campaigns' ? '' : 'hidden'}`}>
           <CampaignsPanel
             profiles={profiles}
-            showQueueRequest={queueRequest}
+            queueRequest={queueRequest}
             onAttentionChange={setCampaignAttention}
             onEditProfile={(profileId) => openAccountPage(profileId, 'settings')}
             onSelectProfile={(profileId) => openAccountPage(profileId, 'browser')}

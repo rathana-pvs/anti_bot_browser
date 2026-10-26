@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Body
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
+from backend.services import proxy_groups
 from backend.models.profile import NetworkIntent
 from backend.services.proxy_service import (
     load_proxy_pool,
@@ -13,6 +14,7 @@ from backend.services.proxy_service import (
     refresh_proxy_statuses,
     test_proxy_ping,
     check_proxy_speed,
+    update_proxy_metadata,
 )
 
 router = APIRouter(prefix="/api/proxies", tags=["proxies"])
@@ -20,6 +22,58 @@ router = APIRouter(prefix="/api/proxies", tags=["proxies"])
 
 class ProxySelection(BaseModel):
     proxy_ids: list[str] = Field(min_length=1, max_length=10000)
+
+
+class ProxyGroupSelection(ProxySelection):
+    group: str = Field(max_length=80)
+
+
+class GroupName(BaseModel):
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    name: str = Field(min_length=1, max_length=80)
+
+
+@router.get('/groups')
+def get_proxy_groups():
+    return proxy_groups.list_groups()
+
+
+@router.post('/groups', status_code=201)
+def create_proxy_group(request: GroupName):
+    try:
+        return {'name': proxy_groups.create_group(request.name)}
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.put('/groups/{name:path}')
+def rename_proxy_group(name: str, request: GroupName):
+    try:
+        return proxy_groups.rename_group(name, request.name)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.delete('/groups/{name:path}')
+def delete_proxy_group(name: str):
+    try:
+        return proxy_groups.delete_group(name)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/set-group")
+def set_proxy_group(request: ProxyGroupSelection):
+    raise HTTPException(status_code=409, detail=proxy_groups.AUTOMATIC_FOLDER_MESSAGE)
+
+
+@router.post("/{proxy_id}/speed-test")
+def measure_saved_proxy_speed(proxy_id: str):
+    return test_network_speed(NetworkIntent(mode="pool", proxy_id=proxy_id))
 
 
 @router.post("/speed-test")
@@ -43,8 +97,13 @@ def test_network_speed(intent: NetworkIntent):
         upload = check_proxy_speed(network, "upload")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"latency": latency, "download": download, "upload": upload,
-            "last_checked": datetime.now(timezone.utc).isoformat()}
+    result = {"latency": latency, "download": download, "upload": upload,
+              "last_checked": datetime.now(timezone.utc).isoformat()}
+    if intent.mode == "pool":
+        saved = update_proxy_metadata([intent.proxy_id], speed_test=result)
+        if not saved["updated_ids"]:
+            raise HTTPException(status_code=404, detail="Proxy removed during speed test")
+    return result
 
 
 @router.post("/delete-selected")
@@ -60,6 +119,9 @@ def import_proxies(payload: dict = Body(...)):
     text = payload.get("text")
     if not text or not isinstance(text, str):
         raise HTTPException(status_code=400, detail="No proxy text provided")
+    group = payload.get("group", "")
+    if not isinstance(group, str) or len(group) > 80:
+        raise HTTPException(status_code=422, detail="Folder name must be at most 80 characters")
     result = import_proxies_from_text(text)
     added_ids = result.pop("added_ids", [])
     status = refresh_proxy_statuses(added_ids) if added_ids else {
@@ -88,11 +150,12 @@ def test_proxy(proxy_id: str):
         raise HTTPException(status_code=404, detail="Proxy not found")
 
     test_res = test_proxy_ping(proxy["host"], proxy["port"])
-    proxy["latency_ms"] = test_res.get("latency_ms")
-    proxy["last_checked"] = datetime.now(timezone.utc).isoformat()
-    save_proxy_pool(pool)
-
-    return {**proxy, "test": test_res}
+    checked_at = datetime.now(timezone.utc).isoformat()
+    saved = update_proxy_metadata([proxy_id], latency_ms=test_res.get("latency_ms"), last_checked=checked_at)
+    if not saved['updated_ids']:
+        raise HTTPException(status_code=404, detail="Proxy removed during test")
+    current = next(p for p in load_proxy_pool() if p['id'] == proxy_id)
+    return {**current, "test": test_res}
 
 
 @router.post("/{proxy_id}/geo-check")

@@ -45,7 +45,7 @@ export function ReelCreator({ active, onUseReel }: Props) {
   return <div className="reel-creator-shell mx-auto flex w-full max-w-6xl flex-col gap-4 p-4 lg:p-6">
     <header className="flex items-center gap-3">
       <Film className="h-4 w-4 text-violet-400" aria-hidden="true" />
-      {recent.length > 0 && <div className="w-56"><Select value={recent.some(r => r.value === studio.draftId) ? studio.draftId : ''} options={recent}
+      {recent.length > 0 && <div className="w-80 max-w-full shrink-0"><Select className="whitespace-nowrap [&>span:first-child]:min-w-0 [&>span:first-child]:flex-1 [&>span:first-child]:truncate" value={recent.some(r => r.value === studio.draftId) ? studio.draftId : ''} options={recent}
         placeholder="Recent reels" ariaLabel="Recent reels" onValueChange={id => studio.open(studio.drafts.find(d => d.id === id) ?? null)} /></div>}
       <Button variant="outline" size="sm" disabled={!!busy} onClick={() => studio.open(null)}><Plus className="h-3.5 w-3.5" />New</Button>
       <span className="ml-auto text-xs text-zinc-500" aria-live="polite">{studio.saveState}</span>

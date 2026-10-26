@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { FolderPlus, Loader2, Plus, Search, Users, X } from 'lucide-react';
 import { Profile } from '../../types/profile';
+import { ProxyItem } from '../../types/proxy';
 import { QueueExecutionItem } from '../../types/automation';
 import { ActionMenu } from '../ui/ActionMenu';
 import { Button } from '../ui/Button';
@@ -12,14 +13,16 @@ import { cn } from '../ui/cn';
 import { AccountHandlers, FolderHandlers, accountMenu, bulkMenu, folderMenu } from './accountActions';
 import { ACCOUNT_DRAG_TYPE, ALL_FOLDERS, ATTENTION, FolderList, NO_FOLDER } from './FolderList';
 import {
-  AccountActivity, STATUS_LABEL, STATUS_TONE, TONE_CLASS, activityFor, healthFor, needsAttention, warmupLabel,
+  AccountActivity, HealthSignal, STATUS_LABEL, STATUS_TONE, TONE_CLASS, activityFor, browserNotes, liveSignal, needsAttention,
+  networkSignal, openItemSignals, warmupLabel,
+  ActivityPeriod, PERIOD_OPTIONS, periodStart,
 } from './accountModel';
 import { formatTime, kindLabel } from '../queue/queueModel';
 
 type StatusFilter = 'all' | 'running' | 'stopped';
 
-export function AccountsPage({ profiles, groups, executions, handlers, folderHandlers, busyIds, onCreate }: {
-  profiles: Profile[]; groups: string[]; executions: QueueExecutionItem[];
+export function AccountsPage({ profiles, proxies, groups, executions, handlers, folderHandlers, busyIds, onCreate }: {
+  profiles: Profile[]; proxies: ProxyItem[]; groups: string[]; executions: QueueExecutionItem[];
   handlers: AccountHandlers; folderHandlers: FolderHandlers;
   /** Accounts with a start/stop request in flight. */
   busyIds: Set<string>;
@@ -29,9 +32,17 @@ export function AccountsPage({ profiles, groups, executions, handlers, folderHan
   const [folder, setFolder] = useState(ALL_FOLDERS);
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Always opens on Today; longer ranges are a deliberate, temporary choice.
+  const [period, setPeriod] = useState<ActivityPeriod>(1);
   const menu = useContextMenu();
 
-  const activity = useMemo(() => new Map(profiles.map(p => [p.id, activityFor(p.id, executions)])), [profiles, executions]);
+  const activity = useMemo(() => new Map(profiles.map(p => [p.id, activityFor(p.id, executions, period)])), [profiles, executions, period]);
+  const periodInfo = PERIOD_OPTIONS.find(option => option.value === period)!;
+  const totals = useMemo(() => {
+    let posted = 0, warmed = 0;
+    activity.forEach(entry => { posted += entry.posted; warmed += entry.warmed; });
+    return { posted, warmed };
+  }, [activity]);
   const folders = useMemo(() => [...new Set([...groups, ...profiles.map(p => p.group || '').filter(Boolean)])]
     .sort((a, b) => a.localeCompare(b))
     .map(name => ({ name, count: profiles.filter(p => p.group === name).length })), [groups, profiles]);
@@ -67,7 +78,7 @@ export function AccountsPage({ profiles, groups, executions, handlers, folderHan
 
   const rowMenu = (profile: Profile) => selected.has(profile.id) && selected.size > 1
     ? { items: bulkMenu(selectedProfiles, handlers), title: `${selected.size} accounts` }
-    : { items: accountMenu(profile, handlers), title: profile.name };
+    : { items: accountMenu(profile, handlers, { failureCutoff: periodStart(period) }), title: profile.name };
   const menuForFolder = (name: string) => folderMenu(name, profiles.filter(p => p.group === name), handlers, folderHandlers);
   const blankMenu = [{ label: 'New folder…', icon: <FolderPlus className="h-3.5 w-3.5" />, onSelect: folderHandlers.create }];
 
@@ -118,7 +129,15 @@ export function AccountsPage({ profiles, groups, executions, handlers, folderHan
         <button type="button" className={chip(status === 'all')} onClick={() => setStatus('all')}>Any status</button>
         <button type="button" className={chip(status === 'running')} onClick={() => setStatus('running')}>Running</button>
         <button type="button" className={chip(status === 'stopped')} onClick={() => setStatus('stopped')}>Not running</button>
-        <span className="ml-auto text-[11px] text-zinc-600">Drag accounts onto a folder to move them</span>
+        <div role="radiogroup" aria-label="Activity period" className="ml-auto flex items-center gap-2">
+          <span className="text-[11px] text-zinc-500">{totals.posted} posted{totals.warmed ? ` · ${totals.warmed} warmed` : ''}</span>
+          <div className="flex rounded-control border border-zinc-800 bg-zinc-950 p-0.5">
+            {PERIOD_OPTIONS.map(option => <button key={option.value} type="button" role="radio" aria-checked={period === option.value}
+              onClick={() => setPeriod(option.value)}
+              className={cn('rounded-md px-2.5 py-1 text-xs transition-colors', period === option.value ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:text-zinc-200')}>
+              {option.label}</button>)}
+          </div>
+        </div>
       </div>
 
       {selected.size > 0 && <div className="mx-6 mt-3 flex shrink-0 flex-wrap items-center gap-2 rounded-xl border border-blue-900 bg-blue-950/30 px-3 py-2 text-xs text-blue-100">
@@ -132,16 +151,17 @@ export function AccountsPage({ profiles, groups, executions, handlers, folderHan
 
       <div className="min-h-0 flex-1 overflow-y-auto px-6 py-3">
         <div className="overflow-hidden rounded-xl border border-zinc-800">
-          <div className="grid grid-cols-[1.5rem_minmax(0,1.5fr)_6rem_minmax(0,1.6fr)_minmax(0,1fr)_2.5rem] items-center gap-3 border-b border-zinc-800 bg-zinc-950/60 px-3 py-2 text-[11px] text-zinc-500">
+          <div className={cn(ROW_GRID, 'border-b border-zinc-800 bg-zinc-950/60 px-3 py-2 text-[11px] text-zinc-500')}>
             <Checkbox checked={allVisibleSelected ? true : selected.size > 0 ? 'indeterminate' : false} onCheckedChange={toggleAll} ariaLabel="Select all shown accounts" />
-            <span>Account</span><span>Status</span><span className="hidden md:block">Health</span><span className="hidden md:block">Today</span><span />
+            <span>Account</span><span>Status</span><span className="hidden md:block">Network</span><span className="hidden md:block">Live</span><span className="hidden md:block">{periodInfo.column}</span><span />
           </div>
           {visible.length === 0 && <p className="px-3 py-10 text-center text-xs text-zinc-500">
             {folder !== ALL_FOLDERS && folder !== ATTENTION && !search && status === 'all' ? 'This folder is empty. Drag accounts here, or use Move to folder.' : 'No accounts match these filters.'}</p>}
           {visible.map(profile => <AccountRow key={profile.id} profile={profile} activity={activity.get(profile.id)!}
-            selected={selected.has(profile.id)} busy={busyIds.has(profile.id)} onToggle={() => toggle(profile.id)}
+            network={networkSignal(profile, proxies)} selected={selected.has(profile.id)} busy={busyIds.has(profile.id)} onToggle={() => toggle(profile.id)}
             onOpen={() => handlers.open(profile.id, 'overview')} onDragStart={startDrag(profile)}
-            menuItems={() => accountMenu(profile, handlers)}
+            menuItems={() => accountMenu(profile, handlers, { failureCutoff: periodStart(period) })}
+            onOpenQueue={() => handlers.openQueue(profile.id)}
             onContextMenu={(e) => { const m = rowMenu(profile); menu.open(e, m.items, m.title); }}
             onMenuKey={menu.keyboardTrigger(() => rowMenu(profile).items, profile.name)} />)}
         </div>
@@ -151,12 +171,23 @@ export function AccountsPage({ profiles, groups, executions, handlers, folderHan
   </div>;
 }
 
-function AccountRow({ profile, activity, selected, busy, onToggle, onOpen, onDragStart, menuItems, onContextMenu, onMenuKey }: {
-  profile: Profile; activity: AccountActivity; selected: boolean; busy: boolean;
-  onToggle: () => void; onOpen: () => void; onDragStart: (event: React.DragEvent) => void; menuItems: () => ReturnType<typeof accountMenu>;
+const ROW_GRID = 'grid grid-cols-[1.5rem_minmax(0,1.6fr)_7rem_minmax(0,1fr)_5.5rem_minmax(0,1.4fr)_2.5rem] items-center gap-3';
+
+function Signal({ signal, onOpenQueue }: { signal: HealthSignal; onOpenQueue?: () => void }) {
+  return signal.opensQueue && onOpenQueue
+    ? <button type="button" title={`${signal.hint} Click to see them in the queue.`} onClick={(e) => { e.stopPropagation(); onOpenQueue(); }}
+      className={cn('whitespace-nowrap underline decoration-dotted underline-offset-2 hover:decoration-solid', TONE_CLASS[signal.tone])}>{signal.label}</button>
+    : <span title={signal.hint} className={cn('whitespace-nowrap', TONE_CLASS[signal.tone])}>{signal.label}</span>;
+}
+
+function AccountRow({ profile, network, activity, selected, busy, onToggle, onOpen, onOpenQueue, onDragStart, menuItems, onContextMenu, onMenuKey }: {
+  profile: Profile; network: HealthSignal; activity: AccountActivity; selected: boolean; busy: boolean;
+  onToggle: () => void; onOpen: () => void; onOpenQueue: () => void; onDragStart: (event: React.DragEvent) => void; menuItems: () => ReturnType<typeof accountMenu>;
   onContextMenu: (event: React.MouseEvent) => void; onMenuKey: (event: React.KeyboardEvent) => void;
 }) {
-  const health = healthFor(profile, activity);
+  const notes = browserNotes(profile);
+  const openItems = openItemSignals(activity);
+  const done = [activity.posted && `${activity.posted} posted`, activity.warmed && `${activity.warmed} warmed`].filter(Boolean).join(' · ');
   return <div tabIndex={0} draggable onDragStart={onDragStart} onClick={onOpen} onContextMenu={onContextMenu}
     onKeyDown={(e) => {
       onMenuKey(e);
@@ -164,24 +195,30 @@ function AccountRow({ profile, activity, selected, busy, onToggle, onOpen, onDra
       if (e.target === e.currentTarget && e.key === ' ') { e.preventDefault(); onToggle(); }
     }}
     aria-label={`${profile.name}, ${STATUS_LABEL[profile.status]}`}
-    className={cn('grid cursor-pointer grid-cols-[1.5rem_minmax(0,1.5fr)_6rem_minmax(0,1.6fr)_minmax(0,1fr)_2.5rem] items-center gap-3 border-b border-zinc-800/70 px-3 py-2.5 text-xs outline-none transition-colors last:border-b-0 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500',
+    className={cn(ROW_GRID, 'cursor-pointer border-b border-zinc-800/70 px-3 py-2.5 text-xs outline-none transition-colors last:border-b-0 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500',
       selected ? 'bg-blue-950/25' : 'hover:bg-zinc-900/60')}>
     <span onClick={(e) => e.stopPropagation()}><Checkbox checked={selected} onCheckedChange={onToggle} ariaLabel={`Select ${profile.name}`} /></span>
     <div className="min-w-0">
       <p className="truncate font-medium text-zinc-100">{profile.name}</p>
       <p className="truncate text-[11px] text-zinc-500">{[profile.group || 'No folder', warmupLabel(profile)].join(' · ')}</p>
     </div>
-    <span className={cn('flex items-center gap-1.5', STATUS_TONE[profile.status])}>
-      {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <span className="h-1.5 w-1.5 rounded-full bg-current" />}{STATUS_LABEL[profile.status]}
-    </span>
-    <div className="hidden min-w-0 flex-wrap gap-x-2 gap-y-0.5 md:flex">
-      {health.map(signal => <span key={signal.label} title={signal.hint} className={cn('whitespace-nowrap text-[11px]', TONE_CLASS[signal.tone])}>{signal.label}</span>)}
+    <div className="min-w-0">
+      <span className={cn('flex items-center gap-1.5', STATUS_TONE[profile.status])}>
+        {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <span className="h-1.5 w-1.5 rounded-full bg-current" />}{STATUS_LABEL[profile.status]}
+      </span>
+      {notes.filter(note => note.label !== 'Browser error').map(note => <p key={note.label} className="truncate text-[11px]"><Signal signal={note} /></p>)}
     </div>
-    <div className="hidden min-w-0 text-[11px] md:block">
+    <div className="hidden min-w-0 text-[11px] md:block" title={network.hint}>
+      <span className={cn('inline-flex max-w-full rounded-md border border-current/20 bg-current/5 px-1.5 py-0.5', TONE_CLASS[network.tone])}><Signal signal={network} /></span>
+      {network.detail && <p className="mt-1 truncate text-[10px] text-zinc-500">{network.detail}</p>}
+    </div>
+    <div className="hidden text-[11px] md:block"><Signal signal={liveSignal(profile)} /></div>
+    <div className="hidden min-w-0 space-y-0.5 text-[11px] md:block">
+      <p className="truncate text-zinc-300">{done || 'Nothing posted'}</p>
       {activity.running
         ? <p className="truncate text-blue-300">Now: {kindLabel(activity.running)}</p>
-        : <p className="truncate text-zinc-300">{activity.postedToday ? `${activity.postedToday} posted` : 'Nothing posted'}</p>}
-      <p className="truncate text-zinc-500">{activity.next ? `Next ${formatTime(activity.next.scheduled_at)}` : 'Nothing scheduled'}</p>
+        : <p className="truncate text-zinc-500">{activity.next ? `Next ${formatTime(activity.next.scheduled_at)}` : 'Nothing scheduled'}</p>}
+      {openItems.length > 0 && <p className="flex flex-wrap gap-x-2">{openItems.map(signal => <Signal key={signal.label} signal={signal} onOpenQueue={onOpenQueue} />)}</p>}
     </div>
     <span onClick={(e) => e.stopPropagation()} className="flex justify-end">
       <ActionMenu items={menuItems()} ariaLabel={`Actions for ${profile.name}`} className="[&>button]:min-h-7 [&>button]:border-transparent [&>button]:px-1.5" />

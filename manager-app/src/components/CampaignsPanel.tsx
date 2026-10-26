@@ -14,8 +14,8 @@ interface CampaignsPanelProps {
   onEditProfile: (profileId: string) => void;
   onOpenAccount?: (profileId: string) => void;
   onAttentionChange?: (count: number) => void;
-  /** Bumped by other pages to bring the Queue tab forward. */
-  showQueueRequest?: number;
+  /** Set by other pages to bring the Queue tab forward, optionally showing one account. */
+  queueRequest?: { profileId?: string; key: number } | null;
 }
 
 type CampaignTab = 'queue' | 'create' | 'reel_studio';
@@ -32,7 +32,7 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
   onEditProfile,
   onOpenAccount,
   onAttentionChange,
-  showQueueRequest = 0,
+  queueRequest = null,
 }) => {
   const [tab, setTab] = useState<CampaignTab>('queue');
   const [kind, setKind] = useState<CampaignKind>(() => {
@@ -41,7 +41,7 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
   });
   const [attention, setAttention] = useState(0);
   useEffect(() => { onAttentionChange?.(attention); }, [attention, onAttentionChange]);
-  useEffect(() => { if (showQueueRequest) setTab('queue'); }, [showQueueRequest]);
+  useEffect(() => { if (queueRequest) setTab('queue'); }, [queueRequest?.key]);
   const [incomingReel, setIncomingReel] = useState<CreatedReelMedia | null>(null);
   const consumeIncomingReel = useCallback(() => setIncomingReel(null), []);
   const chooseKind = (next: CampaignKind) => {
@@ -79,7 +79,8 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
 
       <div className={`min-h-0 flex-1 overflow-hidden p-6 ${tab === 'queue' ? '' : 'hidden'}`}>
         <PostingQueuePanel profiles={profiles} onAttentionChange={setAttention}
-          onWatchProfile={onSelectProfile} onOpenAccount={onOpenAccount} onCreate={() => setTab('create')} />
+          onWatchProfile={onSelectProfile} onOpenAccount={onOpenAccount} onCreate={() => setTab('create')}
+          focusAccount={queueRequest?.profileId ? { profileId: queueRequest.profileId, key: queueRequest.key } : null} />
       </div>
 
       <div className={`flex-1 overflow-y-auto p-6 ${tab === 'create' ? '' : 'hidden'}`}>

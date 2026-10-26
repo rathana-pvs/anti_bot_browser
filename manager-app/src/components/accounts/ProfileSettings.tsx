@@ -112,7 +112,7 @@ export function ProfileSettings({ profile, onSave, proxies = [], groups = [] }: 
 
   if (!environment) return null;
 
-  const poolChoices = proxies.filter((proxy) => !proxy.assigned || proxy.profile_id === profile.id || proxy.id === profile.network.proxy_id);
+  const poolChoices = proxies.filter((proxy) => (!proxy.assigned && !proxy.profile_id && proxy.group !== 'Poor proxy') || proxy.profile_id === profile.id || proxy.id === profile.network.proxy_id);
   const selectedPoolProxy = poolChoices.find((proxy) => proxy.id === networkChoice);
   const originalNetworkChoice = profile.network.mode === 'pool' && profile.network.proxy_id
     ? profile.network.proxy_id : profile.network.proxy_host ? 'custom' : 'direct';

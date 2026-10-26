@@ -95,6 +95,15 @@ export function formatTime(iso?: string | null) {
     : `${date.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${time}`;
 }
 
+/** Time on one line; the date goes above it when it isn't today. */
+export function timeParts(iso?: string | null): { day: string | null; time: string } {
+  if (!iso) return { day: null, time: '' };
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return { day: null, time: iso };
+  const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return { day: date.toDateString() === new Date().toDateString() ? null : date.toLocaleDateString([], { month: 'short', day: 'numeric' }), time };
+}
+
 export function matchesSearch(item: QueueExecutionItem, query: string, profileName: string) {
   if (!query) return true;
   const q = query.toLowerCase();

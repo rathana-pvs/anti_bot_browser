@@ -5,7 +5,7 @@ import { NetworkRecoveryStatus } from '../NetworkRecoveryStatus';
 import { Button } from '../ui/Button';
 import { cn } from '../ui/cn';
 import {
-  ACTIVE_STATUSES, FAILED_STATUSES, UNCERTAIN_STATUSES, commentNeedsRetry, describe, formatTime,
+  ACTIVE_STATUSES, FAILED_STATUSES, UNCERTAIN_STATUSES, commentNeedsRetry, describe, timeParts,
   hasOpenRecovery, isVideoFile, itemKind, kindLabel, statusLabel,
 } from './queueModel';
 
@@ -89,7 +89,12 @@ export function QueueRow({ item, profileName, selected, actions, busy, onContext
     }}
     className={cn('grid cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500 grid-cols-[4.5rem_2.5rem_minmax(0,1fr)_auto] items-center gap-3 px-3 py-2.5 transition-colors',
       selected ? 'bg-blue-950/30' : 'hover:bg-zinc-900/60')}>
-    <span className={cn('whitespace-nowrap font-mono text-xs', timeTone)}>{active ? 'now' : formatTime(item.published_at || item.scheduled_at)}</span>
+    <span className={cn('whitespace-nowrap font-mono text-xs', timeTone)}>
+      {active ? 'now' : (() => {
+        const { day, time } = timeParts(item.published_at || item.scheduled_at);
+        return <>{day && <span className="block text-[10px] text-zinc-500">{day}</span>}{time}</>;
+      })()}
+    </span>
     <QueueThumb item={item} onPreview={() => actions.preview(item)} />
     <div className="min-w-0">
       <div className="flex min-w-0 items-center gap-1.5 text-xs">

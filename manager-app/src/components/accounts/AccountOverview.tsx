@@ -1,30 +1,36 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArrowRight, Loader2, RefreshCw } from 'lucide-react';
 import { Profile } from '../../types/profile';
+import { ProxyItem } from '../../types/proxy';
 import { QueueExecutionItem } from '../../types/automation';
 import { checkProfileFacebookResponse, checkProfileProxySpeed, FacebookResponseResult, ProxySpeedResult } from '../../services/api';
 import { Button } from '../ui/Button';
 import { cn } from '../ui/cn';
-import { describe, formatTime, kindLabel } from '../queue/queueModel';
-import { AccountActivity, STATUS_LABEL, STATUS_TONE, TONE_CLASS, healthFor, warmupLabel } from './accountModel';
+import { FAILED_STATUSES, describe, formatTime, kindLabel } from '../queue/queueModel';
+import { AccountActivity, STATUS_LABEL, STATUS_TONE, TONE_CLASS, browserNotes, liveSignal, networkSignal, openItemSignals, warmupLabel } from './accountModel';
 
 const card = 'rounded-xl border border-zinc-800 bg-zinc-950/40 p-4';
 
-export function AccountOverview({ profile, activity, onOpenQueue }: {
-  profile: Profile; activity: AccountActivity; onOpenQueue: () => void;
+export function AccountOverview({ profile, proxies, activity, onOpenQueue }: {
+  profile: Profile; proxies: ProxyItem[]; activity: AccountActivity; onOpenQueue: () => void;
 }) {
+  const network = networkSignal(profile, proxies);
   const upcoming = activity.recent.filter(item => ['pending', 'ready'].includes(item.status))
     .sort((a, b) => (new Date(a.scheduled_at).getTime() || 0) - (new Date(b.scheduled_at).getTime() || 0)).slice(0, 5);
   return <div className="mx-auto grid max-w-5xl gap-4 text-xs lg:grid-cols-2">
     <section className={card} aria-labelledby="overview-status">
       <h3 id="overview-status" className="mb-3 text-sm font-semibold text-zinc-100">Status</h3>
       <dl className="grid grid-cols-[8rem_minmax(0,1fr)] gap-y-2 text-zinc-400">
-        <dt>Browser</dt><dd className={STATUS_TONE[profile.status]}>{STATUS_LABEL[profile.status]}</dd>
+        <dt>Browser</dt><dd><span className={STATUS_TONE[profile.status]}>{STATUS_LABEL[profile.status]}</span>
+          {browserNotes(profile).filter(n => n.label !== 'Browser error').map(n => <span key={n.label} title={n.hint} className={cn('ml-2', TONE_CLASS[n.tone])}>{n.label}</span>)}</dd>
         {profile.status === 'running' && <><dt>CPU</dt><dd className="text-zinc-200">{profile.cpu_usage || '0%'}</dd>
           <dt>Memory</dt><dd className="text-zinc-200">{profile.ram_usage || 'Not measured'}</dd></>}
+        <dt>Network</dt><dd title={network.hint} className={TONE_CLASS[network.tone]}>{network.label}{network.detail && <span className="ml-2 text-zinc-400">{network.detail}</span>}</dd>
+        <dt>Facebook Live</dt><dd title={liveSignal(profile).hint} className={TONE_CLASS[liveSignal(profile).tone]}>{liveSignal(profile).label}</dd>
         <dt>Warm-up</dt><dd className="text-zinc-200">{warmupLabel(profile)}</dd>
-        <dt>Posted today</dt><dd className="text-zinc-200">{activity.postedToday}</dd>
-        <dt>Health</dt><dd className="flex flex-wrap gap-x-2">{healthFor(profile, activity).map(s => <span key={s.label} title={s.hint} className={TONE_CLASS[s.tone]}>{s.label}</span>)}</dd>
+        <dt>Today</dt><dd className="text-zinc-200">{activity.posted} posted{activity.warmed ? ` · ${activity.warmed} warmed` : ''}</dd>
+        {openItemSignals(activity).length > 0 && <><dt>Needs you</dt><dd className="flex flex-wrap gap-x-2">{openItemSignals(activity).map(s =>
+          <button key={s.label} type="button" title={s.hint} onClick={onOpenQueue} className={cn('underline decoration-dotted underline-offset-2 hover:decoration-solid', TONE_CLASS[s.tone])}>{s.label}</button>)}</dd></>}
         {profile.account.notes && <><dt>Notes</dt><dd className="whitespace-pre-wrap text-zinc-300">{profile.account.notes}</dd></>}
       </dl>
     </section>
@@ -39,7 +45,9 @@ export function AccountOverview({ profile, activity, onOpenQueue }: {
       {!activity.attention.length && !activity.running && !upcoming.length
         ? <p className="text-zinc-500">Nothing queued for this account.</p>
         : <ul className="divide-y divide-zinc-800/70">
-          {activity.attention.map(item => <WorkItem key={item.execution_id} item={item} tone="text-amber-300" label="Needs review" />)}
+          {activity.attention.map(item => <WorkItem key={item.execution_id} item={item}
+            tone={FAILED_STATUSES.has(item.status) && item.status !== 'failed_after_publish' ? 'text-red-300' : 'text-amber-300'}
+            label={item.status === 'published' ? 'Comment' : FAILED_STATUSES.has(item.status) && item.status !== 'failed_after_publish' ? 'Failed' : 'Unconfirmed'} />)}
           {activity.running && <WorkItem item={activity.running} tone="text-blue-300" label="Now" />}
           {upcoming.map(item => <WorkItem key={item.execution_id} item={item} tone="text-zinc-300" label={formatTime(item.scheduled_at)} />)}
         </ul>}
