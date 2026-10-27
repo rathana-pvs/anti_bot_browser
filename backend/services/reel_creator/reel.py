@@ -89,6 +89,7 @@ class Scene(BaseModel):
     focal_y: float = Field(default=.4, ge=0, le=1, allow_inf_nan=False)
     seconds: float | None = Field(default=None, ge=2, le=20, allow_inf_nan=False)  # None = timed by reading length
     fit: Literal['cover', 'blur'] = 'cover'  # blur: the whole photo over a blurred copy of itself, nothing cropped away
+    zoom: float = Field(default=1, ge=1, le=2.5, allow_inf_nan=False)  # times the cover crop's magnification; cover fit only
     # story: headline and detail. stat: a big figure above a short label (the headline). quote: the headline
     # is the speaker's words, credited to `attribution`. end: the closing card (a question, or where the full story is).
     kind: SceneKind = 'story'

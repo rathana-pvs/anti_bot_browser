@@ -4,8 +4,8 @@ import { reelApi } from '../../services/reelCreator';
 
 const cache = new Map<string, string>();
 
-/** Small preview of an imported photo or logo; fetched once per session. */
-export function Thumb({ id, className = '' }: { id: string | null; className?: string }) {
+/** An imported photo's or logo's thumbnail as an object URL, fetched once per session; failed when it cannot load. */
+export function useThumbnail(id: string | null): { url: string; failed: boolean } {
   const [url, setUrl] = useState(id ? cache.get(id) ?? '' : '');
   const [failed, setFailed] = useState(false);
   useEffect(() => {
@@ -21,6 +21,12 @@ export function Thumb({ id, className = '' }: { id: string | null; className?: s
     }).catch(() => { if (!cancelled) setFailed(true); });
     return () => { cancelled = true; };
   }, [id]);
+  return { url, failed };
+}
+
+/** Small preview of an imported photo or logo. */
+export function Thumb({ id, className = '' }: { id: string | null; className?: string }) {
+  const { url, failed } = useThumbnail(id);
   if (url) return <img src={url} alt="" className={`object-cover ${className}`} draggable={false} />;
   return <div className={`flex items-center justify-center bg-zinc-900 text-zinc-600 ${className}`}>{failed ? <ImageOff className="h-4 w-4" aria-hidden="true" /> : !id ? <ImagePlus className="h-4 w-4" aria-hidden="true" /> : null}</div>;
 }

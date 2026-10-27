@@ -162,6 +162,12 @@ shrinks to make room when it is long.
 A photo that does not suit the frame (for example a wide photo in a full-bleed 9:16 look) loses its sides when
 cropped. The frame button on a scene shows the **whole photo** instead, over a blurred, darkened copy of itself.
 
+The crop starts on the faces the app found. **Move photo** under the preview lets you drag the photo (or use the
+arrow keys) to choose what stays in frame; **Reset** goes back to the app's framing. On Hot, a dragged point counts
+as the photo's subject, so the text moves below it when it sits high. In advanced mode, **Photo zoom** (100–250%)
+crops tighter around that point; the reel's zoom motion still plays on top. Neither applies to the whole-photo
+fit, where nothing is cropped, or to Pop Art, which cuts the subject out.
+
 Photos move slowly by default: zoom in on one scene, out on the next. Choose **Zoom in**, **Zoom out** or
 **Still** for the whole reel. The brand name at the top is one line across the full width; it shrinks to fit
 and ends with an ellipsis only if it still cannot (it never runs under the LIVE badge).

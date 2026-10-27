@@ -264,11 +264,11 @@ class ReelCreator:
             return result
 
     def scene_layout(self, reel, scene_index=0):
-        """Element boxes for the scene preview, so the app can select what was clicked. Photos do not move them."""
+        """Element boxes for the scene preview, so the app can select what was clicked, and where its photo can be dragged."""
         if not 0 <= scene_index < len(reel.scenes):
             raise ValueError('That scene does not exist.')
-        _, logo, _ = self.validate_assets(reel)
-        return Plan(reel, PREVIEW_WIDTH, {}, logo, FPS).layout(scene_index)
+        images, logo, _ = self.validate_assets(reel)  # Hot places its text by where the photo's faces land
+        return Plan(reel, PREVIEW_WIDTH, images, logo, FPS).layout(scene_index)
 
     def enqueue(self, value):
         if self.thread and not self.thread.is_alive():

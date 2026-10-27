@@ -27,7 +27,7 @@ export function fillPhotos(reel: Reel, assets: ReelAsset[]): Reel {
   return { ...reel, scenes: reel.scenes.map(scene => {
     if (scene.image_id || scene.kind === 'end' || !queue.length) return scene;
     const asset = queue.shift()!;
-    return { ...scene, image_id: asset.id, focal_x: asset.focus?.x ?? .5, focal_y: asset.focus?.y ?? .4 };
+    return { ...scene, image_id: asset.id, focal_x: asset.focus?.x ?? .5, focal_y: asset.focus?.y ?? .4, zoom: 1 };
   }) };
 }
 
@@ -68,8 +68,26 @@ export const insertIndex = (reel: Reel): number => reel.scenes.at(-1)?.kind === 
 
 export function setPhoto(reel: Reel, index: number, asset: ReelAsset | null): Reel {
   return { ...reel, scenes: reel.scenes.map((scene, i) => i !== index ? scene : asset
-    ? { ...scene, image_id: asset.id, focal_x: asset.focus?.x ?? .5, focal_y: asset.focus?.y ?? .4 }
+    ? { ...scene, image_id: asset.id, focal_x: asset.focus?.x ?? .5, focal_y: asset.focus?.y ?? .4, zoom: 1 }
     : { ...scene, image_id: null }) };
+}
+
+/** How much of the photo a cover crop shows across and down, as fractions of the photo, at the scene's zoom. */
+export function photoView(photo: { width: number; height: number }, box: { width: number; height: number }, zoom = 1): { x: number; y: number } {
+  const wide = photo.width / photo.height > box.width / box.height;
+  const across = wide ? (box.width / box.height) / (photo.width / photo.height) : 1;
+  const down = wide ? 1 : (photo.width / photo.height) / (box.width / box.height);
+  return { x: across / zoom, y: down / zoom };
+}
+
+/**
+ * The focal point after dragging the photo by (dx, dy), as fractions of the box it shows in. The focal point places
+ * the crop like the renderer's: 0 keeps the left (or top) edge, 1 the right (or bottom). An axis with nothing cropped stays.
+ */
+export function dragFocal(scene: Pick<ReelScene, 'focal_x' | 'focal_y'>, dx: number, dy: number, view: { x: number; y: number }): Pick<ReelScene, 'focal_x' | 'focal_y'> {
+  const move = (focal: number, by: number, shown: number) => shown >= 1 ? focal : Math.min(1, Math.max(0, focal - by * shown / (1 - shown)));
+  const round = (value: number) => Math.round(value * 1000) / 1000;
+  return { focal_x: round(move(scene.focal_x, dx, view.x)), focal_y: round(move(scene.focal_y, dy, view.y)) };
 }
 
 /** A written draft replaces the words only; photos already chosen stay with their scene position. */

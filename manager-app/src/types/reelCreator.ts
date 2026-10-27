@@ -31,6 +31,8 @@ export interface ReelScene {
   seconds: number | null;
   /** blur: the whole photo over a blurred copy of itself instead of a crop. Absent in older drafts. */
   fit?: 'cover' | 'blur';
+  /** Times the cover crop's magnification, 1–2.5; absent = 1. */
+  zoom?: number;
   /** stat: a big figure over a short label; quote: the headline is quoted words; end: the closing card. */
   kind?: SceneKind;
   stat?: string;
@@ -57,6 +59,8 @@ export interface SceneLayout {
   boxes: { role: StyleRole; x: number; y: number; w: number; h: number }[];
   /** Where the text block sits on the text_position scale, or null when this look cannot move it. */
   position: number | null;
+  /** Where the scene's photo shows, as fractions of the frame, when it is cropped and can be dragged. Absent from older backends. */
+  photo?: { x: number; y: number; w: number; h: number } | null;
 }
 
 export type SceneKind = 'story' | 'stat' | 'quote' | 'end';

@@ -238,3 +238,23 @@ test('the article decides which scene types a rewrite can give', () => {
   assert.equal(doc.articleSupports('Officials moved three families to shelters.').stat, true);
   assert.equal(doc.articleSupports('Officials moved families to shelters someone said.').stat, false);   // not "one" inside "someone"
 });
+
+test('a cover crop shows the photo the way the renderer crops it', () => {
+  const tall = { width: 1080, height: 1920 };
+  assert.deepEqual(doc.photoView({ width: 1600, height: 900 }, tall), { x: (9 / 16) / (16 / 9), y: 1 });   // a wide photo loses its sides
+  assert.deepEqual(doc.photoView({ width: 900, height: 1600 }, tall), { x: 1, y: 1 });                     // same shape: nothing lost
+  assert.deepEqual(doc.photoView({ width: 900, height: 1600 }, tall, 2), { x: .5, y: .5 });               // zoomed in twice
+});
+
+test('dragging the photo moves its focal point the opposite way, within the photo', () => {
+  const scene = { ...doc.emptyScene(), focal_x: .5, focal_y: .4 };
+  const view = { x: .5, y: 1 };                            // half the width shows, all of the height
+  assert.deepEqual(doc.dragFocal(scene, .25, .3, view), { focal_x: .25, focal_y: .4 });   // dragged right: more of the left; height has nothing to move
+  assert.deepEqual(doc.dragFocal(scene, -2, 0, view), { focal_x: 1, focal_y: .4 });        // never past the edge
+});
+
+test('a new photo starts at the face the app found, unzoomed', () => {
+  const zoomed = { ...reel('Vote'), scenes: [{ ...doc.emptyScene(), headline: 'Vote', image_id: 'old', zoom: 2, focal_x: .1 }] };
+  const scene = doc.setPhoto(zoomed, 0, asset('new', .7, .2)).scenes[0];
+  assert.deepEqual([scene.image_id, scene.focal_x, scene.focal_y, scene.zoom], ['new', .7, .2, 1]);
+});

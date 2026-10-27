@@ -54,6 +54,17 @@ def ease_back(p):
     return 1 + 2.70158 * (p - 1) ** 3 + 1.70158 * (p - 1) ** 2
 
 
+def zoom_crop(photo, size, scene):
+    """The part of the photo a zoomed-in cover crop keeps, placed like ImageOps.fit's centering; the photo itself at zoom 1."""
+    if scene.zoom <= 1:
+        return photo
+    aspect = size[0] / size[1]
+    w, h = (photo.height * aspect, photo.height) if photo.width / photo.height > aspect else (photo.width, photo.width / aspect)
+    w, h = w / scene.zoom, h / scene.zoom
+    x, y = (photo.width - w) * scene.focal_x, (photo.height - h) * scene.focal_y
+    return photo.crop((round(x), round(y), round(x + w), round(y + h)))
+
+
 def rgb(color):
     return tuple(int(color[i:i + 2], 16) for i in (1, 3, 5))
 
@@ -238,7 +249,14 @@ class Plan:
             boxes[element.role] = (min(x0, old[0]), min(y0, old[1]), max(x1, old[2]), max(y1, old[3])) if old else (x0, y0, x1, y1)
         out = [dict(role=role, x=round(a / self.W, 4), y=round(b / self.H, 4), w=round((c - a) / self.W, 4), h=round((d - b) / self.H, 4))
                for role, (a, b, c, d) in boxes.items()]
-        return dict(boxes=sorted(out, key=lambda box: -box['w'] * box['h']), position=self.positions[index])
+        return dict(boxes=sorted(out, key=lambda box: -box['w'] * box['h']), position=self.positions[index], photo=self._photo_box(index))
+
+    def _photo_box(self, index):
+        """Where a croppable photo shows, as fractions of the frame, so the app can drag it; None when nothing is cropped."""
+        scene, (x0, y0, rw, rh, _) = self.reel.scenes[index], self.rects[index]
+        if not scene.image_id or scene.fit == 'blur' or self.reel.look == 'pop_art' or not rw or not rh:
+            return None
+        return dict(x=round(x0 / self.W, 4), y=round(y0 / self.H, 4), w=round(rw / self.W, 4), h=round(rh / self.H, 4))
 
     @staticmethod
     def _role(role, elements):
@@ -357,7 +375,7 @@ class Plan:
             elif scene.fit == 'blur':
                 base = self._blur_fill(photo, size)
             else:
-                base = ImageOps.fit(photo, size, Image.Resampling.LANCZOS, centering=(scene.focal_x, scene.focal_y))
+                base = ImageOps.fit(zoom_crop(photo, size, scene), size, Image.Resampling.LANCZOS, centering=(scene.focal_x, scene.focal_y))
         elif scene.backdrop:
             base = Image.new('RGB', size, rgb(scene.backdrop))
         elif self.reel.look == 'pop_art':
@@ -798,7 +816,7 @@ class Plan:
             return .36
         with Image.open(path) as photo:
             width, height = photo.size
-        shown = height * max(self.W / width, self.H / height)   # the photo's height once it covers the frame
+        shown = height * max(self.W / width, self.H / height) * scene.zoom   # the photo's height once it covers the frame
         top = clamp(scene.focal_y * shown - self.H / 2, 0, max(0, shown - self.H))
         return (scene.focal_y * shown - top) / self.H
 

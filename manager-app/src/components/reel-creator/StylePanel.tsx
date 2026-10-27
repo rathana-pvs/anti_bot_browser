@@ -134,6 +134,14 @@ function SceneBackdrop({ reel, scene, index, onScene, layout }: { reel: Reel; sc
           onClick={() => onScene({ text_position: null })} className="text-zinc-500 hover:text-zinc-200"><RotateCcw className="h-3 w-3" /></button>}
       </div>
     </Row>}
+    {layout?.photo && <Row label="Photo zoom" note={`${Math.round((scene.zoom ?? 1) * 100)}%`}>
+      <div className="flex items-center gap-3">
+        <input type="range" min={100} max={250} step={5} value={Math.round((scene.zoom ?? 1) * 100)} aria-label="Photo zoom"
+          onChange={event => onScene({ zoom: Number(event.target.value) / 100 })} className="w-full accent-violet-500" />
+        {(scene.zoom ?? 1) !== 1 && <button type="button" aria-label="Show the whole crop again" title="Back to 100%"
+          onClick={() => onScene({ zoom: 1 })} className="text-zinc-500 hover:text-zinc-200"><RotateCcw className="h-3 w-3" /></button>}
+      </div>
+    </Row>}
     <Row label="Photo motion"><Select value={scene.motion ?? LOOK} options={motions} ariaLabel="Scene photo motion"
       onValueChange={value => onScene({ motion: unset(value) as ReelScene['motion'] })} /></Row>
     <Row label="Comes in with"><Select value={scene.transition ?? LOOK} options={transitions} ariaLabel="Scene transition" disabled={index === 0}

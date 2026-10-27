@@ -1046,7 +1046,7 @@ def test_text_position_is_ignored_where_the_look_sizes_the_photo_to_the_text(cre
 def test_api_layout(client, reel):
     response = client.post('/api/reel-creator/layout?scene=1', json=reel.model_dump())
     assert response.status_code == 200
-    assert {'boxes', 'position'} == set(response.json())
+    assert {'boxes', 'position', 'photo'} == set(response.json())
     assert client.post('/api/reel-creator/layout?scene=5', json=reel.model_dump()).status_code == 400
 
 
@@ -1243,3 +1243,44 @@ def test_hot_moves_its_text_below_a_face_high_in_the_photo(creator):
     assert dark(face, 1850) < dark(plain, 1850)                                 # the scrim follows the text down
     moved = plan(focal_x=.5, focal_y=.24, text_position=0)
     assert block(moved)[0] < top and moved.positions[0] == 0                    # Text position still moves it
+
+
+def test_photo_zoom_crops_tighter_around_the_focal_point(creator):
+    marked = io.BytesIO()
+    photo = Image.new('RGB', (900, 1600), (40, 40, 40))          # already 9:16, so zoom 1 keeps all of it
+    photo.paste((255, 0, 0), (0, 0, 900, 120))                   # red top edge
+    photo.paste((0, 0, 255), (0, 1480, 900, 1600))               # blue bottom edge
+    photo.save(marked, 'PNG')
+    asset = creator.import_asset(marked.getvalue(), 'tall.png', 'image')
+    images = {asset['id']: creator.asset_path(asset['id'], 'image')}
+    def edges(**scene):
+        value = Reel(look='breaking', motion='none', scenes=[Scene(headline='Vote', image_id=asset['id'], shade=0, **scene)])
+        frame = Plan(value, 360, images, None).background(0, 1)
+        column = [frame.getpixel((180, y)) for y in range(frame.height)]
+        return any(r > 200 and b < 60 for r, g, b in column), any(b > 200 and r < 60 for r, g, b in column)
+    assert edges(focal_y=.5) == (True, True)
+    assert edges(zoom=2, focal_y=.5) == (False, False)                       # twice as close: both edges cropped away
+    assert edges(zoom=2, focal_y=0) == (True, False)             # dragged up: the top stays in frame
+    assert edges(zoom=2, focal_y=1) == (False, True)
+    with pytest.raises(ValidationError):
+        Scene(zoom=.5)
+    with pytest.raises(ValidationError):
+        Scene(zoom=3)
+
+
+def test_scene_layout_says_where_the_photo_can_be_dragged(creator, reel):
+    box = creator.scene_layout(reel, 0)['photo']
+    assert box == dict(x=0, y=0, w=1, h=1)                       # full bleed on Breaking
+    assert creator.scene_layout(reel, 1)['photo'] is None        # no photo
+    politics = creator.scene_layout(reel.model_copy(update=dict(look='politics')), 0)['photo']
+    assert politics['y'] == 0 and politics['h'] < 1              # only the photo panel above the text
+    blurred = reel.model_copy(update=dict(scenes=[reel.scenes[0].model_copy(update=dict(fit='blur')), reel.scenes[1]]))
+    assert creator.scene_layout(blurred, 0)['photo'] is None     # the whole photo shows: nothing to drag
+    assert creator.scene_layout(reel.model_copy(update=dict(look='pop_art')), 0)['photo'] is None
+
+
+def test_scene_layout_follows_where_hot_moves_its_text_for_a_face(creator):
+    asset = creator.import_asset(image_bytes(size=(727, 485)), 'rally.png', 'image')
+    value = lambda y: Reel(look='hot', scenes=[Scene(headline='Are family attacks in campaign ads fair game?', image_id=asset['id'], focal_x=.5, focal_y=y)])
+    headline = lambda y: next(box for box in creator.scene_layout(value(y), 0)['boxes'] if box['role'] == 'headline')
+    assert headline(.24)['y'] > headline(.4)['y'] + .2           # the clickable boxes match the poster, not the look's default

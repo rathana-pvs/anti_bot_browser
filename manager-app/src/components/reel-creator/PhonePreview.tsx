@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
-import { Play } from 'lucide-react';
+import { Move, Play, RotateCcw } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { Spinner } from '../ui/Spinner';
 import { reelApi } from '../../services/reelCreator';
-import type { Reel, ReelJob, SceneLayout, StyleRole } from '../../types/reelCreator';
+import { dragFocal, photoView } from '../../services/reelDocument';
+import type { Reel, ReelJob, ReelScene, SceneLayout, StyleRole } from '../../types/reelCreator';
 import { roleName } from './StylePanel';
+import { useThumbnail } from './Thumb';
 
 interface Props {
   active: boolean;
@@ -19,10 +21,12 @@ interface Props {
   layout: SceneLayout | null;
   selected: StyleRole | null;
   onPick: (role: StyleRole) => void;
+  /** Reframes the selected scene's photo. */
+  onFrame: (patch: Pick<ReelScene, 'focal_x' | 'focal_y'>) => void;
 }
 
 /** Shows the selected scene exactly as rendered, or the finished video while it matches the edits. */
-export function PhonePreview({ active, reel, scene, onScene, job, fresh, onCancel, onRetry, layout, selected, onPick }: Props) {
+export function PhonePreview({ active, reel, scene, onScene, job, fresh, onCancel, onRetry, layout, selected, onPick, onFrame }: Props) {
   const [poster, setPoster] = useState('');
   const [problem, setProblem] = useState('');
   const [video, setVideo] = useState('');
@@ -33,6 +37,8 @@ export function PhonePreview({ active, reel, scene, onScene, job, fresh, onCance
   const [playPending, setPlayPending] = useState(false);
   const [videoProblem, setVideoProblem] = useState('');
   const [previewAttempt, setPreviewAttempt] = useState(0);
+  const [moving, setMoving] = useState(false);
+  useEffect(() => { setMoving(false); }, [scene, reel.scenes[scene]?.image_id]);
   const shown = fresh && job?.state === 'completed';
   const working = !!job && fresh && ['queued', 'rendering', 'verifying'].includes(job.state);
 
@@ -83,6 +89,8 @@ export function PhonePreview({ active, reel, scene, onScene, job, fresh, onCance
   };
 
   const previewImage = (shown && cover) || poster;
+  const current = reel.scenes[Math.min(scene, reel.scenes.length - 1)];
+  const box = !video && !shown && !working && poster ? layout?.photo ?? null : null;
 
   const shape = reel.ratio === '4:5' ? 'aspect-[4/5]' : 'aspect-[9/16]';
   return <div className="flex flex-col items-center gap-3">
@@ -96,7 +104,9 @@ export function PhonePreview({ active, reel, scene, onScene, job, fresh, onCance
           className={`${shape} w-full bg-black`} />
         : previewImage ? <img src={previewImage} alt={`Scene ${scene + 1} preview`} className={`${shape} w-full object-cover`} draggable={false} />
         : <div className={`flex ${shape} w-full items-center justify-center`}><Spinner className="text-zinc-600" /></div>}
-      {!video && !shown && !working && poster && layout && <div className="absolute inset-0" role="group" aria-label="Elements in this scene">
+      {box && moving
+        ? <PhotoDrag scene={current} box={box} onFrame={onFrame} poster={poster} />
+        : !video && !shown && !working && poster && layout && <div className="absolute inset-0" role="group" aria-label="Elements in this scene">
         {layout.boxes.map(box => <button key={box.role} type="button" onClick={() => onPick(box.role)}
           aria-label={`Style ${roleName(box.role).toLowerCase()}, scene ${scene + 1}`} title={roleName(box.role)}
           style={{ left: `${box.x * 100}%`, top: `${box.y * 100}%`, width: `${box.w * 100}%`, height: `${box.h * 100}%` }}
@@ -115,6 +125,7 @@ export function PhonePreview({ active, reel, scene, onScene, job, fresh, onCance
         <Button variant="outline" size="sm" onClick={onCancel}>Stop</Button>
       </div>}
     </div>
+    {box && <PhotoControls scene={current} moving={moving} onMoving={setMoving} onFrame={onFrame} />}
     {!video && reel.scenes.length > 1 && <div role="tablist" aria-label="Scenes" className="flex gap-1.5">
       {reel.scenes.map((_, i) => <button key={i} role="tab" type="button" aria-selected={i === scene} aria-label={`Scene ${i + 1}`} onClick={() => onScene(i)}
         className={`h-7 w-7 rounded-full text-xs transition-colors ${i === scene ? 'bg-violet-600 text-white' : 'bg-zinc-900 text-zinc-400 hover:bg-zinc-800'}`}>{i + 1}</button>)}
@@ -129,5 +140,77 @@ export function PhonePreview({ active, reel, scene, onScene, job, fresh, onCance
       <p role="alert" className="text-xs text-red-400">{job.error ?? 'The video stopped.'}</p>
       <Button variant="outline" size="sm" onClick={onRetry}>Try again</Button>
     </div>}
+  </div>;
+}
+
+type Box = NonNullable<SceneLayout['photo']>;
+type Focal = Pick<ReelScene, 'focal_x' | 'focal_y'>;
+const percent = (box: Box) => ({ left: `${box.x * 100}%`, top: `${box.y * 100}%`, width: `${box.w * 100}%`, height: `${box.h * 100}%` });
+
+/**
+ * The photo's box, dragged to reframe it. While dragging, and until the new preview arrives, it shows the photo
+ * itself, cropped the way the renderer crops it.
+ */
+function PhotoDrag({ scene, box, onFrame, poster }: { scene: ReelScene; box: Box; onFrame: (patch: Focal) => void; poster: string }) {
+  const { url } = useThumbnail(scene.image_id);
+  const photo = useRef<HTMLImageElement>(null);
+  const start = useRef<{ x: number; y: number; width: number; height: number; scene: ReelScene } | null>(null);
+  const [framing, setFraming] = useState<Focal | null>(null);
+  useEffect(() => { setFraming(null); }, [poster]);
+  const view = (width: number, height: number) => photo.current?.naturalWidth
+    ? photoView({ width: photo.current.naturalWidth, height: photo.current.naturalHeight }, { width, height }, scene.zoom ?? 1) : null;
+  const commit = (next: Focal | null) => {
+    if (next && (next.focal_x !== scene.focal_x || next.focal_y !== scene.focal_y)) { setFraming(next); onFrame(next); }
+    else setFraming(null);
+  };
+  const shown = framing ?? scene;
+  const place = `${shown.focal_x * 100}% ${shown.focal_y * 100}%`;
+  return <div className="absolute overflow-hidden" style={percent(box)}>
+    {url && <img ref={photo} src={url} alt="" draggable={false} className={`pointer-events-none h-full w-full object-cover ${framing ? '' : 'opacity-0'}`}
+      style={{ objectPosition: place, transform: `scale(${scene.zoom ?? 1})`, transformOrigin: place }} />}
+    <div role="application" tabIndex={0} aria-label="Photo framing. Drag the photo, or use the arrow keys, to choose what stays in frame."
+      className="absolute inset-0 cursor-grab rounded-sm outline-none ring-2 ring-inset ring-violet-400/70 focus-visible:ring-violet-300 active:cursor-grabbing"
+      onPointerDown={event => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        start.current = { x: event.clientX, y: event.clientY, width: rect.width, height: rect.height, scene };
+      }}
+      onPointerMove={event => {
+        const from = start.current, shape = from && view(from.width, from.height);
+        if (from && shape) setFraming(dragFocal(from.scene, (event.clientX - from.x) / from.width, (event.clientY - from.y) / from.height, shape));
+      }}
+      onPointerUp={() => { if (start.current) { start.current = null; commit(framing); } }}
+      onPointerCancel={() => { start.current = null; setFraming(null); }}
+      onKeyDown={event => {
+        const step = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
+        const rect = event.currentTarget.getBoundingClientRect(), shape = view(rect.width, rect.height);
+        if (!step || !shape) return;
+        event.preventDefault();
+        commit(dragFocal({ ...scene, ...framing }, step[0] * .05, step[1] * .05, shape));
+      }} />
+  </div>;
+}
+
+/** Under the preview: start or finish moving the photo, and go back to the framing the app chose from its faces. */
+function PhotoControls({ scene, moving, onMoving, onFrame }: { scene: ReelScene; moving: boolean; onMoving: (moving: boolean) => void; onFrame: (patch: Focal) => void }) {
+  const [found, setFound] = useState<Focal | null>(null);
+  useEffect(() => {
+    setFound(null);
+    if (!moving || !scene.image_id) return;
+    let cancelled = false;
+    void reelApi.asset(scene.image_id).then(asset => {
+      if (!cancelled) setFound({ focal_x: asset.focus?.x ?? .5, focal_y: asset.focus?.y ?? .4 });
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [moving, scene.image_id]);
+  const moved = found && (found.focal_x !== scene.focal_x || found.focal_y !== scene.focal_y);
+  if (!moving) return <Button variant="outline" size="sm" onClick={() => onMoving(true)}><Move className="h-3.5 w-3.5" />Move photo</Button>;
+  return <div className="flex max-w-[300px] flex-col items-center gap-2 text-center">
+    <p className="text-xs text-zinc-400">Drag the photo to choose what stays in frame.</p>
+    <div className="flex gap-2">
+      {moved && <Button variant="outline" size="sm" onClick={() => onFrame(found)} title="Frame the photo the way the app chose from its faces">
+        <RotateCcw className="h-3.5 w-3.5" />Reset</Button>}
+      <Button size="sm" onClick={() => onMoving(false)}>Done</Button>
+    </div>
   </div>;
 }

@@ -95,7 +95,7 @@ export function ReelCreator({ active, onUseReel }: Props) {
         <div className="space-y-4 lg:sticky lg:top-4 lg:self-start">
           <PhonePreview active={active} reel={doc.reel} scene={scene} onScene={setScene} job={job} fresh={fresh}
             onCancel={() => { void studio.updateJob('cancel'); }} onRetry={() => { void studio.updateJob('retry'); }}
-            layout={layout} selected={mode === 'advanced' ? role : null} onPick={pick} />
+            layout={layout} selected={mode === 'advanced' ? role : null} onPick={pick} onFrame={patch => edit(scene, patch)} />
           <div className="mx-auto flex max-w-[300px] flex-col gap-2">
             {done?.kind === 'final'
               ? <>
