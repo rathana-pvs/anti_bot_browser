@@ -117,6 +117,7 @@ export function ReelCreator({ active, onUseReel }: Props) {
               onSave={name => { void studio.saveHouseStyle(name); }} onDelete={id => { void studio.deleteHouseStyle(id); }} />} />
           <SceneList reel={doc.reel} hooks={doc.hooks} selected={scene} busy={!!busy} writing={busy === 'hooks'} adding={busy === 'scene'} canWrite={canWrite}
             rewriting={studio.rewriting} onRewrite={index => { void studio.rewriteScene(index); }}
+            undoable={studio.undo?.index ?? null} onUndo={studio.undoRewrite}
             onSelect={setScene} onEdit={edit} onHook={studio.pickHook} onMoreHooks={() => { void studio.moreHooks(); }}
             onPhoto={index => { void studio.changePhoto(index); }} onPhotos={() => { void studio.addPhotos(); }}
             onMove={studio.moveScene} onRemove={studio.removeScene} onAdd={studio.addScene} />

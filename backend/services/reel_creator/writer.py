@@ -203,6 +203,11 @@ def check(copy, request):
             raise Unsupported(MISSING[request.rewrite])
     if request.existing and request.rewrite != 'end':
         copy.end_card = None
+    if request.rewrite:  # a rewrite that repeats another scene is no rewrite
+        others = {normalized(h).strip(' ?.!') for h in request.existing}
+        new = copy.end_card.headline if request.rewrite == 'end' else copy.scenes[0].headline
+        if normalized(new).strip(' ?.!') in others:
+            raise Ungrounded('The rewrite repeated another scene.')
     if copy.end_card:
         copy.end_card.highlight = checked_highlight(copy.end_card.headline, copy.end_card.highlight)
     end = [f'{copy.end_card.headline}\n{copy.end_card.detail}'] if copy.end_card else []

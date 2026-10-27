@@ -1193,3 +1193,13 @@ def test_reported_speech_never_becomes_a_quote_scene():
     story = dict(headline='Bridge stays shut for safety checks', source_quote='the Route 9 bridge would stay closed')
     written = write_reel(ask(scenes=2), provider=lambda r: copy(scenes=[story, reported]))
     assert [s['kind'] for s in written['scenes']] == ['story', 'story']     # creating a reel follows the same rule
+
+
+def test_a_rewrite_that_repeats_another_scene_is_tried_again():
+    answers = iter([copy(end_card=dict(headline='Council backs flood relief plan?', detail='', highlight='')),
+                    copy(end_card=dict(headline='Should relief come first?', detail='', highlight=''))])
+    result = write_reel(rewrite(rewrite='end'), provider=lambda r: next(answers))
+    assert result['end']['headline'] == 'Should relief come first?'
+    with pytest.raises(ValueError):
+        write_reel(rewrite(rewrite='story'), provider=lambda r: copy(scenes=[dict(headline='Council backs flood relief plan',
+                                                                                    source_quote='voted 7 to 2 on Tuesday')]))
