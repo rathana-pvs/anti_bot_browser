@@ -235,4 +235,6 @@ test('a one-scene rewrite replaces only the words, and Undo has the old words to
 test('the article decides which scene types a rewrite can give', () => {
   assert.deepEqual(doc.articleSupports('Trump said the ad was “hitting pay dirt” and Acton was “fair game.”'), { story: true, end: true, stat: false, quote: true });
   assert.deepEqual(doc.articleSupports('About 3,400 people left. The mayor said the bridge would stay closed.'), { story: true, end: true, stat: true, quote: false });
+  assert.equal(doc.articleSupports('Officials moved three families to shelters.').stat, true);
+  assert.equal(doc.articleSupports('Officials moved families to shelters someone said.').stat, false);   // not "one" inside "someone"
 });

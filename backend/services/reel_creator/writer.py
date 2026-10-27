@@ -25,7 +25,8 @@ Return JSON:
   scenes 2 onward rather than writing another story scene:
   - story: headline and detail as above.
   - stat: the scene's point is one specific figure. stat is that figure exactly as the article gives it (up to
-    12 characters, e.g. "7-2", "$1.2bn", "300,000"); headline is a short label of 3-8 words saying what it counts.
+    12 characters), in digits ("7-2", "$1.2bn", "300,000") or in words when the article writes it that way ("three",
+    "half", "a dozen", "one in five"); headline is a short label of 3-8 words saying what it counts.
   - quote: the article contains a direct quotation worth hearing, inside quotation marks. headline is the quoted words
     copied exactly (no quotation marks, up to 110 characters); attribution is the speaker's name and role as the article
     gives them. Reported speech ("she said the bridge would stay closed") is not a quotation: never make it a quote.
@@ -159,6 +160,26 @@ def checked_highlight(headline, phrase):
     return phrase if span and span[1] - span[0] < len(' '.join(headline.split())) else ''
 
 
+NUMBER_WORDS = frozenset('''one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen
+seventeen eighteen nineteen twenty thirty forty fifty sixty seventy eighty ninety hundred hundreds thousand thousands million
+millions billion billions trillion dozen dozens half halves third thirds quarter quarters twice double triple'''.split())
+JOINERS = frozenset('a an and in of out'.split())  # "a dozen", "one in five", "two out of three"
+
+
+def figure_in(stat, facts):
+    """A figure in digits, or a number the article spells out ("three", "half") copied word for word from it."""
+    if re.search(r'\d', stat):
+        return True
+    words = re.split(r'[\s-]+', normalized(stat).strip(' .,'))
+    if not words or not all(w in NUMBER_WORDS or w in JOINERS for w in words) or not NUMBER_WORDS.intersection(words):
+        return False
+    return re.search(r'(?<![\w-])' + r'[\s-]+'.join(map(re.escape, words)) + r'(?![\w-])', facts) is not None
+
+
+def spells_numbers(text):
+    return bool(NUMBER_WORDS.intersection(re.findall(r'[a-z]+', normalized(text))))
+
+
 def quotations(text):
     """What the article puts inside quotation marks; reported speech ("she said the bridge would stay shut") is not among it."""
     return [normalized(q) for q in re.findall(r'"([^"]{8,})"|“([^”]{8,})”|‘([^’]{8,})’', text) for q in q if q]
@@ -174,8 +195,12 @@ def settle_kind(scene, facts, hook=False, quoted=None):
             scene.headline = words
         else:
             scene.kind = 'story'
-    if scene.kind == 'stat' and not re.search(r'\d', scene.stat):
-        scene.kind = 'story'
+    if scene.kind == 'stat':
+        if figure_in(scene.stat, facts):
+            scene.stat = scene.stat.strip()
+            scene.stat = scene.stat[:1].upper() + scene.stat[1:]  # "three" reads as a figure when it leads: "Three"
+        else:
+            scene.kind = 'story'
     if hook:  # the first scene carries the hook headline, which the operator can swap
         scene.kind = 'story'
     if scene.kind != 'stat':
@@ -228,8 +253,9 @@ def check(copy, request):
 
 def write_reel(request, provider=None, attempts=2):
     provider = provider or (lambda r: provider_generate(r, system=SYSTEM, schema=ReelCopy))
-    # Nothing to ask the AI for: an article with no quotation marks has no quote, one with no digits no figure.
-    if (request.rewrite == 'quote' and not quotations(request.text)) or (request.rewrite == 'stat' and not numbers(request.text)):
+    # Nothing to ask the AI for: an article with no quotation marks has no quote, one with no number at all no figure.
+    if (request.rewrite == 'quote' and not quotations(request.text)) or \
+            (request.rewrite == 'stat' and not numbers(request.text) and not spells_numbers(request.text)):
         raise ValueError(ABSENT[request.rewrite])
     for attempt in range(attempts):
         try:

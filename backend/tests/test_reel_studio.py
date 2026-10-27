@@ -1203,3 +1203,19 @@ def test_a_rewrite_that_repeats_another_scene_is_tried_again():
     with pytest.raises(ValueError):
         write_reel(rewrite(rewrite='story'), provider=lambda r: copy(scenes=[dict(headline='Council backs flood relief plan',
                                                                                     source_quote='voted 7 to 2 on Tuesday')]))
+
+
+def test_a_figure_can_be_a_number_the_article_spells_out():
+    text = ('Officials said three provinces will share the relief money, and half of the families affected have already '
+            'applied. A dozen schools remain closed while someone checks the buildings.')
+    ask = lambda: WriteRequest(api_key='k', model='gemini-test', text=text, rewrite='stat', position=2)
+    stat = lambda figure: copy(scenes=[dict(kind='stat', stat=figure, headline='Provinces sharing the money', source_quote='three provinces will share')])
+    for figure, shown in (('three', 'Three'), ('Half', 'Half'), ('a dozen', 'A dozen')):
+        assert write_reel(ask(), provider=lambda r: stat(figure))['scenes'][0]['stat'] == shown
+    for figure in ('four', 'one', 'many', 'Record'):     # not in the article, inside another word, or not a number
+        with pytest.raises(ValueError, match='no clear figure'):
+            write_reel(ask(), provider=lambda r: stat(figure))
+    no_numbers = WriteRequest(api_key='k', model='gemini-test', rewrite='stat', position=2,
+                              text='The governor signed the order on Thursday after a long debate in the state assembly.')
+    with pytest.raises(ValueError, match='has no numbers'):
+        write_reel(no_numbers, provider=lambda r: pytest.fail('the AI must not be asked'))

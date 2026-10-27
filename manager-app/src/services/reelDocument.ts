@@ -202,7 +202,10 @@ export function rewrittenWords(written: WrittenReel, kind: SceneKind): Partial<R
   return scene ? { kind: scene.kind, headline: scene.headline, detail: scene.detail, stat: scene.stat, attribution: scene.attribution, highlight: scene.highlight } : null;
 }
 
-/** Scene types the article can support: a Figure needs a number in it, a Quote words it puts in quotation marks. */
+/** Numbers an article may spell out instead of writing digits; the writer accepts the same words. */
+const NUMBER_WORDS = /\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundreds?|thousands?|millions?|billions?|trillion|dozens?|half|halves|thirds?|quarters?|twice|double|triple)\b/i;
+
+/** Scene types the article can support: a Figure needs a number in it (digits or words), a Quote words it puts in quotation marks. */
 export function articleSupports(text: string): Record<SceneKind, boolean> {
-  return { story: true, end: true, stat: /\p{Nd}/u.test(text), quote: /"[^"]{8,}"|“[^”]{8,}”|‘[^’]{8,}’/.test(text) };
+  return { story: true, end: true, stat: /\p{Nd}/u.test(text) || NUMBER_WORDS.test(text), quote: /"[^"]{8,}"|“[^”]{8,}”|‘[^’]{8,}’/.test(text) };
 }
