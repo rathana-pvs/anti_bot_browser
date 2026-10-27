@@ -35,7 +35,7 @@ Return JSON:
 - hook_alternatives: exactly 2 other hook headlines for scene 1 in different styles (question, number,
   consequence), each fully supported by the article. Empty when existing_headlines is given.
 - look: breaking (urgent developing news), hot (trending or viral), politics (political news and analysis), wire (straight factual report), editorial
-  (explainer or analysis), pop_art (bold retro collage) or clean (neutral update). Use clean, politics, wire or editorial unless the operator requested another look.
+  (explainer or analysis), pop_art (trending or entertainment news about one clear person) or clean (neutral update). Use clean, politics, wire or editorial unless the operator requested another look.
 - post_caption: only when write_caption is true; a readable Facebook caption of 60-130 words in short
   paragraphs with attribution; no URLs. Otherwise an empty string.
 - hashtags: up to 5, no emoji; empty unless write_caption is true.

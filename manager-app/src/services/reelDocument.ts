@@ -8,7 +8,7 @@ export const emptyScene = (): ReelScene => ({ headline: '', detail: '', image_id
 export const emptyReel = (brand?: ReelBrand | null): Reel => ({
   version: 4, look: 'breaking', tag: null, accent: null, scenes: [emptyScene()],
   brand: brand?.brand ?? '', logo_id: brand?.logo_id ?? null, source: brand?.source ?? '', dateline: '',
-  ratio: '9:16', motion: 'auto', show_progress: true, music: 'auto', music_id: null,
+  ratio: '9:16', motion: 'auto', show_progress: true, live: false, music: 'auto', music_id: null,
 });
 
 /** Mirrors the renderer's timing: enough time to read, within a comfortable range. */

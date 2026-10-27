@@ -435,9 +435,9 @@ def test_display_face_hands_missing_characters_to_noto():
 
 @pytest.mark.parametrize('look', ['politics', 'clean', 'editorial'])
 def test_photo_takes_the_room_short_text_leaves(look):
-    value = Reel(look=look, scenes=[Scene(headline='Vote passes'),
+    value = Reel(look=look, scenes=[Scene(headline='Vote passes', backdrop='#334455'),   # a color keeps the photo frame
                                    Scene(headline='Council approves a flood relief plan for three provinces after a long debate',
-                                         detail='Payments begin next week after the cabinet signs the order, officials said.')])
+                                         detail='Payments begin next week after the cabinet signs the order, officials said.', backdrop='#334455')])
     plan = Plan(value, 1080, {}, None)
     short, long = plan.rects
     assert short[3] > long[3]                                # a bigger photo for the short scene
@@ -569,10 +569,16 @@ def test_photo_zoom_follows_the_motion_setting(creator, reel):
 def test_brand_is_one_wide_line_and_clears_the_live_badge(creator, reel):
     reel.look, reel.brand = 'breaking', 'A very long news organisation name that keeps going well past the edge of the screen'
     images, logo, _ = creator.validate_assets(reel)
+    unbadged = Plan(reel, 1080, images, logo)
+    assert not any(e.anim == 'blink' for e in unbadged.global_elements)   # LIVE is only for coverage marked live
+    assert any(e.anim == 'marquee' for e in unbadged.global_elements)     # the ticker stays
+    reel.live = True
     plan = Plan(reel, 1080, images, logo)
     brand = next(e for e in plan.global_elements if e.anim == 'rise')
     badge = next(e for e in plan.global_elements if e.anim == 'pop' and e.tile.width < 400 and e.x > 500)
     assert brand.x + brand.tile.width <= badge.x                       # never under the badge
+    wide = next(e for e in unbadged.global_elements if e.anim == 'rise')
+    assert wide.tile.width > brand.tile.width                            # without the badge the brand gets its room
     reel.look, reel.brand = 'clean', 'Short name'
     plain = Plan(reel, 1080, images, logo)
     short = next(e for e in plain.global_elements if e.anim == 'rise')
@@ -782,7 +788,7 @@ def test_highlight_missing_from_the_headline_is_ignored():
 
 
 def test_an_end_card_without_a_photo_is_the_page_itself():
-    plan = Plan(Reel(look='clean', scenes=[Scene(headline='Vote passes'), Scene(kind='end', headline='Agree?')]), 360, {}, None)
+    plan = Plan(Reel(look='clean', scenes=[Scene(headline='Vote passes', backdrop='#334455'), Scene(kind='end', headline='Agree?')]), 360, {}, None)
     assert plan.rects[1][3] == 0 and plan.rects[0][3] > 0
     assert plan.background(1, 1).getpixel((180, 300)) == plan.page
 
@@ -802,7 +808,7 @@ def test_gemini_is_asked_for_scene_kinds_highlights_and_the_end_card():
 
 
 @pytest.mark.parametrize('ratio', ['9:16', '4:5'])
-def test_pop_art_preserves_cutout_and_draws_pattern_halo_outline_and_no_byline(creator, ratio):
+def test_pop_art_preserves_cutout_and_draws_halftone_halo_outline_and_no_byline(creator, ratio):
     from PIL import ImageDraw
     photo = Image.new('RGBA', (400, 600))
     ImageDraw.Draw(photo).rectangle((100, 50, 300, 599), fill=(230, 60, 40, 255))
@@ -817,11 +823,11 @@ def test_pop_art_preserves_cutout_and_draws_pattern_halo_outline_and_no_byline(c
     plan = Plan(value, 540, {asset['id']: path})
     background = plan._base(0)
     colors = set(background.getdata())
-    assert {(162, 139, 212), (116, 125, 61), (204, 255, 0), (255, 255, 255)} <= colors
-    # The originally red portrait becomes gray, while its transparent surroundings show the design.
-    center = background.getpixel((background.width // 2, background.height // 2))
-    assert center[0] == center[1] == center[2]
-    assert len(plan.global_elements) == 1  # centered publisher label only
+    assert {(17, 17, 17), (204, 255, 0), (255, 255, 255)} <= colors    # halftone page, accent halo, white outline
+    # The portrait keeps its own color, while its transparent surroundings show the design.
+    assert background.getpixel((background.width // 2, round(background.height * .7))) == (230, 60, 40)
+    assert [e.role for e in plan.global_elements] == ['brand']           # the centered brand pill only
+    assert any(e.role == 'label' for e in plan.scene_elements[0])        # the label rides the seam
     frame = plan.frame(plan.settled(0))
     assert frame.getpixel((20, frame.height - 20)) == (17, 17, 17)
     assert plan.rect[3] < plan.H * .65
@@ -879,7 +885,7 @@ def test_every_look_tags_its_text_by_role(look, creator, reel):
     assert {'headline', 'detail'} <= {e.role for e in plan.scene_elements[0]}
     assert 'lead' in {e.role for e in plan.scene_elements[1]}
     roles = {e.role for e in plan.global_elements}
-    assert ('label' in roles) if look == 'pop_art' else 'brand' in roles
+    assert 'brand' in roles
     if look == 'breaking':
         assert 'ticker' in roles
 
@@ -1100,3 +1106,27 @@ def test_house_styles_are_limited(creator):
     with pytest.raises(ValueError, match='up to'):
         creator.store.save_house_style(dict(id='f' * 32, name='One more'), MAX_HOUSE_STYLES)
     creator.store.save_house_style(dict(id=f'{0:032x}', name='Renamed'), MAX_HOUSE_STYLES)      # replacing one is fine
+
+
+@pytest.mark.parametrize('look', ['politics', 'clean', 'editorial'])
+def test_a_scene_without_a_photo_is_the_page_with_its_text_mid_frame(look):
+    """No empty photo frame on page looks: the page fills the scene and the text moves toward the middle."""
+    with_color = Plan(Reel(look=look, scenes=[Scene(headline='Government approves aid', detail='The money goes to housing.', backdrop='#334455')]), 360, {}, None)
+    bare = Plan(Reel(look=look, scenes=[Scene(headline='Government approves aid', detail='The money goes to housing.')]), 360, {}, None)
+    assert bare.rects[0][3] == 0 and with_color.rects[0][3] > 0
+    assert bare.background(0, 1).getpixel((180, 600)) == bare.page
+    top = min(e.y for e in bare.scene_elements[0] if e.role == 'headline')
+    assert bare.px(bare.inset + 200) < top < bare.px(bare.limit) * .6
+
+
+def test_hot_keeps_the_detail_under_its_headline_and_no_source_repeats_the_brand(creator, reel):
+    reel.look, reel.source = 'hot', reel.brand
+    images, logo, _ = creator.validate_assets(reel)
+    plan = Plan(reel, 1080, images, logo)
+    elements = plan.scene_elements[0]
+    sticker = next(e for e in elements if e.role == 'detail')
+    underline = next(e for e in elements if e.role == 'headline' and e.anim == 'wipe')
+    assert 0 < sticker.y - underline.y < plan.px(80)                    # right under the headline, not at the bottom
+    assert [e.role for e in elements].count('label') == 1               # the tag only: the source is the brand
+    reel.source = 'City Wire'
+    assert [e.role for e in Plan(reel, 1080, images, logo).scene_elements[0]].count('label') == 2

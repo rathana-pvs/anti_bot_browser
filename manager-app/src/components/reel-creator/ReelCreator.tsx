@@ -111,7 +111,7 @@ export function ReelCreator({ active, onUseReel }: Props) {
         <div className="min-w-0 space-y-6">
           <LookPicker looks={capabilities.looks} ratios={capabilities.ratios} reel={doc.reel}
             onLook={look => studio.setReel(reel => ({ ...reel, look }))} onTag={tag => studio.setReel(reel => ({ ...reel, tag }))}
-            onRatio={ratio => studio.setReel(reel => ({ ...reel, ratio }))}
+            onRatio={ratio => studio.setReel(reel => ({ ...reel, ratio }))} onLive={live => studio.setReel(reel => ({ ...reel, live }))}
             houseStyles={<HouseStylePicker styles={studio.houseStyles} reel={doc.reel} busy={!!busy} onPick={studio.pickHouseStyle}
               onSave={name => { void studio.saveHouseStyle(name); }} onDelete={id => { void studio.deleteHouseStyle(id); }} />} />
           <SceneList reel={doc.reel} hooks={doc.hooks} selected={scene} busy={!!busy} writing={busy === 'hooks'} adding={busy === 'scene'} canWrite={canWrite}

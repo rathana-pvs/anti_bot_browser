@@ -196,7 +196,7 @@ class Plan:
     def _credit(self, scene, elements):
         """The photo credit, small and right-aligned to the text column so it stays clear of the Reels buttons.
 
-        Full-bleed looks set it just above their text (Hot: above the detail sticker); page looks at the photo's edge.
+        Breaking and Wire set it just above their text; Pop Art above its label sticker; the others at the photo's edge.
         """
         if not scene.credit or not scene.image_id or not self._scene_rect[3]:
             return []
@@ -207,9 +207,8 @@ class Plan:
         right = min(x0 + rw - px(20), px(DESIGN_W - self.right + 8))
         if look in ('breaking', 'wire'):
             y = min(e.y for e in elements) - px(10) - tile.height if elements else px(self.limit) - tile.height
-        elif look == 'hot':
-            sticker = [e for e in elements if e.role == 'detail']
-            y = (sticker[0].y if sticker else px(self.limit)) - px(10) - tile.height
+        elif look == 'pop_art':
+            y = y0 + rh - px(48) - tile.height
         elif look == 'editorial':
             y = y0 + px(10)
         else:
@@ -297,8 +296,8 @@ class Plan:
             rect, page = (0, 0, DESIGN_W, round(self.DH * .62), 0), (17, 17, 17)
         elif look == 'politics':   # photo on top, text panel below
             rect, page = (0, 0, DESIGN_W, round(self.DH * .52), 0), PANEL
-        elif look == 'clean':  # rounded photo card on a white page
-            rect, page = (48, self.inset + 140, 984, round(self.DH * .41), 32), PAGE
+        elif look == 'clean':  # photo card under a masthead rule, on a light page
+            rect, page = (48, self.inset + 140, 984, round(self.DH * .41), 12), PAGE
         elif look == 'editorial':  # headline on top, photo across the bottom
             top = round(self.DH * (.46 if self.reel.ratio == '9:16' else .52))
             rect, page = (0, top, DESIGN_W, self.DH - top, 0), PAPER
@@ -347,9 +346,9 @@ class Plan:
         path = self.images.get(scene.image_id) if scene.image_id else None
         if path:
             with Image.open(path) as source:
-                photo = source.convert('RGBA' if self.reel.look == 'pop_art' else 'RGB')
-            if self.reel.look == 'pop_art':
-                base = self._collage_photo(photo, size, scene)
+                photo = source.convert('RGBA' if self.reel.look == 'pop_art' and source.mode in ('RGBA', 'LA', 'P') else 'RGB')
+            if self.reel.look == 'pop_art' and photo.mode == 'RGBA' and photo.getchannel('A').getextrema()[0] < 255:
+                base = self._collage_photo(photo, size)
             elif scene.fit == 'blur':
                 base = self._blur_fill(photo, size)
             else:
@@ -357,7 +356,7 @@ class Plan:
         elif scene.backdrop:
             base = Image.new('RGB', size, rgb(scene.backdrop))
         elif self.reel.look == 'pop_art':
-            base = self._collage_photo(None, size, scene)
+            base = self._collage_photo(None, size)
         else:
             base = self._plain_background(size)
         base = self._scrim(base, 1 if scene.shade is None else scene.shade)
@@ -366,35 +365,35 @@ class Plan:
         self._bases[index] = base
         return base
 
-    def _collage_photo(self, photo, size, scene):
-        """Retro pattern and halo; preserve uploaded cutouts without guessing a subject mask."""
+    def _halftone(self, size):
+        """Pop Art's page: accent dots on near-black, largest at the top and fading out toward the text panel."""
         w, h = size
-        base = Image.new('RGB', size, '#a28bd4')
+        base = Image.new('RGB', size, (17, 17, 17))
         draw = ImageDraw.Draw(base)
-        step = max(8, round(w / 10))
-        for y in range(-step, h + step, step):
+        dot = tuple(round(17 + (c - 17) * .3) for c in self.accent)
+        step = max(8, round(w / 22))
+        for row, y in enumerate(range(0, h + step, step)):
+            radius = step * .34 * (1 - .9 * clamp(y / h))
             for x in range(-step, w + step, step):
-                draw.ellipse((x, y, x + step, y + step), fill='#747d3d')
+                cx = x + (step // 2 if row % 2 else 0)
+                draw.ellipse((cx - radius, y - radius, cx + radius, y + radius), fill=dot)
+        return base
+
+    def _collage_photo(self, photo, size):
+        """A cutout on the halftone page, in front of an accent halo with a white outline; no photo: the page alone."""
+        w, h = size
+        base = self._halftone(size)
+        if photo is None:
+            return base
+        bounds = photo.getchannel('A').getbbox()
+        if bounds is None:
+            return base
+        draw = ImageDraw.Draw(base)
         radius = w * .36
         cx, cy = w * .53, h * .39
         draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), fill=self.accent)
-        if photo is None:
-            return base
-        alpha = photo.getchannel('A')
-        gray = ImageOps.grayscale(photo).convert('RGBA')
-        gray.putalpha(alpha)
-        if alpha.getextrema()[0] < 255:
-            bounds = alpha.getbbox()
-            if bounds is None:
-                return base
-            front = ImageOps.contain(gray.crop(bounds), (round(w * .9), round(h * .93)), Image.Resampling.LANCZOS)
-            x, y = (w - front.width) // 2, h - front.height
-        else:
-            # Keep a visible patterned margin around photographs that have no subject mask.
-            front = (ImageOps.contain(gray, (round(w * .84), round(h * .83)), Image.Resampling.LANCZOS)
-                     if scene.fit == 'blur' else ImageOps.fit(gray, (round(w * .84), round(h * .83)),
-                         Image.Resampling.LANCZOS, centering=(scene.focal_x, scene.focal_y)))
-            x, y = (w - front.width) // 2, h - front.height
+        front = ImageOps.contain(photo.crop(bounds), (round(w * .9), round(h * .78)), Image.Resampling.LANCZOS)  # the head clears the brand pill
+        x, y = (w - front.width) // 2, h - front.height
         mask = Image.new('L', size)
         mask.paste(front.getchannel('A'), (x, y))
         spread = max(3, round(w * .008)) | 1
@@ -436,7 +435,7 @@ class Plan:
     def _scrim(self, base, shade=1):
         """Darken where text sits so it stays readable on any photo; `shade` scales it. Clean needs none."""
         spec = {'breaking': ((.40, .78, .86), (.2, .55), (6, 8, 14)),
-                'hot': ((.60, .92, .78), (.5, .72), (6, 8, 14)),          # both ends: headline on top, detail below
+                'hot': ((.62, .95, .55), (.64, .86), (6, 8, 14)),         # mostly the top, where the headline and sticker sit
                 'wire': ((.45, .86, .9), (.2, .5), (6, 8, 14)),
                 'politics': ((.74, 1.0, 1.0), (.25, .5), PANEL)}.get(self.reel.look)  # photo melts into the panel
         if not spec or not shade:
@@ -697,6 +696,16 @@ class Plan:
         ink = self._ink('label', self._ink_on(fill[:3]) if fill is not bg else fg)
         return self._label(text, size, ink, fill, radius, height, pad, face=self._face('label', face or self.type['label']))
 
+    @property
+    def _source(self):
+        """The article's publisher, unless it is the brand already shown at the top."""
+        source = self.reel.source
+        return '' if source.casefold() == self.reel.brand.casefold() else source
+
+    def _bare(self, scene):
+        """A scene with no photo on a page look: the page itself, rather than an empty photo frame."""
+        return not scene.image_id and (scene.kind == 'end' or not scene.backdrop)
+
     def _ink_on(self, color):
         r, g, b = color
         return (12, 12, 12, 255) if .2126 * r + .7152 * g + .0722 * b > 150 else WHITE
@@ -726,17 +735,17 @@ class Plan:
         return out
 
     def _hot(self, scene):
-        """Huge headline in the top half, the photo in the middle, the detail on a sticker below."""
+        """Huge headline up top on a dark scrim, the detail on a sticker right under it; the photo shows below."""
         px, accent = self.px, self.accent + (255,)
         out, y = [], self.inset + 130
         if self.reel.tag_text:
             pill = self._tag(self.reel.tag_text, px(42), self._ink_on(self.accent), accent, 14, 72, 24)
             out.append(Element(pill, px(LEFT), px(y), 0, .5, 'pop', role='label'))
-            if self.reel.source:
-                tile, base = self._text(self.reel.source.upper(), px(32), WHITE, self._face('label', 'condensed-semi'), spacing=px(2))
+            if self._source:
+                tile, base = self._text(self._source.upper(), px(32), WHITE, self._face('label', 'condensed-semi'), spacing=px(2))
                 out.append(Element(tile, px(LEFT) + pill.width + px(16), px(y) + (px(72) + round(px(32) * .7)) // 2 - base, .3, .5, 'fade', role='label'))
             y += 72 + 34
-        reserve = 0
+        reserve, sticker = 0, None
         if scene.detail_text:  # the sticker claims the bottom first; the headline gets what is left
             face, d0, d1 = self.type['detail']
             _, _, dl, ds, block = self._fit('', scene.detail_text, self.text_w - 52, 400, detail_type=(face, d0, d1), det_pitch=1.32, lead=False)
@@ -746,9 +755,9 @@ class Plan:
             for k, line in enumerate(dl):
                 tile, base = self._text(line, ds, self._ink('detail', self._ink_on(fill[:3])), face, shadow=False)
                 sticker.alpha_composite(tile, (pad - px(8), px(22) + k * round(ds * 1.32) + round(ds) - base))
-            out.append(Element(sticker, px(LEFT), px(self.limit) - sticker.height, .6, .5, 'rise', role='detail'))
-            reserve = sticker.height / self.s + 44
+            reserve = sticker.height / self.s + 52
         hl, hs, _, _, block = self._fit(scene.headline, '', self.text_w, self.limit - y - reserve)
+        bottom = px(y)
         if block:
             lines, bottom = self._headline(hl, hs, WHITE, px(LEFT), px(y), .15, stroke=max(2, px(5)), shadow=False)
             out += lines
@@ -756,20 +765,27 @@ class Plan:
             widest = max(text_width(line, hs, self.type['head'][0]) for line in hl)
             out.append(Element(self._box((min(px(self.text_w), round(widest * .6) + px(40)), px(14)), accent, px(7)),
                                px(LEFT), bottom + px(10), .15 + len(hl) * .12, .5, 'wipe', role='headline'))
+            bottom += px(52)
+        if sticker:
+            out.append(Element(sticker, px(LEFT), bottom, .6, .5, 'rise', role='detail'))
         return out
 
     def _politics(self, scene):
         """Photo on top, a solid text panel below: label, headline, detail. The photo takes what the text leaves."""
         px, accent = self.px, self.accent + (255,)
-        label = '  |  '.join(filter(None, [self.reel.tag_text, self.reel.source.upper()]))
+        label = '  |  '.join(filter(None, [self.reel.tag_text, self._source.upper()]))
         header = 104 if label else 56
         low, high = round(self.DH * .40), round(self.DH * .58)
         hl, hs, dl, ds, block = self._fit(scene.headline, scene.detail_text, self.text_w, self.limit - low - header,
                                           det_pitch=1.4, gap=24)
         if not block:
             return []
-        split = max(low, min(high, round(self.limit - header - block / self.s - 24)))
-        self._scene_rect = (0, 0, self.W, px(split), 0)
+        if self._bare(scene):  # no photo: the panel is the whole frame and the text sits in the middle of it
+            split = max(self.inset + 100, round((self.inset + 100 + self.limit - header - block / self.s) / 2))
+            self._scene_rect = (0, 0, self.W, 0, 0)
+        else:
+            split = max(low, min(high, round(self.limit - header - block / self.s - 24)))
+            self._scene_rect = (0, 0, self.W, px(split), 0)
         top = split + header
         out = []
         if label:
@@ -783,29 +799,34 @@ class Plan:
             out += details
         return out
 
-    def _bare_end(self, scene):
-        """An end card with no photo: page looks show the page itself rather than an empty photo frame."""
-        return scene.kind == 'end' and not scene.image_id
-
     def _clean(self, scene):
-        """A white page: rounded photo card, then the headline and detail in dark type. The card grows when the text is short."""
+        """A light news page: photo card, a kicker with the label and date, then the headline and detail in dark type.
+
+        The card grows when the text is short; a scene with no photo has no card and its text sits mid-page.
+        """
         px, accent = self.px, self.accent + (255,)
         card_top = self.inset + 140
-        source = self.reel.source
+        source = self._source
         below = 76 + (60 if source else 0)
         low, high = round(self.DH * .30), round(self.DH * .50)
         hl, hs, dl, ds, block = self._fit(scene.headline, scene.detail_text, self.text_w,
                                           self.limit - card_top - low - below)
         if not block:
             return []
+        bare = self._bare(scene)
         card_h = max(low, min(high, round(self.limit - card_top - below - block / self.s)))
-        self._scene_rect = (px(48), px(card_top), px(984), 0 if self._bare_end(scene) else px(card_h), px(32))
-        # A bare end card has no photo card; its text sits in the middle of the page instead.
-        card_end = card_top + (round((self.limit - card_top - below - block / self.s) / 2) if self._bare_end(scene) else card_h)
+        self._scene_rect = (px(48), px(card_top), px(984), 0 if bare else px(card_h), px(12))
+        card_end = card_top + (round((self.limit - card_top - below - block / self.s) / 2) if bare else card_h)
         out = []
+        chip_w = 0
         if self.reel.tag_text:
-            chip = self._tag(self.reel.tag_text, px(30), self._ink_on(self.accent), accent, 12, 58, 20)
+            chip = self._tag(self.reel.tag_text, px(30), self._ink_on(self.accent), accent, 6, 58, 20)
             out.append(Element(chip, px(LEFT), px(card_end - 29), .2, .5, 'pop', role='label'))
+            chip_w = chip.width / self.s + 18
+        if self.reel.dateline:  # beside the chip, on the page just under the card
+            tile, base = self._text(self.reel.dateline.upper(), px(28), self._ink('label', MUTED + (255,)), self._face('label', 'condensed-semi'),
+                                    shadow=False, spacing=px(2))
+            out.append(Element(tile, px(LEFT + chip_w - 8), px(card_end + (10 if bare else 24)) - base, .3, .5, 'fade', role='label'))
         lines, y = self._headline(hl, hs, INK + (255,), px(LEFT), px(card_end + 66), .3, shadow=False)
         out += lines
         if dl:
@@ -838,7 +859,7 @@ class Plan:
         if self.reel.tag_text:
             tag, base = self._text(self.reel.tag_text, px(42), self._ink('label', accent), self._face('label', 'condensed'), spacing=px(3))
             out.append(Element(tag, px(LEFT - 8), top + px(26 + 34) - base, .15, .5, 'fade', role='label'))
-        credit = '  |  '.join(filter(None, [self.reel.source.upper(), self.reel.dateline.upper()]))
+        credit = '  |  '.join(filter(None, [self._source.upper(), self.reel.dateline.upper()]))
         if credit:
             tile, base = self._text(credit, px(34), self._ink('label', (255, 255, 255, 230)), self.type['label'], spacing=px(1))
             out.append(Element(tile, px(DESIGN_W - self.right + 8) - tile.width, top + px(26 + 34) - base, .25, .5, 'fade', role='label'))
@@ -860,7 +881,11 @@ class Plan:
                                           det_pitch=1.4, gap=46)
         if not block:
             return []
-        photo_top = self.DH if self._bare_end(scene) else max(low, min(high, round(text_top + block / self.s + 56)))
+        if self._bare(scene):  # no photo: the page alone, the text block moved to the middle of it
+            shift = max(0, round((self.limit - text_top - block / self.s) / 2) - 40)
+            top, text_top, photo_top = top + shift, text_top + shift, self.DH
+        else:
+            photo_top = max(low, min(high, round(text_top + block / self.s + 56)))
         self._scene_rect = (0, px(photo_top), self.W, self.H - px(photo_top), 0)
         out = [Element(self._box((px(56), px(34)), self._fill('label', accent)), px(LEFT), px(top), 0, .4, 'wipe', fades_out=False, role='label')]
         if kicker:
@@ -875,14 +900,20 @@ class Plan:
         return out
 
     def _pop_art(self, scene):
-        """Centered uppercase headline on a black panel, with no author/footer credit."""
-        px = self.px
+        """Photo or cutout on top; an accent seam carrying the label; a centered uppercase headline on a black panel."""
+        px, accent = self.px, self.accent + (255,)
+        tag = self.reel.tag_text
+        room = 40 + (40 if tag else 0)                     # above the text: the seam, and the label sticker riding it
         low, high = round(self.DH * .43), round(self.DH * .62)
         hl, hs, dl, ds, block = self._fit(scene.headline.upper(), scene.detail_text, self.text_w,
-                                          self.limit - low - 56, gap=24, max_head_lines=6)
-        split = max(low, min(high, round(self.limit - block / self.s - 72)))
+                                          self.limit - low - room - 16, gap=24, max_head_lines=6)
+        split = max(low, min(high, round(self.limit - block / self.s - room - 32)))
         self._scene_rect = (0, 0, self.W, px(split), 0)
-        out, y = [], px(split + 40)
+        out = [Element(self._box((self.W, px(10)), accent), 0, px(split) - px(5), 0, .4, 'wipe')]
+        if tag:
+            sticker = self._tag(tag, px(40), self._ink_on(self.accent), accent, 8, 72, 28)
+            out.append(Element(sticker, (px(DESIGN_W - self.right + LEFT) - sticker.width) // 2, px(split) - px(36), .1, .45, 'pop', role='label'))
+        y = px(split + room)
         if self._lead_plan:
             element, height = self._lead(0, y, .1, centered=True, shadow=False)
             out.append(element)
@@ -905,18 +936,17 @@ class Plan:
     def _identity(self):
         """Logo, brand name and (for Breaking) the live badge and ticker: present for the whole reel."""
         px, out, x = self.px, [], 56
-        if self.reel.look == 'pop_art':
-            label = self.reel.tag if self.reel.tag is not None else self.reel.brand or self.reel.tag_text
-            if label:
-                face = self._face('label', 'bold')
-                text, size = self._one_line(label, self.text_w - 60, 64, 30, face)
-                tile = self._tag(text, size, WHITE, (86, 108, 11, 235), 28, size / self.s + 34, 36, face=face)
+        if self.reel.look == 'pop_art':  # the brand on a dark pill, centered over the photo
+            if self.reel.brand:
+                face = self._face('brand', 'bold')
+                text, size = self._one_line(self.reel.brand, self.text_w - 60, 56, 30, face)
+                tile = self._label(text, size, self._ink('brand', WHITE), (0, 0, 0, 190), 28, size / self.s + 34, 36, face=face)
                 out.append(Element(tile, (self.W - tile.width) // 2, px(self.inset),
-                                   0, .5, 'fade', fades_out=False, role='label'))
+                                   0, .5, 'fade', fades_out=False, role='brand'))
             return out
         right = DESIGN_W - 56
         badge = None
-        if self.reel.look == 'breaking':
+        if self.reel.look == 'breaking' and self.reel.live:
             badge = self._label('LIVE', px(36), WHITE, self.accent + (255,), 10, 56, 46, face='condensed')
             right -= badge.width / self.s + 24            # the brand must never run under the badge
         if self.logo_path and not self._hidden('logo'):
@@ -930,17 +960,21 @@ class Plan:
             tile, base = self._text(text, size, self._ink('brand', self.ink), face, shadow=self.reel.look not in LIGHT_PAGE)
             middle = px(self.inset) + (px(104) if self.logo_path and not self._hidden('logo') else px(44)) // 2
             out.append(Element(tile, px(x - 8), middle + round(size * .36) - base, .15, .5, 'rise', fades_out=False, role='brand'))
+        if self.reel.look == 'clean':  # a masthead rule under the brand row, like a news site's header
+            below = self.inset + (104 if self.logo_path and not self._hidden('logo') else 64) + 14
+            out.append(Element(self._box((px(DESIGN_W - 112), px(5)), self.accent + (255,)), px(56), px(below), .1, .6, 'wipe', fades_out=False))
         if badge:
             bx, by = self.W - px(56) - badge.width, px(self.inset + 24)
             out.append(Element(badge, bx, by, .3, .4, 'pop', fades_out=False))
             out.append(Element(self._box((px(16), px(16)), WHITE, px(8)), bx + px(17), by + px(20), .7, .3, 'blink', fades_out=False))
+        if self.reel.look == 'breaking':
             out.append(self._ticker())
         return out
 
     def _ticker(self):
         """A bar along the bottom edge of the text zone with the source and label scrolling past."""
         px, size = self.px, self.px(36)
-        words = ' | '.join(filter(None, [self.reel.source.upper(), self.reel.dateline.upper(), self.reel.brand.upper(), self.reel.tag_text])) or 'NEWS'
+        words = ' | '.join(filter(None, [self._source.upper(), self.reel.dateline.upper(), self.reel.brand.upper(), self.reel.tag_text])) or 'NEWS'
         unit = words + '        '
         period = math.ceil(text_width(unit, size, 'condensed-semi'))
         bar = self._box((self.W + period, px(80)), self._fill('ticker', self.accent + (255,)))

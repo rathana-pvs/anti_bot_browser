@@ -13,7 +13,7 @@ LOOKS = {
     'politics': dict(name='Politics', tag='POLITICS', accent='#e8c07a', music='washington_watch'),
     'clean': dict(name='Clean', tag='NEWS', accent='#1d6fe8', music='headlines'),
     'wire': dict(name='Wire', tag='LATEST', accent='#f2780c', music='urgent_wire'),
-    'pop_art': dict(name='Pop Art', tag='SPOTLIGHT', accent='#ccff00', music='headlines'),
+    'pop_art': dict(name='Pop Art', tag='TRENDING', accent='#ccff00', music='headlines'),
     'editorial': dict(name='Editorial', tag='ANALYSIS', accent='#d7261e', music='major_headline'),
 }
 MAX_SCENES = 8
@@ -179,6 +179,7 @@ class Reel(BaseModel):
     ratio: Ratio = '9:16'
     motion: Motion = 'auto'
     show_progress: bool = True
+    live: bool = False  # Breaking only: the LIVE badge, for coverage that is actually live
     music: str = 'auto'  # auto = the look's own track | off | a bundled track id | custom
     music_id: str | None = None  # the uploaded audio asset when music is 'custom'
     style: Styles = Field(default_factory=dict)  # advanced mode: every scene, unless a scene sets its own

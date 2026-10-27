@@ -75,6 +75,8 @@ export interface Reel {
   ratio: ReelRatio;
   motion: ReelMotion;
   show_progress: boolean;
+  /** Breaking only: show the LIVE badge. Absent in older drafts. */
+  live?: boolean;
   /** auto = the look's own track, off, a bundled track id, or custom (an uploaded file). */
   music: string;
   music_id: string | null;

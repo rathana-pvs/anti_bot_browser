@@ -43,8 +43,8 @@ Drafts save automatically. Brand name, logo and source are remembered for new re
 
 A scene with a photo has a **Photo credit** field (for example "Photo: AP" or "Handout", up to 60 characters). It is
 drawn small on the photo, right-aligned to the text column so it never sits under the Reels buttons: just above
-the text on Breaking and Wire (it follows Text position), above the detail sticker on Hot, at the photo's bottom
-edge on Politics, Clean and Pop Art, and at its top edge on Editorial. Scenes without a photo show no credit. In
+the text on Breaking and Wire (it follows Text position), above the label on Pop Art, at the photo's bottom
+edge on Hot, Politics and Clean, and at its top edge on Editorial. Scenes without a photo show no credit. In
 advanced mode **Photo credit** can be recolored or hidden.
 
 ## House styles
@@ -132,13 +132,13 @@ together with the detail line until the scene fits; detail text never goes below
 
 | Look | For | Layout | Type |
 | --- | --- | --- | --- |
-| Breaking | urgent, developing news | full-bleed photo, red label bar and dark headline strap, LIVE badge, scrolling source ticker along the bottom, top progress line | Anton headline, Barlow Condensed labels and ticker |
-| Hot | trending stories | full-bleed photo, huge outlined headline in the top half, label pill, detail on an accent sticker below, segmented progress | Anton headline, Noto Sans Bold sticker |
+| Breaking | urgent, developing news | full-bleed photo, red label bar and dark headline strap, scrolling source ticker; a LIVE badge only when **LIVE badge** is ticked, for coverage that is live right now along the bottom, top progress line | Anton headline, Barlow Condensed labels and ticker |
+| Hot | trending stories | full-bleed photo darkened at the top, huge outlined headline with the label pill above and the detail on an accent sticker right under it, the photo clear below, segmented progress | Anton headline, Noto Sans Bold sticker |
 | Politics | political news and analysis | photo on top fading into a solid text panel with label, headline and detail, segmented progress | Barlow Condensed headline, Noto Sans detail |
 | Wire | straight factual reports | full-bleed photo, orange rule over a kicker line (label left, source and date right), plain bold headline and detail; Reuters/AP-style wire copy | Noto Sans Bold headline, Barlow Condensed kicker and credit |
 | Editorial | explainers and analysis | cream page: red tab and kicker with date, headline, hairline and an italic serif deck on top; the photo fills the lower part; Economist-style magazine page | Source Serif Bold headline, Source Serif Italic deck |
-| Pop Art | bold news collage | lavender/olive pattern, lime halo, grayscale cutout with a white outline, centered top label and uppercase headline on black; no author footer | Noto Sans Bold headline |
-| Clean | neutral updates | white page, rounded photo card with a label chip, dark headline and detail beneath, top progress line | Noto Sans throughout |
+| Pop Art | trending and entertainment news | full-color cutout on an accent halo with a white outline, over a dark halftone page (an uncut photo fills the top instead); centered brand pill; accent seam carrying the label (TRENDING) above a centered uppercase headline on black; no author footer | Noto Sans Bold headline |
+| Clean | neutral updates | light news page: accent masthead rule under the brand, photo card, label chip with the date, dark headline and detail beneath, top progress line | Noto Sans throughout |
 
 Pop Art removes photo backgrounds automatically using the small U²-Net model through the existing
 OpenCV runtime. The first preview/export downloads about 4.4 MB of checksum-verified model weights
@@ -147,7 +147,11 @@ offline. Derived PNGs are cached under the studio's `cutouts/` directory and reu
 motion previews and final exports; original assets are preserved. Existing transparent PNGs bypass
 segmentation. Use a clear foreground portrait for best results; complex backgrounds and hair may
 need an already-prepared transparent PNG. A failed download or inference shows an error rather than
-silently keeping the background. The top Label overrides the brand name when supplied.
+silently keeping the background.
+
+On Politics, Clean and Editorial a scene with no photo (and no background color) shows the page alone, its
+text moved toward the middle, instead of an empty photo frame. The source line is left out wherever it would
+repeat the brand name.
 
 All looks fade scenes into each other, push or pull the photo slowly, animate the logo in with a
 periodic shine. Text is English; characters the bundled font lacks are reported instead of drawn as boxes. Without a photo a scene gets a dark background
