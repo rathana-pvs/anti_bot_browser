@@ -105,6 +105,9 @@ class Scene(BaseModel):
     backdrop: str | None = None  # color behind a scene with no photo; None = the accent-tinted dark gradient
     # Where the text block sits in the safe area, 0 = highest, 1 = lowest; None = where the look puts it. Breaking and Wire only.
     text_position: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+    # How big the photo is against the text on looks that split the frame between them, 0 = the look's smallest photo,
+    # 1 = its largest; None = as big as the text leaves room for. Politics, Clean, Editorial and Pop Art only.
+    photo_size: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
 
     @field_validator('backdrop')
     @classmethod

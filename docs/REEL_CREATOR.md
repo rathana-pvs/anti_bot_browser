@@ -157,7 +157,10 @@ All looks fade scenes into each other, push or pull the photo slowly, animate th
 periodic shine. Text is English; characters the bundled font lacks are reported instead of drawn as boxes. Without a photo a scene gets a dark background
 tinted with the look's accent color. Text is sized to fit its layout; if it cannot, the preview says
 which scene is too long. On Politics, Clean and Editorial the photo grows when a scene's text is short and
-shrinks to make room when it is long.
+shrinks to make room when it is long. In advanced mode, **Photo size** moves the line between photo and text on
+Politics, Clean, Editorial and Pop Art, within the look's range (Politics 40–58% of the height, Clean 30–50%,
+Editorial 34–58%, Pop Art 43–62%); the text shrinks to the room left, and the preview says when even that is not
+enough.
 
 A photo that does not suit the frame (for example a wide photo in a full-bleed 9:16 look) loses its sides when
 cropped. The frame button on a scene shows the **whole photo** instead, over a blurred, darkened copy of itself.

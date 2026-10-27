@@ -258,3 +258,9 @@ test('a new photo starts at the face the app found, unzoomed', () => {
   const scene = doc.setPhoto(zoomed, 0, asset('new', .7, .2)).scenes[0];
   assert.deepEqual([scene.image_id, scene.focal_x, scene.focal_y, scene.zoom], ['new', .7, .2, 1]);
 });
+
+test('a chosen photo size counts as scene style and is cleared by a scene reset', () => {
+  const scene = { ...doc.emptyScene(), headline: 'a', photo_size: .8 };
+  assert.ok(doc.sceneIsStyled(scene));
+  assert.ok(!('photo_size' in doc.unstyledScene(scene)));
+});

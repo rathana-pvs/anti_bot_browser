@@ -134,6 +134,16 @@ function SceneBackdrop({ reel, scene, index, onScene, layout }: { reel: Reel; sc
           onClick={() => onScene({ text_position: null })} className="text-zinc-500 hover:text-zinc-200"><RotateCcw className="h-3 w-3" /></button>}
       </div>
     </Row>}
+    {layout?.photo_size != null && <Row label="Photo size" note={scene.photo_size == null ? 'Look' : `${Math.round(scene.photo_size * 100)}%`}>
+      <div className="flex items-center gap-3">
+        <span className="text-[11px] text-zinc-500">Smaller</span>
+        <input type="range" min={0} max={100} step={1} value={Math.round((scene.photo_size ?? layout.photo_size) * 100)} aria-label="Photo size"
+          onChange={event => onScene({ photo_size: Number(event.target.value) / 100 })} className="w-full accent-violet-500" />
+        <span className="text-[11px] text-zinc-500">Larger</span>
+        {scene.photo_size != null && <button type="button" aria-label="Size the photo to the text again" title="Back to the look's size"
+          onClick={() => onScene({ photo_size: null })} className="text-zinc-500 hover:text-zinc-200"><RotateCcw className="h-3 w-3" /></button>}
+      </div>
+    </Row>}
     {layout?.photo && <Row label="Photo zoom" note={`${Math.round((scene.zoom ?? 1) * 100)}%`}>
       <div className="flex items-center gap-3">
         <input type="range" min={100} max={250} step={5} value={Math.round((scene.zoom ?? 1) * 100)} aria-label="Photo zoom"

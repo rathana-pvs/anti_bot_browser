@@ -52,6 +52,8 @@ export interface ReelScene {
   backdrop?: string | null;
   /** Text block height in the safe area, 0 highest to 1 lowest; absent = the look's place. Breaking and Wire only. */
   text_position?: number | null;
+  /** The photo's share against the text on split looks, 0 the look's smallest to 1 its largest; absent = sized to the text. */
+  photo_size?: number | null;
 }
 
 /** Where a scene preview draws each styled element, as fractions of the frame; smaller boxes come last. */
@@ -61,6 +63,8 @@ export interface SceneLayout {
   position: number | null;
   /** Where the scene's photo shows, as fractions of the frame, when it is cropped and can be dragged. Absent from older backends. */
   photo?: { x: number; y: number; w: number; h: number } | null;
+  /** Where the line between photo and text sits on the photo_size scale, or null when this look or scene has none. */
+  photo_size?: number | null;
 }
 
 export type SceneKind = 'story' | 'stat' | 'quote' | 'end';

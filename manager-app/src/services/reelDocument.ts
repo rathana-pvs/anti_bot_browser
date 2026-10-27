@@ -160,10 +160,10 @@ export const effectiveStyle = (reel: Reel, scene: ReelScene | undefined, role: S
 
 /** Whether a scene sets anything of its own in advanced mode. */
 export const sceneIsStyled = (scene: ReelScene): boolean =>
-  !!(Object.keys(scene.style ?? {}).length || scene.motion || scene.transition || scene.shade != null || scene.backdrop || scene.text_position != null);
+  !!(Object.keys(scene.style ?? {}).length || scene.motion || scene.transition || scene.shade != null || scene.backdrop || scene.text_position != null || scene.photo_size != null);
 
 /** Advanced settings of a scene removed, leaving its words, photo and timing. */
-export const unstyledScene = ({ style: _style, motion: _motion, transition: _transition, shade: _shade, backdrop: _backdrop, text_position: _position, ...scene }: ReelScene): ReelScene => scene;
+export const unstyledScene = ({ style: _style, motion: _motion, transition: _transition, shade: _shade, backdrop: _backdrop, text_position: _position, photo_size: _size, ...scene }: ReelScene): ReelScene => scene;
 
 /** Key order and absent-versus-null do not change what a style means. */
 const stable = (value: unknown): string => JSON.stringify(value, (_key, v) =>

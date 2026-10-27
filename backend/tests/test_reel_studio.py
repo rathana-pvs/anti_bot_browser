@@ -1046,7 +1046,7 @@ def test_text_position_is_ignored_where_the_look_sizes_the_photo_to_the_text(cre
 def test_api_layout(client, reel):
     response = client.post('/api/reel-creator/layout?scene=1', json=reel.model_dump())
     assert response.status_code == 200
-    assert {'boxes', 'position', 'photo'} == set(response.json())
+    assert {'boxes', 'position', 'photo', 'photo_size'} == set(response.json())
     assert client.post('/api/reel-creator/layout?scene=5', json=reel.model_dump()).status_code == 400
 
 
@@ -1284,3 +1284,35 @@ def test_scene_layout_follows_where_hot_moves_its_text_for_a_face(creator):
     value = lambda y: Reel(look='hot', scenes=[Scene(headline='Are family attacks in campaign ads fair game?', image_id=asset['id'], focal_x=.5, focal_y=y)])
     headline = lambda y: next(box for box in creator.scene_layout(value(y), 0)['boxes'] if box['role'] == 'headline')
     assert headline(.24)['y'] > headline(.4)['y'] + .2           # the clickable boxes match the poster, not the look's default
+
+
+@pytest.mark.parametrize('look', ['politics', 'clean', 'editorial', 'pop_art'])
+def test_photo_size_moves_the_line_between_photo_and_text(look):
+    def plan(**scene):
+        value = Reel(look=look, scenes=[Scene(headline='Senate passes the budget after a long night of debate',
+                                              detail='The vote was close.', image_id='a' * 32, **scene)])
+        return Plan(value, 1080, {}, None)
+    photo = lambda p: p.rects[0][3]                                   # the photo's height
+    small, own, large = plan(photo_size=0), plan(), plan(photo_size=1)
+    assert photo(small) < photo(own) <= photo(large)
+    assert small.layout(0)['photo_size'] == 0 and large.layout(0)['photo_size'] == 1
+    assert 0 < own.layout(0)['photo_size'] <= 1                       # where the look put it, for the slider
+    text_top = lambda p: min(e.y for e in p.scene_elements[0] if e.role == 'headline')
+    if look == 'editorial':
+        assert large.rects[0][1] >= max(e.y + e.tile.height for e in large.scene_elements[0])  # the photo stays below the text
+    else:
+        assert text_top(large) >= large.rects[0][1] + photo(large)   # the text stays below the photo
+    for p in (small, large):
+        assert max(e.y + e.tile.height for e in p.scene_elements[0]) <= p.px(p.limit) + p.px(4)
+
+
+def test_photo_size_shrinks_the_text_and_says_when_it_cannot_fit():
+    def plan(headline, **scene):
+        return Plan(Reel(look='politics', scenes=[Scene(headline=headline, image_id='a' * 32, **scene)]), 1080, {}, None)
+    words = 'Senate passes the budget after a long night of debate over schools and roads'
+    head = lambda p: next(e for e in p.scene_elements[0] if e.role == 'headline').tile.height
+    assert head(plan(words, photo_size=1)) < head(plan(words))        # a bigger photo: smaller type
+    with pytest.raises(ValueError, match='make the photo smaller'):
+        Plan(Reel(look='politics', scenes=[Scene(headline=('word ' * 24).strip(), detail=('detail ' * 22).strip(),
+                                                 image_id='a' * 32, photo_size=1)]), 1080, {}, None)
+    assert Plan(Reel(look='breaking', scenes=[Scene(headline='Vote', photo_size=1)]), 1080, {}, None).layout(0)['photo_size'] is None

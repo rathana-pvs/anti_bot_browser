@@ -108,17 +108,21 @@ class Plan:
         self._bases, self._masks = {}, {}
         default, self.page = self._frame()
         # Looks with a page or panel size the photo to the text each scene needs.
-        self.scene_elements, self.rects, self.positions = [], [], []
+        self.scene_elements, self.rects, self.positions, self.photo_sizes = [], [], [], []
         self.text_low = []  # per scene: the text block sits in the lower half, so the scrim darkens the bottom
         for index, scene in enumerate(reel.scenes):
-            self._scene_rect, self._lead_plan = default, None
+            self._scene_rect, self._lead_plan, self._photo_size = default, None, None
             self._scene = self._shown(scene)
             self.type = self._type_for(scene)
             try:
                 elements = self._restyle(self._layout(self._scene))
             except ValueError as exc:
-                raise ValueError(f'Scene {index + 1}: {exc}') from None
+                message = str(exc)
+                if scene.photo_size is not None and 'too long' in message:
+                    message = message.removesuffix('.') + ', or make the photo smaller.'
+                raise ValueError(f'Scene {index + 1}: {message}') from None
             self.positions.append(self._place(elements, scene.text_position))
+            self.photo_sizes.append(None if self._photo_size is None else round(clamp(self._photo_size), 3))
             self.text_low.append(bool(elements) and min(e.y for e in elements) + max(e.y + e.tile.height for e in elements) > self.H)
             elements += self._restyle(self._credit(scene, elements))
             self.scene_elements.append(elements)
@@ -249,7 +253,8 @@ class Plan:
             boxes[element.role] = (min(x0, old[0]), min(y0, old[1]), max(x1, old[2]), max(y1, old[3])) if old else (x0, y0, x1, y1)
         out = [dict(role=role, x=round(a / self.W, 4), y=round(b / self.H, 4), w=round((c - a) / self.W, 4), h=round((d - b) / self.H, 4))
                for role, (a, b, c, d) in boxes.items()]
-        return dict(boxes=sorted(out, key=lambda box: -box['w'] * box['h']), position=self.positions[index], photo=self._photo_box(index))
+        return dict(boxes=sorted(out, key=lambda box: -box['w'] * box['h']), position=self.positions[index],
+                    photo=self._photo_box(index), photo_size=self.photo_sizes[index])
 
     def _photo_box(self, index):
         """Where a croppable photo shows, as fractions of the frame, so the app can drag it; None when nothing is cropped."""
@@ -820,13 +825,20 @@ class Plan:
         top = clamp(scene.focal_y * shown - self.H / 2, 0, max(0, shown - self.H))
         return (scene.focal_y * shown - top) / self.H
 
+    def _chosen_split(self, scene, smallest, largest):
+        """Where the scene's own photo size puts the line between photo and text, in design px; None = the look decides."""
+        if scene.photo_size is None or self._bare(scene):
+            return None
+        return round(smallest + scene.photo_size * (largest - smallest))
+
     def _politics(self, scene):
         """Photo on top, a solid text panel below: label, headline, detail. The photo takes what the text leaves."""
         px, accent = self.px, self.accent + (255,)
         label = '  |  '.join(filter(None, [self.reel.tag_text, self._source.upper()]))
         header = 104 if label else 56
         low, high = round(self.DH * .40), round(self.DH * .58)
-        hl, hs, dl, ds, block = self._fit(scene.headline, scene.detail_text, self.text_w, self.limit - low - header,
+        chosen = self._chosen_split(scene, low, high)
+        hl, hs, dl, ds, block = self._fit(scene.headline, scene.detail_text, self.text_w, self.limit - (chosen or low) - header - (24 if chosen else 0),
                                           det_pitch=1.4, gap=24)
         if not block:
             return []
@@ -834,8 +846,9 @@ class Plan:
             split = max(self.inset + 100, round((self.inset + 100 + self.limit - header - block / self.s) / 2))
             self._scene_rect = (0, 0, self.W, 0, 0)
         else:
-            split = max(low, min(high, round(self.limit - header - block / self.s - 24)))
+            split = chosen or max(low, min(high, round(self.limit - header - block / self.s - 24)))
             self._scene_rect = (0, 0, self.W, px(split), 0)
+            self._photo_size = (split - low) / (high - low)
         top = split + header
         out = []
         if label:
@@ -859,12 +872,15 @@ class Plan:
         source = self._source
         below = 76 + (60 if source else 0)
         low, high = round(self.DH * .30), round(self.DH * .50)
+        chosen = self._chosen_split(scene, low, high)
         hl, hs, dl, ds, block = self._fit(scene.headline, scene.detail_text, self.text_w,
-                                          self.limit - card_top - low - below)
+                                          self.limit - card_top - (chosen or low) - below)
         if not block:
             return []
         bare = self._bare(scene)
-        card_h = max(low, min(high, round(self.limit - card_top - below - block / self.s)))
+        card_h = chosen or max(low, min(high, round(self.limit - card_top - below - block / self.s)))
+        if not bare:
+            self._photo_size = (card_h - low) / (high - low)
         self._scene_rect = (px(48), px(card_top), px(984), 0 if bare else px(card_h), px(12))
         card_end = card_top + (round((self.limit - card_top - below - block / self.s) / 2) if bare else card_h)
         out = []
@@ -927,7 +943,8 @@ class Plan:
         kicker = '  |  '.join(filter(None, [self.reel.tag_text, self.reel.dateline.upper()]))
         text_top = top + 80
         low, high = round(self.DH * .42), round(self.DH * .66)
-        hl, hs, dl, ds, block = self._fit(scene.headline, scene.detail_text, self.text_w, high - 56 - text_top,
+        chosen = self._chosen_split(scene, high, low)        # the photo is below the text: a bigger photo starts higher
+        hl, hs, dl, ds, block = self._fit(scene.headline, scene.detail_text, self.text_w, (chosen or high) - 56 - text_top,
                                           det_pitch=1.4, gap=46)
         if not block:
             return []
@@ -935,7 +952,8 @@ class Plan:
             shift = max(0, round((self.limit - text_top - block / self.s) / 2) - 40)
             top, text_top, photo_top = top + shift, text_top + shift, self.DH
         else:
-            photo_top = max(low, min(high, round(text_top + block / self.s + 56)))
+            photo_top = chosen or max(low, min(high, round(text_top + block / self.s + 56)))
+            self._photo_size = (high - photo_top) / (high - low)
         self._scene_rect = (0, px(photo_top), self.W, self.H - px(photo_top), 0)
         out = [Element(self._box((px(56), px(34)), self._fill('label', accent)), px(LEFT), px(top), 0, .4, 'wipe', fades_out=False, role='label')]
         if kicker:
@@ -955,10 +973,12 @@ class Plan:
         tag = self.reel.tag_text
         room = 40 + (40 if tag else 0)                     # above the text: the seam, and the label sticker riding it
         low, high = round(self.DH * .43), round(self.DH * .62)
+        chosen = self._chosen_split(scene, low, high)
         hl, hs, dl, ds, block = self._fit(scene.headline.upper(), scene.detail_text, self.text_w,
-                                          self.limit - low - room - 16, gap=24, max_head_lines=6)
-        split = max(low, min(high, round(self.limit - block / self.s - room - 32)))
+                                          self.limit - (chosen or low) - room - (32 if chosen else 16), gap=24, max_head_lines=6)
+        split = chosen or max(low, min(high, round(self.limit - block / self.s - room - 32)))
         self._scene_rect = (0, 0, self.W, px(split), 0)
+        self._photo_size = (split - low) / (high - low)
         out = [Element(self._box((self.W, px(10)), accent), 0, px(split) - px(5), 0, .4, 'wipe')]
         if tag:
             sticker = self._tag(tag, px(40), self._ink_on(self.accent), accent, 8, 72, 28)
