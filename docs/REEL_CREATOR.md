@@ -7,6 +7,9 @@ your saved key). Pop Art downloads model weights once; photos, rendering and pre
 ## Simple mode
 
 1. **Paste** a news link or the article text. Optionally choose a look and add photos (up to eight).
+   Photos can also be pasted: copy an image in a browser (**Copy image**) and press **Ctrl+V** in Reel
+   Studio; nothing needs saving first. In the editor, a pasted photo fills the selected scene when it has
+   none, and is otherwise added like chosen photos.
 2. **Create reel.** One scene is written per photo (the AI decides if there are none). The AI returns
    a hook headline plus two alternatives, and scene headlines and details. Every
    scene must be backed by a verbatim passage of the article; drafts that invent numbers or links are

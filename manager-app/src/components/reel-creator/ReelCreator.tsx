@@ -11,6 +11,7 @@ import { FinishPanel } from './FinishPanel';
 import { HouseStylePicker } from './HouseStylePicker';
 import { UpdateStoryDialog } from './UpdateStoryDialog';
 import { LookPicker } from './LookPicker';
+import { usePastedImages } from '../../hooks/usePastedImages';
 import { OutputPanel } from './OutputPanel';
 import { PhonePreview } from './PhonePreview';
 import { SceneList } from './SceneList';
@@ -47,6 +48,12 @@ export function ReelCreator({ active, onUseReel }: Props) {
     try { localStorage.setItem('reel_creator_mode', next); } catch { /* The mode is a per-viewer convenience. */ }
   };
   const hasReel = hasContent(doc.reel) || doc.reel.scenes.some(s => s.image_id) || started;
+  // A pasted photo fills the selected scene when it has none; otherwise it is added like chosen photos.
+  usePastedImages(files => {
+    const current = doc.reel.scenes[scene];
+    if (files.length === 1 && current && !current.image_id && current.kind !== 'end') void studio.changePhoto(scene, files);
+    else void studio.addPhotos(files);
+  }, active && studio.loaded && hasReel);
   useEffect(() => { setScene(0); setStarted(false); }, [studio.draftId]);
   useEffect(() => { setScene(index => Math.min(index, doc.reel.scenes.length - 1)); }, [doc.reel.scenes.length]);
 
@@ -89,7 +96,7 @@ export function ReelCreator({ active, onUseReel }: Props) {
       {studio.undo && <Button variant="outline" size="sm" onClick={studio.undoRewrite}>Undo</Button>}</div></Alert>}
 
     {!hasReel
-      ? <SourceInput looks={capabilities.looks} houseStyles={studio.houseStyles} busy={writing} goal={doc.goal} onGoal={studio.setGoal}
+      ? <SourceInput active={active} looks={capabilities.looks} houseStyles={studio.houseStyles} busy={writing} goal={doc.goal} onGoal={studio.setGoal}
           onCreate={(source, look, photos, goal, house) => { void studio.create(source, look, photos, goal, house); }}
           importImages={studio.importImages} onBlank={() => setStarted(true)} />
       : <div className="grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">

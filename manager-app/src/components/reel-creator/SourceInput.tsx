@@ -3,12 +3,15 @@ import { Bookmark, ImagePlus, Sparkles, X } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { Textarea } from '../ui/Textarea';
 import { useFileDrop } from '../../hooks/useFileDrop';
+import { usePastedImages } from '../../hooks/usePastedImages';
 import { sourceKind } from '../../services/reelDocument';
 import type { WriteRequest } from '../../services/reelCreator';
 import type { HouseStyle, LookInfo, ReelAsset, ReelGoal } from '../../types/reelCreator';
 import { Thumb } from './Thumb';
 
 interface Props {
+  /** The studio is on screen, so a paste is meant for it. */
+  active: boolean;
   looks: LookInfo[];
   /** Saved newsroom looks, offered beside the looks; the reel is written for the style's look and then styled. */
   houseStyles: HouseStyle[];
@@ -39,7 +42,7 @@ export function GoalPicker({ goal, onGoal, disabled }: { goal: ReelGoal; onGoal:
 }
 
 /** The whole first step: paste an article, optionally add photos, press one button. */
-export function SourceInput({ looks, houseStyles, busy, goal, onGoal, onCreate, importImages, onBlank }: Props) {
+export function SourceInput({ active, looks, houseStyles, busy, goal, onGoal, onCreate, importImages, onBlank }: Props) {
   const [source, setSource] = useState('');
   const [look, setLook] = useState<WriteRequest['look']>('auto');
   const [houseId, setHouseId] = useState<string | null>(null);
@@ -54,6 +57,7 @@ export function SourceInput({ looks, houseStyles, busy, goal, onGoal, onCreate, 
     finally { setLoading(false); }
   };
   const drop = useFileDrop(files => { void addPhotos(files); }, busy || loading || photos.length >= MAX_PHOTOS);
+  usePastedImages(files => { void addPhotos(files); }, active && !busy && !loading && photos.length < MAX_PHOTOS);
   const ready = sourceKind(source) !== 'empty';
   const chips = [{ id: 'auto', name: 'Auto', accent: '#a1a1aa' }, ...looks];
 
@@ -86,6 +90,7 @@ export function SourceInput({ looks, houseStyles, busy, goal, onGoal, onCreate, 
       {photos.length > 0 && <span className="text-xs text-zinc-500">{photos.length} {photos.length === 1 ? 'scene' : 'scenes'}</span>}
       {photos.length < MAX_PHOTOS && <Button type="button" variant="outline" size="sm" loading={loading} disabled={busy}
         onClick={() => { void addPhotos(); }}><ImagePlus className="h-3.5 w-3.5" />Photos</Button>}
+      {photos.length < MAX_PHOTOS && <span className="text-xs text-zinc-500">or copy a photo and press Ctrl+V</span>}
     </div>
 
     {problem && <p role="alert" className="text-xs text-red-400">{problem}</p>}
