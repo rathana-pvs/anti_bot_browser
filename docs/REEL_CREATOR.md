@@ -95,10 +95,10 @@ for all scenes. **Accent** (all scenes) recolors the look's accent.
 
 Per scene: photo motion (zoom in, zoom out or still, instead of the reel's), how it **comes in** (crossfade, slide
 or cut), **shade behind text** (0–200 % of the look's darkening, on Breaking, Hot, Wire and Politics), a background
-color when it has no photo, and its length (auto from reading time, or 2–20 s). On Breaking and Wire, **Text
+color when it has no photo, and its length (auto from reading time, or 2–20 s). On Breaking, Wire and Hot, **Text
 position** moves the scene's whole text block (label, strap, figure, headline and detail together) higher or lower,
-between the logo row and the area Reels covers (or the ticker). Looks that size the photo to the text, and Hot and
-Pop Art, keep their own placement. **Reset scene style** clears all
+between the logo row and the area Reels covers (or the ticker). Looks that size the photo to the text, and Pop Art,
+keep their own placement. **Reset scene style** clears all
 of these for the scene.
 
 The document stores styles as `Reel.style` and `Scene.style` (role → overrides; unset fields are left out) and
@@ -133,7 +133,7 @@ together with the detail line until the scene fits; detail text never goes below
 | Look | For | Layout | Type |
 | --- | --- | --- | --- |
 | Breaking | urgent, developing news | full-bleed photo, red label bar and dark headline strap, scrolling source ticker; a LIVE badge only when **LIVE badge** is ticked, for coverage that is live right now along the bottom, top progress line | Anton headline, Barlow Condensed labels and ticker |
-| Hot | trending stories | full-bleed photo darkened at the top, huge outlined headline with the label pill above and the detail on an accent sticker right under it, the photo clear below, segmented progress | Anton headline, Noto Sans Bold sticker |
+| Hot | trending stories | full-bleed photo darkened at the top, huge outlined headline with the label pill above and the detail on an accent sticker right under it, the photo clear below, segmented progress. When a face was found high in the photo, the block moves to the bottom instead (darkened there), sized to fit below the face | Anton headline, Noto Sans Bold sticker |
 | Politics | political news and analysis | photo on top fading into a solid text panel with label, headline and detail, segmented progress | Barlow Condensed headline, Noto Sans detail |
 | Wire | straight factual reports | full-bleed photo, orange rule over a kicker line (label left, source and date right), plain bold headline and detail; Reuters/AP-style wire copy | Noto Sans Bold headline, Barlow Condensed kicker and credit |
 | Editorial | explainers and analysis | cream page: red tab and kicker with date, headline, hairline and an italic serif deck on top; the photo fills the lower part; Economist-style magazine page | Source Serif Bold headline, Source Serif Italic deck |

@@ -1003,7 +1003,7 @@ def test_layout_boxes_cover_what_the_preview_draws(look, creator, reel):
             assert b['x'] * plan.W - 1 <= element.x and element.y >= b['y'] * plan.H - 1
     areas = [box['w'] * box['h'] for box in layout['boxes']]
     assert areas == sorted(areas, reverse=True)          # smaller boxes last, so they sit on top
-    assert (layout['position'] is not None) == (look in ('breaking', 'wire'))
+    assert (layout['position'] is not None) == (look in ('breaking', 'wire', 'hot'))
 
 
 def test_layout_leaves_out_hidden_elements(creator, reel):
@@ -1033,7 +1033,7 @@ def test_text_block_moves_within_the_safe_area(look, ratio, creator, reel):
 
 def test_text_position_is_ignored_where_the_look_sizes_the_photo_to_the_text(creator, reel):
     images, logo, _ = creator.validate_assets(reel)
-    for look in ('politics', 'clean', 'editorial', 'hot', 'pop_art'):
+    for look in ('politics', 'clean', 'editorial', 'pop_art'):
         base = reel.model_copy(update=dict(look=look))
         plain = Plan(base, 360, images, logo)
         moved = Plan(styled(base, scenes={0: {'text_position': 0}}), 360, images, logo)
@@ -1219,3 +1219,27 @@ def test_a_figure_can_be_a_number_the_article_spells_out():
                               text='The governor signed the order on Thursday after a long debate in the state assembly.')
     with pytest.raises(ValueError, match='has no numbers'):
         write_reel(no_numbers, provider=lambda r: pytest.fail('the AI must not be asked'))
+
+
+
+def test_hot_moves_its_text_below_a_face_high_in_the_photo(creator):
+    asset = creator.import_asset(image_bytes(size=(727, 485)), 'rally.png', 'image')
+    images = {asset['id']: creator.asset_path(asset['id'], 'image')}
+    def plan(**scene):
+        value = Reel(look='hot', motion='none', scenes=[Scene(headline='Are family attacks in campaign ads fair game?', image_id=asset['id'],
+                                                               detail='Backlash spread after an Ohio campaign ad.', credit='Photo: AP', **scene)])
+        return Plan(value, 1080, images, None)
+    def block(p):
+        elements = [e for e in p.scene_elements[0] if e.role != 'credit']
+        return min(e.y for e in elements), max(e.y + e.tile.height for e in elements)
+    face, plain = plan(focal_x=.5, focal_y=.24), plan()               # a face found high up; no face found
+    top, bottom = block(face)
+    assert top > face.H * .38 and bottom <= face.px(face.limit) + face.px(4)   # under the face, down to the safe line
+    assert block(plain)[0] < plain.H * .2 and not plain.text_low[0]            # the look's own place: up top
+    assert face.text_low[0] and face.positions[0] is not None
+    credit = next(e for e in face.scene_elements[0] if e.role == 'credit')
+    assert credit.y + credit.tile.height <= top                                 # the credit sits above the text
+    dark = lambda p, y: sum(p.background(0, 1).convert('L').getpixel((540, y)) for _ in [0])
+    assert dark(face, 1850) < dark(plain, 1850)                                 # the scrim follows the text down
+    moved = plan(focal_x=.5, focal_y=.24, text_position=0)
+    assert block(moved)[0] < top and moved.positions[0] == 0                    # Text position still moves it

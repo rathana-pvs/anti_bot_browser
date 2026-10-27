@@ -25,7 +25,8 @@ STAT_SIZES = (330, 280, 236, 196, 160, 130)  # design px tried for a stat figure
 MARK_SIZES = (210, 176, 148, 124)            # the quote mark and the end card's ? or →
 LEAD_GAP = 14
 BOX_PAD = 14         # extra room around a line drawn on a box
-MOVABLE = ('breaking', 'wire')  # looks whose text block floats over a full-bleed photo, so it can move up or down
+MOVABLE = ('breaking', 'wire', 'hot')  # looks whose text block floats over a full-bleed photo, so it can move up or down
+NO_SUBJECT = (.5, .4)  # the focus a photo gets when no face was found in it
 
 # Type per look, in design px at 1080 wide: (face, preferred size, smallest size). Headline and detail
 # shrink together until the block fits; the smallest sizes stay readable on a phone held at arm's length.
@@ -97,6 +98,7 @@ class Plan:
         default, self.page = self._frame()
         # Looks with a page or panel size the photo to the text each scene needs.
         self.scene_elements, self.rects, self.positions = [], [], []
+        self.text_low = []  # per scene: the text block sits in the lower half, so the scrim darkens the bottom
         for index, scene in enumerate(reel.scenes):
             self._scene_rect, self._lead_plan = default, None
             self._scene = self._shown(scene)
@@ -106,6 +108,7 @@ class Plan:
             except ValueError as exc:
                 raise ValueError(f'Scene {index + 1}: {exc}') from None
             self.positions.append(self._place(elements, scene.text_position))
+            self.text_low.append(bool(elements) and min(e.y for e in elements) + max(e.y + e.tile.height for e in elements) > self.H)
             elements += self._restyle(self._credit(scene, elements))
             self.scene_elements.append(elements)
             self.rects.append(self._scene_rect)
@@ -196,7 +199,8 @@ class Plan:
     def _credit(self, scene, elements):
         """The photo credit, small and right-aligned to the text column so it stays clear of the Reels buttons.
 
-        Breaking and Wire set it just above their text; Pop Art above its label sticker; the others at the photo's edge.
+        Breaking and Wire (and Hot when its text sits low) set it just above their text; Pop Art above its label
+        sticker; the others at the photo's edge.
         """
         if not scene.credit or not scene.image_id or not self._scene_rect[3]:
             return []
@@ -205,7 +209,8 @@ class Plan:
         tile, _ = self._text(text, size, self._ink('credit', (255, 255, 255, 225)), 'condensed-semi')  # always over the photo
         x0, y0, rw, rh, _ = self._scene_rect
         right = min(x0 + rw - px(20), px(DESIGN_W - self.right + 8))
-        if look in ('breaking', 'wire'):
+        low_hot = look == 'hot' and elements and min(e.y for e in elements) + max(e.y + e.tile.height for e in elements) > self.H
+        if look in ('breaking', 'wire') or low_hot:
             y = min(e.y for e in elements) - px(10) - tile.height if elements else px(self.limit) - tile.height
         elif look == 'pop_art':
             y = y0 + rh - px(48) - tile.height
@@ -359,7 +364,7 @@ class Plan:
             base = self._collage_photo(None, size)
         else:
             base = self._plain_background(size)
-        base = self._scrim(base, 1 if scene.shade is None else scene.shade)
+        base = self._scrim(base, 1 if scene.shade is None else scene.shade, self.text_low[index])
         if len(self._bases) >= 3:  # long reels would otherwise hold every scene in memory
             self._bases.pop(next(iter(self._bases)))
         self._bases[index] = base
@@ -432,12 +437,15 @@ class Plan:
         glow = glow.filter(ImageFilter.GaussianBlur(size[0] * .12))
         return Image.composite(Image.new('RGB', size, self.accent), base, glow)
 
-    def _scrim(self, base, shade=1):
+    def _scrim(self, base, shade=1, low=False):
         """Darken where text sits so it stays readable on any photo; `shade` scales it. Clean needs none."""
-        spec = {'breaking': ((.40, .78, .86), (.2, .55), (6, 8, 14)),
-                'hot': ((.62, .95, .55), (.64, .86), (6, 8, 14)),         # mostly the top, where the headline and sticker sit
-                'wire': ((.45, .86, .9), (.2, .5), (6, 8, 14)),
-                'politics': ((.74, 1.0, 1.0), (.25, .5), PANEL)}.get(self.reel.look)  # photo melts into the panel
+        if self.reel.look == 'hot' and low:  # Hot's text moved below the subject: dark at the bottom, light up top
+            spec = ((.36, .82, .9), (.18, .5), (6, 8, 14))
+        else:
+            spec = {'breaking': ((.40, .78, .86), (.2, .55), (6, 8, 14)),
+                    'hot': ((.62, .95, .55), (.64, .86), (6, 8, 14)),         # mostly the top, where the headline and sticker sit
+                    'wire': ((.45, .86, .9), (.2, .5), (6, 8, 14)),
+                    'politics': ((.74, 1.0, 1.0), (.25, .5), PANEL)}.get(self.reel.look)  # photo melts into the panel
         if not spec or not shade:
             return base
         (start, end, strength), (reach, top_strength), color = spec
@@ -735,9 +743,16 @@ class Plan:
         return out
 
     def _hot(self, scene):
-        """Huge headline up top on a dark scrim, the detail on a sticker right under it; the photo shows below."""
+        """Huge headline up top on a dark scrim, the detail on a sticker right under it; the photo shows below.
+
+        When the photo's subject (a face) sits in the upper half of the frame, the whole block moves to the bottom instead.
+        """
         px, accent = self.px, self.accent + (255,)
-        out, y = [], self.inset + 130
+        subject = self._subject_y(scene)
+        high = subject is not None and subject < .5
+        # Below a high subject the block starts under the face (about .14 of the frame past its center), and the
+        # headline shrinks to fit what is left; it is then pushed down to the bottom of the safe area.
+        out, y = [], max(self.inset + 130, round((subject + .14) * self.DH)) if high else self.inset + 130
         if self.reel.tag_text:
             pill = self._tag(self.reel.tag_text, px(42), self._ink_on(self.accent), accent, 14, 72, 24)
             out.append(Element(pill, px(LEFT), px(y), 0, .5, 'pop', role='label'))
@@ -768,7 +783,24 @@ class Plan:
             bottom += px(52)
         if sticker:
             out.append(Element(sticker, px(LEFT), bottom, .6, .5, 'rise', role='detail'))
+        if out and high:
+            shift = px(self.limit) - max(e.y + e.tile.height for e in out)
+            for element in out:
+                element.y += max(0, shift)
         return out
+
+    def _subject_y(self, scene):
+        """Where the photo's subject (its faces) lands, as a fraction of the frame height; None when none was found."""
+        path = self.images.get(scene.image_id) if scene.image_id else None
+        if not path or (scene.focal_x, scene.focal_y) == NO_SUBJECT:
+            return None
+        if scene.fit == 'blur':                    # the whole photo, centered high: see _blur_fill
+            return .36
+        with Image.open(path) as photo:
+            width, height = photo.size
+        shown = height * max(self.W / width, self.H / height)   # the photo's height once it covers the frame
+        top = clamp(scene.focal_y * shown - self.H / 2, 0, max(0, shown - self.H))
+        return (scene.focal_y * shown - top) / self.H
 
     def _politics(self, scene):
         """Photo on top, a solid text panel below: label, headline, detail. The photo takes what the text leaves."""
