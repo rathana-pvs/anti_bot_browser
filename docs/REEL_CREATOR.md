@@ -178,8 +178,8 @@ Each scene has a type, chosen under its text (the AI picks one when it writes th
 | --- | --- | --- |
 | Story | headline and detail | the first scene is always a story, so its hook can be swapped |
 | Figure | one large number above a short label (the headline) | the figure must appear in the article; the AI uses at most one |
-| Quote | a large quotation mark, the quoted words, then "— speaker" | the AI only writes a quote when the words appear verbatim in the article and the speaker's name is in it; otherwise the scene becomes a story |
-| End card | a large ? (a question) or → (pointing at the comment button) above the headline | written from the goal: Engage ends on the open question, Read more says the full story is in the first comment. It stays last; new scenes and photos go before it, and it gets no photo unless you add one. On Clean and Editorial a photo-less end card is the plain page |
+| Quote | a large quotation mark, the quoted words, then "— speaker" | the AI only writes a quote when the article itself puts the words in quotation marks and names the speaker; reported speech ("she said the bridge would stay closed") never becomes a quote, and otherwise the scene becomes a story |
+| End card | a large ? (a question) or → (pointing at the comment button) above the headline | written from the goal: Engage ends on the open question, Read more says the full story is in the first comment. It stays last; new scenes and photos go before it, and it gets no photo unless you add one. On Politics, Clean and Editorial a photo-less end card is the plain page |
 
 **Highlight words**: one to three words of a headline drawn in the look's accent color (Breaking, and light pages
 with a pale accent, put them on an accent block instead). The AI picks them from its own headline; you can change
@@ -189,6 +189,17 @@ The figure, quote credit and end card are checked like every other line: no numb
 and no links.
 
 Scene length follows reading time (3.5–8 seconds); a reel is at most 90 seconds and eight scenes.
+
+### Rewriting one scene
+
+Changing a scene's type keeps its words; the scene then offers **Rewrite for** that type, and every scene of a reel
+written from an article has a **Rewrite** button (the sparkles icon). The AI rewrites only that scene, from the same
+article and in its current type, knowing the other scenes so it does not repeat them: a Figure gets a number from
+the article and a label for it, a Quote the article's quoted words and speaker, an End card a closing line in the
+goal's spirit, a Story a new headline (the first scene's is a hook). The photo, credit, timing and styles stay, and
+the notice offers **Undo**. When the article has nothing for the type, for example no direct quote, the scene is
+left as it is and the message says so; an article with no quotation marks or no numbers at all is refused at once,
+without asking the AI. A rewrite uses the Gemini key like any other writing.
 
 ## Music
 

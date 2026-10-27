@@ -81,7 +81,8 @@ export function ReelCreator({ active, onUseReel }: Props) {
     </header>
 
     {studio.error && <Alert variant="danger" role="alert">{studio.error}</Alert>}
-    {studio.notice && <Alert variant="success">{studio.notice}</Alert>}
+    {studio.notice && <Alert variant="success"><div className="flex flex-1 items-center justify-between gap-3"><span>{studio.notice}</span>
+      {studio.undo && <Button variant="outline" size="sm" onClick={studio.undoRewrite}>Undo</Button>}</div></Alert>}
 
     {!hasReel
       ? <SourceInput looks={capabilities.looks} houseStyles={studio.houseStyles} busy={writing} goal={doc.goal} onGoal={studio.setGoal}
@@ -115,6 +116,7 @@ export function ReelCreator({ active, onUseReel }: Props) {
             houseStyles={<HouseStylePicker styles={studio.houseStyles} reel={doc.reel} busy={!!busy} onPick={studio.pickHouseStyle}
               onSave={name => { void studio.saveHouseStyle(name); }} onDelete={id => { void studio.deleteHouseStyle(id); }} />} />
           <SceneList reel={doc.reel} hooks={doc.hooks} selected={scene} busy={!!busy} writing={busy === 'hooks'} adding={busy === 'scene'} canWrite={canWrite}
+            rewriting={studio.rewriting} onRewrite={index => { void studio.rewriteScene(index); }}
             onSelect={setScene} onEdit={edit} onHook={studio.pickHook} onMoreHooks={() => { void studio.moreHooks(); }}
             onPhoto={index => { void studio.changePhoto(index); }} onPhotos={() => { void studio.addPhotos(); }}
             onMove={studio.moveScene} onRemove={studio.removeScene} onAdd={studio.addScene} />

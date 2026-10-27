@@ -1130,3 +1130,64 @@ def test_hot_keeps_the_detail_under_its_headline_and_no_source_repeats_the_brand
     assert [e.role for e in elements].count('label') == 1               # the tag only: the source is the brand
     reel.source = 'City Wire'
     assert [e.role for e in Plan(reel, 1080, images, logo).scene_elements[0]].count('label') == 2
+
+
+# --- rewriting one scene ---------------------------------------------------
+
+def rewrite(**extra):
+    return request(**{'existing': ['Council backs flood relief plan'], 'position': 2, 'replacing': 'Payments start next week', **extra})
+
+
+def test_rewriting_one_scene_returns_that_scene_only_in_the_kind_asked_for():
+    asked = []
+    stat = dict(kind='stat', stat='7-2', headline='Council vote on the plan', source_quote='voted 7 to 2 on Tuesday')
+    result = write_reel(rewrite(rewrite='stat'), provider=lambda r: asked.append(r.provider_context()) or copy(scenes=[stat]))
+    assert [(s['kind'], s['stat'], s['headline']) for s in result['scenes']] == [('stat', '7-2', 'Council vote on the plan')]
+    assert result['hooks'] == [] and result['end'] is None and result['caption'] == ''
+    context = asked[0]
+    assert context['rewrite_kind'] == 'stat' and context['scene_count'] == 1 and context['rewrite_position'] == 2
+    assert context['existing_headlines'] == ['Council backs flood relief plan'] and context['replacing'] == 'Payments start next week'
+
+
+def test_a_rewrite_never_invents_a_quote_or_figure_the_article_lacks():
+    calls = []
+    with pytest.raises(ValueError, match='no direct quote'):          # no quotation marks at all: the AI is not asked
+        write_reel(rewrite(rewrite='quote'), provider=lambda r: calls.append(1) or copy(scenes=[]))
+    assert calls == []
+    quoting = WriteRequest(api_key='k', model='gemini-test', text=ARTICLE + ' "We will review every claim quickly," the mayor said.', rewrite='quote', position=2)
+    with pytest.raises(ValueError, match='no direct quote'):          # the model says there is none: asked once
+        write_reel(quoting, provider=lambda r: calls.append(1) or copy(scenes=[]))
+    assert len(calls) == 1
+    paraphrase = dict(kind='quote', headline='We must help families now', attribution='Mayor Lina Chhay',
+                      source_quote='voted 7 to 2 on Tuesday')
+    with pytest.raises(ValueError, match='no direct quote'):          # words not in the article are not a quote
+        write_reel(rewrite(rewrite='quote'), provider=lambda r: copy(scenes=[paraphrase]))
+    with pytest.raises(ValueError, match='no clear figure'):
+        write_reel(rewrite(rewrite='stat'), provider=lambda r: copy(scenes=[dict(kind='stat', stat='many', headline='Many provinces',
+                                                                               source_quote='covering three provinces')]))
+
+
+def test_the_hook_scene_stays_a_story_and_an_end_card_can_be_rewritten():
+    story = dict(headline='Flood relief approved', source_quote='voted 7 to 2 on Tuesday')
+    assert write_reel(rewrite(rewrite='story', position=1), provider=lambda r: copy(scenes=[story]))['scenes'][0]['kind'] == 'story'
+    end = dict(headline='Should relief come first?', detail='', highlight='relief')
+    result = write_reel(rewrite(rewrite='end'), provider=lambda r: copy(end_card=end))
+    assert result['scenes'] == [] and result['end']['headline'] == 'Should relief come first?'
+    with pytest.raises(ValueError):
+        write_reel(rewrite(rewrite='end'), provider=lambda r: copy(end_card=None))
+
+
+def test_reported_speech_never_becomes_a_quote_scene():
+    text = ('Mayor Ana Teller said the Route 9 bridge would stay closed until engineers inspect it. '
+            '"We will not take any chances with people\'s lives," Teller told reporters on Wednesday evening.')
+    reported = dict(kind='quote', headline='the Route 9 bridge would stay closed until engineers inspect it',
+                    attribution='Mayor Ana Teller', source_quote='the Route 9 bridge would stay closed')
+    quoted = dict(kind='quote', headline="We will not take any chances with people's lives", attribution='Mayor Ana Teller',
+                  source_quote='We will not take any chances')
+    ask = lambda **extra: WriteRequest(api_key='k', model='gemini-test', text=text, **extra)
+    with pytest.raises(ValueError, match='no direct quote'):
+        write_reel(ask(rewrite='quote', position=2), provider=lambda r: copy(scenes=[reported]))
+    assert write_reel(ask(rewrite='quote', position=2), provider=lambda r: copy(scenes=[quoted]))['scenes'][0]['kind'] == 'quote'
+    story = dict(headline='Bridge stays shut for safety checks', source_quote='the Route 9 bridge would stay closed')
+    written = write_reel(ask(scenes=2), provider=lambda r: copy(scenes=[story, reported]))
+    assert [s['kind'] for s in written['scenes']] == ['story', 'story']     # creating a reel follows the same rule

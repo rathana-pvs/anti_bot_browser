@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { API_BASE } from './api';
 import { isDesktopApp } from './desktopEnvironment';
-import type { ArticleText, PhotoImport, Reel, ReelAsset, ReelGoal, ReelBrand, ReelCapabilities, HouseStyle, ReelDraft, ReelJob, SceneLayout, WrittenReel } from '../types/reelCreator';
+import type { ArticleText, PhotoImport, Reel, ReelAsset, ReelGoal, ReelBrand, ReelCapabilities, HouseStyle, ReelDraft, ReelJob, SceneKind, SceneLayout, WrittenReel } from '../types/reelCreator';
 
 async function request(path: string, init?: RequestInit): Promise<Response> {
   const response = await fetch(`${API_BASE}/reel-creator${path}`, init);
@@ -31,6 +31,12 @@ export interface WriteRequest {
   existing?: string[];
   /** The post caption is written only when this is true. */
   caption?: boolean;
+  /** Rewrite one scene as this kind; `existing` then holds the other scenes' headlines. */
+  rewrite?: SceneKind;
+  /** That scene's place in the reel, 1 = the hook. */
+  position?: number;
+  /** Its current text, so the new text is not a copy. */
+  replacing?: string;
 }
 
 export const reelApi = {

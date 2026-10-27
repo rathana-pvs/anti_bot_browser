@@ -214,3 +214,20 @@ test('an updated story gets new words but keeps photos, credits, styles and its 
   assert.equal(next.scenes[2].backdrop, '#111111');
   assert.equal(doc.updatedStory(base, written, '', false).tag, null);
 });
+
+test('a one-scene rewrite replaces only the words, and Undo has the old words to put back', () => {
+  const scene = { ...doc.emptyScene(), headline: 'Old', detail: 'Old detail', kind: 'quote', attribution: 'Old speaker', image_id: 'p1', credit: 'Photo: AP', style: { headline: { color: '#ffee00' } } };
+  const written = { look: 'clean', hooks: [], caption: '', comment: '', source_label: '', source_fingerprint: '', end: null,
+    scenes: [{ headline: 'Families cannot wait', detail: '', kind: 'quote', stat: '', attribution: 'Mayor Lina Chhay', highlight: 'cannot wait' }] };
+  const next = { ...scene, ...doc.rewrittenWords(written, 'quote') };
+  assert.equal(next.headline, 'Families cannot wait');
+  assert.equal(next.attribution, 'Mayor Lina Chhay');
+  assert.equal(next.image_id, 'p1');
+  assert.equal(next.credit, 'Photo: AP');
+  assert.deepEqual(next.style, scene.style);
+  assert.deepEqual({ ...next, ...doc.sceneWords(scene) }, scene);
+  assert.deepEqual(doc.rewrittenWords({ ...written, scenes: [], end: { headline: 'Agree?', detail: '', highlight: '' } }, 'end'),
+    { kind: 'end', headline: 'Agree?', detail: '', highlight: '', stat: '', attribution: '' });
+  assert.equal(doc.rewrittenWords({ ...written, scenes: [] }, 'stat'), null);
+  assert.equal(doc.rewrittenWords(written, 'end'), null);
+});

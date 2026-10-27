@@ -1,9 +1,10 @@
-import { ArrowDown, ArrowUp, Frame, ImagePlus, Paintbrush, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { useState } from 'react';
+import { ArrowDown, ArrowUp, Frame, ImagePlus, Paintbrush, Plus, RefreshCw, Sparkles, Trash2 } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { IconButton } from '../ui/IconButton';
 import { Input } from '../ui/Input';
 import { Select } from '../ui/Select';
-import { MAX_SCENES, sceneIsStyled, sceneSeconds } from '../../services/reelDocument';
+import { KIND_NAMES, MAX_SCENES, sceneIsStyled, sceneSeconds } from '../../services/reelDocument';
 import type { Reel, ReelScene, SceneKind } from '../../types/reelCreator';
 import { Thumb } from './Thumb';
 
@@ -15,6 +16,8 @@ interface Props {
   writing: boolean;
   adding: boolean;
   canWrite: boolean;
+  /** The scene being rewritten, if any. */
+  rewriting: number | null;
   onSelect: (index: number) => void;
   onEdit: (index: number, patch: Partial<ReelScene>) => void;
   onHook: (hook: string) => void;
@@ -24,11 +27,11 @@ interface Props {
   onMove: (from: number, to: number) => void;
   onRemove: (index: number) => void;
   onAdd: () => void;
+  /** New words for the scene in its current type, from the article. */
+  onRewrite: (index: number) => void;
 }
 
-const kinds: { value: SceneKind; label: string }[] = [
-  { value: 'story', label: 'Story' }, { value: 'stat', label: 'Figure' }, { value: 'quote', label: 'Quote' }, { value: 'end', label: 'End card' },
-];
+const kinds = (Object.keys(KIND_NAMES) as SceneKind[]).map(value => ({ value, label: KIND_NAMES[value] }));
 const headlineHint: Record<SceneKind, string> = { story: 'Headline', stat: 'What the figure counts', quote: 'Quoted words', end: 'Question or where to read more' };
 
 /** Mirrors the renderer: whole words, any case; a highlight that is not in the headline is simply not drawn. */
@@ -39,6 +42,9 @@ const includesWords = (headline: string, phrase: string) => {
 
 export function SceneList(p: Props) {
   const first = p.reel.scenes[0]?.headline ?? '';
+  // Changing a type keeps the words; the scene then offers to rewrite them for the new type.
+  const [retyped, setRetyped] = useState<number | null>(null);
+  const rewrite = (index: number) => { setRetyped(null); p.onRewrite(index); };
   return <section aria-label="Scenes" className="space-y-3">
     {(p.hooks.length > 0 || p.canWrite) && <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Hook">
       {p.hooks.map(hook => <button key={hook} type="button" onClick={() => p.onHook(hook)} aria-pressed={hook === first}
@@ -60,7 +66,7 @@ export function SceneList(p: Props) {
           <Input value={scene.detail} onChange={event => p.onEdit(i, { detail: event.target.value })} maxLength={160} aria-label={`Scene ${i + 1} detail`} placeholder="Detail" />
           <div className="flex gap-1.5">
             <div className="w-28 shrink-0"><Select value={scene.kind ?? 'story'} options={kinds} ariaLabel={`Scene ${i + 1} type`}
-              onValueChange={value => p.onEdit(i, { kind: value as SceneKind })} /></div>
+              onValueChange={value => { p.onEdit(i, { kind: value as SceneKind }); setRetyped(i); }} /></div>
             {scene.kind === 'stat' && <Input value={scene.stat ?? ''} onChange={event => p.onEdit(i, { stat: event.target.value })} maxLength={24}
               aria-label={`Scene ${i + 1} figure`} placeholder="Figure, e.g. 7-2" className="w-32 shrink-0" />}
             {scene.kind === 'quote' && <Input value={scene.attribution ?? ''} onChange={event => p.onEdit(i, { attribution: event.target.value })} maxLength={60}
@@ -71,11 +77,19 @@ export function SceneList(p: Props) {
           </div>
           {scene.image_id && <Input value={scene.credit ?? ''} onChange={event => p.onEdit(i, { credit: event.target.value })} maxLength={60}
             aria-label={`Scene ${i + 1} photo credit`} placeholder="Photo credit, e.g. Photo: AP" className="h-8 text-xs" />}
+          {p.canWrite && retyped === i && p.rewriting !== i && <div className="flex items-center gap-2 text-xs text-zinc-500">
+            The text was kept.
+            <button type="button" disabled={p.busy} onClick={event => { event.stopPropagation(); rewrite(i); }}
+              className="inline-flex items-center gap-1 text-violet-300 hover:text-violet-200 disabled:opacity-50"><Sparkles className="h-3 w-3" />Rewrite for {KIND_NAMES[scene.kind ?? 'story']}</button>
+            <button type="button" onClick={event => { event.stopPropagation(); setRetyped(null); }} className="hover:text-zinc-300">Keep it</button>
+          </div>}
         </div>
         <div className="flex shrink-0 flex-col items-center justify-between">
           <span className="flex items-center gap-1 text-[11px] tabular-nums text-zinc-500">
             {sceneIsStyled(scene) && <Paintbrush className="h-3 w-3 text-violet-400" aria-label="Has its own style" />}{sceneSeconds(scene)}s</span>
           <div className="flex">
+            {p.canWrite && <IconButton aria-label={`Rewrite scene ${i + 1}`} title={`Rewrite this ${KIND_NAMES[scene.kind ?? 'story'].toLowerCase()} from the article`}
+              loading={p.rewriting === i} disabled={p.busy} onClick={event => { event.stopPropagation(); rewrite(i); }}><Sparkles className="h-3.5 w-3.5" /></IconButton>}
             {scene.image_id && <IconButton aria-label="Show whole photo" title="Show whole photo (blurred fill)" aria-pressed={scene.fit === 'blur'}
               className={scene.fit === 'blur' ? 'text-violet-300' : undefined}
               onClick={event => { event.stopPropagation(); p.onEdit(i, { fit: scene.fit === 'blur' ? 'cover' : 'blur' }); }}><Frame className="h-3.5 w-3.5" /></IconButton>}

@@ -26,8 +26,9 @@ Return JSON:
   - story: headline and detail as above.
   - stat: the scene's point is one specific figure. stat is that figure exactly as the article gives it (up to
     12 characters, e.g. "7-2", "$1.2bn", "300,000"); headline is a short label of 3-8 words saying what it counts.
-  - quote: the article contains a direct quotation worth hearing. headline is the quoted words copied exactly
-    (no quotation marks, up to 110 characters); attribution is the speaker's name and role as the article gives them.
+  - quote: the article contains a direct quotation worth hearing, inside quotation marks. headline is the quoted words
+    copied exactly (no quotation marks, up to 110 characters); attribution is the speaker's name and role as the article
+    gives them. Reported speech ("she said the bridge would stay closed") is not a quotation: never make it a quote.
   highlight: 1-3 consecutive words copied exactly from that scene's headline that carry the news (a number, a
   name, the key action). Never the whole headline; empty if nothing stands out.
 - end_card: always give one unless existing_headlines is given; then null. A closing card in the goal's spirit:
@@ -53,7 +54,16 @@ The operator's goal decides how the hook, scenes and caption are written:
   caption is 40-90 words and ends by telling readers the full story is in the first comment. comment_lead is
   one line of at most 120 characters for that comment, promising what the article adds; it contains no URL.
   The end card headline tells viewers the full story is in the first comment; its detail says what they will learn.
-If the text is a login page, paywall, error page or has no substantive news, return an empty object.'''
+If the text is a login page, paywall, error page or has no substantive news, return an empty object.
+
+When rewrite_kind is given, the operator is rewriting ONE scene of a finished reel; existing_headlines are the
+other scenes, which must not be repeated, and replacing is the text being replaced (write something better
+suited, not a copy). Return no hook_alternatives, no caption and no hashtags.
+- rewrite_kind story, stat or quote: scenes holds exactly one scene of that kind. If rewrite_position is 1 it is
+  the reel's hook (a story, 4-10 words). If the article has no figure worth a stat scene, or no direct quotation
+  for a quote scene, return scenes as an empty list rather than inventing or paraphrasing one.
+- rewrite_kind end: end_card holds the closing card in the goal's spirit; scenes holds one story scene that is
+  ignored.'''
 
 
 def asks_for(*fields):
@@ -111,17 +121,32 @@ class WriteRequest(NewsRequest):
     existing: list[str] = Field(default_factory=list, max_length=8)  # headlines already in the reel
     caption: bool = False  # the post caption is written only when asked for
     goal: Literal['engage', 'readmore'] = 'engage'  # share a thought, or send readers to the article
+    # Rewrite one scene of a finished reel as this kind; `existing` then holds the other scenes' headlines.
+    rewrite: Literal['story', 'stat', 'quote', 'end'] | None = None
+    position: int = Field(default=1, ge=1, le=8)        # the rewritten scene's place in the reel, 1 = the hook
+    replacing: str = Field(default='', max_length=300)  # its current text, so the new one is not a copy
 
     def provider_context(self):
-        return dict(text=self.text, source_url=self.source_url, source_title=self.source_title,
-                    publisher=self.publisher, language=self.language,
-                    operator_look=None if self.look == 'auto' else self.look,
-                    scene_count=self.scenes or (None if self.existing else 3),
-                    existing_headlines=self.existing or None, write_caption=self.caption, goal=self.goal)
+        context = dict(text=self.text, source_url=self.source_url, source_title=self.source_title,
+                       publisher=self.publisher, language=self.language,
+                       operator_look=None if self.look == 'auto' else self.look,
+                       scene_count=self.scenes or (None if self.existing else 3),
+                       existing_headlines=self.existing or None, write_caption=self.caption, goal=self.goal)
+        if self.rewrite:
+            context.update(scene_count=1, rewrite_kind=self.rewrite, rewrite_position=self.position, replacing=self.replacing or None)
+        return context
 
 
 class Ungrounded(ValueError):
     """The model's answer contradicted the article; a second attempt may succeed."""
+
+
+class Unsupported(Ungrounded):
+    """The article has nothing for the scene type asked for; said plainly rather than worked around."""
+
+
+MISSING = {'stat': 'This article has no clear figure for a Figure scene. Try Story or Quote instead.',
+           'quote': 'This article has no direct quote for a Quote scene. Try Story or Figure instead.'}
 
 
 def checked_highlight(headline, phrase):
@@ -130,12 +155,18 @@ def checked_highlight(headline, phrase):
     return phrase if span and span[1] - span[0] < len(' '.join(headline.split())) else ''
 
 
-def settle_kind(scene, facts, hook=False):
-    """A stat needs a figure; a quote must be the article's own words from a speaker it names. Otherwise: a story."""
+def quotations(text):
+    """What the article puts inside quotation marks; reported speech ("she said the bridge would stay shut") is not among it."""
+    return [normalized(q) for q in re.findall(r'"([^"]{8,})"|“([^”]{8,})”|‘([^’]{8,})’', text) for q in q if q]
+
+
+def settle_kind(scene, facts, hook=False, quoted=None):
+    """A stat needs a figure; a quote must be words the article itself quotes, from a speaker it names. Otherwise: a story."""
     if scene.kind == 'quote':
         words = scene.headline.strip(' "“”\'‘’')
         names = re.findall(r"[A-Z][\w'’.-]*", scene.attribution)
-        if normalized(words) in facts and names and all(normalized(name.rstrip('.')) in facts for name in names):
+        said = quoted is None or any(normalized(words) in q for q in quoted)
+        if said and normalized(words) in facts and names and all(normalized(name.rstrip('.')) in facts for name in names):
             scene.headline = words
         else:
             scene.kind = 'story'
@@ -153,16 +184,24 @@ def settle_kind(scene, facts, hook=False):
 def check(copy, request):
     if request.caption and len(copy.post_caption.strip()) < 20:
         raise Ungrounded('The AI wrote no caption.')
-    wanted = request.scenes
+    if request.rewrite:
+        copy.hook_alternatives, copy.post_caption, copy.comment_lead, copy.hashtags = [], '', '', []
+        if request.rewrite == 'end':
+            if not copy.end_card:
+                raise Ungrounded('The AI wrote no end card.')
+            copy.scenes = []
+    wanted = 1 if request.rewrite in ('story', 'stat', 'quote') else request.scenes
     if wanted and len(copy.scenes) < wanted:
         raise Ungrounded('The AI wrote too few scenes.')
     del copy.scenes[wanted or len(copy.scenes):]
-    facts = normalized(request.text)
+    facts, quoted = normalized(request.text), quotations(request.text)
     for index, scene in enumerate(copy.scenes):
         if normalized(scene.source_quote) not in facts:
             raise Ungrounded('A scene was not backed by the article.')
-        settle_kind(scene, facts, hook=index == 0)
-    if request.existing:
+        settle_kind(scene, facts, hook=index == 0 and (not request.rewrite or request.position == 1), quoted=quoted)
+        if request.rewrite and scene.kind != request.rewrite:
+            raise Unsupported(MISSING[request.rewrite])
+    if request.existing and request.rewrite != 'end':
         copy.end_card = None
     if copy.end_card:
         copy.end_card.highlight = checked_highlight(copy.end_card.headline, copy.end_card.highlight)
@@ -180,12 +219,20 @@ def check(copy, request):
 
 def write_reel(request, provider=None, attempts=2):
     provider = provider or (lambda r: provider_generate(r, system=SYSTEM, schema=ReelCopy))
+    # Nothing to ask the AI for: an article with no quotation marks has no quote, one with no digits no figure.
+    if (request.rewrite == 'quote' and not quotations(request.text)) or (request.rewrite == 'stat' and not numbers(request.text)):
+        raise ValueError(MISSING[request.rewrite])
     for attempt in range(attempts):
         try:
-            copy = check(ReelCopy.model_validate(provider(request)), request)
+            raw = provider(request)
+            if request.rewrite in MISSING and isinstance(raw, dict) and raw.get('scenes') == []:
+                raise ValueError(MISSING[request.rewrite])  # the model found nothing to use: no second try
+            copy = check(ReelCopy.model_validate(raw), request)
             break
-        except (Ungrounded, ValidationError):
+        except (Ungrounded, ValidationError) as exc:
             if attempt + 1 == attempts:
+                if isinstance(exc, Unsupported):
+                    raise ValueError(str(exc)) from None
                 raise ValueError('The AI could not write a draft grounded in this article. Try again, or use a longer article.') from None
     # Links never go in the caption: Facebook reduces reach for them. Read-more reels carry the link in a first comment.
     body, comment = (copy.post_caption.strip() if request.caption else ''), ''
@@ -197,7 +244,7 @@ def write_reel(request, provider=None, attempts=2):
             from .articles import public_url
             comment += '\n' + str(public_url(request.source_url))
     caption = body + ('\n\n' + ' '.join(copy.hashtags) if body and copy.hashtags else '')
-    hooks = [copy.scenes[0].headline, *[h for h in copy.hook_alternatives if h != copy.scenes[0].headline]]
+    hooks = [copy.scenes[0].headline, *[h for h in copy.hook_alternatives if h != copy.scenes[0].headline]] if copy.scenes and not request.rewrite else []
     return dict(look=copy.look, hooks=hooks,
                 scenes=[dict(headline=s.headline, detail=s.detail, kind=s.kind, stat=s.stat, attribution=s.attribution,
                              highlight=s.highlight) for s in copy.scenes],

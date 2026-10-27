@@ -1,4 +1,4 @@
-import type { ElementStyle, HouseStyle, Reel, ReelAsset, ReelBrand, ReelScene, ReelStyles, StyleRole, WrittenReel, WrittenScene } from '../types/reelCreator';
+import type { ElementStyle, HouseStyle, Reel, ReelAsset, ReelBrand, ReelScene, ReelStyles, SceneKind, StyleRole, WrittenReel, WrittenScene } from '../types/reelCreator';
 
 export const MAX_SCENES = 8;
 export const MAX_SECONDS = 90;
@@ -183,4 +183,21 @@ export function updatedStory(reel: Reel, written: WrittenReel, dateline: string,
   const scenes = next.scenes.map(scene => scene.kind === 'end' && end
     ? { ...end, headline: scene.headline, detail: scene.detail, highlight: scene.highlight, seconds: null } : scene);
   return { ...next, scenes, tag: mark ? UPDATE_LABEL : reel.tag, dateline: dateline || reel.dateline };
+}
+
+export const KIND_NAMES: Record<SceneKind, string> = { story: 'Story', stat: 'Figure', quote: 'Quote', end: 'End card' };
+
+/** The words of a scene: what a rewrite replaces and Undo puts back. Photo, credit, timing and styles are not words. */
+export const sceneWords = (scene: ReelScene): Partial<ReelScene> => ({
+  headline: scene.headline, detail: scene.detail, kind: scene.kind ?? 'story', stat: scene.stat ?? '', attribution: scene.attribution ?? '', highlight: scene.highlight ?? '',
+});
+
+/** A one-scene rewrite as new words for that scene, or null when the AI returned nothing for it. */
+export function rewrittenWords(written: WrittenReel, kind: SceneKind): Partial<ReelScene> | null {
+  if (kind === 'end') {
+    const end = written.end;
+    return end ? { kind: 'end', headline: end.headline, detail: end.detail, highlight: end.highlight, stat: '', attribution: '' } : null;
+  }
+  const scene = written.scenes[0];
+  return scene ? { kind: scene.kind, headline: scene.headline, detail: scene.detail, stat: scene.stat, attribution: scene.attribution, highlight: scene.highlight } : null;
 }

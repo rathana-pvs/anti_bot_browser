@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { reelApi, type WriteRequest } from '../services/reelCreator';
 import { configuredGemini } from '../services/newsSource';
-import { addScene, updatedStory, applyHouseStyle, applyWriting, houseStyleOf, datelineFor, emptyReel, fillPhotos, fillScenes, hasContent, headlines, insertIndex, MAX_SCENES, moveScene, placePhotos, reelKey, removeScene, setPhoto, sourceKind, withHook } from '../services/reelDocument';
-import type { CreatedReelMedia, HouseStyle, Reel, ReelGoal, ReelAsset, ReelBrand, ReelCapabilities, ReelDraft, ReelJob } from '../types/reelCreator';
+import { addScene, KIND_NAMES, rewrittenWords, sceneWords, updatedStory, applyHouseStyle, applyWriting, houseStyleOf, datelineFor, emptyReel, fillPhotos, fillScenes, hasContent, headlines, insertIndex, MAX_SCENES, moveScene, placePhotos, reelKey, removeScene, setPhoto, sourceKind, withHook } from '../services/reelDocument';
+import type { CreatedReelMedia, HouseStyle, Reel, ReelGoal, ReelAsset, ReelBrand, ReelCapabilities, ReelDraft, ReelJob, ReelScene } from '../types/reelCreator';
 
 interface Doc { reel: Reel; caption: string; goal: ReelGoal; comment: string; hooks: string[]; sourceText: string; sourceUrl: string; sourceTitle: string; sourcePublisher: string }
 /** An article as read once: pasted text, or the text extracted from a link. */
 interface Article { text: string; url: string; title: string; publisher: string; published: string }
-type Busy = null | 'write' | 'hooks' | 'caption' | 'photos' | 'scene' | 'logo' | 'music' | 'render';
+type Busy = null | 'write' | 'hooks' | 'caption' | 'photos' | 'scene' | 'rewrite' | 'logo' | 'music' | 'render';
 
 const ACTIVE = ['queued', 'rendering', 'verifying'];
 const message = (err: unknown) => err instanceof Error ? err.message : 'Something went wrong.';
@@ -29,6 +29,9 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  /** The scene words a rewrite replaced, while its notice offers Undo. */
+  const [undo, setUndo] = useState<{ index: number; words: Partial<ReelScene> } | null>(null);
+  const [rewriting, setRewriting] = useState<number | null>(null);
   const [saveState, setSaveState] = useState('');
   const [render, setRender] = useState<{ jobId: string; key: string } | null>(null);
 
@@ -69,7 +72,7 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
       sourceTitle: draft.source_title ?? '', sourcePublisher: draft.source_publisher ?? '' } : blank(brandRef.current);
     savedHash.current = draft ? JSON.stringify(snapshot(next)) : '';
     docRef.current = next;
-    setDocState(next); setDraftId(id); setError(''); setNotice(''); setSaveState(draft ? 'Saved' : '');
+    setDocState(next); setDraftId(id); setError(''); setNotice(''); setUndo(null); setSaveState(draft ? 'Saved' : '');
     try { localStorage.setItem('reel_creator_draft', id); } catch { /* A remembered draft is a convenience. */ }
     try { setRender(JSON.parse(localStorage.getItem(`reel_creator_render:${id}`) || 'null')); } catch { setRender(null); }
   }, []);
@@ -120,7 +123,7 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
 
   const attempt = async (kind: Busy, work: () => Promise<void>) => {
     if (busy) return;
-    setBusy(kind); setError(''); setNotice('');
+    setBusy(kind); setError(''); setNotice(''); setUndo(null);
     try { await work(); } catch (err) { setError(message(err)); } finally { setBusy(null); }
   };
 
@@ -132,7 +135,7 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
   };
 
   /** One call to the AI writer; `source` is an article already read, or a pasted article or web address. */
-  const requestWriting = async (source: Article | string, look: WriteRequest['look'], extra: Pick<WriteRequest, 'scenes' | 'existing' | 'caption'> = {}, goal: ReelGoal = docRef.current.goal) => {
+  const requestWriting = async (source: Article | string, look: WriteRequest['look'], extra: Pick<WriteRequest, 'scenes' | 'existing' | 'caption' | 'rewrite' | 'position' | 'replacing'> = {}, goal: ReelGoal = docRef.current.goal) => {
     const gemini = configuredGemini();
     const article = typeof source === 'string' ? await readArticle(source) : source;
     if (article.text.length < 80) throw new Error('Paste the full article text, or a link to it.');
@@ -194,6 +197,33 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
     const { written } = await requestWriting(sourceInput(), 'auto');
     setDoc(d => ({ ...d, hooks: written.hooks.slice(0, 4) }));
   });
+  /**
+   * New words for one scene in its current type, from the same article; its photo, credit, timing and styles stay.
+   * When the article has no quote or figure for that type, the writer says so and the scene is left as it is.
+   */
+  const rewriteScene = (index: number) => attempt('rewrite', async () => {
+    const reel = docRef.current.reel, scene = reel.scenes[index];
+    if (!scene) return;
+    const kind = scene.kind ?? 'story';
+    const existing = reel.scenes.filter((s, i) => i !== index && s.kind !== 'end').map(s => s.headline.trim()).filter(Boolean).slice(0, MAX_SCENES);
+    setRewriting(index);
+    try {
+      const { written } = await requestWriting(sourceInput(), 'auto', { rewrite: kind, position: Math.min(MAX_SCENES, index + 1), existing,
+        replacing: [scene.headline, scene.detail].filter(Boolean).join('. ').slice(0, 300) });
+      const words = rewrittenWords(written, kind);
+      if (!words) throw new Error('The AI wrote nothing for this scene. Try again.');
+      const before = sceneWords(scene);
+      setReel(r => ({ ...r, scenes: r.scenes.map((s, i) => i === index ? { ...s, ...words } : s) }));
+      setUndo({ index, words: before });
+      setNotice(`Rewrote scene ${index + 1} as ${KIND_NAMES[kind] === 'End card' ? 'an end card' : `a ${KIND_NAMES[kind]}`} from the article.`);
+    } finally { setRewriting(null); }
+  });
+  const undoRewrite = () => {
+    if (!undo) return;
+    setReel(r => ({ ...r, scenes: r.scenes.map((s, i) => i === undo.index ? { ...s, ...undo.words } : s) }));
+    setUndo(null); setNotice('');
+  };
+
   const rewriteCaption = () => attempt('caption', async () => {
     const { written } = await requestWriting(sourceInput(), 'auto', { caption: true });
     setDoc(d => ({ ...d, caption: written.caption, comment: written.comment }));
@@ -301,7 +331,7 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
   return {
     capabilities, drafts, doc, draftId, houseStyles, saveHouseStyle, deleteHouseStyle, pickHouseStyle, loaded, busy, error, notice, saveState, job, fresh,
     setError, setNotice, setReel, setDoc, open, discard,
-    create, updateStory, moreHooks, rewriteCaption, importImages,
+    create, updateStory, moreHooks, rewriteScene, undoRewrite, undo, rewriting, rewriteCaption, importImages,
     setGoal, addPhotos, changePhoto, setBrand, uploadLogo, pickMusic, setMusic, startRender, updateJob, useVideo, saveFile,
     pickHook: (hook: string) => setReel(reel => withHook(reel, hook)),
     moveScene: (from: number, to: number) => setReel(reel => moveScene(reel, from, to)),
