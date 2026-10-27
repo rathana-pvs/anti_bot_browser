@@ -59,8 +59,8 @@ If the text is a login page, paywall, error page or has no substantive news, ret
 When rewrite_kind is given, the operator is rewriting ONE scene of a finished reel; existing_headlines are the
 other scenes, which must not be repeated, and replacing is the text being replaced (write something better
 suited, not a copy). Return no hook_alternatives, no caption and no hashtags.
-- rewrite_kind story, stat or quote: scenes holds exactly one scene of that kind. If rewrite_position is 1 it is
-  the reel's hook (a story, 4-10 words). If the article has no figure worth a stat scene, or no direct quotation
+- rewrite_kind story, stat or quote: scenes holds exactly one scene of that kind, even when rewrite_position is 1.
+  Position 1 is the reel's hook: keep its headline short and punchy (4-10 words). If the article has no figure worth a stat scene, or no direct quotation
   for a quote scene, return scenes as an empty list rather than inventing or paraphrasing one.
 - rewrite_kind end: end_card holds the closing card in the goal's spirit; scenes holds one story scene that is
   ignored.'''
@@ -198,7 +198,7 @@ def check(copy, request):
     for index, scene in enumerate(copy.scenes):
         if normalized(scene.source_quote) not in facts:
             raise Ungrounded('A scene was not backed by the article.')
-        settle_kind(scene, facts, hook=index == 0 and (not request.rewrite or request.position == 1), quoted=quoted)
+        settle_kind(scene, facts, hook=index == 0 and not request.rewrite, quoted=quoted)  # a type the operator chose stands
         if request.rewrite and scene.kind != request.rewrite:
             raise Unsupported(MISSING[request.rewrite])
     if request.existing and request.rewrite != 'end':

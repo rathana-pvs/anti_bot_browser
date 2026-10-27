@@ -176,7 +176,7 @@ Each scene has a type, chosen under its text (the AI picks one when it writes th
 
 | Type | Shows | Notes |
 | --- | --- | --- |
-| Story | headline and detail | the first scene is always a story, so its hook can be swapped |
+| Story | headline and detail | the AI always makes the first scene a story, so its hook can be swapped; a type you choose for it yourself stays |
 | Figure | one large number above a short label (the headline) | the figure must appear in the article; the AI uses at most one |
 | Quote | a large quotation mark, the quoted words, then "— speaker" | the AI only writes a quote when the article itself puts the words in quotation marks and names the speaker; reported speech ("she said the bridge would stay closed") never becomes a quote, and otherwise the scene becomes a story |
 | End card | a large ? (a question) or → (pointing at the comment button) above the headline | written from the goal: Engage ends on the open question, Read more says the full story is in the first comment. It stays last; new scenes and photos go before it, and it gets no photo unless you add one. On Politics, Clean and Editorial a photo-less end card is the plain page |

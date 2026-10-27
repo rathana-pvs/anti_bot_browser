@@ -1167,9 +1167,11 @@ def test_a_rewrite_never_invents_a_quote_or_figure_the_article_lacks():
                                                                                source_quote='covering three provinces')]))
 
 
-def test_the_hook_scene_stays_a_story_and_an_end_card_can_be_rewritten():
+def test_the_first_scene_takes_the_type_chosen_for_it_and_an_end_card_can_be_rewritten():
     story = dict(headline='Flood relief approved', source_quote='voted 7 to 2 on Tuesday')
     assert write_reel(rewrite(rewrite='story', position=1), provider=lambda r: copy(scenes=[story]))['scenes'][0]['kind'] == 'story'
+    stat = dict(kind='stat', stat='7-2', headline='Council vote on the plan', source_quote='voted 7 to 2 on Tuesday')
+    assert write_reel(rewrite(rewrite='stat', position=1), provider=lambda r: copy(scenes=[stat]))['scenes'][0]['kind'] == 'stat'
     end = dict(headline='Should relief come first?', detail='', highlight='relief')
     result = write_reel(rewrite(rewrite='end'), provider=lambda r: copy(end_card=end))
     assert result['scenes'] == [] and result['end']['headline'] == 'Should relief come first?'
