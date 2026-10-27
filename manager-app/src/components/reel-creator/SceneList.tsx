@@ -16,6 +16,8 @@ interface Props {
   writing: boolean;
   adding: boolean;
   canWrite: boolean;
+  /** Which types the reel's article can be rewritten into. */
+  supports: Record<SceneKind, boolean>;
   /** The scene being rewritten, if any. */
   rewriting: number | null;
   /** The scene whose last rewrite can still be undone. */
@@ -87,7 +89,10 @@ export function SceneList(p: Props) {
             Rewritten from the article.
             <button type="button" onClick={event => { event.stopPropagation(); p.onUndo(); }} className="text-violet-300 hover:text-violet-200">Undo</button>
           </div>}
-          {p.canWrite && retyped === i && p.rewriting !== i && <div className="flex items-center gap-2 text-xs text-zinc-500">
+          {p.canWrite && retyped === i && p.rewriting !== i && !p.supports[scene.kind ?? 'story'] && <p className="text-xs text-amber-400/90">
+            {scene.kind === 'stat' ? 'The article has no numbers, so the AI cannot write a figure for it. Type one in, or use another type.'
+              : 'The article quotes no one directly, so the AI cannot write a quote for it. Type the exact words, or use another type.'}</p>}
+          {p.canWrite && retyped === i && p.rewriting !== i && p.supports[scene.kind ?? 'story'] && <div className="flex items-center gap-2 text-xs text-zinc-500">
             The text was kept.
             <button type="button" disabled={p.busy} onClick={event => { event.stopPropagation(); rewrite(i); }}
               className="inline-flex items-center gap-1 text-violet-300 hover:text-violet-200 disabled:opacity-50"><Sparkles className="h-3 w-3" />Rewrite for {KIND_NAMES[scene.kind ?? 'story']}</button>

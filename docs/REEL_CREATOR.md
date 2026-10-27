@@ -198,8 +198,10 @@ article and in its current type, knowing the other scenes so it does not repeat 
 the article and a label for it, a Quote the article's quoted words and speaker, an End card a closing line in the
 goal's spirit, a Story a new headline (the first scene's is a hook). The photo, credit, timing and styles stay, and
 the notice offers **Undo**. When the article has nothing for the type, for example no direct quote, the scene is
-left as it is and the message says so; an article with no quotation marks or no numbers at all is refused at once,
-without asking the AI. A rewrite uses the Gemini key like any other writing.
+left as it is and the message says so. An article with no numbers cannot give a Figure and one with nothing in
+quotation marks cannot give a Quote: picking that type says so on the scene, and a rewrite is refused at once,
+without asking the AI. You can still type a figure or quote yourself. A rewrite uses the Gemini key like any other
+writing.
 
 ## Music
 

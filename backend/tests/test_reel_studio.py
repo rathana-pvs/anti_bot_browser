@@ -1151,7 +1151,7 @@ def test_rewriting_one_scene_returns_that_scene_only_in_the_kind_asked_for():
 
 def test_a_rewrite_never_invents_a_quote_or_figure_the_article_lacks():
     calls = []
-    with pytest.raises(ValueError, match='no direct quote'):          # no quotation marks at all: the AI is not asked
+    with pytest.raises(ValueError, match='quotes no one directly'):   # no quotation marks at all: the AI is not asked
         write_reel(rewrite(rewrite='quote'), provider=lambda r: calls.append(1) or copy(scenes=[]))
     assert calls == []
     quoting = WriteRequest(api_key='k', model='gemini-test', text=ARTICLE + ' "We will review every claim quickly," the mayor said.', rewrite='quote', position=2)
@@ -1160,7 +1160,7 @@ def test_a_rewrite_never_invents_a_quote_or_figure_the_article_lacks():
     assert len(calls) == 1
     paraphrase = dict(kind='quote', headline='We must help families now', attribution='Mayor Lina Chhay',
                       source_quote='voted 7 to 2 on Tuesday')
-    with pytest.raises(ValueError, match='no direct quote'):          # words not in the article are not a quote
+    with pytest.raises(ValueError, match='quotes no one directly'):          # words not in the article are not a quote
         write_reel(rewrite(rewrite='quote'), provider=lambda r: copy(scenes=[paraphrase]))
     with pytest.raises(ValueError, match='no clear figure'):
         write_reel(rewrite(rewrite='stat'), provider=lambda r: copy(scenes=[dict(kind='stat', stat='many', headline='Many provinces',

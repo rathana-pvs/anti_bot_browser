@@ -147,6 +147,10 @@ class Unsupported(Ungrounded):
 
 MISSING = {'stat': 'This article has no clear figure for a Figure scene. Try Story or Quote instead.',
            'quote': 'This article has no direct quote for a Quote scene. Try Story or Figure instead.'}
+# The article itself rules the type out: said before the AI is asked.
+ABSENT = {'stat': 'This article has no numbers, so it has nothing for a Figure scene. Make this scene a Story or Quote.',
+          'quote': 'This article quotes no one directly (nothing in quotation marks), so it has nothing for a Quote scene. '
+                   'Make this scene a Story or Figure.'}
 
 
 def checked_highlight(headline, phrase):
@@ -226,7 +230,7 @@ def write_reel(request, provider=None, attempts=2):
     provider = provider or (lambda r: provider_generate(r, system=SYSTEM, schema=ReelCopy))
     # Nothing to ask the AI for: an article with no quotation marks has no quote, one with no digits no figure.
     if (request.rewrite == 'quote' and not quotations(request.text)) or (request.rewrite == 'stat' and not numbers(request.text)):
-        raise ValueError(MISSING[request.rewrite])
+        raise ValueError(ABSENT[request.rewrite])
     for attempt in range(attempts):
         try:
             raw = provider(request)

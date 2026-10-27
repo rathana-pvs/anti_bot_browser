@@ -201,3 +201,8 @@ export function rewrittenWords(written: WrittenReel, kind: SceneKind): Partial<R
   const scene = written.scenes[0];
   return scene ? { kind: scene.kind, headline: scene.headline, detail: scene.detail, stat: scene.stat, attribution: scene.attribution, highlight: scene.highlight } : null;
 }
+
+/** Scene types the article can support: a Figure needs a number in it, a Quote words it puts in quotation marks. */
+export function articleSupports(text: string): Record<SceneKind, boolean> {
+  return { story: true, end: true, stat: /\p{Nd}/u.test(text), quote: /"[^"]{8,}"|“[^”]{8,}”|‘[^’]{8,}’/.test(text) };
+}

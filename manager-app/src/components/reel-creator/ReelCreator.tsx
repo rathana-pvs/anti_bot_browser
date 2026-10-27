@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Check, Download, Film, Newspaper, Play, Plus, Send } from 'lucide-react';
 import { useReelStudio } from '../../hooks/useReelStudio';
-import { hasContent, reelSeconds, draftTitle, patchStyle, unstyledScene } from '../../services/reelDocument';
+import { articleSupports, hasContent, reelSeconds, draftTitle, patchStyle, unstyledScene } from '../../services/reelDocument';
 import type { CreatedReelMedia, StyleRole } from '../../types/reelCreator';
 import { Alert } from '../ui/Alert';
 import { Button } from '../ui/Button';
@@ -57,6 +57,8 @@ export function ReelCreator({ active, onUseReel }: Props) {
 
   const writing = busy === 'write';
   const canWrite = !!(doc.sourceText || doc.sourceUrl);
+  // An article only known by its link is not read again here, so every type stays open for it.
+  const supports = useMemo(() => doc.sourceText ? articleSupports(doc.sourceText) : { story: true, stat: true, quote: true, end: true }, [doc.sourceText]);
   const rendering = busy === 'render' || (!!job && fresh && ['queued', 'rendering', 'verifying'].includes(job.state));
   const done = !!job && fresh && job.state === 'completed' ? job : null;
   const recent = studio.drafts.map(d => ({ value: d.id, label: draftTitle(d.reel) }));
@@ -117,7 +119,7 @@ export function ReelCreator({ active, onUseReel }: Props) {
               onSave={name => { void studio.saveHouseStyle(name); }} onDelete={id => { void studio.deleteHouseStyle(id); }} />} />
           <SceneList reel={doc.reel} hooks={doc.hooks} selected={scene} busy={!!busy} writing={busy === 'hooks'} adding={busy === 'scene'} canWrite={canWrite}
             rewriting={studio.rewriting} onRewrite={index => { void studio.rewriteScene(index); }}
-            undoable={studio.undo?.index ?? null} onUndo={studio.undoRewrite}
+            undoable={studio.undo?.index ?? null} onUndo={studio.undoRewrite} supports={supports}
             onSelect={setScene} onEdit={edit} onHook={studio.pickHook} onMoreHooks={() => { void studio.moreHooks(); }}
             onPhoto={index => { void studio.changePhoto(index); }} onPhotos={() => { void studio.addPhotos(); }}
             onMove={studio.moveScene} onRemove={studio.removeScene} onAdd={studio.addScene} />
