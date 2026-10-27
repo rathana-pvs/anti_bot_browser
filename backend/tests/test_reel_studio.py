@@ -1316,3 +1316,30 @@ def test_photo_size_shrinks_the_text_and_says_when_it_cannot_fit():
         Plan(Reel(look='politics', scenes=[Scene(headline=('word ' * 24).strip(), detail=('detail ' * 22).strip(),
                                                  image_id='a' * 32, photo_size=1)]), 1080, {}, None)
     assert Plan(Reel(look='breaking', scenes=[Scene(headline='Vote', photo_size=1)]), 1080, {}, None).layout(0)['photo_size'] is None
+
+
+def test_photo_is_the_fully_drawn_scene_at_its_own_ratio_without_progress(creator, reel):
+    photo = creator.create_photo(reel, 0, '4:5')
+    path = creator.photo_path(photo['id'])
+    assert path.name == photo['filename'] and path.parent == creator.media_dir   # shared media, ready for a photo post
+    with Image.open(path) as image:
+        assert image.size == (1080, 1350) and image.format == 'JPEG'
+    assert creator.create_photo(reel, 0, '4:5') == photo                          # the same reel reuses its file
+    assert creator.create_photo(reel, 1, '4:5')['id'] != photo['id']
+    with Image.open(creator.photo_path(creator.create_photo(reel, 0, '9:16')['id'])) as image:
+        assert image.size == (1080, 1920)
+    unprogressed = creator.create_photo(reel.model_copy(update=dict(show_progress=False)), 0, '4:5')
+    assert unprogressed == photo                                                  # the progress bar is never drawn
+    with pytest.raises(ValueError):
+        creator.create_photo(reel, 5, '4:5')
+    with pytest.raises(ValueError):
+        creator.create_photo(reel, 0, '1:1')
+
+
+def test_api_makes_and_downloads_a_photo(client, reel):
+    response = client.post('/api/reel-creator/photo?scene=0&ratio=4:5', json=reel.model_dump())
+    assert response.status_code == 200
+    download = client.get(f"/api/reel-creator/photos/{response.json()['id']}/download")
+    assert download.status_code == 200 and download.headers['content-type'] == 'image/jpeg'
+    assert client.get(f"/api/reel-creator/photos/{'0' * 32}/download").status_code == 404
+    assert client.get('/api/reel-creator/photos/../download').status_code == 404

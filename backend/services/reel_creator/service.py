@@ -270,6 +270,29 @@ class ReelCreator:
         images, logo, _ = self.validate_assets(reel)  # Hot places its text by where the photo's faces land
         return Plan(reel, PREVIEW_WIDTH, images, logo, FPS).layout(scene_index)
 
+    def create_photo(self, reel, scene_index, ratio):
+        """The scene, fully drawn, as a full-size JPEG in shared media for a photo post. The same reel gives the same file."""
+        if not 0 <= scene_index < len(reel.scenes):
+            raise ValueError('That scene does not exist.')
+        if ratio not in RATIOS:
+            raise ValueError('Choose 9:16 or 4:5.')
+        reel = reel.model_copy(update=dict(ratio=ratio, show_progress=False))  # a still has no progress to show
+        photo_id = hashlib.sha256((reel.model_dump_json() + ':' + str(scene_index)).encode()).hexdigest()[:32]
+        path = self.photo_path(photo_id)
+        if not path.is_file():
+            with self.poster_lock:
+                images, logo, _ = self.validate_assets(reel)
+                images = self._prepare_images(reel, images, scene_index)
+                plan = Plan(reel, FINAL_WIDTH, images, logo, FPS)
+                self.media_dir.mkdir(parents=True, exist_ok=True)
+                partial = path.with_suffix('.part')
+                plan.frame(plan.settled(scene_index)).save(partial, format='JPEG', quality=92)
+                partial.replace(path)
+        return dict(id=photo_id, filename=path.name)
+
+    def photo_path(self, photo_id):
+        return self.media_dir / f'reel_photo_{photo_id}.jpg'
+
     def enqueue(self, value):
         if self.thread and not self.thread.is_alive():
             raise Conflict('The local renderer stopped. Restart the app or backend before rendering.')

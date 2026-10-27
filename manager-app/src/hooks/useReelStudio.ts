@@ -1,13 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { reelApi, type WriteRequest } from '../services/reelCreator';
 import { configuredGemini } from '../services/newsSource';
-import { addScene, KIND_NAMES, rewrittenWords, sceneWords, updatedStory, applyHouseStyle, applyWriting, houseStyleOf, datelineFor, emptyReel, fillPhotos, fillScenes, hasContent, headlines, insertIndex, MAX_SCENES, moveScene, placePhotos, reelKey, removeScene, setPhoto, sourceKind, withHook } from '../services/reelDocument';
-import type { CreatedReelMedia, HouseStyle, Reel, ReelGoal, ReelAsset, ReelBrand, ReelCapabilities, ReelDraft, ReelJob, ReelScene } from '../types/reelCreator';
+import { addScene, KIND_NAMES, rewrittenWords, sceneWords, updatedStory, applyHouseStyle, applyWriting, houseStyleOf, datelineFor, liveVersion, photoVersion, emptyReel, fillPhotos, fillScenes, hasContent, headlines, insertIndex, MAX_SCENES, moveScene, placePhotos, reelKey, removeScene, setPhoto, sourceKind, withHook } from '../services/reelDocument';
+import type { CreatedReelMedia, HouseStyle, Reel, ReelGoal, ReelAsset, ReelBrand, ReelCapabilities, ReelDraft, ReelJob, ReelRatio, ReelScene } from '../types/reelCreator';
 
 interface Doc { reel: Reel; caption: string; goal: ReelGoal; comment: string; hooks: string[]; sourceText: string; sourceUrl: string; sourceTitle: string; sourcePublisher: string }
 /** An article as read once: pasted text, or the text extracted from a link. */
 interface Article { text: string; url: string; title: string; publisher: string; published: string }
-type Busy = null | 'write' | 'hooks' | 'caption' | 'photos' | 'scene' | 'rewrite' | 'logo' | 'music' | 'render';
+type Busy = null | 'write' | 'hooks' | 'caption' | 'photos' | 'scene' | 'rewrite' | 'logo' | 'music' | 'render' | 'photo';
+/** What the reel is used as: a still of one scene for a photo post, the Reel video, or the video for Live. */
+export type ReelOutput = 'photo' | 'reel' | 'live';
+type Tracked = { jobId: string; key: string };
+/** The latest video render for the Reel and for Live; each is only usable while it matches the edits. */
+type Renders = Partial<Record<'reel' | 'live', Tracked>>;
 
 const ACTIVE = ['queued', 'rendering', 'verifying'];
 const message = (err: unknown) => err instanceof Error ? err.message : 'Something went wrong.';
@@ -16,6 +21,12 @@ const savedGoal = (): ReelGoal => { try { return localStorage.getItem('reel_crea
 const blank = (brand?: ReelBrand | null): Doc => ({ reel: emptyReel(brand), caption: '', goal: savedGoal(), comment: '', hooks: [], sourceText: '', sourceUrl: '', sourceTitle: '', sourcePublisher: '' });
 const snapshot = (doc: Doc) => ({ reel: doc.reel, caption: doc.caption, goal: doc.goal, comment: doc.comment, hooks: doc.hooks, source_text: doc.sourceText, source_url: doc.sourceUrl,
   source_title: doc.sourceTitle, source_publisher: doc.sourcePublisher });
+const savedRenders = (id: string): Renders => {
+  try {
+    const value = JSON.parse(localStorage.getItem(`reel_creator_render:${id}`) || 'null');
+    return value?.jobId ? { reel: value } : value ?? {};   // older drafts tracked the Reel render alone
+  } catch { return {}; }
+};
 const worthSaving = (doc: Doc) => hasContent(doc.reel) || doc.reel.scenes.some(s => s.image_id) || !!doc.sourceText;
 
 export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMedia) => void) {
@@ -33,7 +44,9 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
   const [undo, setUndo] = useState<{ index: number; words: Partial<ReelScene> } | null>(null);
   const [rewriting, setRewriting] = useState<number | null>(null);
   const [saveState, setSaveState] = useState('');
-  const [render, setRender] = useState<{ jobId: string; key: string } | null>(null);
+  const [renders, setRenders] = useState<Renders>({});
+  const [output, setOutput] = useState<ReelOutput>('reel');
+  const [photoRatio, setPhotoRatio] = useState<ReelRatio>('4:5');
 
   const docRef = useRef(doc);
   const draftRef = useRef({ id: draftId, revision: 0 });
@@ -74,7 +87,7 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
     docRef.current = next;
     setDocState(next); setDraftId(id); setError(''); setNotice(''); setUndo(null); setSaveState(draft ? 'Saved' : '');
     try { localStorage.setItem('reel_creator_draft', id); } catch { /* A remembered draft is a convenience. */ }
-    try { setRender(JSON.parse(localStorage.getItem(`reel_creator_render:${id}`) || 'null')); } catch { setRender(null); }
+    setRenders(savedRenders(id));
   }, []);
 
   useEffect(() => {
@@ -101,8 +114,12 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
     return () => window.clearTimeout(timer);
   }, [doc, loaded, persist]);
 
+  /** The reel as the chosen output shows it; the preview and its video follow this. */
+  const shown = useMemo(() => output === 'live' ? liveVersion(doc.reel) : output === 'photo' ? photoVersion(doc.reel, photoRatio) : doc.reel,
+    [output, doc.reel, photoRatio]);
+  const render = output === 'photo' ? null : renders[output] ?? null;
   const job = useMemo(() => render ? jobs.find(j => j.id === render.jobId) ?? null : null, [jobs, render]);
-  const busyJob = !!job && ACTIVE.includes(job.state);
+  const busyJob = jobs.some(j => ACTIVE.includes(j.state) && (j.id === renders.reel?.jobId || j.id === renders.live?.jobId));
   useEffect(() => {
     if (!loaded || !active || !busyJob) return;
     let timer = 0, cancelled = false;
@@ -114,10 +131,12 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
     return () => { cancelled = true; window.clearTimeout(timer); };
   }, [loaded, active, busyJob]);
 
-  const track = (result: ReelJob, key: string) => {
-    const value = { jobId: result.id, key };
-    setRender(value);
-    try { localStorage.setItem(`reel_creator_render:${draftRef.current.id}`, JSON.stringify(value)); } catch { /* Tracking falls back to this session. */ }
+  const track = (result: ReelJob, key: string, slot: 'reel' | 'live') => {
+    setRenders(old => {
+      const next = { ...old, [slot]: { jobId: result.id, key } };
+      try { localStorage.setItem(`reel_creator_render:${draftRef.current.id}`, JSON.stringify(next)); } catch { /* Tracking falls back to this session. */ }
+      return next;
+    });
     setJobs(old => [result, ...old.filter(j => j.id !== result.id)]);
   };
 
@@ -170,7 +189,7 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
     draftRef.current = { id, revision: 0 };
     savedHash.current = '';
     docRef.current = next;
-    setDocState(next); setDraftId(id); setRender(null); setSaveState('');
+    setDocState(next); setDraftId(id); setRenders({}); setSaveState('');
     try { localStorage.setItem('reel_creator_draft', id); } catch { /* A remembered draft is a convenience. */ }
     setNotice('Updated from the new reporting as a new reel. Check every scene, then generate a new caption.');
   });
@@ -293,7 +312,10 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
   const setMusic = (music: string) => setReel(reel => ({ ...reel, music, music_id: music === 'custom' ? reel.music_id : null }));
 
   const startRender = (kind: ReelJob['kind']) => attempt('render', async () => {
-    const { reel, caption } = docRef.current;
+    if (output === 'photo') return;
+    const slot = output;
+    const { caption } = docRef.current;
+    const reel = slot === 'live' ? liveVersion(docRef.current.reel) : docRef.current.reel;
     const key = reelKey(reel);
     const idKey = kind + key + caption;
     const requestId = requestIds.current.get(idKey) ?? crypto.randomUUID();
@@ -301,7 +323,7 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
     await persist();
     const result = await reelApi.render(reel, kind, requestId, caption);
     requestIds.current.delete(idKey);
-    track(result, key);
+    track(result, key, slot);
   });
   const updateJob = (action: 'cancel' | 'retry') => attempt(null, async () => {
     if (!job) return;
@@ -309,15 +331,24 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
     setJobs(old => old.map(j => j.id === job.id ? result : j));
   });
 
-  const fresh = !!job && !!render && render.key === reelKey(doc.reel);
-  const useVideo = () => {
-    if (!job?.output || job.kind !== 'final' || !fresh) return;
-    void persist().then(() => onUseReel({ jobId: job.id, filename: job.output!.filename, postType: 'reel', thumbnail: job.output!.thumbnail ?? undefined,
-      name: doc.reel.scenes.find(s => s.headline)?.headline.replace(/\n/g, ' ').slice(0, 80) || 'News reel', caption: doc.caption, comment: doc.goal === 'readmore' ? doc.comment.trim() || undefined : undefined }))
-      .catch(err => setError(message(err)));
-  };
-  const saveFile = () => attempt(null, async () => {
-    if (job?.output) setNotice(await reelApi.export(job.id, job.output.filename));
+  const fresh = !!job && !!render && render.key === reelKey(shown);
+  const makePhoto = (scene: number) => reelApi.photo(docRef.current.reel, scene, photoRatio);
+  /** Hands the chosen output to Campaigns: a photo or the Reel to Posts, the Live video to Live. */
+  const send = (scene: number) => attempt(output === 'photo' ? 'photo' : null, async () => {
+    const { reel, caption, goal, comment } = docRef.current;
+    const words = { name: reel.scenes.find(s => s.headline)?.headline.replace(/\n/g, ' ').slice(0, 80) || 'News reel', caption,
+      comment: goal === 'readmore' ? comment.trim() || undefined : undefined };
+    await persist();
+    if (output === 'photo') {
+      const photo = await makePhoto(scene);
+      onUseReel({ jobId: photo.id, filename: photo.filename, postType: 'photo', ...words });
+    } else if (job?.output && job.kind === 'final' && fresh) {
+      onUseReel({ jobId: job.id, filename: job.output.filename, postType: output, thumbnail: job.output.thumbnail ?? undefined, ...words });
+    }
+  });
+  const saveFile = (scene: number) => attempt(output === 'photo' ? 'photo' : null, async () => {
+    if (output === 'photo') setNotice(await reelApi.savePhoto(await makePhoto(scene)));
+    else if (job?.output) setNotice(await reelApi.export(job.id, job.output.filename));
   });
 
   const discard = async () => {
@@ -332,7 +363,7 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
     capabilities, drafts, doc, draftId, houseStyles, saveHouseStyle, deleteHouseStyle, pickHouseStyle, loaded, busy, error, notice, saveState, job, fresh,
     setError, setNotice, setReel, setDoc, open, discard,
     create, updateStory, moreHooks, rewriteScene, undoRewrite, undo, rewriting, rewriteCaption, importImages,
-    setGoal, addPhotos, changePhoto, setBrand, uploadLogo, pickMusic, setMusic, startRender, updateJob, useVideo, saveFile,
+    setGoal, addPhotos, changePhoto, setBrand, uploadLogo, pickMusic, setMusic, startRender, updateJob, send, saveFile, output, setOutput, photoRatio, setPhotoRatio, shown,
     pickHook: (hook: string) => setReel(reel => withHook(reel, hook)),
     moveScene: (from: number, to: number) => setReel(reel => moveScene(reel, from, to)),
     removeScene: (index: number) => setReel(reel => removeScene(reel, index)),

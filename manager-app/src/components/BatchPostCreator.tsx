@@ -157,11 +157,14 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
   });
 
   useEffect(() => {
-    if (!incomingReel || liveMode) return;
-    const id = `reel_${incomingReel.jobId}`;
+    if (!incomingReel || liveMode !== (incomingReel.postType === 'live')) return;
+    const live = incomingReel.postType === 'live';
+    const id = `${incomingReel.postType === 'photo' ? 'photo' : 'reel'}_${incomingReel.jobId}`;
     setPosts(current => current.some(row => row.id === id) ? current.map(row => row.id === id ? { ...row, type: incomingReel.postType } : row) : [...current, {
       id, type: incomingReel.postType, media_file: incomingReel.filename, media_name: incomingReel.name,
-      preview_url: getSharedMediaUrl(incomingReel.filename), caption: incomingReel.caption || '', first_comment: incomingReel.comment || '',
+      preview_url: getSharedMediaUrl(incomingReel.filename), caption: incomingReel.caption || '',
+      // A Live video is titled by its headline; the read-more link is pinned once the broadcast starts.
+      ...(live ? { title: incomingReel.name, pinned_comment: incomingReel.comment || '', first_comment: '' } : { first_comment: incomingReel.comment || '' }),
     }]);
     onIncomingReelConsumed?.();
   }, [incomingReel, liveMode, onIncomingReelConsumed]);

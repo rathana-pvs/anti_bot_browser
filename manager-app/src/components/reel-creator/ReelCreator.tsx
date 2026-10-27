@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Check, Download, Film, Newspaper, Play, Plus, Send } from 'lucide-react';
+import { Film, Newspaper, Plus } from 'lucide-react';
 import { useReelStudio } from '../../hooks/useReelStudio';
 import { articleSupports, hasContent, reelSeconds, draftTitle, patchStyle, unstyledScene } from '../../services/reelDocument';
 import type { CreatedReelMedia, StyleRole } from '../../types/reelCreator';
@@ -11,6 +11,7 @@ import { FinishPanel } from './FinishPanel';
 import { HouseStylePicker } from './HouseStylePicker';
 import { UpdateStoryDialog } from './UpdateStoryDialog';
 import { LookPicker } from './LookPicker';
+import { OutputPanel } from './OutputPanel';
 import { PhonePreview } from './PhonePreview';
 import { SceneList } from './SceneList';
 import { SourceInput } from './SourceInput';
@@ -35,7 +36,7 @@ export function ReelCreator({ active, onUseReel }: Props) {
   const [scope, setScope] = useState<'reel' | 'scene'>('reel');
   const [role, setRole] = useState<StyleRole>('headline');
   const [updating, setUpdating] = useState(false);
-  const layout = useSceneLayout(active && studio.loaded, doc.reel, scene);
+  const layout = useSceneLayout(active && studio.loaded, studio.shown, scene);
   const pick = (target: StyleRole) => {
     setMode('advanced'); setRole(target);
     setScope(reelOnly.includes(target) ? 'reel' : 'scene');
@@ -93,23 +94,13 @@ export function ReelCreator({ active, onUseReel }: Props) {
           importImages={studio.importImages} onBlank={() => setStarted(true)} />
       : <div className="grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
         <div className="space-y-4 lg:sticky lg:top-4 lg:self-start">
-          <PhonePreview active={active} reel={doc.reel} scene={scene} onScene={setScene} job={job} fresh={fresh}
+          <PhonePreview active={active} reel={studio.shown} scene={scene} onScene={setScene} job={job} fresh={fresh}
             onCancel={() => { void studio.updateJob('cancel'); }} onRetry={() => { void studio.updateJob('retry'); }}
             layout={layout} selected={mode === 'advanced' ? role : null} onPick={pick} onFrame={patch => edit(scene, patch)} />
-          <div className="mx-auto flex max-w-[300px] flex-col gap-2">
-            {done?.kind === 'final'
-              ? <>
-                <Button size="lg" onClick={studio.useVideo}><Send className="h-4 w-4" />Use for Reel</Button>
-                <Button variant="outline" onClick={() => { void studio.saveFile(); }}><Download className="h-4 w-4" />Save video</Button>
-                <p className="text-center text-xs text-zinc-500">Choose accounts, then post now or schedule.</p>
-              </>
-              : <>
-                <Button size="lg" loading={rendering} disabled={rendering || !!busy} onClick={() => { void studio.startRender('final'); }}>
-                  <Check className="h-4 w-4" />Create video · {reelSeconds(doc.reel)}s
-                </Button>
-                <Button variant="outline" disabled={rendering || !!busy} onClick={() => { void studio.startRender('preview'); }}><Play className="h-4 w-4" />Quick preview</Button>
-              </>}
-          </div>
+          <OutputPanel output={studio.output} onOutput={studio.setOutput} photoRatio={studio.photoRatio} onPhotoRatio={studio.setPhotoRatio}
+            scene={scene} seconds={reelSeconds(doc.reel)} reelRatio={doc.reel.ratio} rendering={rendering} busy={!!busy} makingPhoto={busy === 'photo'}
+            ready={done?.kind === 'final'} onCreate={kind => { void studio.startRender(kind); }}
+            onSend={() => { void studio.send(scene); }} onSave={() => { void studio.saveFile(scene); }} />
         </div>
 
         <div className="min-w-0 space-y-6">

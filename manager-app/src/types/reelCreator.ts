@@ -168,11 +168,14 @@ export interface WrittenReel {
 export interface ArticleText { url: string; title: string; text: string; publisher: string; published_date: string; characters: number }
 export interface PhotoImport { assets: ReelAsset[]; errors: string[] }
 
+/** A scene made into a still for a photo post, saved in shared media. */
+export interface ReelPhoto { id: string; filename: string }
+
 export interface CreatedReelMedia {
   jobId: string;
   filename: string;
-  /** Reel Creator videos always use the Reel posting workflow, regardless of ratio. */
-  postType: 'reel';
+  /** A video goes to Posts as a Reel (whatever its ratio) or to Live; a photo goes to Posts as a feed post. */
+  postType: 'reel' | 'live' | 'photo';
   /** The complete opening frame, with the headline and subtitle visible. */
   thumbnail?: string;
   name: string;

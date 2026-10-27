@@ -50,7 +50,7 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
   };
   const useCreatedReel = useCallback((media: CreatedReelMedia) => {
     setIncomingReel(media);
-    setKind('posts');
+    setKind(media.postType === 'live' ? 'live' : 'posts');
     setTab('create');
   }, []);
 
@@ -98,7 +98,7 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
         {/* Each kind keeps its own saved draft and settings, so remount on change. */}
         <BatchPostCreator key={kind} mode={kind} profiles={profiles} onEditProfile={onEditProfile}
           onBatchCreated={() => setTab('queue')}
-          incomingReel={kind === 'posts' ? incomingReel : null} onIncomingReelConsumed={consumeIncomingReel} />
+          incomingReel={kind === (incomingReel?.postType === 'live' ? 'live' : 'posts') ? incomingReel : null} onIncomingReelConsumed={consumeIncomingReel} />
       </div>
 
       <div className={`min-h-0 flex-1 overflow-y-auto ${tab === 'reel_studio' ? '' : 'hidden'}`}>

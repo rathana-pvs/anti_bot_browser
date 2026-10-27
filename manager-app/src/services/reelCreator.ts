@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { API_BASE } from './api';
 import { isDesktopApp } from './desktopEnvironment';
-import type { ArticleText, PhotoImport, Reel, ReelAsset, ReelGoal, ReelBrand, ReelCapabilities, HouseStyle, ReelDraft, ReelJob, SceneKind, SceneLayout, WrittenReel } from '../types/reelCreator';
+import type { ArticleText, PhotoImport, Reel, ReelAsset, ReelPhoto, ReelRatio, ReelGoal, ReelBrand, ReelCapabilities, HouseStyle, ReelDraft, ReelJob, SceneKind, SceneLayout, WrittenReel } from '../types/reelCreator';
 
 async function request(path: string, init?: RequestInit): Promise<Response> {
   const response = await fetch(`${API_BASE}/reel-creator${path}`, init);
@@ -37,6 +37,18 @@ export interface WriteRequest {
   position?: number;
   /** Its current text, so the new text is not a copy. */
   replacing?: string;
+}
+
+/** A browser has no Downloads folder to write to: hand the file to its own download. */
+function download(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
 export const reelApi = {
@@ -100,17 +112,16 @@ export const reelApi = {
   retry: async (id: string): Promise<ReelJob> => (await request(`/jobs/${id}/retry`, { method: 'POST' })).json(),
   jobThumbnail: async (id: string): Promise<Blob> => (await request(`/jobs/${id}/thumbnail`)).blob(),
   video: async (id: string): Promise<Blob> => (await request(`/jobs/${id}/video`)).blob(),
+  photo: async (reel: Reel, scene: number, ratio: ReelRatio): Promise<ReelPhoto> =>
+    (await request(`/photo?scene=${scene}&ratio=${encodeURIComponent(ratio)}`, json('POST', reel))).json(),
+  savePhoto: async (photo: ReelPhoto): Promise<string> => {
+    if (isDesktopApp()) return invoke<string>('export_reel_photo', { photoId: photo.id });
+    download(await (await request(`/photos/${photo.id}/download`)).blob(), photo.filename);
+    return 'Photo download started.';
+  },
   export: async (id: string, filename: string): Promise<string> => {
     if (isDesktopApp()) return invoke<string>('export_reel_video', { jobId: id });
-    const blob = await (await request(`/jobs/${id}/download`)).blob();
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    download(await (await request(`/jobs/${id}/download`)).blob(), filename);
     return 'Video download started.';
   },
 };

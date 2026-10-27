@@ -16,11 +16,19 @@ your saved key). Pop Art downloads model weights once; photos, rendering and pre
    the progress line. Adding photos or **+ Scene** later writes text for the new scenes from the same
    article, continuing the story rather than repeating it. The phone preview shows the selected scene
    as it will render and updates as you type.
-4. **Create video** (final 1080 wide) or **Quick preview** (540 wide). A finished video stays on
-   screen until you edit the reel. **Use for Reel** sends the video to the Reel posting draft for
-   both 9:16 and 4:5, carrying the caption and optional first comment.
+4. **Use as** under the preview picks what the reel becomes:
+   - **Photo**: the scene selected in the preview, fully drawn, as a 1080-wide JPEG at its own ratio
+     (**4:5** by default, or **9:16**) with no progress bar. No video render is needed. **Use for photo
+     post** adds it to the Posts draft as a feed post with the caption and optional first comment;
+     **Save photo** exports the JPEG.
+   - **Reel**: **Create video** (final 1080 wide) or **Quick preview** (540 wide). A finished video stays
+     on screen until you edit the reel. **Use for Reel** sends it to the Posts draft as a Reel for both
+     9:16 and 4:5, with the caption and optional first comment. **Save video** exports the MP4.
+   - **Live**: the same reel rendered for a broadcast: no progress bar (a loop would show it restarting),
+     and Breaking shows its LIVE badge. It is its own render, so **Create Live video** first. **Use for
+     Live** opens Create → Live with the video, the headline as the Live title, the caption, and the
+     read-more link as the pinned comment; choose accounts and playback there.
    Choose accounts and post now or schedule from the draft.
-   **Save video** exports the MP4.
 
 The post caption is never written automatically: press **Generate caption** when the reel is ready
 (or write your own), and use the refresh icon to rewrite it.
@@ -247,7 +255,7 @@ hear them), turn music off, or upload your own MP3, WAV, M4A, Ogg or FLAC file (
 - `writer.py` — grounded AI writing; `articles.py` — public-article extraction.
 - `store.py` — SQLite journal (`reels`, `assets`, `jobs`, `settings`).
 
-API: `/api/reel-creator/{capabilities,drafts,article,write,assets,poster,layout,brand,house-styles,jobs}`; local
+API: `/api/reel-creator/{capabilities,drafts,article,write,assets,poster,layout,photo,photos,brand,house-styles,jobs}`; local
 and authenticated like the rest of the desktop API.
 
 The older template-based studio, its drafts and Remotion tooling were removed; existing

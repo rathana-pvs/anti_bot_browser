@@ -1822,6 +1822,7 @@ fn main() {
             get_api_session,
             save_support_bundle,
             reel_export::export_reel_video,
+            reel_export::export_reel_photo,
             reel_import::pick_reel_audio,
             reel_import::pick_reel_images,
             get_setup_status,

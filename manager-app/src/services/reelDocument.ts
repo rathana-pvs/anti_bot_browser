@@ -1,4 +1,4 @@
-import type { ElementStyle, HouseStyle, Reel, ReelAsset, ReelBrand, ReelScene, ReelStyles, SceneKind, StyleRole, WrittenReel, WrittenScene } from '../types/reelCreator';
+import type { ElementStyle, HouseStyle, Reel, ReelAsset, ReelBrand, ReelRatio, ReelScene, ReelStyles, SceneKind, StyleRole, WrittenReel, WrittenScene } from '../types/reelCreator';
 
 export const MAX_SCENES = 8;
 export const MAX_SECONDS = 90;
@@ -125,6 +125,12 @@ export const hasContent = (reel: Reel): boolean => reel.scenes.some(scene => sce
 
 /** Stable identity of what a render shows; captions and hooks do not change the video. */
 export const reelKey = (reel: Reel): string => JSON.stringify(reel);
+
+/** What a reel becomes on Live: no progress bar (a loop would restart it), and Breaking shows its LIVE badge. */
+export const liveVersion = (reel: Reel): Reel => ({ ...reel, show_progress: false, live: reel.look === 'breaking' ? true : reel.live });
+
+/** What a photo post shows: the reel at the photo's own ratio, with no progress bar. The renderer makes the same change. */
+export const photoVersion = (reel: Reel, ratio: ReelRatio): Reel => ({ ...reel, ratio, show_progress: false });
 
 export function draftTitle(reel: Reel): string {
   const first = reel.scenes.find(scene => scene.headline.trim())?.headline.replace(/\s+/g, ' ').trim();

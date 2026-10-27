@@ -264,3 +264,17 @@ test('a chosen photo size counts as scene style and is cleared by a scene reset'
   assert.ok(doc.sceneIsStyled(scene));
   assert.ok(!('photo_size' in doc.unstyledScene(scene)));
 });
+
+test('the Live video drops the progress bar and Breaking shows its LIVE badge', () => {
+  const breaking = { ...reel('Vote'), look: 'breaking', show_progress: true, live: false };
+  assert.deepEqual([doc.liveVersion(breaking).show_progress, doc.liveVersion(breaking).live], [false, true]);
+  const wire = { ...breaking, look: 'wire' };
+  assert.equal(doc.liveVersion(wire).live, false);                      // only Breaking has the badge
+  assert.equal(doc.reelKey(doc.liveVersion(breaking)) === doc.reelKey(breaking), false);  // its own render, never the Reel's
+});
+
+test('a photo is the reel at its own ratio without a progress bar', () => {
+  const tall = { ...reel('Vote'), ratio: '9:16', show_progress: true };
+  const photo = doc.photoVersion(tall, '4:5');
+  assert.deepEqual([photo.ratio, photo.show_progress, photo.scenes], ['4:5', false, tall.scenes]);
+});

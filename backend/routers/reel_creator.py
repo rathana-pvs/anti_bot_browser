@@ -101,6 +101,19 @@ def poster(value: Reel, scene: int = Query(default=0, ge=0, le=7)):
     return Response(image, media_type='image/jpeg', headers={'Cache-Control': 'no-store'})
 
 
+@router.post('/photo')
+def photo(value: Reel, scene: int = Query(default=0, ge=0, le=7), ratio: str = Query(default='4:5')):
+    return checked(get_service().create_photo, value, scene, ratio)
+
+
+@router.get('/photos/{photo_id}/download')
+def download_photo(photo_id: Id):
+    path = get_service().photo_path(photo_id)
+    if not path.is_file():
+        raise HTTPException(404, 'This photo is no longer available. Make it again.')
+    return FileResponse(path, media_type='image/jpeg', filename=path.name)
+
+
 @router.post('/layout')
 def layout(value: Reel, scene: int = Query(default=0, ge=0, le=7)):
     return checked(get_service().scene_layout, value, scene)
