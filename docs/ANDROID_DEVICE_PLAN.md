@@ -1,6 +1,8 @@
 # Android devices: design and implementation plan
 
-Date: 2026-10-28 · Revision: 1 · Status: Milestone 1 implemented except live view; not yet tested on a real phone.
+Date: 2026-10-28 · Revision: 1 · Status: Milestone 1 implemented except live view. ADB discovery, users, health and
+user switching timings checked on a Pixel 10 Pro XL (Android 17); the screen and lock
+screen readiness parsers are not yet checked on a real phone.
 
 ## Recommendation
 
@@ -93,6 +95,12 @@ broken tunnel can never lock the worker out of the phone.
   about 1.8 s later, and the phone then sits with the screen off and the lock
   screen showing. "Ready" therefore means: current user = N, user N running,
   screen awake, and lock screen not showing. Switching back took under 1 s.
+- Manual switching implements this: after `am switch-user` the worker polls for
+  up to 15 s, wakes the screen (`KEYCODE_WAKEUP`) and dismisses a swipe lock
+  screen (`wm dismiss-keyguard`). Screen state comes from `mWakefulness` in
+  `dumpsys power`, lock state from `mKeyguardShowing` with window-policy flags as
+  a fallback. An unreadable value or a PIN/pattern lock reports "not ready" with
+  the reason; it is never treated as ready. One switch at a time per phone.
 - The scheduler groups queued jobs by device and current user to reduce switches
   (roughly 5–15 seconds each).
 - A phone that is offline or fails health checks rejects the job at admission.

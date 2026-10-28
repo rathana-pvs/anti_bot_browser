@@ -85,9 +85,31 @@ def test_serial_is_validated(serial):
         adb_client.validate_serial(serial)
 
 
+def test_parse_screen_and_lock_screen_state():
+    assert adb_client.parse_screen_awake("POWER MANAGER (dumpsys power)\n  mWakefulness=Awake\n  mWakefulnessChanging=false\n") is True
+    assert adb_client.parse_screen_awake("  mWakefulness=Asleep\n") is False
+    assert adb_client.parse_screen_awake("  mWakefulness=Dozing\n") is False
+    assert adb_client.parse_screen_awake("Display Power: state=ON\n") is True
+    assert adb_client.parse_screen_awake("nothing useful") is None
+    assert adb_client.parse_lock_screen_showing("  mKeyguardShowing=true\n") is True
+    # The KeyguardController value wins over window policy flags.
+    assert adb_client.parse_lock_screen_showing("  mKeyguardShowing=false\n    mDreamingLockscreen=true\n") is False
+    assert adb_client.parse_lock_screen_showing("    mShowingLockscreen=false mShowingDream=false mDreamingLockscreen=true\n") is True
+    assert adb_client.parse_lock_screen_showing("") is None
+
+
 class FakeAdb:
+    """A phone that, like the Pixel, comes up asleep and locked after a switch."""
+
     def __init__(self):
         self.switched = []
+        self.current = 10
+        self.awake = True
+        self.locked = False
+        self.secure_lock = False
+        self.starting = None
+        self.woken = 0
+        self.dismissed = 0
         self.users_list = adb_client.parse_users(USERS_OUTPUT)
         self.serials = adb_client.parse_user_serials(DUMPSYS_USER)
 
@@ -98,13 +120,18 @@ class FakeAdb:
         return {"manufacturer": "samsung", "model": "SM-G973F", "android_version": "12", "sdk": 31}
 
     def users(self, serial):
+        if self.starting is not None:
+            # The switched-to user reports running one poll after the switch.
+            self.users_list = [AndroidUser(u.user_id, u.name, u.flags, u.running or u.user_id == self.starting)
+                               for u in self.users_list]
+            self.starting = None
         return self.users_list
 
     def user_serials(self, serial):
         return self.serials
 
     def current_user(self, serial):
-        return 10
+        return self.current
 
     def max_users(self, serial):
         return 4
@@ -123,6 +150,25 @@ class FakeAdb:
 
     def switch_user(self, serial, user_id):
         self.switched.append(user_id)
+        self.current = user_id
+        self.starting = user_id
+        self.awake = False
+        self.locked = True
+
+    def screen_awake(self, serial):
+        return self.awake
+
+    def lock_screen_showing(self, serial):
+        return self.locked
+
+    def wake_screen(self, serial):
+        self.woken += 1
+        self.awake = True
+
+    def dismiss_lock_screen(self, serial):
+        self.dismissed += 1
+        if not self.secure_lock:
+            self.locked = False
 
 
 @pytest.fixture
@@ -134,6 +180,8 @@ def phone(tmp_path, monkeypatch):
     monkeypatch.setattr(android_devices, "DEVICES_FILE", tmp_path / "android_devices.json")
     monkeypatch.setattr(android_devices, "PROFILES_DIR", root)
     monkeypatch.setattr(profiles, "PROFILES_DIR", root)
+    monkeypatch.setattr(android_devices, "SWITCH_POLL_S", 0)
+    monkeypatch.setattr(android_devices.time, "sleep", lambda _seconds: None)
     return fake
 
 
@@ -224,12 +272,44 @@ def test_phone_with_accounts_cannot_be_forgotten(phone):
     assert "192.168.1.40:5555" not in android_devices.load_store()["devices"]
 
 
-def test_switch_user_checks_the_user_exists(phone):
-    assert devices.switch_user("R58M12345ABC", devices.SwitchUserRequest(user_id=11)) == {"current_user": 10}
+def test_switch_user_waits_until_user_is_running_awake_and_unlocked(phone):
+    result = devices.switch_user("R58M12345ABC", devices.SwitchUserRequest(user_id=11))
+    assert result == {"current_user": 11, "running": True, "screen_awake": True,
+                      "lock_screen_showing": False, "ready": True, "reason": None}
     assert phone.switched == [11]
+    assert (phone.woken, phone.dismissed) == (1, 1)
     with pytest.raises(HTTPException) as error:
         devices.switch_user("R58M12345ABC", devices.SwitchUserRequest(user_id=42))
     assert error.value.status_code == 404
+
+
+def test_switch_user_reports_secure_lock_screen_instead_of_claiming_ready(phone, monkeypatch):
+    monkeypatch.setattr(android_devices, "SWITCH_READY_TIMEOUT_S", 0.05)
+    phone.secure_lock = True
+    result = android_devices.switch_user("R58M12345ABC", 11)
+    assert result["ready"] is False
+    assert result["lock_screen_showing"] is True
+    assert "lock screen" in result["reason"]
+
+
+def test_unreadable_lock_screen_state_is_not_ready(phone, monkeypatch):
+    monkeypatch.setattr(android_devices, "SWITCH_READY_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(phone, "lock_screen_showing", lambda serial: None)
+    result = android_devices.switch_user("R58M12345ABC", 11)
+    assert result["ready"] is False
+    assert result["reason"] == "Couldn’t read the phone’s lock screen state."
+
+
+def test_concurrent_switch_on_the_same_phone_is_rejected(phone):
+    lock = android_devices._switch_locks.setdefault("R58M12345ABC", android_devices.threading.Lock())
+    lock.acquire()
+    try:
+        with pytest.raises(HTTPException) as error:
+            devices.switch_user("R58M12345ABC", devices.SwitchUserRequest(user_id=11))
+        assert error.value.status_code == 409
+        assert phone.switched == []
+    finally:
+        lock.release()
 
 
 def test_android_profiles_never_reach_docker_or_edit_runtime_settings(phone, monkeypatch):

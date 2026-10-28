@@ -20,6 +20,15 @@ export interface AndroidUserRow {
   profile_name: string | null;
 }
 
+export interface SwitchReadiness {
+  current_user: number | null;
+  running: boolean;
+  screen_awake: boolean | null;
+  lock_screen_showing: boolean | null;
+  ready: boolean;
+  reason: string | null;
+}
+
 export interface DeviceScan {
   scanned_at: string;
   current_user: number | null;

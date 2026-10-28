@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
-import { BatteryCharging, BatteryMedium, PencilLine, RefreshCw, ScanLine, Smartphone, Thermometer, Trash2, Usb, Wifi } from 'lucide-react';
+import { BatteryCharging, BatteryMedium, Check, ChevronRight, CircleAlert, Copy, PencilLine, RefreshCw, ScanLine, ShieldCheck, Smartphone, Thermometer, Trash2, Usb, Wifi } from 'lucide-react';
 import { AndroidDevice, AndroidUserRow, DeviceListResponse } from '../../types/device';
 import { fetchDevices, forgetDevice, importDeviceUser, renameDevice, scanDevice, switchDeviceUser } from '../../services/devices';
+import { API_BASE } from '../../services/api';
+import { writeHostClipboardText } from '../../services/clipboard';
 import { Alert } from '../ui/Alert';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
@@ -97,7 +99,9 @@ export function DevicesPage({ active, groups, onProfilesChanged, onOpenAccount }
     setSwitching(user.user_id);
     try {
       const result = await switchDeviceUser(device.serial, user.user_id);
-      showToast(result.current_user === user.user_id ? `Switched to ${user.name}` : 'Switch requested; the phone has not confirmed it yet', result.current_user === user.user_id ? 'success' : 'warning');
+      if (result.ready) showToast(`Switched to ${user.name}`, 'success');
+      else await showAlert(`${result.reason ?? 'The phone didn’t confirm the switch.'} Check the phone, then switch again.`,
+        { title: `${user.name} isn’t ready yet`, variant: 'warning' });
       await scan(device.serial);
     } catch (error) {
       await showAlert(error instanceof Error ? error.message : 'Switch failed', { title: 'Could not switch user', variant: 'danger' });
@@ -118,15 +122,35 @@ export function DevicesPage({ active, groups, onProfilesChanged, onOpenAccount }
     </header>
 
     <div className="min-h-0 flex-1 overflow-y-auto p-5">
-      {loadError && <Alert variant="danger" className="mb-4">{loadError}</Alert>}
+      {loadError && (data ? <Alert variant="warning" className="mb-4">
+        <p className="font-medium">Couldn’t refresh phones</p>
+        <p className="mt-1">Your last loaded phones are still shown. Try refreshing again.</p>
+      </Alert> : <PhoneUnavailable error={loadError} loading={loading} onRetry={() => void load()} />)}
       {data && !data.adb_available && <Alert variant="warning" className="mb-4">
         <p className="font-medium">ADB is not available</p>
         <p className="mt-0.5 text-amber-200/80">{data.adb_error} Install Android platform-tools on this computer, then press Refresh.</p>
       </Alert>}
 
-      {data && data.devices.length === 0 && <EmptyState icon={<Smartphone className="h-8 w-8" />} title="Add a phone"
-        description="1. Connect the phone with a USB cable.  2. Turn on USB debugging in Developer options and allow this computer.  3. Press Refresh."
-        action={<Button size="sm" onClick={() => void load()} loading={loading}>Refresh</Button>} />}
+      {data && data.devices.length === 0 && <section className="mx-auto max-w-2xl overflow-hidden rounded-panel border border-border bg-surface/70">
+        <div className="flex flex-col items-center px-6 py-10 text-center sm:px-10">
+          <div className="mb-5 flex h-16 w-16 items-center justify-center rounded-2xl border border-blue-500/20 bg-blue-500/10 text-blue-400">
+            <Smartphone className="h-8 w-8" aria-hidden="true" />
+          </div>
+          <h2 className="text-base font-semibold text-zinc-100">Connect your first phone</h2>
+          <p className="mt-2 max-w-sm text-xs leading-5 text-zinc-400">Your Android phones and their accounts will appear here once connected.</p>
+          <ol className="my-7 w-full space-y-4 text-left">
+            {[
+              { icon: Usb, title: 'Connect with USB', description: 'Use a USB cable that supports data transfer.' },
+              { icon: ShieldCheck, title: 'Allow USB debugging', description: 'Enable USB debugging in Developer options, then unlock the phone and allow this computer.' },
+              { icon: RefreshCw, title: 'Refresh your phones', description: 'Check for connected phones when you’re ready.' },
+            ].map(({ icon: Icon, title, description }, index) => <li key={title} className="flex gap-3">
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-control bg-elevated text-zinc-400"><Icon className="h-4 w-4" aria-hidden="true" /></span>
+              <div><p className="text-xs font-medium text-zinc-200">{index + 1}. {title}</p><p className="mt-1 text-xs leading-5 text-zinc-500">{description}</p></div>
+            </li>)}
+          </ol>
+          <Button onClick={() => void load()} loading={loading}><RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} aria-hidden="true" />{loading ? 'Checking for phones…' : 'Check for phones'}</Button>
+        </div>
+      </section>}
 
       {data && data.devices.length > 0 && <div className="grid gap-5 lg:grid-cols-[18rem_minmax(0,1fr)]">
         <div className="space-y-2" role="list" aria-label="Phones">
@@ -162,6 +186,54 @@ export function DevicesPage({ active, groups, onProfilesChanged, onOpenAccount }
         await load();
       }} />}
   </div>;
+}
+
+function PhoneUnavailable({ error, loading, onRetry }: { error: string; loading: boolean; onRetry: () => void }) {
+  const notFound = error.trim().toLowerCase() === 'not found';
+  const [checkedAt, setCheckedAt] = useState<Date | null>(null);
+  const [wasLoading, setWasLoading] = useState(loading);
+  const [copied, setCopied] = useState(false);
+  if (wasLoading !== loading) {
+    setWasLoading(loading);
+    if (!loading) setCheckedAt(new Date());
+  }
+  const details = `GET ${API_BASE}/devices\n${error}`;
+  const copy = async () => {
+    try {
+      await writeHostClipboardText(details);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch { /* clipboard unavailable; details stay visible */ }
+  };
+  return <section role="alert" className="mx-auto mt-6 max-w-lg overflow-hidden rounded-panel border border-border bg-surface/70 sm:mt-12">
+    <div className="flex flex-col items-center px-6 pb-7 pt-8 text-center sm:px-10">
+      <div className="relative mb-5 flex h-14 w-14 items-center justify-center rounded-2xl border border-amber-500/20 bg-amber-500/10">
+        <Smartphone className="h-7 w-7 text-amber-300/90" aria-hidden="true" />
+        <CircleAlert className="absolute -bottom-1.5 -right-1.5 h-5 w-5 rounded-full bg-surface text-amber-400 ring-4 ring-surface" aria-hidden="true" />
+      </div>
+      <h2 className="text-base font-semibold text-zinc-100">{notFound ? 'Phone support isn’t running' : 'Couldn’t load your phones'}</h2>
+      <p className="mt-2 max-w-sm text-xs leading-5 text-zinc-400">{notFound
+        ? 'The local service running now is an older version without phone management. Quit and reopen Automat FB to load the updated service.'
+        : 'The local service didn’t respond. Make sure Automat FB’s service is running, then try again.'}</p>
+      <Button className="mt-6" onClick={onRetry} loading={loading}>
+        <RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} aria-hidden="true" />{loading ? 'Checking…' : 'Try again'}
+      </Button>
+      <p className="mt-3 h-4 text-[11px] text-zinc-500" aria-live="polite">
+        {checkedAt && !loading && `Still unavailable · checked ${checkedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`}
+      </p>
+    </div>
+    <details className="group border-t border-border text-xs text-zinc-500">
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 px-5 py-3 hover:text-zinc-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-400 [&::-webkit-details-marker]:hidden">
+        <ChevronRight className="h-3.5 w-3.5 transition-transform group-open:rotate-90" aria-hidden="true" />Technical details
+      </summary>
+      <div className="flex items-start gap-3 px-5 pb-4">
+        <pre className="min-w-0 flex-1 whitespace-pre-wrap break-words rounded-control bg-elevated px-3 py-2 font-mono text-[11px] leading-5 text-zinc-400">{details}</pre>
+        <IconButton aria-label={copied ? 'Copied' : 'Copy technical details'} onClick={() => void copy()}>
+          {copied ? <Check className="h-4 w-4 text-emerald-400" /> : <Copy className="h-4 w-4" />}
+        </IconButton>
+      </div>
+    </details>
+  </section>;
 }
 
 function DeviceCard({ device, selected, onSelect }: { device: AndroidDevice; selected: boolean; onSelect: () => void }) {

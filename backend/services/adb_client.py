@@ -117,6 +117,28 @@ def parse_free_storage_mb(df_output: str) -> int | None:
     return int(parts[3]) // 1024
 
 
+def parse_screen_awake(dumpsys_power: str) -> bool | None:
+    """Screen state from `dumpsys power`; None when the format is not recognised."""
+    match = re.search(r"mWakefulness=(\w+)", dumpsys_power)
+    if match:
+        return match.group(1) == "Awake"
+    match = re.search(r"Display Power: state=(\w+)", dumpsys_power)
+    return match.group(1) == "ON" if match else None
+
+
+def parse_lock_screen_showing(output: str) -> bool | None:
+    """Lock screen state from the keyguard lines of `dumpsys activity`/`window`.
+
+    `mKeyguardShowing` (activity KeyguardController) wins; the window policy
+    flags are a fallback for ROMs that do not print it. None when neither appears.
+    """
+    primary = re.findall(r"mKeyguardShowing=(true|false)", output)
+    if primary:
+        return "true" in primary
+    fallback = re.findall(r"(?:mShowingLockscreen|mDreamingLockscreen|isStatusBarKeyguard)=(true|false)", output)
+    return "true" in fallback if fallback else None
+
+
 def parse_int(output: str) -> int | None:
     match = re.search(r"(-?\d+)", output)
     return int(match.group(1)) if match else None
@@ -186,3 +208,18 @@ class AdbClient:
 
     def switch_user(self, serial: str, user_id: int) -> None:
         self.shell(serial, "am", "switch-user", str(int(user_id)), timeout=30)
+
+    def screen_awake(self, serial: str) -> bool | None:
+        return parse_screen_awake(self.shell(serial, "dumpsys", "power"))
+
+    def lock_screen_showing(self, serial: str) -> bool | None:
+        return parse_lock_screen_showing(self.shell(serial,
+            "dumpsys activity activities | grep -i keyguardshowing; "
+            "dumpsys window | grep -iE 'ShowingLockscreen|DreamingLockscreen|isStatusBarKeyguard'; true"))
+
+    def wake_screen(self, serial: str) -> None:
+        self.shell(serial, "input", "keyevent", "KEYCODE_WAKEUP")
+
+    def dismiss_lock_screen(self, serial: str) -> None:
+        """Dismiss a swipe/none lock screen. A secure lock stays up; we never enter PINs."""
+        self.shell(serial, "wm", "dismiss-keyguard")

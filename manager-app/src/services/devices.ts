@@ -1,5 +1,5 @@
 import { Profile } from '../types/profile';
-import { AndroidDevice, DeviceListResponse } from '../types/device';
+import { AndroidDevice, DeviceListResponse, SwitchReadiness } from '../types/device';
 import { API_BASE, apiError } from './api';
 
 const devicePath = (serial: string) => `${API_BASE}/devices/${encodeURIComponent(serial)}`;
@@ -29,7 +29,7 @@ export async function forgetDevice(serial: string): Promise<void> {
   if (!res.ok) throw await apiError(res, 'Failed to remove the phone');
 }
 
-export async function switchDeviceUser(serial: string, userId: number): Promise<{ current_user: number | null }> {
+export async function switchDeviceUser(serial: string, userId: number): Promise<SwitchReadiness> {
   const res = await fetch(`${devicePath(serial)}/switch-user`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user_id: userId }),
   });

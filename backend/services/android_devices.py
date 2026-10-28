@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import secrets
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +24,10 @@ DEVICES_FILE = DATA_DIR / "android_devices.json"
 ANDROID_RUNTIME = "android_user"
 CONTROL_USER_ID = 0
 AUTOMATION_UNAVAILABLE = "android_automation_unavailable"
+SWITCH_READY_TIMEOUT_S = 15.0
+SWITCH_POLL_S = 0.5
 _store_lock = threading.Lock()
+_switch_locks: dict[str, threading.Lock] = {}
 
 
 class DeviceNotFound(LookupError):
@@ -218,13 +222,59 @@ def forget_device(serial: str) -> None:
         _save_store(store)
 
 
+def user_readiness(client: AdbClient, serial: str, user_id: int) -> dict:
+    """Ready means: user N is current and running, the screen is awake, and no lock screen shows.
+
+    `am get-current-user` reports the new user before it is running, and a
+    switched-to user starts with the screen off and the lock screen up, so all
+    four are checked. An unreadable value counts as not ready.
+    """
+    current = client.current_user(serial)
+    running = next((user.running for user in client.users(serial) if user.user_id == user_id), False)
+    awake = client.screen_awake(serial)
+    locked = client.lock_screen_showing(serial) if awake else None
+    if current != user_id:
+        reason = "The phone has not switched to this user yet."
+    elif not running:
+        reason = "The Android user is still starting."
+    elif awake is None:
+        reason = "Couldn’t read whether the phone’s screen is on."
+    elif not awake:
+        reason = "The phone’s screen is off."
+    elif locked is None:
+        reason = "Couldn’t read the phone’s lock screen state."
+    elif locked:
+        reason = "The lock screen is showing. Remove the PIN or pattern lock for this user; automation never enters it."
+    else:
+        reason = None
+    return {"current_user": current, "running": running, "screen_awake": awake,
+            "lock_screen_showing": locked, "ready": reason is None, "reason": reason}
+
+
 def switch_user(serial: str, user_id: int) -> dict:
     validate_serial(serial)
     client = _client()
     if user_id not in {user.user_id for user in client.users(serial)}:
         raise DeviceNotFound("This Android user does not exist on the phone")
-    client.switch_user(serial, user_id)
-    return {"current_user": client.current_user(serial)}
+    with _store_lock:
+        lock = _switch_locks.setdefault(serial, threading.Lock())
+    if not lock.acquire(blocking=False):
+        raise AdbError("This phone is already switching users. Wait for it to finish.")
+    try:
+        client.switch_user(serial, user_id)
+        deadline = time.monotonic() + SWITCH_READY_TIMEOUT_S
+        while True:
+            state = user_readiness(client, serial, user_id)
+            if state["ready"] or time.monotonic() >= deadline:
+                return state
+            if state["current_user"] == user_id and state["running"]:
+                if state["screen_awake"] is False:
+                    client.wake_screen(serial)
+                elif state["lock_screen_showing"]:
+                    client.dismiss_lock_screen(serial)
+            time.sleep(SWITCH_POLL_S)
+    finally:
+        lock.release()
 
 
 def _android_profile(profile_id: str, name: str, group: str, serial: str, user: dict) -> dict:
