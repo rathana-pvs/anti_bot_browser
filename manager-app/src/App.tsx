@@ -21,6 +21,9 @@ import { waitForBackend } from './services/backendStartup';
 import { BackendConnectionScreen } from './components/BackendConnectionScreen';
 import { ProxyPanel } from './components/ProxyPanel';
 import { CampaignsPanel } from './components/CampaignsPanel';
+import { ReelCreator } from './components/reel-creator/ReelCreator';
+import { ReelCreatorBoundary } from './components/reel-creator/ReelCreatorBoundary';
+import type { CreatedReelMedia } from './types/reelCreator';
 import { CreateProfileModal } from './components/CreateProfileModal';
 import { TelemetryFooter } from './components/TelemetryFooter';
 import { ProfileActionErrorModal } from './components/ProfileActionErrorModal';
@@ -226,6 +229,12 @@ export const App: React.FC = () => {
     }
   };
 
+  const [reelRequest, setReelRequest] = useState<{ media: CreatedReelMedia; key: number } | null>(null);
+  const useCreatedReel = useCallback((media: CreatedReelMedia) => {
+    setReelRequest({ media, key: Date.now() });
+    setPage('campaigns');
+  }, []);
+
   const openQueue = (profileId?: string) => {
     setPage('campaigns');
     setQueueRequest({ profileId, key: Date.now() });
@@ -384,11 +393,16 @@ export const App: React.FC = () => {
           <CampaignsPanel
             profiles={profiles}
             queueRequest={queueRequest}
+            reelRequest={reelRequest}
             onAttentionChange={setCampaignAttention}
             onEditProfile={(profileId) => openAccountPage(profileId, 'settings')}
             onSelectProfile={(profileId) => openAccountPage(profileId, 'browser')}
             onOpenAccount={(profileId) => openAccountPage(profileId, 'overview')}
           />
+        </main>
+
+        <main className={`flex-1 min-w-0 overflow-y-auto bg-background ${page === 'reel_studio' ? '' : 'hidden'}`}>
+          <ReelCreatorBoundary><ReelCreator active={page === 'reel_studio'} onUseReel={useCreatedReel} /></ReelCreatorBoundary>
         </main>
 
         <main className={`flex-1 flex min-w-0 overflow-hidden ${page === 'proxies' ? '' : 'hidden'}`}>

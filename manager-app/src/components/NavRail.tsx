@@ -1,12 +1,13 @@
 import { ReactNode } from 'react';
-import { Globe, Send, Settings, Users } from 'lucide-react';
+import { Film, Globe, Send, Settings, Users } from 'lucide-react';
 import { cn } from './ui/cn';
 
-export type AppPage = 'accounts' | 'campaigns' | 'proxies';
+export type AppPage = 'accounts' | 'campaigns' | 'reel_studio' | 'proxies';
 
 const ITEMS: { value: AppPage; label: string; icon: ReactNode }[] = [
   { value: 'accounts', label: 'Accounts', icon: <Users className="h-5 w-5" /> },
   { value: 'campaigns', label: 'Campaigns', icon: <Send className="h-5 w-5" /> },
+  { value: 'reel_studio', label: 'Reel Studio', icon: <Film className="h-5 w-5" /> },
   { value: 'proxies', label: 'Proxies', icon: <Globe className="h-5 w-5" /> },
 ];
 
@@ -17,7 +18,7 @@ export function NavRail({ page, onPageChange, onOpenSettings, badges = {} }: {
 }) {
   const item = (label: string, icon: ReactNode, active: boolean, onClick: () => void, badge?: number) => (
     <button key={label} type="button" onClick={onClick} aria-current={active ? 'page' : undefined}
-      className={cn('relative flex w-14 flex-col items-center gap-1 rounded-xl py-2 text-[10px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+      className={cn('relative flex w-14 flex-col items-center gap-1 rounded-xl py-2 text-center text-[10px] font-medium leading-tight transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
         active ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:bg-zinc-900 hover:text-zinc-200')}>
       {icon}{label}
       {!!badge && <span className="absolute right-1.5 top-1 min-w-4 rounded-full bg-amber-500 px-1 text-[9px] leading-4 text-zinc-950" aria-label={`${badge} need attention`}>{badge}</span>}

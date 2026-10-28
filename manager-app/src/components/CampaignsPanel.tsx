@@ -1,12 +1,10 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { Profile } from '../types/profile';
 import { BatchPostCreator, CampaignKind } from './BatchPostCreator';
-import { ReelCreator } from './reel-creator/ReelCreator';
-import { ReelCreatorBoundary } from './reel-creator/ReelCreatorBoundary';
 import type { CreatedReelMedia } from '../types/reelCreator';
 import { PostingQueuePanel } from './PostingQueuePanel';
 import { cn } from './ui/cn';
-import { Clock, Film, Flame, Plus, Radio, Send } from 'lucide-react';
+import { Clock, Flame, Plus, Radio, Send } from 'lucide-react';
 
 interface CampaignsPanelProps {
   profiles: Profile[];
@@ -16,9 +14,11 @@ interface CampaignsPanelProps {
   onAttentionChange?: (count: number) => void;
   /** Set by other pages to bring the Queue tab forward, optionally showing one account. */
   queueRequest?: { profileId?: string; key: number } | null;
+  /** A photo, Reel, or Live video sent from Reel Studio, to start a campaign with. */
+  reelRequest?: { media: CreatedReelMedia; key: number } | null;
 }
 
-type CampaignTab = 'queue' | 'create' | 'reel_studio';
+type CampaignTab = 'queue' | 'create';
 
 const KINDS: { value: CampaignKind; label: string; description: string; icon: React.ReactNode }[] = [
   { value: 'posts', label: 'Posts and reels', description: 'Photos, videos, Reels, and text', icon: <Send className="h-4 w-4" /> },
@@ -33,6 +33,7 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
   onOpenAccount,
   onAttentionChange,
   queueRequest = null,
+  reelRequest = null,
 }) => {
   const [tab, setTab] = useState<CampaignTab>('queue');
   const [kind, setKind] = useState<CampaignKind>(() => {
@@ -48,16 +49,16 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
     setKind(next);
     try { localStorage.setItem('campaign_kind', next); } catch (_) {}
   };
-  const useCreatedReel = useCallback((media: CreatedReelMedia) => {
-    setIncomingReel(media);
-    setKind(media.postType === 'live' ? 'live' : 'posts');
+  useEffect(() => {
+    if (!reelRequest) return;
+    setIncomingReel(reelRequest.media);
+    setKind(reelRequest.media.postType === 'live' ? 'live' : 'posts');
     setTab('create');
-  }, []);
+  }, [reelRequest?.key]);
 
   const tabs: { value: CampaignTab; label: string; icon: React.ReactNode; badge?: number }[] = [
     { value: 'queue', label: 'Queue', icon: <Clock className="h-3.5 w-3.5" />, badge: attention },
     { value: 'create', label: 'Create', icon: <Plus className="h-3.5 w-3.5" /> },
-    { value: 'reel_studio', label: 'Reel Studio', icon: <Film className="h-3.5 w-3.5" /> },
   ];
 
   return (
@@ -99,10 +100,6 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
         <BatchPostCreator key={kind} mode={kind} profiles={profiles} onEditProfile={onEditProfile}
           onBatchCreated={() => setTab('queue')}
           incomingReel={kind === (incomingReel?.postType === 'live' ? 'live' : 'posts') ? incomingReel : null} onIncomingReelConsumed={consumeIncomingReel} />
-      </div>
-
-      <div className={`min-h-0 flex-1 overflow-y-auto ${tab === 'reel_studio' ? '' : 'hidden'}`}>
-        <ReelCreatorBoundary><ReelCreator active={tab === 'reel_studio'} onUseReel={useCreatedReel} /></ReelCreatorBoundary>
       </div>
     </div>
   );
