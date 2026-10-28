@@ -8,8 +8,11 @@ import android.net.IpPrefix
 import android.net.VpnService
 import android.os.ParcelFileDescriptor
 import android.os.Process
+import android.system.Os
+import android.system.OsConstants
 import android.util.Log
 import java.io.File
+import java.io.FileOutputStream
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
@@ -87,10 +90,32 @@ class AgentVpnService : VpnService() {
             lastError = "No proxy is configured; all traffic is blocked."
             return
         }
-        val yaml = File(filesDir, "tunnel.yml")
-        yaml.writeText(config.toTunnelYaml(File(filesDir, "tunnel.log"), dnsAddress))
-        lastError = if (TunnelEngine.TProxyStartService(yaml.absolutePath, tun!!.fd)) null
+        lastError = if (startEngine(config.toTunnelYaml(File(filesDir, "tunnel.log"), dnsAddress))) null
         else "The tunnel engine did not start."
+    }
+
+    /**
+     * The engine reads its config once from a path. A named pipe hands it the YAML, which holds
+     * the proxy password, without ever writing it to storage.
+     */
+    private fun startEngine(yaml: String): Boolean {
+        File(filesDir, "tunnel.yml").delete() // plain-text config written by 0.1.0
+        val pipe = File(filesDir, "tunnel.pipe")
+        pipe.delete()
+        Os.mkfifo(pipe.absolutePath, OsConstants.S_IRUSR or OsConstants.S_IWUSR)
+        // Opening a pipe for writing blocks until the engine opens it for reading.
+        val writer = Thread { runCatching { FileOutputStream(pipe).use { it.write(yaml.toByteArray()) } } }
+        writer.isDaemon = true
+        writer.start()
+        val started = TunnelEngine.TProxyStartService(pipe.absolutePath, tun!!.fd)
+        writer.join(PIPE_TIMEOUT_MS)
+        if (writer.isAlive) {
+            // The engine never read it: open the read end ourselves so the writer can finish.
+            runCatching { Os.close(Os.open(pipe.absolutePath, OsConstants.O_RDONLY or OsConstants.O_NONBLOCK, 0)) }
+            writer.join(PIPE_TIMEOUT_MS)
+        }
+        pipe.delete()
+        return started
     }
 
     private fun establish(config: ProxyConfig?, dnsAddress: String): ParcelFileDescriptor? {
@@ -164,6 +189,7 @@ class AgentVpnService : VpnService() {
         private const val TAG = "AgentVpn"
         private const val CHANNEL = "agent"
         private const val NOTIFICATION_ID = 1
+        private const val PIPE_TIMEOUT_MS = 5000L
 
         @Volatile var instance: AgentVpnService? = null
             private set

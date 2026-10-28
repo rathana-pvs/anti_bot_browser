@@ -418,7 +418,12 @@ using `android-agent/` and `android-agent/tools/agent_poc.py`:
   `am start-user -w N` after a boot. Their Always-on settings survived, lockdown was
   on within a second of each user starting, and Always-on started each VPN with its
   saved proxy. Exits matched each user's proxy and never the computer's address.
-- Still open: encrypting stored proxy credentials with Android Keystore.
+- Credentials at rest (0.2.0): the saved proxy is AES-256-GCM encrypted with a key
+  held in Android Keystore (`proxy.enc`), and the engine receives its config through
+  a named pipe, so no file in either user's storage contains the username or
+  password. The plain-text files from 0.1.0 were migrated and deleted on update.
+  Updating the APK briefly stopped both VPNs; lockdown covered the gap and
+  Always-on restarted both with their own proxies.
 
 ### 1. Device inventory and live view
 

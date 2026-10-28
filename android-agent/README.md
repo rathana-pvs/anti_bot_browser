@@ -17,6 +17,9 @@ traffic through the account's SOCKS5 proxy and blocks it when the proxy is unava
   `adb shell content call --user N --uri content://com.isolatedbrowser.agent.control --method M`.
   It rejects every caller except ADB shell and root.
 - `ControlActivity` starts the service; launched from ADB it may start a foreground service.
+- The saved proxy is encrypted with an AES-256-GCM key held in Android Keystore
+  (`SecretStore`). The engine gets its config, which includes the password, through a
+  named pipe, so it is never written to storage.
 
 ## Build
 

@@ -51,22 +51,27 @@ data class ProxyConfig(val host: String, val port: Int, val username: String, va
         val DNS_ADDRESSES = listOf("198.18.0.2", "198.18.0.3")
         const val MAPPED_NETWORK = "100.64.0.0"
         const val MAPPED_NETMASK = "255.192.0.0"
-        private const val FILE = "proxy.json"
+        private const val FILE = "proxy.enc"
+        // Written by 0.1.0 in plain text; migrated to the encrypted file on first load.
+        private const val LEGACY_FILE = "proxy.json"
 
         fun fromJson(json: JSONObject) = ProxyConfig(
             json.getString("host").trim(), json.getInt("port"),
             json.optString("username", ""), json.optString("password", ""),
         )
 
-        fun load(context: Context): ProxyConfig? = runCatching {
-            fromJson(JSONObject(File(context.filesDir, FILE).readText()))
-        }.getOrNull()
+        fun load(context: Context): ProxyConfig? {
+            val legacy = File(context.filesDir, LEGACY_FILE)
+            if (legacy.exists()) {
+                runCatching { fromJson(JSONObject(legacy.readText())) }.getOrNull()?.let { save(context, it) }
+                legacy.delete()
+            }
+            // An unreadable file means no proxy, which keeps the tunnel blocking.
+            return SecretStore.read(File(context.filesDir, FILE))?.let { runCatching { fromJson(JSONObject(it)) }.getOrNull() }
+        }
 
         fun save(context: Context, config: ProxyConfig) {
-            val target = File(context.filesDir, FILE)
-            val tmp = File(context.filesDir, "$FILE.tmp")
-            tmp.writeText(config.toJson().toString())
-            tmp.renameTo(target)
+            SecretStore.write(File(context.filesDir, FILE), config.toJson().toString())
         }
 
         // No DNS lookups here: a hostname would be resolved outside the tunnel.
