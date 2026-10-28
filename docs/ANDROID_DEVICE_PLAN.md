@@ -374,9 +374,22 @@ verified for that Android version.
 Results on a Pixel 10 Pro XL, Android 17, one Android user (user 11), 2026-10-28,
 using `android-agent/` and `android-agent/tools/agent_poc.py`:
 
-- Onboarding steps 2 and 4 work over ADB with no tapping: `appops ... ACTIVATE_VPN
-  allow` grants VPN consent, and the two `always_on_vpn_*` settings take effect
-  immediately (Android logged `lockdown=true alwaysOn=true`; no restart needed).
+- Onboarding step 2 works over ADB with no tapping: `appops ... ACTIVATE_VPN
+  allow` grants VPN consent. Step 4 (Always-on with lockdown over ADB) is not
+  proven: Always-on and lockdown were switched on by hand in Settings (logged as
+  `calling from 1101000`, Settings in user 11) before the `always_on_vpn_*`
+  settings were written, so the writes changed nothing that could be observed.
+  A follow-up showed the writes have no live effect: deleting both settings left
+  Always-on and lockdown on (no log entry, lockdown rules unchanged). Android reads
+  them when the user starts; there is no shell command for it (`cmd vpn_management`
+  has none). Restarting the user after writing them works, entirely over ADB:
+  with the settings deleted, `am stop-user -w 11` + `am start-user -w 11` made
+  Android log `lockdown=false alwaysOn=false calling from 1000`; with them written
+  back, the same restart logged `lockdown=true alwaysOn=true calling from 1000`,
+  restored the lockdown rules, and started the companion app's VPN by itself.
+  Onboarding therefore writes the settings and restarts that user once (switching
+  the screen to user 0 first). The phone was kept in airplane mode while user 11
+  ran without lockdown, so nothing could leave it unprotected.
 - The VPN covers only user 11 (UIDs 1100000-1199999). Exit measured inside the
   user was the proxy's address, by `ipwho.is` and by a literal-IPv4 HTTPS request.
 - With the tunnel pointed at an unreachable proxy, no request got out. IPv6 is
@@ -388,10 +401,21 @@ using `android-agent/` and `android-agent/tools/agent_poc.py`:
 - Kill switch: with the app force-stopped or its process killed, lockdown blocked
   every app in user 11 except the companion app. Android did not restart the VPN
   in either case within 90 s, so the preflight gate must check the app's status
-  and restart it (`ControlActivity`) before every job. Restart after a reboot is
-  not yet tested.
-- Still open: a second Android user with a second proxy, the timezone command,
-  and encrypting stored proxy credentials with Android Keystore.
+  and restart it (`ControlActivity`) before every job. Always-on does start the VPN
+  when the user starts (shown by the restart test above); a full reboot is not yet
+  tested.
+- Two users, two proxies: a second Android user (user 10) was created with
+  `pm create-user`, onboarded entirely over ADB while the phone was in airplane
+  mode, and given a different pool proxy. Measured inside each user: user 10
+  exited at 72.1.183.109 (New York), user 11 at 9.142.198.36 (Los Angeles); the
+  computer's own address never appeared.
+- Timezone: `cmd time_zone_detector suggest_manual_time_zone` is refused for the
+  shell user (missing SUGGEST_MANUAL_TIME_AND_ZONE). `cmd alarm set-timezone <zone>`
+  works once `cmd time_zone_detector set_auto_detection_enabled false` is set, and
+  changes the zone and clock immediately. Re-enabling automatic detection restored
+  the local zone.
+- Still open: a full reboot, and encrypting stored proxy credentials with
+  Android Keystore.
 
 ### 1. Device inventory and live view
 
