@@ -83,11 +83,16 @@ whitespace-separated words randomly use full typing or full paste (50/50).
 Captions of 100 words or more, captions containing links, link comments, Unicode,
 and multiline text use full paste. Typing and pasting are never mixed. Clipboard
 failures stop entry rather than falling back to typing. Entry checks existing
-drafts, reads back content through the clipboard, and stops on focus/pointer
-ownership loss or uncertainty. X11 cannot reliably detect all manual keyboard
+drafts, reads back content through the clipboard, and stops on window focus
+loss or uncertainty. Pointer movement alone does not interrupt entry. X11 cannot reliably detect all manual keyboard
 intervention; avoid concurrent manual input while an attempt owns the profile. Live preset pinned comments are always pasted.
-Live uses a separate adapter without screenshot evidence or field-content logs;
-its existing Go live/End live gates and stream duration remain unchanged. Different
+Live uses a separate adapter without field-content logs. Failed browser checks save
+redacted screenshots of verified post-details dialogs, plus control positions,
+confidence scores and form-check results. Background credentials are masked. If a
+dialog cannot be verified, only recognized controls and the last confirmed dialog
+are retained. Dialog screenshots may include the supplied title and caption;
+arbitrary OCR text and clipboard payloads are discarded.
+Different
 or unconfirmed drafts stop preparation for review. If a preset editor lacks a
 recognized empty placeholder, preparation stops rather than assuming it is blank.
 

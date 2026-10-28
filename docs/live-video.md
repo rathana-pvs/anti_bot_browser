@@ -20,10 +20,19 @@ Only supported English field layouts are recognized. Existing saved-details
 handling remains unchanged. Go live, End live, FFmpeg startup/playback, and broadcast
 duration are independent of input pacing.
 
-Live does not inherit screenshot evidence recording: screen/OCR observations are
-transient, and input diagnostics contain only safe method/timing metadata. No
-stream keys, captions, clipboard payloads, or screenshots are persisted by this
-adapter. Offline tests validate the new input paths; a real Live input pilot has
+Failed Live browser checks now retain a redacted PNG and JSON under the profile's
+`automation_evidence` directory, linked from the queue item's evidence viewer.
+Verified post-details dialogs are visible, including supplied title/caption text;
+the credential-bearing background is masked. A modal requires a rectangular
+boundary containing its heading and Save control. Unrecognized frames retain only
+control labels, alongside the last confirmed dialog if available.
+Pinned-comment failures retain the right post/settings column after a verified
+setup frame, with the left and center credential panels masked.
+JSON includes control positions/confidence and form-check counts, without raw OCR,
+stream keys or clipboard payloads. The last observed frame is used so
+diagnostics do not move the mouse or repeat an action. Successful observations
+remain in memory. Evidence-write failures preserve the original Live error.
+Offline tests validate the new input paths; a real Live input pilot has
 not been performed. The profile_004 session inspected during this change reported
 completed/broadcast_ended, but its stopped container and lack of screenshots did
 not establish the current editor layout.

@@ -72,7 +72,7 @@ def fixture_task():
     controller = ComposerEntry(task)
     clock = Clock()
     controller.waiter = lambda owner, deadline=None, surface_guard=None: InteractionWait(
-        guard=lambda: not task.input_cancelled and task.client.input_owner() == owner,
+        guard=lambda: not task.input_cancelled and task.client.input_owner()[0] == owner[0],
         clock=clock.clock, sleep=clock.sleep, surface_guard=surface_guard,
     )
     return task, controller
@@ -143,17 +143,36 @@ def test_composer_interruption_records_specific_reason():
     assert task.telemetry.record_step.call_args.kwargs['interruption_reason'] == 'composer_unconfirmed'
 
 
-@pytest.mark.parametrize('owner,reason', [
-    (('other', '10,20'), 'focus_changed'),
-    (('chrome', '11,20'), 'pointer_moved'),
-])
-def test_real_ownership_guard_distinguishes_focus_from_pointer(owner, reason):
+def test_real_ownership_guard_stops_on_focus_loss():
     task, entry = fixture_task()
-    task.client.input_owner.return_value = owner
+    task.client.input_owner.return_value = ('other', '10,20')
     waiter = ComposerEntry.waiter(entry, ('chrome', '10,20'))
     with pytest.raises(EntryInterrupted) as error:
         waiter.check()
-    assert error.value.reason == reason
+    assert error.value.reason == 'focus_changed'
+
+
+def test_real_ownership_guard_allows_pointer_movement():
+    task, entry = fixture_task()
+    task.client.input_owner.return_value = ('chrome', '11,20')
+    ComposerEntry.waiter(entry, ('chrome', '10,20')).checkpoint()
+
+
+@pytest.mark.parametrize('focus,allowed', [('chrome', True), ('other', False)])
+def test_paste_guard_ignores_pointer_but_requires_window_focus(focus, allowed):
+    task = BaseTask.__new__(BaseTask)
+    task.client = Mock()
+    task.client.input_owner.return_value = (focus, '99,99')
+    task.human = Mock()
+    task.input_cancelled = False
+    if allowed:
+        task.paste_text('caption', expected_owner=('chrome', '10,20'))
+        task.human.key_press.assert_called_once_with('ctrl+v')
+    else:
+        with pytest.raises(ClipboardFailure):
+            task.paste_text('caption', expected_owner=('chrome', '10,20'))
+        task.client.write_clipboard.assert_not_called()
+        task.human.key_press.assert_not_called()
 
 
 def test_checkpoint_rechecks_ownership_after_slow_surface_read():

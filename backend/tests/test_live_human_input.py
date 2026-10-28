@@ -8,6 +8,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'automation'))
 from engine.behavior_timing import InteractionWait
+from engine.behavior_timing import EntryInterrupted
+from modules.composer_entry import EntryResult
 from modules.live_input import LiveInput
 
 
@@ -56,7 +58,7 @@ def adapter(monkeypatch):
     value = LiveInput(task, 'offline-live-profile')
     clock = Clock()
     def waiter(owner, deadline=None, surface_guard=None):
-        return InteractionWait(guard=lambda: not task.input_cancelled and client.input_owner() == owner,
+        return InteractionWait(guard=lambda: not task.input_cancelled and client.input_owner()[0] == owner[0],
                                clock=clock.clock, sleep=clock.sleep, surface_guard=surface_guard)
     value.composer_entry.waiter = waiter
     # Keep real entry policy/controller/readback; isolate mouse timing only.
@@ -127,7 +129,7 @@ def test_live_clipboard_failure_never_types_or_saves(adapter):
 
 
 def test_closed_live_form_blocks_input(adapter):
-    with pytest.raises(RuntimeError, match='interrupted'): enter(adapter, 'https://example.com', surface=False)
+    with pytest.raises(RuntimeError, match='composer_unconfirmed'): enter(adapter, 'https://example.com', surface=False)
     assert adapter.client.value == ''
 
 
@@ -145,7 +147,7 @@ def test_live_focus_loss_blocks_save(adapter):
 
 def test_live_cancellation_never_refocuses(adapter):
     adapter.task.input_cancelled = True
-    with pytest.raises(RuntimeError, match='interrupted'): enter(adapter, 'Caption')
+    with pytest.raises(RuntimeError, match='cancelled'): enter(adapter, 'Caption')
     adapter.human.click.assert_not_called()
 
 
@@ -154,3 +156,44 @@ def test_live_telemetry_allowlist_drops_content_and_secrets(adapter):
     adapter.record_step('caption_entry', 1, method='paste', text='PRIVATE', stream_key='SECRET', url='PRIVATE_URL')
     assert adapter.events == [{'name': 'caption_entry', 'duration_ms': 1, 'outcome': 'completed', 'method': 'paste'}]
     adapter.client.screenshot.assert_not_called()
+
+
+@pytest.mark.parametrize('reason', ['focus_changed', 'deadline_exceeded', 'composer_unconfirmed'])
+def test_live_review_error_identifies_field_and_safe_reason(adapter, reason):
+    adapter.composer_entry.enter = Mock(return_value=EntryResult('entered_verified', True))
+    adapter.composer_entry.last_owner = adapter.client.owner
+    adapter.review.review = Mock(side_effect=EntryInterrupted('PRIVATE field contents', reason))
+    with pytest.raises(RuntimeError, match='caption review was interrupted \\(' + reason + '\\)') as error:
+        enter(adapter, 'PRIVATE caption')
+    assert 'PRIVATE' not in str(error.value)
+
+
+def test_live_review_reports_changed_content_without_exposing_it(adapter):
+    adapter.composer_entry.enter = Mock(return_value=EntryResult('entered_verified', True))
+    adapter.composer_entry.last_owner = adapter.client.owner
+    adapter.composer_entry.read_field = Mock(return_value='PRIVATE changed draft')
+    with pytest.raises(RuntimeError, match='field_content_changed') as error:
+        enter(adapter, 'Requested caption')
+    assert 'PRIVATE' not in str(error.value)
+
+
+def test_live_pointer_movement_during_paste_and_review_does_not_interrupt(adapter):
+    original = adapter.client.write_clipboard
+    def write(text):
+        original(text)
+        adapter.client.owner = ('chrome', '99,99')
+    adapter.client.write_clipboard = write
+    assert enter(adapter, 'https://example.com').verified
+    adapter.before_save()
+    assert adapter.client.value == 'https://example.com'
+
+
+def test_live_focus_loss_during_clipboard_write_prevents_paste(adapter):
+    original = adapter.client.write_clipboard
+    def write(text):
+        original(text)
+        adapter.client.owner = ('other-window', '99,99')
+    adapter.client.write_clipboard = write
+    with pytest.raises(RuntimeError):
+        adapter.paste_text('caption', expected_owner=('chrome', '10,20'))
+    assert 'key ctrl+v' not in adapter.client.commands

@@ -564,8 +564,6 @@ async def rerun_batch(batch_id: str):
         owners = container_lifecycle.snapshot()
         now = datetime.now(timezone.utc).isoformat()
         for post in batch.get("posts", []):
-            if post.get("type") == "live":
-                continue
             for execution in post.get("executions", []):
                 status = execution.get("status", "")
                 if status in {"published", "completed"}:
@@ -585,6 +583,19 @@ async def rerun_batch(batch_id: str):
                 if status in {"uncertain", "needs_review", "failed_after_publish"} or has_publication_evidence(execution):
                     review += 1
                     continue
+                if post.get("type") == "live":
+                    from backend.services import live_service
+                    prior = live_service.get_status(execution["profile_id"])
+                    if (execution.get("broadcast_confirmed") or (
+                            prior.get("status") == "needs_review"
+                            and prior.get("queue_execution_id") == execution["execution_id"])):
+                        review += 1
+                        continue
+                    # Only definite pre-stream failures or unstarted work may
+                    # be retried together. A stopped broadcast may have aired.
+                    if status not in {"failed_before_publish", "pending", "ready", "cancelled"}:
+                        review += 1
+                        continue
                 eligible = (safe_to_retry(execution) or status.startswith("skipped_")
                             or status in {"cancelled", "stopped"})
                 if not eligible:

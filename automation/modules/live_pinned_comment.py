@@ -44,7 +44,11 @@ class LivePinnedComment:
     def read_right(self):
         image = self.task.client.screenshot()
         h,w = image.shape[:2]
-        items = self.task.vision.read_text(image, region=(int(.6*w),int(.55*h),int(.30*w),int(.44*h)), min_confidence=.55)
+        items = self.task.vision.read_text(image, region=(int(.6*w),int(.13*h),int(.30*w),int(.86*h)), min_confidence=.55)
+        self.task.observe_failure_evidence(image, items, 'pinned_comment_settings', {
+            'heading_count': len(self.find(items, {'preset pinned comment'})),
+            'enable_label_count': len(self.find(items, {'enable preset pinned comment'})),
+        })
         return image, items
 
     @staticmethod
@@ -57,21 +61,27 @@ class LivePinnedComment:
 
     def settings(self):
         deadline = time.monotonic()+35
-        scrolled = False
+        scrolls = 0
         while time.monotonic() < deadline:
             image, items = self.read_right()
             switch = self.toggle(image, items)
             if switch:
                 return image, items, switch
+            # Long saved captions push the preset card below the fold. Use a
+            # verified noninteractive panel heading to reach it, not a blind
+            # click or a prerequisite that the missing card already be visible.
             headings = self.find(items, {'preset pinned comment'})
-            if not scrolled and len(headings) == 1:
+            if not headings:
+                headings = self.find(items, {'drive conversions from your live video', 'add post details'})
+                headings = sorted(headings, key=lambda i: i['center'][1], reverse=True)[:1]
+            if scrolls < 3 and len(headings) == 1:
                 _, fresh = self.read_right()
-                matches = self.find(fresh, {'preset pinned comment'})
+                matches = self.find(fresh, {label(headings[0])})
                 if len(matches) == 1 and self.task.same(headings[0], matches[0]):
                     # Focus a noninteractive heading, then scroll the settings.
                     self.task.click(matches[0])
                     self.task.client.exec_cmd(['xdotool','key','--clearmodifiers','Page_Down'])
-                    scrolled = True
+                    scrolls += 1
             time.sleep(.5)
         raise RuntimeError('Could not identify Facebook’s preset pinned-comment setting.')
 

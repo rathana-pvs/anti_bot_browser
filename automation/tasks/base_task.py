@@ -671,10 +671,10 @@ class BaseTask:
         """
         try:
             owner = expected_owner if expected_owner is not None else self.client.input_owner()
-            if self.client.input_owner() != owner:
+            if self.input_cancelled or self.client.input_owner()[0] != owner[0]:
                 raise ClipboardFailure("Input ownership lost before clipboard write")
             self.client.write_clipboard(text, selection)
-            if self.input_cancelled or self.client.input_owner() != owner:
+            if self.input_cancelled or self.client.input_owner()[0] != owner[0]:
                 raise ClipboardFailure("Input ownership lost before paste")
             self.human.key_press(paste_key)
         except Exception:

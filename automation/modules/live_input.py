@@ -55,7 +55,7 @@ class LiveInput:
             raise ClipboardFailure('Live clipboard paste failed; no typing fallback') from None
 
     def check_owner(self, owner):
-        if self.input_cancelled or self.client.input_owner() != owner:
+        if self.input_cancelled or self.client.input_owner()[0] != owner[0]:
             raise EntryInterrupted('Live input ownership lost')
 
     def deadline(self):
@@ -64,14 +64,16 @@ class LiveInput:
         return (deadline if deadline is not None else time.monotonic() + 120) - 20
 
     def enter(self, text, target, *, field, empty_check, surface_guard):
+        field_label = {'live_title': 'title', 'live_caption': 'caption', 'comment': 'pinned comment'}.get(field, 'text')
         deadline = self.deadline()
         result = self.composer_entry.enter(
             text, target['center'], field=field, empty_confirmed=empty_check,
             surface_guard=surface_guard, deadline=deadline,
         )
         if not result.verified:
-            raise RuntimeError('Facebook did not accept the Live text (' + result.status
-                               + '). Check the field before starting.')
+            reason = result.interruption_reason or result.status
+            raise RuntimeError('Live ' + field_label + ' entry could not be verified (' + reason
+                               + '). Nothing was saved or published.')
         owner = self.composer_entry.last_owner
         waiter = self.composer_entry.waiter(owner, deadline, surface_guard)
         try:
@@ -80,9 +82,13 @@ class LiveInput:
             self.review.review(text, field, 0, waiter)
             waiter.checkpoint()
             if self.composer_entry.read_field(waiter) != text:
-                raise EntryInterrupted('Live text changed during review')
+                raise EntryInterrupted('Live text changed during review', 'field_content_changed')
+        except EntryInterrupted as error:
+            raise RuntimeError('Live ' + field_label + ' review was interrupted (' + error.reason
+                               + '); nothing was saved or published.') from None
         except Exception:
-            raise RuntimeError('Live text review was interrupted; nothing was saved or published.') from None
+            raise RuntimeError('Live ' + field_label + ' review failed (verification_unavailable); '
+                               'nothing was saved or published.') from None
         return result
 
     def before_save(self):

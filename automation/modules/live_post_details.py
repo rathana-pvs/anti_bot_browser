@@ -1,6 +1,6 @@
 """Fill Live's reversible post details using fresh OCR and X11 input.
 
-No screenshots, field contents or clipboard values are written to evidence.
+Failure evidence may retain the verified dialog; its background is masked.
 This module never clicks Go live or starts ingest.
 """
 import time
@@ -33,8 +33,33 @@ class LivePostDetails:
         image = self.task.client.screenshot()
         # The post form is narrower than the End Live confirmation region.
         # Keep background setup labels outside field recognition.
-        return image, self.task.vision.read_text(
+        items = self.task.vision.read_text(
             image, region=self.dialog_region(image), min_confidence=.55)
+        checks = {
+            'save_count': len(self.find(items, {'save'})),
+            'heading_found': any(phrase(items, heading) for heading in ('create post', 'edit post', 'edit post details')),
+            'title_label_count': len(self.find(items, self.TITLE)),
+        }
+        diagnostic_items = items
+        if checks['save_count'] != 1 or not (checks['heading_found'] or checks['title_label_count']):
+            # A growing caption can move the modal heading/footer outside the
+            # narrow field region. Accept the wider observation only when it
+            # independently confirms the post-details heading and unique Save.
+            h, w = image.shape[:2]
+            try:
+                diagnostic_items = self.task.vision.read_text(
+                    image, region=(int(.28*w), int(.08*h), int(.44*w), int(.90*h)), min_confidence=.55)
+                wide_save_count = len(self.find(diagnostic_items, {'save'}))
+                wide_heading = any(phrase(diagnostic_items, heading)
+                                   for heading in ('create post', 'edit post', 'edit post details'))
+                checks.update(wide_save_count=wide_save_count, wide_heading_found=wide_heading)
+                if wide_save_count == 1 and wide_heading:
+                    items = diagnostic_items
+                    checks['used_wider_region'] = True
+            except Exception:
+                pass
+        self.task.observe_failure_evidence(image, diagnostic_items, 'post_details_dialog', checks)
+        return image, items
 
     @staticmethod
     def find(items, labels):

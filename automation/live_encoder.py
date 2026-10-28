@@ -4,6 +4,7 @@ The destination arrives on stdin. Only phase markers and numeric progress leave
 stdout; FFmpeg stderr never becomes application logs.
 """
 import argparse
+import json
 import os
 from pathlib import Path
 import signal
@@ -11,6 +12,24 @@ import subprocess
 import sys
 import threading
 import time
+
+
+def classify_encoder_error(line):
+    """Return fixed diagnostics; never persist FFmpeg's credential-bearing text."""
+    text = line.lower()
+    for markers, reason in [
+        (('invalid stream key', 'invalid streamkey'), 'invalid_stream_key'),
+        (('server error', 'publishing failed', 'authentication failed'), 'server_rejected_stream'),
+        (('connection refused',), 'connection_refused'),
+        (('connection timed out', 'operation timed out'), 'connection_timeout'),
+        (('certificate verify failed', 'tls handshake failed'), 'tls_failed'),
+        (('no such file or directory',), 'input_missing'),
+        (('unknown encoder',), 'encoder_unavailable'),
+        (('invalid data found',), 'invalid_media'),
+    ]:
+        if any(marker in text for marker in markers):
+            return reason
+    return None
 
 
 def main():
@@ -37,6 +56,27 @@ def main():
     sender = relay = None
     phase_started = None
     output_lock = threading.Lock()
+    diagnostic_lock = threading.Lock()
+    failure_reason = None
+
+    def note_failure(reason):
+        nonlocal failure_reason
+        with diagnostic_lock:
+            if failure_reason == 'invalid_stream_key':
+                return
+            failure_reason = reason
+            path = Path(str(pidfile) + '.diagnostic.json')
+            temporary = path.with_suffix('.tmp')
+            temporary.write_text(json.dumps({'failure_reason': reason}))
+            temporary.replace(path)
+
+    def watch_errors(proc):
+        def receive():
+            for line in iter(lambda: proc.stderr.readline(4096), b''):
+                reason = classify_encoder_error(line.decode(errors='replace'))
+                if reason:
+                    note_failure(reason)
+        threading.Thread(target=receive, daemon=True).start()
 
     def emit(value):
         with output_lock:
@@ -64,7 +104,9 @@ def main():
                 '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2',
                 '-mpegts_flags', '+resend_headers+initial_discontinuity',
                 '-muxdelay', '0', '-muxpreload', '0', '-f', 'mpegts', 'pipe:1']
-        return subprocess.Popen(cmd, stdout=relay.stdin, stderr=subprocess.DEVNULL)
+        proc = subprocess.Popen(cmd, stdout=relay.stdin, stderr=subprocess.PIPE)
+        watch_errors(proc)
+        return proc
 
     try:
         # MPEG-TS discontinuities let the single relay adjust timestamps when the
@@ -73,7 +115,8 @@ def main():
             '-fflags', '+genpts', '-dts_delta_threshold', '0.1', '-probesize', '1048576', '-analyzeduration', '1000000',
             '-f', 'mpegts', '-i', 'pipe:0', '-map', '0:v:0', '-map', '0:a:0', '-c', 'copy',
             '-progress', 'pipe:1', '-stats_period', '0.5', '-f', 'flv', destination],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        watch_errors(relay)
         def progress():
             for line in relay.stdout:
                 # Playback progress is independent of startup ingest timestamps.
@@ -87,6 +130,8 @@ def main():
         deadline = time.monotonic() + args.startup_timeout
         while not stopped.is_set() and not control.exists():
             if sender.poll() is not None or relay.poll() is not None or time.monotonic() >= deadline:
+                if failure_reason is None:
+                    note_failure('startup_timeout' if time.monotonic() >= deadline else 'encoder_startup_failed')
                 emit('failure=startup')
                 return 1
             stopped.wait(.05)

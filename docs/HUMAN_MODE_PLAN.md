@@ -3,14 +3,15 @@
 Status: core local implementation added on `codex/human-mode-caption-hooks`.
 
 Implemented: shared whole-caption entry policy; strict paste; stable session pacing;
-clipboard draft/readback checks; focus/pointer/cancellation guards; review budgets;
+clipboard draft/readback checks; window-focus/cancellation guards; review budgets;
 Photo/Reel/Live/comment integration; text-only hook generation, preview, approval, and
 immutable local scheduling snapshots. Tests use offline input/provider fixtures.
 
 Remaining validation: real Docker/X11 composer calibration and a provider pilot.
 No live posts or provider calls were made during implementation. Multiline/Unicode
 captions conservatively use paste; there is no validated multiline typing mode.
-X11 focus/pointer checks cannot detect all manual keyboard activity. Optional media
+Pointer movement alone does not interrupt entry. X11 window-focus checks cannot
+detect all manual keyboard activity or reliably identify the focused browser field. Optional media
 analysis remains a later phase. Cloud integration was not verified because the
 sibling repository was unavailable. The resource-control consumer now tolerates
 an omitted `ocr_engine.locked` field, preserving the pre-existing type edit while

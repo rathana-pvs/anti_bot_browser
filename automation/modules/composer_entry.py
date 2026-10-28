@@ -42,8 +42,6 @@ class ComposerEntry:
             current_owner = task.client.input_owner()
             if current_owner[0] != owner[0]:
                 raise EntryInterrupted('Window focus changed', 'focus_changed')
-            if current_owner[1] != owner[1]:
-                raise EntryInterrupted('Pointer moved', 'pointer_moved')
             return True
         return InteractionWait(guard=guard, surface_guard=surface_guard, progress=lambda: task.log('INFO', 'Caption entry/review in progress.'))
 

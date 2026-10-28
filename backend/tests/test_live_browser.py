@@ -406,7 +406,32 @@ def test_live_post_form_uses_narrow_modal_region(task):
     from modules.live_post_details import LivePostDetails
     task.client.screenshot.return_value = image()
     LivePostDetails(task).read_dialog()
-    assert task.vision.read_text.call_args.kwargs['region'] == (420, 250, 360, 600)
+    assert task.vision.read_text.call_args_list[0].kwargs['region'] == (420, 250, 360, 600)
+
+
+def test_tall_dialog_remains_confirmed_when_heading_and_save_leave_narrow_region(task):
+    from modules.live_post_details import LivePostDetails
+    from modules.live_evidence import LiveFailureEvidence
+    task.failure_evidence = LiveFailureEvidence('profile_009')
+    task.client.screenshot.return_value = image()
+    task.vision.read_text.side_effect = [[], [item('Save', x=700, y=930), item('Create post', x=600, y=180)]]
+    _, items = LivePostDetails(task).read_dialog()
+    assert len(items) == 2
+    assert task.vision.read_text.call_args.kwargs['region'] == (336, 80, 528, 900)
+    assert task.failure_evidence.observation[1]['checks']['save_count'] == 0
+    assert task.failure_evidence.observation[1]['checks']['used_wider_region'] is True
+
+
+@pytest.mark.parametrize('wide_items', [[], [item('Save', x=700, y=930)],
+    [item('Create post', x=600, y=180)],
+    [item('Create post', x=600, y=180), item('Save', x=700, y=930), item('Save', x=800, y=930)]])
+def test_wide_region_requires_heading_and_unique_save(task, wide_items):
+    from modules.live_post_details import LivePostDetails
+    from modules.live_evidence import LiveFailureEvidence
+    task.failure_evidence = LiveFailureEvidence('profile_009')
+    task.client.screenshot.return_value = image()
+    task.vision.read_text.side_effect = [[], wide_items]
+    assert LivePostDetails(task).read_dialog()[1] == []
 
 
 def test_description_required_label_sits_above_editable_body(task):
@@ -551,6 +576,37 @@ def test_blank_preset_disables_without_opening_or_typing(task):
     module.set(ready(task),'')
     module.set_enabled.assert_called_once_with(False)
     module.open_editor.assert_not_called()
+    task.client.exec_cmd.assert_not_called()
+
+
+def test_preset_below_long_caption_scrolls_from_verified_panel_heading(task):
+    from modules.live_pinned_comment import LivePinnedComment
+    module = LivePinnedComment(task)
+    heading = item('Drive conversions from your live video', x=1320, y=800)
+    switch = {'center': (1530, 800), 'enabled': False}
+    module.read_right = Mock(side_effect=[(image(), [heading]), (image(), [heading]), (image(), [])])
+    module.toggle = Mock(side_effect=[None, switch])
+    assert module.settings()[2] == switch
+    task.click.assert_called_once_with(heading)
+    task.client.exec_cmd.assert_called_once_with(['xdotool', 'key', '--clearmodifiers', 'Page_Down'])
+
+
+def test_preset_settings_scroll_is_bounded_and_never_uses_unrecognized_surface(task, monkeypatch):
+    from modules.live_pinned_comment import LivePinnedComment
+    ticks = iter(range(1000))
+    monkeypatch.setattr('modules.live_pinned_comment.time.monotonic', lambda: next(ticks))
+    monkeypatch.setattr('modules.live_pinned_comment.time.sleep', lambda _: None)
+    module = LivePinnedComment(task)
+    heading = item('Add post details', x=1320, y=250)
+    module.read_right = Mock(return_value=(image(), [heading]))
+    module.toggle = Mock(return_value=None)
+    with pytest.raises(RuntimeError, match='preset pinned-comment setting'):
+        module.settings()
+    assert task.client.exec_cmd.call_count == 3
+    task.client.exec_cmd.reset_mock()
+    module.read_right.return_value = (image(), [])
+    with pytest.raises(RuntimeError, match='preset pinned-comment setting'):
+        module.settings()
     task.client.exec_cmd.assert_not_called()
 
 

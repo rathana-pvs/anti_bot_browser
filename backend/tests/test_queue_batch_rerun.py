@@ -14,7 +14,6 @@ def configure(monkeypatch, executions, save=True):
     monkeypatch.setattr(container_lifecycle, "snapshot", lambda: {})
     queue = {"daily_batches": [{"batch_id": "batch", "posts": [
         {"type": "reel", "executions": executions},
-        {"type": "live", "executions": [{"status": "failed_before_publish"}]},
     ]}]}
     monkeypatch.setattr(router, "load_posting_queue", lambda: deepcopy(queue))
     monkeypatch.setattr(router, "with_queue_claim_lock", lambda callback: callback())
@@ -118,3 +117,27 @@ def test_rerun_does_not_clear_unmigrated_ownership(monkeypatch):
     assert result["blocked"] == 1
     saved.assert_not_called()
     dispatched.assert_not_called()
+
+
+def test_rerun_includes_safe_live_failures_and_preserves_unresolved_sessions(monkeypatch):
+    from backend.services import live_service
+
+    statuses = ['failed_before_publish', 'cancelled', 'pending', 'needs_review', 'completed', 'running', 'stopped', 'failed_before_publish']
+    executions = [dict(execution_id=str(i), profile_id='p' + str(i), status=status)
+                  for i, status in enumerate(statuses)]
+    saved, dispatched = configure(monkeypatch, [])
+    queue = {'daily_batches': [{'batch_id': 'batch', 'posts': [{'type': 'live', 'executions': executions}]}]}
+    monkeypatch.setattr(router, 'load_posting_queue', lambda: deepcopy(queue))
+    monkeypatch.setattr(live_service, 'get_status', lambda profile: (
+        {'status': 'needs_review', 'queue_execution_id': '7'} if profile == 'p7' else {'status': 'failed'}))
+
+    result = asyncio.run(router.rerun_batch('batch'))
+
+    assert result['queued'] == 3
+    assert result['needs_review'] == 3
+    assert result['already_finished'] == 1
+    assert result['blocked'] == 1
+    items = saved.call_args.args[0]['daily_batches'][0]['posts'][0]['executions']
+    assert all(e['status'] == 'pending' for e in items[:3])
+    assert items[3:] == executions[3:]
+    dispatched.assert_called_once()

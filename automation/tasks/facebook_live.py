@@ -1,8 +1,7 @@
 """Template-driven browser half of Facebook Live; FFmpeg stays in the service.
 
-Unlike upload tasks this does not inherit BaseTask's screenshot evidence: Live
-Producer displays stream credentials. Only safe workflow/template metadata is
-returned; screenshots and OCR are transient.
+Live Producer displays stream credentials. Failure evidence masks everything
+except recognized control labels; raw screenshots and OCR remain transient.
 """
 from pathlib import Path
 import time
@@ -15,6 +14,7 @@ from engine.runtime_paths import automation_dir
 from engine.vision import VisionEngine
 from modules.live_post_details import LivePostDetails
 from modules.live_input import LiveInput
+from modules.live_evidence import LiveFailureEvidence
 from modules.live_pinned_comment import LivePinnedComment
 from modules.live_producer import LiveProducerTemplates, enabled_color, label, phrase
 
@@ -22,6 +22,7 @@ from modules.live_producer import LiveProducerTemplates, enabled_color, label, p
 class FacebookLiveTask:
     def __init__(self, profile_id, brain_package=None):
         self.client = ContainerClient(profile_id)
+        self.failure_evidence = LiveFailureEvidence(profile_id)
         self.vision = VisionEngine(self.client)
         self.input_cancelled = False
         self.live_input = LiveInput(self, profile_id)
@@ -35,6 +36,16 @@ class FacebookLiveTask:
         callback = getattr(self, 'on_event', None)
         if callback:
             callback(event)
+
+    def observe_failure_evidence(self, image, items, source, checks=None):
+        evidence = getattr(self, 'failure_evidence', None)
+        if evidence is not None:
+            try:
+                evidence.observe(image, items, source, checks)
+            except Exception:
+                # Diagnostics must not affect input/publication decisions or
+                # attach an older screenshot to a newer failed observation.
+                evidence.observation = None
 
     def inspect(self):
         """Observe publication state without navigation or publication clicks."""
@@ -65,6 +76,7 @@ class FacebookLiveTask:
             regions['sidebar'] += self.vision.read_text(
                 image, region=(0, int(.18*h), int(.19*w), int(.14*h)), min_confidence=.55)
         frame = self.layouts.observe(image, regions)
+        self.observe_failure_evidence(image, [item for items in regions.values() for item in items], action)
         self.template_id = frame.template_id
         return frame
 

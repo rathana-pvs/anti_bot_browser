@@ -180,7 +180,7 @@ def update(record, stage=None, **fields):
     record['last_activity_at'] = now()
     # Store only public fields; never serialize processes, keys, or settings.
     public = {k: record[k] for k in ('profile_id', 'task', 'session_id', 'status', 'stage', 'started_at',
-              'ended_at', 'filename', 'duration_seconds', 'elapsed_seconds', 'error', 'logs', 'broadcast_confirmed', 'queue_execution_id', 'loop', 'max_duration_seconds', 'muted', 'brain', 'browser_template', 'browser_state', 'encoder_exit_code', 'final_browser_state', 'playback_mode', 'source_duration_seconds', 'startup_elapsed_seconds', 'playback_started_at') if k in record}
+              'ended_at', 'filename', 'duration_seconds', 'elapsed_seconds', 'error', 'logs', 'broadcast_confirmed', 'queue_execution_id', 'loop', 'max_duration_seconds', 'muted', 'brain', 'browser_template', 'browser_state', 'encoder_exit_code', 'final_browser_state', 'playback_mode', 'source_duration_seconds', 'startup_elapsed_seconds', 'playback_started_at', 'evidence_dir') if k in record}
     private_write(state_path(record['profile_id']), public)
     if record.get('queue_execution_id'):
         sync_queue(record)
@@ -200,7 +200,7 @@ def sync_queue(record, finalize=False):
         if not match or (match['execution'].get('scheduler_lease') or {}).get('lease_id') != lease.get('lease_id'):
             raise RuntimeError('Live queue ownership lost; check Facebook')
         execution = match['execution']
-        for key in ('elapsed_seconds', 'duration_seconds', 'broadcast_confirmed', 'error', 'session_id', 'brain', 'browser_template', 'browser_state', 'logs', 'encoder_exit_code', 'final_browser_state', 'playback_mode', 'source_duration_seconds', 'startup_elapsed_seconds', 'playback_started_at'):
+        for key in ('elapsed_seconds', 'duration_seconds', 'broadcast_confirmed', 'error', 'session_id', 'brain', 'browser_template', 'browser_state', 'logs', 'encoder_exit_code', 'final_browser_state', 'playback_mode', 'source_duration_seconds', 'startup_elapsed_seconds', 'playback_started_at', 'evidence_dir'):
             if key in record:
                 execution[key] = record[key]
         stage = record.get('stage')
@@ -312,6 +312,12 @@ async def browser_action(profile_id, action, producer_url, stop_event):
         if not isinstance(result, dict):
             raise RuntimeError('Facebook Live verification failed')
         if not result.get('success'):
+            raw_evidence = result.get('evidence_dir')
+            if isinstance(raw_evidence, str):
+                directory = Path(raw_evidence).resolve()
+                expected = (PROFILES_DIR / profile_id / 'automation_evidence').resolve()
+                if directory.parent == expected and directory.is_dir():
+                    update(record, evidence_dir=str(directory))
             raise RuntimeError(result.get('error') or 'Facebook Live verification failed')
         expected_state = result.get('state') if action == 'inspect' else {'prepare': 'prepared', 'start': 'live', 'end': 'ended'}[action]
         allowed_states = {'live', 'ended', 'unconfirmed'} if action == 'inspect' else {expected_state}

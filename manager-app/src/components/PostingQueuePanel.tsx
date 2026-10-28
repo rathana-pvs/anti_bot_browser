@@ -246,7 +246,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
 
   const stopAndCancel = async (batch?: DailyBatch) => {
     const confirmed = await showConfirm(
-      `${batch ? `Stop running work and cancel everything still waiting in “${batch.name}”? Other batches keep going.` : 'Stop running work and cancel everything still waiting in every batch?'} Items hidden by filters are included. Posts already sent can’t be undone, and an interrupted post may need review. Cloud jobs aren’t affected.`,
+      `${batch ? `Stop running work and cancel everything still waiting in “${batch.name}”? Other batches keep going.` : 'Stop running work and cancel everything still waiting in every batch?'} Items hidden by filters are included. Active Live broadcasts will be ended. Posts already sent can’t be undone, and an interrupted post may need review. Cloud jobs aren’t affected.`,
       { title: batch ? 'Stop and cancel this batch?' : 'Stop and cancel everything?', confirmLabel: batch ? 'Stop and cancel batch' : 'Stop and cancel all', variant: 'danger' },
     );
     if (!confirmed) return;

@@ -108,7 +108,8 @@ _queue_execution_tasks: dict[str, asyncio.Task] = {}
 
 
 async def cancel_all_local_posts(batch_id: str | None = None) -> dict:
-    """Cancel local posts in one batch or the entire schedule, excluding cloud and Live."""
+    """Cancel local work, ending active Live broadcasts through their stop flow."""
+    live_execution_ids = set()
     def cancel_schedule():
         queue = load_posting_queue()
         batches = queue.get("daily_batches", [])
@@ -119,9 +120,9 @@ async def cancel_all_local_posts(batch_id: str | None = None) -> dict:
         selected = []
         for batch in batches:
             for post in batch.get("posts", []):
-                if post.get("type") == "live":
-                    continue
                 for execution in post.get("executions", []):
+                    if post.get("type") == "live":
+                        live_execution_ids.add(execution["execution_id"])
                     if (not execution.get("cloud_attempt_id")
                             and (execution.get("network_recovery") or {}).get("state") in network_recovery.ACTIVE_STATES):
                         network_recovery.stop_recovery(execution, "cancelled")
@@ -147,7 +148,18 @@ async def cancel_all_local_posts(batch_id: str | None = None) -> dict:
     selected = with_queue_claim_lock(cancel_schedule)
     prepared = [e for e in selected if e.get("status") == "cancelled" and e.get("container_owner_token")]
     tasks = [_queue_execution_tasks[e["execution_id"]] for e in selected if e["execution_id"] in _queue_execution_tasks]
+    live_tasks = set()
+    for execution in selected:
+        if (execution["execution_id"] in live_execution_ids
+                and execution.get("status") in ("running", "preparing")):
+            # Task cancellation would interrupt the browser's End live flow.
+            # Fence the stop to this execution so another session cannot be stopped.
+            from backend.services.live_service import stop_live
+            stop_live(execution["profile_id"], execution["execution_id"])
+            live_tasks.add(_queue_execution_tasks[execution["execution_id"]])
     for task in tasks:
+        if task in live_tasks:
+            continue
         if not task.cancelling():
             task.cancel()
     if tasks:

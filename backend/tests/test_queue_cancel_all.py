@@ -25,16 +25,16 @@ def test_cancels_every_batch_pending_and_ready_but_preserves_other_work(monkeypa
     published = {"execution_id": "published", "status": "published"}
     uncertain = {"execution_id": "uncertain", "status": "uncertain"}
     cloud = {"execution_id": "cloud", "status": "pending", "cloud_attempt_id": "attempt"}
-    live = {"execution_id": "live", "status": "running"}
+    live = {"execution_id": "live", "status": "pending"}
     queue = setup_queue(monkeypatch, [{"type": "photo", "executions": [pending, published, uncertain, cloud]}, {"type": "live", "executions": [live]}])
     queue["daily_batches"].append({"posts": [{"type": "reel", "executions": [ready]}]})
     result = asyncio.run(svc.cancel_all_local_posts())
-    assert result["cancelled"] == 2
+    assert result["cancelled"] == 3
     assert pending["status"] == ready["status"] == "cancelled"
     assert published["status"] == "published"
     assert uncertain["status"] == "uncertain"
     assert cloud["status"] == "pending"
-    assert live["status"] == "running"
+    assert live["status"] == "cancelled"
     svc.lifecycle.release.assert_awaited_once()
     assert asyncio.run(svc.cancel_all_local_posts())["cancelled"] == 0
 
@@ -104,3 +104,61 @@ def test_missing_batch_does_not_cancel_anything(monkeypatch):
         asyncio.run(svc.cancel_all_local_posts(batch_id="missing"))
     assert execution["status"] == "pending"
     svc.save_posting_queue.assert_not_called()
+
+
+@pytest.mark.parametrize("batch_id", [None, "selected-batch"])
+@pytest.mark.parametrize("outcome", ["completed", "needs_review"])
+def test_live_cancellation_uses_graceful_stop_and_waits_for_cleanup(monkeypatch, batch_id, outcome):
+    from backend.services import live_service as live
+
+    execution = {"execution_id": "live", "profile_id": "p", "status": "pending"}
+    pending = {"execution_id": "waiting-live", "status": "pending"}
+    cloud = {"execution_id": "cloud-live", "status": "running", "cloud_attempt_id": "cloud"}
+    queue = setup_queue(monkeypatch, [{"type": "live", "executions": [execution, pending, cloud]}])
+    queue["daily_batches"][0]["batch_id"] = "selected-batch"
+    other = {"execution_id": "other-live", "status": "pending"}
+    if batch_id:
+        queue["daily_batches"].append({"batch_id": "other", "posts": [{"type": "live", "executions": [other]}]})
+    monkeypatch.setattr(live, "CONTROLS", {})
+    monkeypatch.setattr(live, "update", Mock())
+
+    async def scenario():
+        started = asyncio.Event()
+        stop = asyncio.Event()
+
+        async def broadcast(execution_id):
+            execution.update(status="running", container_owner_token=svc.lifecycle.OWNER_TOKEN.get())
+            live.CONTROLS["p"] = stop
+            svc.active_automation_tasks["p"] = {"task": "live", "queue_execution_id": execution_id}
+            started.set()
+            await stop.wait()
+            # Simulate the End live action and encoder/container cleanup.
+            await asyncio.sleep(0)
+            execution.update(status=outcome, stage=outcome)
+
+        task = asyncio.create_task(svc._run_owned_queue("live", broadcast))
+        await started.wait()
+        result = await svc.cancel_all_local_posts(batch_id)
+        assert result["cancelled"] == 2
+        assert stop.is_set()
+        assert task.done() and not task.cancelled()
+        assert execution["status"] == outcome
+        assert pending["status"] == "cancelled"
+        assert cloud["status"] == "running"
+        assert other["status"] == "pending"
+        live.update.assert_called_once_with(svc.active_automation_tasks["p"], "stopping")
+
+    asyncio.run(scenario())
+
+
+def test_live_stop_is_not_signalled_when_cancellation_cannot_be_saved(monkeypatch):
+    from backend.services import live_service as live
+
+    execution = {"execution_id": "live", "profile_id": "p", "status": "running"}
+    setup_queue(monkeypatch, [{"type": "live", "executions": [execution]}])
+    monkeypatch.setattr(svc, "_queue_execution_tasks", {"live": Mock()})
+    monkeypatch.setattr(live, "stop_live", Mock())
+    svc.save_posting_queue.return_value = False
+    with pytest.raises(OSError, match="persist"):
+        asyncio.run(svc.cancel_all_local_posts())
+    live.stop_live.assert_not_called()

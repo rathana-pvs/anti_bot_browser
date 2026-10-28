@@ -18,6 +18,17 @@ SETTINGS = {'server_url': 'rtmps://live-api-s.facebook.com:443/rtmp/',
             'stream_key': 'FB-test-secret-key-123456', 'producer_url': 'https://www.facebook.com/live/producer/'}
 
 
+@pytest.mark.parametrize('message,reason', [
+    ('Server error: invalid stream key: FB-PRIVATE', 'invalid_stream_key'),
+    ('Server error: Publishing failed: rtmps://host/FB-PRIVATE', 'server_rejected_stream'),
+    ('Connection timed out: rtmps://host/FB-PRIVATE', 'connection_timeout'),
+    ('Unrecognized error containing FB-PRIVATE', None),
+])
+def test_encoder_diagnostics_never_include_credentials(message, reason):
+    from automation.live_encoder import classify_encoder_error
+    assert classify_encoder_error(message) == reason
+
+
 @pytest.fixture
 def sandbox(tmp_path, monkeypatch):
     profiles = tmp_path / 'profiles'
@@ -522,6 +533,31 @@ async def test_browser_helper_receives_pin_and_only_verified_metadata_is_persist
 def test_invalid_live_details(title, caption):
     with pytest.raises(ValueError):
         live.validate_details(title, caption)
+
+
+@run_async_test
+@pytest.mark.parametrize('inside_profile', [True, False])
+async def test_browser_failure_links_only_own_profile_evidence(sandbox, monkeypatch, inside_profile):
+    package = live.resolve_live_brain(live.AUTOMATION_RUNNER.parent, live.ROOT_DIR / 'automation')
+    record = {'profile_id': PROFILE, 'task': 'live', 'status': 'running', 'stage': 'preparing',
+              'brain': package.metadata(), 'brain_package': str(package.root),
+              'title': 'Title', 'caption': 'Caption'}
+    automation.active_automation_tasks[PROFILE] = record
+    directory = (live.PROFILES_DIR / PROFILE / 'automation_evidence' / 'failure'
+                 if inside_profile else sandbox / 'outside')
+    directory.mkdir(parents=True)
+    proc = AsyncMock()
+    proc.returncode = 0
+    proc.stdin.write = Mock()
+    proc.stdin.close = Mock()
+    proc.stdout.readline.side_effect = [json.dumps({'success': False,
+        'error': 'Live caption review was interrupted (composer_unconfirmed)',
+        'evidence_dir': str(directory)}).encode(), b'']
+    monkeypatch.setattr(live.asyncio, 'create_subprocess_exec', AsyncMock(return_value=proc))
+    with pytest.raises(RuntimeError, match='composer_unconfirmed'):
+        await live.browser_action(PROFILE, 'prepare', SETTINGS['producer_url'], asyncio.Event())
+    public = live.read_json(live.state_path(PROFILE))
+    assert public.get('evidence_dir') == (str(directory) if inside_profile else None)
 
 
 @run_async_test

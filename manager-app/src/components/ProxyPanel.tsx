@@ -323,8 +323,8 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
                     <div className="flex justify-end gap-1">
                       <button onClick={() => checkSpeeds([proxy.id])} disabled={busy}
                         aria-label={`Check download/upload for ${proxy.host}:${proxy.port}`} title="Check download and upload"
-                        className="flex items-center gap-1 whitespace-nowrap rounded p-1.5 text-blue-300 hover:bg-zinc-800 disabled:opacity-30">
-                        <Gauge className="h-3.5 w-3.5" />Download/upload
+                        className="rounded p-1.5 text-blue-300 hover:bg-zinc-800 disabled:opacity-30">
+                        <Gauge className="h-3.5 w-3.5" />
                       </button>
                       <button onClick={() => handleTestPing(proxy.id)} disabled={busy || testingId === proxy.id}
                         aria-label={`Test ${proxy.host}:${proxy.port}`} title="Test connection"

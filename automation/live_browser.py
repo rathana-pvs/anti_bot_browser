@@ -17,6 +17,7 @@ def main():
     args = parser.parse_args()
     output = sys.stdout
     sys.stdout = sys.stderr
+    task = None
     try:
         if bool(args.brain_package) != bool(args.brain_digest):
             raise RuntimeError('A Live workflow pin requires both package and digest')
@@ -27,6 +28,13 @@ def main():
         result = task.run(args.action, args.producer_url, title=details.get('title', ''), caption=details.get('caption', ''), pinned_comment=details.get('pinned_comment'))
     except Exception as error:
         result = {'success': False, 'error': str(error) if isinstance(error, RuntimeError) else 'Facebook Live visual check failed'}
+        if task is not None:
+            try:
+                directory = task.failure_evidence.save(args.action)
+                if directory:
+                    result['evidence_dir'] = directory
+            except Exception:
+                result['evidence_capture_failed'] = True
     print(json.dumps(result), file=output, flush=True)
 
 
