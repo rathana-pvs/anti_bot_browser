@@ -27,6 +27,7 @@ from backend.services.ocr_worker_service import start_shared_ocr_worker, stop_sh
 from backend.routers import (
     settings,
     profiles,
+    devices,
     evidence,
     proxies,
     brains,
@@ -111,6 +112,7 @@ app.add_middleware(
 # Register API Routers
 app.include_router(settings.router)
 app.include_router(profiles.router)
+app.include_router(devices.router)
 app.include_router(evidence.router)
 app.include_router(proxies.router)
 app.include_router(brains.router)

@@ -68,7 +68,7 @@ export async function fetchProfiles(): Promise<Profile[]> {
   return res.json();
 }
 
-async function apiError(res: Response, fallback: string): Promise<Error> {
+export async function apiError(res: Response, fallback: string): Promise<Error> {
   try {
     const text = await res.text();
     try {

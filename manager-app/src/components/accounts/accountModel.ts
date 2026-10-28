@@ -57,6 +57,13 @@ export function activityFor(profileId: string, executions: QueueExecutionItem[],
   };
 }
 
+/** Accounts that live on an Android user of a physical phone, not a browser container. */
+export const isAndroid = (profile: Profile) => profile.runtime?.kind === 'android_user';
+
+export function phoneLabel(profile: Profile) {
+  return profile.runtime ? `Phone · Android user ${profile.runtime.android_user_id}` : '';
+}
+
 /** Browser problems shown under the status. */
 export function browserNotes(profile: Profile): HealthSignal[] {
   const notes: HealthSignal[] = [];

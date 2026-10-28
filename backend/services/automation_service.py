@@ -66,6 +66,7 @@ from backend.services.queue_service import (
 
 from backend.services import container_lifecycle as lifecycle
 from backend.services import network_recovery
+from backend.services.android_devices import ensure_not_android
 
 # Brain CLI wrapper
 def run_brain_cli(args: list[str]) -> dict:
@@ -291,6 +292,7 @@ def latest_queue_task_state(profile_id: str) -> dict | None:
 
 # Container readiness and lifecycle helpers
 async def run_profile_lifecycle_action(profile_id: str, action: str, timeout_sec: float = 90.0) -> str:
+    ensure_not_android(profile_id, "Browser automation")
     script_path = SCRIPTS_DIR / "run_profile.sh"
     proc = await asyncio.create_subprocess_exec(
         "bash", str(script_path), profile_id, action,
@@ -429,6 +431,7 @@ async def launch_manual_automation(
     profile_dir = PROFILES_DIR / profile_id
     if not profile_dir.exists():
         raise FileNotFoundError(f"Profile '{profile_id}' not found")
+    ensure_not_android(profile_id, "Automation")
 
     slot_kind = "preparer" if task == "warming" else "publisher"
     scheduler_cfg = get_scheduler_config()

@@ -1,0 +1,188 @@
+"""Thin ADB wrapper for physical Android phones.
+
+Parsers are pure functions so they can be tested with recorded output. Every
+command runs against one explicit serial; nothing here talks to "the" device.
+"""
+from __future__ import annotations
+
+import os
+import re
+import shutil
+import subprocess
+from dataclasses import dataclass
+
+SERIAL_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,64}$")
+FACEBOOK_PACKAGE = "com.facebook.katana"
+DEFAULT_TIMEOUT = 15.0
+
+_USER_RE = re.compile(r"UserInfo\{(\d+):(.*):([0-9a-fA-F]+)\}(\s+running)?")
+_USER_SERIAL_RE = re.compile(r"UserInfo\{(\d+):.*?\}\s+serialNo=(\d+)")
+
+
+class AdbError(RuntimeError):
+    pass
+
+
+class AdbUnavailable(AdbError):
+    pass
+
+
+@dataclass(frozen=True)
+class AndroidUser:
+    user_id: int
+    name: str
+    flags: int
+    running: bool
+
+
+def adb_path() -> str | None:
+    configured = os.environ.get("ADB_PATH")
+    if configured:
+        return configured if os.path.isfile(configured) else None
+    return shutil.which("adb")
+
+
+def validate_serial(serial: str) -> str:
+    if not SERIAL_RE.fullmatch(serial or ""):
+        raise ValueError("Invalid device serial")
+    return serial
+
+
+def parse_devices(output: str) -> list[dict]:
+    """Parse `adb devices -l`. State is device, unauthorized, offline, etc."""
+    devices = []
+    for line in output.splitlines():
+        line = line.strip()
+        if not line or line.startswith("List of devices") or line.startswith("*"):
+            continue
+        parts = line.split()
+        if len(parts) < 2 or not SERIAL_RE.fullmatch(parts[0]):
+            continue
+        details = dict(part.split(":", 1) for part in parts[2:] if ":" in part)
+        devices.append({
+            "serial": parts[0],
+            "state": parts[1],
+            "connection": "usb" if "usb" in details else ("wifi" if ":" in parts[0] else "unknown"),
+            "model": (details.get("model") or "").replace("_", " ") or None,
+        })
+    return devices
+
+
+def parse_users(output: str) -> list[AndroidUser]:
+    users = []
+    for match in _USER_RE.finditer(output):
+        users.append(AndroidUser(
+            user_id=int(match.group(1)), name=match.group(2),
+            flags=int(match.group(3), 16), running=bool(match.group(4)),
+        ))
+    return users
+
+
+def parse_user_serials(dumpsys_user: str) -> dict[int, int]:
+    return {int(uid): int(serial) for uid, serial in _USER_SERIAL_RE.findall(dumpsys_user)}
+
+
+def parse_package_installed(output: str, package: str) -> bool:
+    return any(line.strip() == f"package:{package}" for line in output.splitlines())
+
+
+def parse_version_name(dumpsys_package: str) -> str | None:
+    match = re.search(r"versionName=(\S+)", dumpsys_package)
+    return match.group(1) if match else None
+
+
+def parse_battery(output: str) -> dict:
+    values = {}
+    for line in output.splitlines():
+        if ":" in line:
+            key, value = line.split(":", 1)
+            values[key.strip().casefold()] = value.strip()
+    level = values.get("level")
+    temperature = values.get("temperature")
+    charging = any(values.get(key) == "true" for key in ("ac powered", "usb powered", "wireless powered"))
+    return {
+        "level": int(level) if level and level.isdigit() else None,
+        "temperature_c": int(temperature) / 10 if temperature and temperature.lstrip("-").isdigit() else None,
+        "charging": charging,
+    }
+
+
+def parse_free_storage_mb(df_output: str) -> int | None:
+    lines = [line for line in df_output.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return None
+    parts = lines[-1].split()
+    if len(parts) < 4 or not parts[3].isdigit():
+        return None
+    return int(parts[3]) // 1024
+
+
+def parse_int(output: str) -> int | None:
+    match = re.search(r"(-?\d+)", output)
+    return int(match.group(1)) if match else None
+
+
+class AdbClient:
+    def __init__(self, binary: str | None = None, timeout: float = DEFAULT_TIMEOUT):
+        self.binary = binary or adb_path()
+        self.timeout = timeout
+
+    def _run(self, args: list[str], timeout: float | None = None) -> str:
+        if not self.binary:
+            raise AdbUnavailable("ADB is not installed. Install Android platform-tools and reopen the app.")
+        try:
+            result = subprocess.run(
+                [self.binary, *args], capture_output=True, text=True,
+                timeout=timeout or self.timeout, check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise AdbError(f"ADB timed out: {' '.join(args[:3])}") from exc
+        except OSError as exc:
+            raise AdbUnavailable(f"ADB could not be started: {exc}") from exc
+        if result.returncode != 0:
+            raise AdbError((result.stderr or result.stdout).strip() or f"ADB failed: {' '.join(args[:3])}")
+        return result.stdout
+
+    def shell(self, serial: str, *command: str, timeout: float | None = None) -> str:
+        return self._run(["-s", validate_serial(serial), "shell", *command], timeout)
+
+    def devices(self) -> list[dict]:
+        return parse_devices(self._run(["devices", "-l"]))
+
+    def properties(self, serial: str) -> dict:
+        names = ("ro.product.manufacturer", "ro.product.model", "ro.build.version.release", "ro.build.version.sdk")
+        values = [line.strip() for line in self.shell(serial, " ; ".join(f"getprop {name}" for name in names)).splitlines()]
+        values += [""] * (len(names) - len(values))
+        return {
+            "manufacturer": values[0] or None, "model": values[1] or None,
+            "android_version": values[2] or None,
+            "sdk": int(values[3]) if values[3].isdigit() else None,
+        }
+
+    def users(self, serial: str) -> list[AndroidUser]:
+        return parse_users(self.shell(serial, "pm", "list", "users"))
+
+    def user_serials(self, serial: str) -> dict[int, int]:
+        return parse_user_serials(self.shell(serial, "dumpsys", "user"))
+
+    def current_user(self, serial: str) -> int | None:
+        return parse_int(self.shell(serial, "am", "get-current-user"))
+
+    def max_users(self, serial: str) -> int | None:
+        return parse_int(self.shell(serial, "pm", "get-max-users"))
+
+    def package_installed(self, serial: str, user_id: int, package: str = FACEBOOK_PACKAGE) -> bool:
+        return parse_package_installed(
+            self.shell(serial, "pm", "list", "packages", "--user", str(int(user_id)), package), package)
+
+    def package_version(self, serial: str, package: str = FACEBOOK_PACKAGE) -> str | None:
+        return parse_version_name(self.shell(serial, "dumpsys", "package", package))
+
+    def battery(self, serial: str) -> dict:
+        return parse_battery(self.shell(serial, "dumpsys", "battery"))
+
+    def free_storage_mb(self, serial: str) -> int | None:
+        return parse_free_storage_mb(self.shell(serial, "df", "-k", "/data"))
+
+    def switch_user(self, serial: str, user_id: int) -> None:
+        self.shell(serial, "am", "switch-user", str(int(user_id)), timeout=30)

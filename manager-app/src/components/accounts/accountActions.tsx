@@ -1,7 +1,7 @@
 import { Copy, Eye, Eraser, FolderInput, FolderMinus, FolderPlus, ListChecks, Pause, PencilLine, Play, Settings2, Square, Trash2, ExternalLink } from 'lucide-react';
 import { Profile } from '../../types/profile';
 import type { ActionMenuItem } from '../ui/ActionMenu';
-import type { AccountTab } from './accountModel';
+import { isAndroid, type AccountTab } from './accountModel';
 
 export type ProfileAction = 'start' | 'stop' | 'pause' | 'unpause';
 
@@ -30,6 +30,16 @@ const icon = 'h-3.5 w-3.5';
 /** The same list backs the ⋯ button and the right-click menu, so they never drift apart. */
 export function accountMenu(profile: Profile, handlers: AccountHandlers, { includeOpen = true, failureCutoff }: { includeOpen?: boolean; failureCutoff?: number } = {}): ActionMenuItem[] {
   const items: ActionMenuItem[] = [];
+  if (isAndroid(profile)) {
+    if (includeOpen) items.push({ label: 'Open', icon: <ExternalLink className={icon} />, onSelect: () => handlers.open(profile.id, 'overview') });
+    items.push(
+      { label: 'Show in queue', icon: <ListChecks className={icon} />, onSelect: () => handlers.openQueue(profile.id), divider: includeOpen },
+      { label: 'Move to folder…', icon: <FolderInput className={icon} />, onSelect: () => handlers.moveToGroup([profile]) },
+      { label: 'Copy account ID', icon: <Copy className={icon} />, onSelect: () => handlers.copyId(profile) },
+      { label: 'Delete', icon: <Trash2 className={icon} />, danger: true, divider: true, onSelect: () => handlers.remove([profile]) },
+    );
+    return items;
+  }
   if (includeOpen) {
     items.push(
       { label: 'Open', icon: <ExternalLink className={icon} />, onSelect: () => handlers.open(profile.id, 'overview') },
@@ -59,8 +69,8 @@ const countLabel = (verb: string, count: number) => count ? `${verb} ${count} ac
 
 export function bulkMenu(profiles: Profile[], handlers: AccountHandlers): ActionMenuItem[] {
   const count = profiles.length;
-  const startable = profiles.filter(p => p.status === 'stopped' || p.status === 'error');
-  const stoppable = profiles.filter(p => p.status === 'running' || p.status === 'paused');
+  const startable = profiles.filter(p => !isAndroid(p) && (p.status === 'stopped' || p.status === 'error'));
+  const stoppable = profiles.filter(p => !isAndroid(p) && (p.status === 'running' || p.status === 'paused'));
   return [
     { label: countLabel('Start', startable.length), icon: <Play className={icon} />, disabled: !startable.length, onSelect: () => handlers.run(startable, 'start') },
     { label: countLabel('Stop', stoppable.length), icon: <Square className={icon} />, disabled: !stoppable.length, onSelect: () => handlers.run(stoppable, 'stop') },
@@ -71,8 +81,8 @@ export function bulkMenu(profiles: Profile[], handlers: AccountHandlers): Action
 
 /** Right-click menu for a folder in the folder column. */
 export function folderMenu(folder: string, members: Profile[], handlers: AccountHandlers, folders: FolderHandlers): ActionMenuItem[] {
-  const startable = members.filter(p => p.status === 'stopped' || p.status === 'error');
-  const stoppable = members.filter(p => p.status === 'running' || p.status === 'paused');
+  const startable = members.filter(p => !isAndroid(p) && (p.status === 'stopped' || p.status === 'error'));
+  const stoppable = members.filter(p => !isAndroid(p) && (p.status === 'running' || p.status === 'paused'));
   return [
     { label: countLabel('Start', startable.length), icon: <Play className={icon} />, disabled: !startable.length, onSelect: () => handlers.run(startable, 'start') },
     { label: countLabel('Stop', stoppable.length), icon: <Square className={icon} />, disabled: !stoppable.length, onSelect: () => handlers.run(stoppable, 'stop') },

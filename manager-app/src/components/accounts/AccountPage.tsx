@@ -10,7 +10,7 @@ import { Button } from '../ui/Button';
 import { useAppDialog } from '../ui/AppDialogProvider';
 import { cn } from '../ui/cn';
 import { AccountHandlers, accountMenu } from './accountActions';
-import { AccountTab, STATUS_LABEL, STATUS_TONE, activityFor } from './accountModel';
+import { AccountTab, STATUS_LABEL, STATUS_TONE, activityFor, isAndroid } from './accountModel';
 import { AccountOverview } from './AccountOverview';
 import { AccountActivityTab } from './AccountActivityTab';
 import { ProfileSettings } from './ProfileSettings';
@@ -22,7 +22,7 @@ const TABS: { value: AccountTab; label: string }[] = [
   { value: 'activity', label: 'Activity' },
 ];
 
-export function AccountPage({ profile, tab, onTabChange, onBack, handlers, busy, executions, proxies, groups, onSave, onOpenQueue }: {
+export function AccountPage({ profile, tab: requestedTab, onTabChange, onBack, handlers, busy, executions, proxies, groups, onSave, onOpenQueue }: {
   profile: Profile; tab: AccountTab; onTabChange: (tab: AccountTab) => void; onBack: () => void;
   handlers: AccountHandlers; busy: boolean; executions: QueueExecutionItem[];
   proxies: ProxyItem[]; groups: string[];
@@ -33,16 +33,20 @@ export function AccountPage({ profile, tab, onTabChange, onBack, handlers, busy,
   const [lightbox, setLightbox] = useState<LightboxMedia | null>(null);
   const activity = activityFor(profile.id, executions);
   const run = (action: 'start' | 'stop' | 'pause' | 'unpause') => handlers.run([profile], action);
+  const android = isAndroid(profile);
+  // Phone accounts have no browser or editable runtime settings yet.
+  const tabs = android ? TABS.filter(option => option.value === 'overview' || option.value === 'activity') : TABS;
+  const tab = tabs.some(option => option.value === requestedTab) ? requestedTab : 'overview';
 
   return <div className="flex min-h-0 flex-1 flex-col">
     <header className="shrink-0 border-b border-border bg-surface/50 px-6 pt-3">
       <div className="flex flex-wrap items-center gap-3">
         <Button size="sm" variant="ghost" onClick={onBack} className="-ml-2"><ArrowLeft className="h-3.5 w-3.5" />Accounts</Button>
         <h1 className="min-w-0 truncate text-sm font-semibold text-zinc-100">{profile.name}</h1>
-        <span className={cn('flex items-center gap-1.5 text-xs', STATUS_TONE[profile.status])}><span className="h-1.5 w-1.5 rounded-full bg-current" />{STATUS_LABEL[profile.status]}</span>
+        <span className={cn('flex items-center gap-1.5 text-xs', android ? 'text-zinc-400' : STATUS_TONE[profile.status])}><span className="h-1.5 w-1.5 rounded-full bg-current" />{android ? 'On phone' : STATUS_LABEL[profile.status]}</span>
         {profile.group && <span className="text-xs text-zinc-500">{profile.group}</span>}
         <div className="ml-auto flex items-center gap-2">
-          {profile.status === 'stopped' || profile.status === 'error'
+          {android ? null : profile.status === 'stopped' || profile.status === 'error'
             ? <Button size="sm" loading={busy} onClick={() => run('start')}><Play className="h-3 w-3" />Start</Button>
             : <>
               {profile.status === 'paused'
@@ -55,7 +59,7 @@ export function AccountPage({ profile, tab, onTabChange, onBack, handlers, busy,
         </div>
       </div>
       <nav role="tablist" aria-label="Account sections" className="mt-2 flex gap-1">
-        {TABS.map(option => <button key={option.value} type="button" role="tab" aria-selected={tab === option.value} onClick={() => onTabChange(option.value)}
+        {tabs.map(option => <button key={option.value} type="button" role="tab" aria-selected={tab === option.value} onClick={() => onTabChange(option.value)}
           className={cn('border-b-2 px-3 pb-2.5 pt-1 text-xs font-semibold transition-colors',
             tab === option.value ? 'border-blue-500 text-white' : 'border-transparent text-zinc-400 hover:text-zinc-200')}>
           {option.label}{option.value === 'overview' && activity.attention.length > 0 && <span className="ml-1.5 rounded-full bg-amber-500/20 px-1.5 text-[10px] text-amber-300">{activity.attention.length}</span>}

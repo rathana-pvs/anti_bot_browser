@@ -15,6 +15,7 @@ from automation.engine.live_brain import resolve_live_brain
 
 from backend.config import DATA_DIR, PROFILES_DIR, SHARED_MEDIA_DIR, AUTOMATION_PYTHON, AUTOMATION_RUNNER, ROOT_DIR, MANAGER_INSTANCE_ID
 from backend.services import automation_service as automation, container_lifecycle as lifecycle
+from backend.services.android_devices import ensure_not_android
 
 LIVE_DIR = DATA_DIR / 'live'
 MAX_VIDEO_SECONDS = 4 * 60 * 60
@@ -350,6 +351,7 @@ def encoder_command(profile_id, video, duration, has_audio, session_id, loop=Fal
 
 async def start_live(profile_id, filename, loop=False, max_duration_seconds=None, muted=False, title='', caption='', pinned_comment=None, playback_mode=None):
     profile_path(profile_id)
+    ensure_not_android(profile_id, 'Live video')
     details = validate_details(title, caption, pinned_comment)
     playback = validate_playback(loop, max_duration_seconds, muted, playback_mode)
     video = resolve_video(filename)

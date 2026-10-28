@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { FolderPlus, Loader2, Plus, Search, Users, X } from 'lucide-react';
+import { FolderPlus, Loader2, Plus, Search, Smartphone, Users, X } from 'lucide-react';
 import { Profile } from '../../types/profile';
 import { ProxyItem } from '../../types/proxy';
 import { QueueExecutionItem } from '../../types/automation';
@@ -14,12 +14,13 @@ import { AccountHandlers, FolderHandlers, accountMenu, bulkMenu, folderMenu } fr
 import { ACCOUNT_DRAG_TYPE, ALL_FOLDERS, ATTENTION, FolderList, NO_FOLDER } from './FolderList';
 import {
   AccountActivity, HealthSignal, STATUS_LABEL, STATUS_TONE, TONE_CLASS, activityFor, browserNotes, liveSignal, needsAttention,
-  networkSignal, openItemSignals, warmupLabel,
+  isAndroid, networkSignal, openItemSignals, phoneLabel, warmupLabel,
   ActivityPeriod, PERIOD_OPTIONS, periodStart,
 } from './accountModel';
 import { formatTime, kindLabel } from '../queue/queueModel';
 
 type StatusFilter = 'all' | 'running' | 'stopped';
+type TypeFilter = 'all' | 'browser' | 'android';
 
 export function AccountsPage({ profiles, proxies, groups, executions, handlers, folderHandlers, busyIds, onCreate }: {
   profiles: Profile[]; proxies: ProxyItem[]; groups: string[]; executions: QueueExecutionItem[];
@@ -29,6 +30,7 @@ export function AccountsPage({ profiles, proxies, groups, executions, handlers, 
   onCreate: () => void;
 }) {
   const [status, setStatus] = useState<StatusFilter>('all');
+  const [kind, setKind] = useState<TypeFilter>('all');
   const [folder, setFolder] = useState(ALL_FOLDERS);
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -60,9 +62,11 @@ export function AccountsPage({ profiles, proxies, groups, executions, handlers, 
       if (![ALL_FOLDERS, ATTENTION, NO_FOLDER].includes(folder) && (p.group || '') !== folder) return false;
       if (status === 'running' && p.status !== 'running') return false;
       if (status === 'stopped' && p.status === 'running') return false;
+      if (kind === 'browser' && isAndroid(p)) return false;
+      if (kind === 'android' && !isAndroid(p)) return false;
       return !q || p.name.toLowerCase().includes(q) || p.id.toLowerCase().includes(q) || (p.group || '').toLowerCase().includes(q);
     }).sort((a, b) => Number(!a.group) - Number(!b.group) || (a.group || '').localeCompare(b.group || '') || a.name.localeCompare(b.name));
-  }, [profiles, status, folder, search, activity]);
+  }, [profiles, status, kind, folder, search, activity]);
 
   const attentionCount = profiles.filter(p => needsAttention(p, activity.get(p.id))).length;
   const runningCount = profiles.filter(p => p.status === 'running').length;
@@ -129,6 +133,12 @@ export function AccountsPage({ profiles, proxies, groups, executions, handlers, 
         <button type="button" className={chip(status === 'all')} onClick={() => setStatus('all')}>Any status</button>
         <button type="button" className={chip(status === 'running')} onClick={() => setStatus('running')}>Running</button>
         <button type="button" className={chip(status === 'stopped')} onClick={() => setStatus('stopped')}>Not running</button>
+        {profiles.some(isAndroid) && <>
+          <span className="mx-1 h-4 w-px bg-zinc-800" aria-hidden="true" />
+          <button type="button" className={chip(kind === 'all')} onClick={() => setKind('all')}>Any type</button>
+          <button type="button" className={chip(kind === 'browser')} onClick={() => setKind('browser')}>Browser</button>
+          <button type="button" className={chip(kind === 'android')} onClick={() => setKind('android')}>Phone</button>
+        </>}
         <div role="radiogroup" aria-label="Activity period" className="ml-auto flex items-center gap-2">
           <span className="text-[11px] text-zinc-500">{totals.posted} posted{totals.warmed ? ` · ${totals.warmed} warmed` : ''}</span>
           <div className="flex rounded-control border border-zinc-800 bg-zinc-950 p-0.5">
@@ -199,13 +209,16 @@ function AccountRow({ profile, network, activity, selected, busy, onToggle, onOp
       selected ? 'bg-blue-950/25' : 'hover:bg-zinc-900/60')}>
     <span onClick={(e) => e.stopPropagation()}><Checkbox checked={selected} onCheckedChange={onToggle} ariaLabel={`Select ${profile.name}`} /></span>
     <div className="min-w-0">
-      <p className="truncate font-medium text-zinc-100">{profile.name}</p>
-      <p className="truncate text-[11px] text-zinc-500">{[profile.group || 'No folder', warmupLabel(profile)].join(' · ')}</p>
+      <p className="flex items-center gap-1.5 truncate font-medium text-zinc-100">
+        {isAndroid(profile) && <Smartphone className="h-3.5 w-3.5 shrink-0 text-zinc-400" aria-label="Phone account" />}{profile.name}</p>
+      <p className="truncate text-[11px] text-zinc-500">{[profile.group || 'No folder', isAndroid(profile) ? phoneLabel(profile) : warmupLabel(profile)].join(' · ')}</p>
     </div>
     <div className="min-w-0">
-      <span className={cn('flex items-center gap-1.5', STATUS_TONE[profile.status])}>
-        {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <span className="h-1.5 w-1.5 rounded-full bg-current" />}{STATUS_LABEL[profile.status]}
-      </span>
+      {isAndroid(profile)
+        ? <span className="flex items-center gap-1.5 text-zinc-400"><span className="h-1.5 w-1.5 rounded-full bg-current" />On phone</span>
+        : <span className={cn('flex items-center gap-1.5', STATUS_TONE[profile.status])}>
+          {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <span className="h-1.5 w-1.5 rounded-full bg-current" />}{STATUS_LABEL[profile.status]}
+        </span>}
       {notes.filter(note => note.label !== 'Browser error').map(note => <p key={note.label} className="truncate text-[11px]"><Signal signal={note} /></p>)}
     </div>
     <div className="hidden min-w-0 text-[11px] md:block" title={network.hint}>

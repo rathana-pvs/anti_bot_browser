@@ -23,6 +23,7 @@ from backend.services.resource_service import (
     resource_admission_decision,
 )
 from backend.services.profile_service import atomic_write_json, environment_differences, utc_now
+from backend.services.android_devices import ensure_not_android
 
 container_stats_cache: dict[str, dict] = {}
 profile_disk_usage_cache: dict[str, str] = {}
@@ -352,6 +353,7 @@ def sanitize_profile_action_error(profile_id: str, message: str) -> str:
 async def run_profile_action(profile_id: str, action: str) -> dict:
     if action not in ("start", "stop", "pause", "unpause"):
         raise ValueError("Invalid action")
+    ensure_not_android(profile_id, "Starting or stopping a browser")
     original_status = get_container_status(profile_id)
     script_path = SCRIPTS_DIR / "run_profile.sh"
     cmd = ["bash", str(script_path), profile_id, action]

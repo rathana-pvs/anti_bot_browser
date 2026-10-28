@@ -1,6 +1,6 @@
 # Android devices: design and implementation plan
 
-Date: 2026-10-28 · Revision: 1 · Status: Proposed; nothing implemented.
+Date: 2026-10-28 · Revision: 1 · Status: Milestone 1 implemented except live view; not yet tested on a real phone.
 
 ## Recommendation
 

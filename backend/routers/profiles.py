@@ -15,6 +15,7 @@ from backend.services.docker_service import (
     get_container_stats, get_container_status, get_profile_disk_usage,
     paste_text_to_container, remove_container, run_profile_action,
 )
+from backend.services.android_devices import ANDROID_RUNTIME
 from backend.services.evidence_cleanup import clean_profile_evidence
 from backend.services.profile_service import (
     PROFILE_ID_RE, PROFILE_SCHEMA_VERSION, allocate_profile_identity, atomic_write_json,
@@ -266,6 +267,10 @@ def update_profile(profile_id: str, request: ProfileUpdateRequest):
     existing = json.loads(config_path.read_text(encoding="utf-8"))
     existing, _ = migrate_profile(existing, profile_dir)
     original = deepcopy(existing)
+    android = (existing.get("runtime") or {}).get("kind") == ANDROID_RUNTIME
+    if android and any(value is not None for value in (
+            request.network, request.requested_environment, request.resources, request.automation)):
+        raise HTTPException(status_code=400, detail="Network, environment, resources and automation are not editable for Android phone profiles yet.")
     try:
         if request.group is not None:
             existing["group"] = request.group
@@ -366,6 +371,8 @@ async def profile_action(profile_id: str, payload: dict = Body(...)):
         raise HTTPException(status_code=400, detail="Invalid action")
     try:
         return await run_profile_action(profile_id, action)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

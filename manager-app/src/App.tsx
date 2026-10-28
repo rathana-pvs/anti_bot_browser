@@ -31,6 +31,7 @@ import { SetupCenter } from './components/SetupCenter';
 import { SettingsModal } from './components/SettingsModal';
 import { NavRail, AppPage } from './components/NavRail';
 import { AccountsPage } from './components/accounts/AccountsPage';
+import { DevicesPage } from './components/devices/DevicesPage';
 import { AccountPage } from './components/accounts/AccountPage';
 import { MoveToGroupDialog } from './components/accounts/MoveToGroupDialog';
 import { AccountHandlers, FolderHandlers, ProfileAction } from './components/accounts/accountActions';
@@ -405,6 +406,11 @@ export const App: React.FC = () => {
 
         <main className={`flex-1 min-w-0 overflow-y-auto bg-background ${page === 'reel_studio' ? '' : 'hidden'}`}>
           <ReelCreatorBoundary><ReelCreator active={page === 'reel_studio'} onUseReel={useCreatedReel} /></ReelCreatorBoundary>
+        </main>
+
+        <main className={`flex-1 flex min-w-0 overflow-hidden ${page === 'devices' ? '' : 'hidden'}`}>
+          <DevicesPage active={page === 'devices'} groups={profileGroups} onProfilesChanged={loadData}
+            onOpenAccount={(profileId) => openAccountPage(profileId, 'overview')} />
         </main>
 
         <main className={`flex-1 flex min-w-0 overflow-hidden ${page === 'proxies' ? '' : 'hidden'}`}>

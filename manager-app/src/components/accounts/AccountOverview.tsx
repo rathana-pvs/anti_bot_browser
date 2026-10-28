@@ -7,7 +7,8 @@ import { checkProfileFacebookResponse, checkProfileProxySpeed, FacebookResponseR
 import { Button } from '../ui/Button';
 import { cn } from '../ui/cn';
 import { FAILED_STATUSES, describe, formatTime, kindLabel } from '../queue/queueModel';
-import { AccountActivity, STATUS_LABEL, STATUS_TONE, TONE_CLASS, browserNotes, liveSignal, networkSignal, openItemSignals, warmupLabel } from './accountModel';
+import { AccountActivity, STATUS_LABEL, STATUS_TONE, TONE_CLASS, browserNotes, isAndroid, liveSignal, networkSignal, openItemSignals, warmupLabel } from './accountModel';
+import { Alert } from '../ui/Alert';
 
 const card = 'rounded-xl border border-zinc-800 bg-zinc-950/40 p-4';
 
@@ -15,14 +16,19 @@ export function AccountOverview({ profile, proxies, activity, onOpenQueue }: {
   profile: Profile; proxies: ProxyItem[]; activity: AccountActivity; onOpenQueue: () => void;
 }) {
   const network = networkSignal(profile, proxies);
+  const android = isAndroid(profile);
   const upcoming = activity.recent.filter(item => ['pending', 'ready'].includes(item.status))
     .sort((a, b) => (new Date(a.scheduled_at).getTime() || 0) - (new Date(b.scheduled_at).getTime() || 0)).slice(0, 5);
   return <div className="mx-auto grid max-w-5xl gap-4 text-xs lg:grid-cols-2">
+    {android && <Alert className="lg:col-span-2">This account is on a phone. Proxy setup, live view and automation for phone accounts are not available yet, so it is skipped by the queue.</Alert>}
     <section className={card} aria-labelledby="overview-status">
       <h3 id="overview-status" className="mb-3 text-sm font-semibold text-zinc-100">Status</h3>
       <dl className="grid grid-cols-[8rem_minmax(0,1fr)] gap-y-2 text-zinc-400">
-        <dt>Browser</dt><dd><span className={STATUS_TONE[profile.status]}>{STATUS_LABEL[profile.status]}</span>
-          {browserNotes(profile).filter(n => n.label !== 'Browser error').map(n => <span key={n.label} title={n.hint} className={cn('ml-2', TONE_CLASS[n.tone])}>{n.label}</span>)}</dd>
+        {android && profile.runtime
+          ? <><dt>Phone</dt><dd className="text-zinc-200">{profile.runtime.device_serial}</dd>
+            <dt>Android user</dt><dd className="text-zinc-200">{profile.runtime.android_user_name || 'User'} ({profile.runtime.android_user_id})</dd></>
+          : <><dt>Browser</dt><dd><span className={STATUS_TONE[profile.status]}>{STATUS_LABEL[profile.status]}</span>
+            {browserNotes(profile).filter(n => n.label !== 'Browser error').map(n => <span key={n.label} title={n.hint} className={cn('ml-2', TONE_CLASS[n.tone])}>{n.label}</span>)}</dd></>}
         {profile.status === 'running' && <><dt>CPU</dt><dd className="text-zinc-200">{profile.cpu_usage || '0%'}</dd>
           <dt>Memory</dt><dd className="text-zinc-200">{profile.ram_usage || 'Not measured'}</dd></>}
         <dt>Network</dt><dd title={network.hint} className={TONE_CLASS[network.tone]}>{network.label}{network.detail && <span className="ml-2 text-zinc-400">{network.detail}</span>}</dd>
@@ -35,7 +41,7 @@ export function AccountOverview({ profile, proxies, activity, onOpenQueue }: {
       </dl>
     </section>
 
-    <NetworkChecks profile={profile} />
+    {!android && <NetworkChecks profile={profile} />}
 
     <section className={cn(card, 'lg:col-span-2')} aria-labelledby="overview-work">
       <div className="mb-3 flex items-center justify-between">
@@ -53,7 +59,7 @@ export function AccountOverview({ profile, proxies, activity, onOpenQueue }: {
         </ul>}
     </section>
 
-    <TechnicalDetails profile={profile} />
+    {!android && <TechnicalDetails profile={profile} />}
   </div>;
 }
 
