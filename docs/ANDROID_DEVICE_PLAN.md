@@ -220,6 +220,87 @@ scrcpy streamed into manager-app (WebCodecs) replaces noVNC for Android
 profiles. Loopback-only, like the current viewer. New UI uses the shared
 `Select` and `Checkbox` components.
 
+## UI/UX
+
+Phones are managed hardware, like proxies; accounts stay the place where
+operators work. The device is a detail of the account.
+
+### Navigation
+
+- Add **Devices** to `NavRail.tsx`, between Accounts and Proxies.
+- **Accounts** remains the single list of all profiles, browser and Android.
+
+### Accounts page
+
+- Type icon per row (browser / Android) and a "Phone: <name> · User <id>" line.
+- New filter chip: Any type / Browser / Android.
+- The Network column shows the observed state for Android: "Proxy verified ·
+  2 min ago", "Kill switch off", "Exit IP mismatch". Failures count toward the
+  existing attention filter.
+- New status "Waiting for phone" while the device runs another user's job.
+
+### Account page (Android)
+
+- Live view: scrcpy in a phone-shaped frame with Back, Home and Recent buttons.
+- Network tab with three rows — requested (assigned proxy), effective (tunnel,
+  Always-on, lockdown), observed (exit IP, DNS, IPv6, UDP, timezone, location
+  off). Each row shows pass/fail with a reason and a Re-check button.
+- **Log in** runs the preflight gate and shows its checklist live. The live view
+  opens only when every item passes; otherwise it stops at the failing item with
+  a fix action.
+- Activity tab unchanged.
+
+### Devices page
+
+- One card per phone: name, model, Android version, connection, battery,
+  temperature, storage, Facebook version, status (Online / Busy with User N /
+  Offline / Needs attention).
+- Card warnings: mixed timezones, number of accounts sharing the phone, Facebook
+  version without matching templates.
+- Opening a phone shows its Android users:
+
+  | Android user | Facebook | Account | Network | Profile |
+  | --- | --- | --- | --- | --- |
+  | 0 Owner | — | control user | — | — |
+  | 10 User 1 | Installed, logged in | linked | verified | Profile A |
+  | 11 User 2 | Installed, not logged in | — | not set up | Import |
+
+- **Scan device** refreshes the table. Import is per user; nothing is imported
+  automatically.
+- Empty state "Add phone": connect USB → allow USB debugging on the phone → Scan.
+
+### Onboarding checklist
+
+Opened after Import, one per Android user. Steps run automatically and show
+their result:
+
+1. Install companion app
+2. Allow VPN
+3. Always-on and kill switch
+4. Assign proxy (shared `Select` from the pool, showing each proxy's timezone)
+5. Apply phone settings (location off, permissions, display)
+6. Verify network
+7. Log in to Facebook (manual, in the live view)
+
+A failed step shows a plain reason with **Retry** or **Do it manually**, which
+opens the right settings screen through the live view. The account is blocked
+from jobs until every step passes.
+
+### Queue and Post
+
+- Android queue rows show the phone and states "Waiting for phone" and
+  "Switching user".
+- A job rejected by the preflight gate reads "Not started: <check> failed",
+  visibly different from a failed post.
+- `GroupedProfileSelector` shows the type icon; Post is otherwise unchanged.
+
+### Copy and state rules
+
+- Never say "protected" or "safe" unless verified. Use "Verified 2 min ago",
+  "Not verified", "Check failed: exit IP is 1.2.3.4, expected 5.6.7.8".
+- Every blocked state offers one clear next action.
+- Dropdowns and checkboxes use the shared `Select` and `Checkbox` components.
+
 ## Fleet operations
 
 - Phones on chargers continuously: prefer models with a charge limit or bypass
