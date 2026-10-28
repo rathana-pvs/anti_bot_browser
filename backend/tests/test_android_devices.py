@@ -58,6 +58,27 @@ def test_parse_health_outputs():
     assert adb_client.parse_int("Maximum supported users: 4") == 4
 
 
+def test_parsers_accept_pixel_android_17_output():
+    # Recorded from a Pixel 10 Pro XL on Android 17 (SDK 37).
+    assert adb_client.parse_devices(
+        "List of devices attached\n57231FDCQ009EZ         device usb:3-1 product:mustang model:Pixel_10_Pro_XL device:mustang transport_id:1\n"
+    ) == [{"serial": "57231FDCQ009EZ", "state": "device", "connection": "usb", "model": "Pixel 10 Pro XL"}]
+    assert adb_client.parse_users("Users:\n\tUserInfo{0:Owner:4c13} running\n\tUserInfo{11:1:410}\n") == [
+        AndroidUser(0, "Owner", 0x4C13, True), AndroidUser(11, "1", 0x410, False)]
+    assert adb_client.parse_user_serials(
+        "  UserInfo{0:null:4c13} serialNo=0 isPrimary=true\n  UserInfo{11:1:410} serialNo=11 isPrimary=false\n"
+    ) == {0: 0, 11: 11}
+    assert adb_client.parse_int("Maximum supported switchable users: 4") == 4
+    battery = adb_client.parse_battery(
+        "Current Battery Service state:\n  AC powered: false\n  USB powered: true\n"
+        " Time when the latest updated value of the voltage was sent via battery changed broadcast: +1d5h36m6s276ms\n"
+        "  level: 56\n  scale: 100\n  temperature: 324\n  Charging state: 1\n")
+    assert battery == {"level": 56, "temperature_c": 32.4, "charging": True}
+    assert adb_client.parse_free_storage_mb(
+        "Filesystem       1K-blocks     Used Available Use% Mounted on\n"
+        "/dev/block/dm-67 239543380 77177400 162234908  33% /data/user/0\n") == 158432
+
+
 @pytest.mark.parametrize("serial", ["", "a b", "x;rm -rf /", "a" * 65])
 def test_serial_is_validated(serial):
     with pytest.raises(ValueError):

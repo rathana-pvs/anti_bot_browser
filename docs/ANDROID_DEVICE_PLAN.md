@@ -88,6 +88,11 @@ broken tunnel can never lock the worker out of the phone.
   and controlled, so jobs on one phone run one at a time.
 - Job sequence: take device lock → `am switch-user N` if needed → wait for
   `am get-current-user` = N and screen unlocked → preflight gate → run.
+- Observed on a Pixel 10 Pro XL (Android 17): `am get-current-user` reports the
+  new user about 0.5 s after `am switch-user`, but the user is only running
+  about 1.8 s later, and the phone then sits with the screen off and the lock
+  screen showing. "Ready" therefore means: current user = N, user N running,
+  screen awake, and lock screen not showing. Switching back took under 1 s.
 - The scheduler groups queued jobs by device and current user to reduce switches
   (roughly 5–15 seconds each).
 - A phone that is offline or fails health checks rejects the job at admission.
