@@ -151,9 +151,15 @@ A Kotlin APK installed in each Android user.
   and dropped unless the proxy supports it. UDP goes through SOCKS5 UDP when
   supported, otherwise blocked so Facebook falls back to TCP.
 - On proxy failure the tunnel stays up and drops packets.
-- Control: listens on device localhost at base port + user ID, reached via
-  `adb forward` with a pairing token. Proxy credentials never appear on command
-  lines. Commands: `set_config`, `start`, `stop`, `status`.
+- Control: a ContentProvider called with `adb shell content call --user N`. It
+  rejects every caller except ADB shell and root (calling UID check), so no port
+  or pairing token is needed. Android hides the shell's command lines from other
+  apps; the proxy config is passed base64-encoded to avoid shell quoting. Commands:
+  `set_config`, `stop`, `status`, `check`. The service is started by launching
+  `ControlActivity` with `am start --user N`, or by Always-on VPN.
+- Engine: hev-socks5-tunnel (MIT), pinned to 2.18.0 as a submodule in
+  `android-agent/third_party/`. Only the proxy endpoint is excluded from the
+  tunnel (`excludeRoute`, API 33+), so the app's own checks run through it.
 - `status` reports tunnel state, exit IP measured through the tunnel,
   DNS/UDP/IPv6 handling, `VpnService.isAlwaysOn()`, `isLockdownEnabled()`
   (Android 10+), and last error.
@@ -364,6 +370,28 @@ Exit: each user exits through a different proxy, measured inside the user;
 killing a proxy produces no direct traffic; steps 2 and 4 of onboarding work or
 the vendor limitation is documented; user switching and timezone commands are
 verified for that Android version.
+
+Results on a Pixel 10 Pro XL, Android 17, one Android user (user 11), 2026-10-28,
+using `android-agent/` and `android-agent/tools/agent_poc.py`:
+
+- Onboarding steps 2 and 4 work over ADB with no tapping: `appops ... ACTIVATE_VPN
+  allow` grants VPN consent, and the two `always_on_vpn_*` settings take effect
+  immediately (Android logged `lockdown=true alwaysOn=true`; no restart needed).
+- The VPN covers only user 11 (UIDs 1100000-1199999). Exit measured inside the
+  user was the proxy's address, by `ipwho.is` and by a literal-IPv4 HTTPS request.
+- With the tunnel pointed at an unreachable proxy, no request got out. IPv6 is
+  dropped (the proxy does not carry it; the Wi-Fi had only local IPv6).
+- Private DNS (device-wide, `dns.adguard.com` on this phone) works through the
+  tunnel. After an engine restart Android needs about 30 s to re-validate it;
+  lookups fail, not leak, meanwhile. The app changes the VPN DNS address on each
+  restart so that re-validation happens at all.
+- Kill switch: with the app force-stopped or its process killed, lockdown blocked
+  every app in user 11 except the companion app. Android did not restart the VPN
+  in either case within 90 s, so the preflight gate must check the app's status
+  and restart it (`ControlActivity`) before every job. Restart after a reboot is
+  not yet tested.
+- Still open: a second Android user with a second proxy, the timezone command,
+  and encrypting stored proxy credentials with Android Keystore.
 
 ### 1. Device inventory and live view
 
