@@ -402,8 +402,7 @@ using `android-agent/` and `android-agent/tools/agent_poc.py`:
   every app in user 11 except the companion app. Android did not restart the VPN
   in either case within 90 s, so the preflight gate must check the app's status
   and restart it (`ControlActivity`) before every job. Always-on does start the VPN
-  when the user starts (shown by the restart test above); a full reboot is not yet
-  tested.
+  when the user starts (shown by the restart test above and after a reboot).
 - Two users, two proxies: a second Android user (user 10) was created with
   `pm create-user`, onboarded entirely over ADB while the phone was in airplane
   mode, and given a different pool proxy. Measured inside each user: user 10
@@ -414,8 +413,12 @@ using `android-agent/` and `android-agent/tools/agent_poc.py`:
   works once `cmd time_zone_detector set_auto_detection_enabled false` is set, and
   changes the zone and clock immediately. Re-enabling automatic detection restored
   the local zone.
-- Still open: a full reboot, and encrypting stored proxy credentials with
-  Android Keystore.
+- Reboot: the phone booted in about 35 s with only user 0 running; secondary
+  users do not start by themselves, so the worker starts each one with
+  `am start-user -w N` after a boot. Their Always-on settings survived, lockdown was
+  on within a second of each user starting, and Always-on started each VPN with its
+  saved proxy. Exits matched each user's proxy and never the computer's address.
+- Still open: encrypting stored proxy credentials with Android Keystore.
 
 ### 1. Device inventory and live view
 
