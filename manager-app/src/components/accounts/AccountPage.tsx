@@ -1,5 +1,6 @@
-import { useState } from 'react';
-import { AlertTriangle, ArrowLeft, Pause, Play, Square } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { fetchDevices } from '../../services/devices';
+import { AlertTriangle, ArrowLeft, Pause, Play, Smartphone, Square } from 'lucide-react';
 import { Profile, ProfileUpdateRequest } from '../../types/profile';
 import { ProxyItem } from '../../types/proxy';
 import { QueueExecutionItem } from '../../types/automation';
@@ -23,8 +24,9 @@ const TABS: { value: AccountTab; label: string }[] = [
   { value: 'activity', label: 'Activity' },
 ];
 
-export function AccountPage({ profile, tab: requestedTab, onTabChange, onBack, handlers, busy, executions, proxies, groups, onSave, onOpenQueue }: {
+export function AccountPage({ profile, tab: requestedTab, onTabChange, onBack, backLabel = 'Accounts', onOpenPhone, handlers, busy, executions, proxies, groups, onSave, onOpenQueue }: {
   profile: Profile; tab: AccountTab; onTabChange: (tab: AccountTab) => void; onBack: () => void;
+  backLabel?: string; onOpenPhone?: (serial: string) => void;
   handlers: AccountHandlers; busy: boolean; executions: QueueExecutionItem[];
   proxies: ProxyItem[]; groups: string[];
   onSave: (profileId: string, updates: ProfileUpdateRequest) => Promise<void>;
@@ -40,13 +42,28 @@ export function AccountPage({ profile, tab: requestedTab, onTabChange, onBack, h
     ? [{ value: 'browser' as const, label: 'Phone' }, ...TABS.filter(option => option.value === 'overview' || option.value === 'activity')]
     : TABS;
   const tab = tabs.some(option => option.value === requestedTab) ? requestedTab : 'overview';
+  const serial = profile.runtime?.device_serial;
+  const [phoneName, setPhoneName] = useState(serial || '');
+  useEffect(() => {
+    if (!serial) return;
+    let cancelled = false;
+    // The phone's name lives in the device list; the serial is a fine fallback.
+    fetchDevices().then(result => {
+      const label = result.devices.find(d => d.serial === serial)?.label;
+      if (!cancelled && label) setPhoneName(label);
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [serial]);
 
   return <div className="flex min-h-0 flex-1 flex-col">
     <header className="shrink-0 border-b border-border bg-surface/50 px-6 pt-3">
       <div className="flex flex-wrap items-center gap-3">
-        <Button size="sm" variant="ghost" onClick={onBack} className="-ml-2"><ArrowLeft className="h-3.5 w-3.5" />Accounts</Button>
+        <Button size="sm" variant="ghost" onClick={onBack} className="-ml-2"><ArrowLeft className="h-3.5 w-3.5" />{backLabel}</Button>
         <h1 className="min-w-0 truncate text-sm font-semibold text-zinc-100">{profile.name}</h1>
         <span className={cn('flex items-center gap-1.5 text-xs', android ? 'text-zinc-400' : STATUS_TONE[profile.status])}><span className="h-1.5 w-1.5 rounded-full bg-current" />{android ? 'On phone' : STATUS_LABEL[profile.status]}</span>
+        {android && profile.runtime && <button type="button" title="Show this phone on the Phones page" onClick={() => onOpenPhone?.(profile.runtime!.device_serial)}
+          className="inline-flex items-center gap-1.5 text-xs text-blue-300 underline-offset-2 hover:underline">
+          <Smartphone className="h-3.5 w-3.5" aria-hidden="true" />{phoneName} · User {profile.runtime.android_user_id}</button>}
         {profile.group && <span className="text-xs text-zinc-500">{profile.group}</span>}
         <div className="ml-auto flex items-center gap-2">
           {android ? null : profile.status === 'stopped' || profile.status === 'error'

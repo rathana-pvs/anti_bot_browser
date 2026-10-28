@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { BatteryCharging, BatteryMedium, Check, ChevronRight, CircleAlert, Copy, PencilLine, RefreshCw, ScanLine, ShieldCheck, Smartphone, Thermometer, Trash2, Usb, Wifi } from 'lucide-react';
+import { BatteryCharging, BatteryMedium, Check, ChevronRight, CircleAlert, Copy, PencilLine, RefreshCw, ScanLine, ShieldCheck, Smartphone, Thermometer, Trash2, Usb, UserRound, Wifi } from 'lucide-react';
 import { AndroidDevice, AndroidUserRow, DeviceListResponse } from '../../types/device';
 import { fetchDevices, forgetDevice, importDeviceUser, renameDevice, scanDevice, switchDeviceUser } from '../../services/devices';
 import { API_BASE } from '../../services/api';
@@ -30,8 +30,10 @@ function stateBadge(device: AndroidDevice) {
 }
 
 /** Physical Android phones: inventory, health, and import of Android users as accounts. */
-export function DevicesPage({ active, groups, onProfilesChanged, onOpenAccount }: {
+export function DevicesPage({ active, groups, onProfilesChanged, onOpenAccount, focus }: {
   active: boolean; groups: string[]; onProfilesChanged: () => void; onOpenAccount: (profileId: string) => void;
+  /** Phone to select when another page links here; a new object re-selects the same phone. */
+  focus?: { serial: string } | null;
 }) {
   const { showAlert, showConfirm, showPrompt, showToast } = useAppDialog();
   const [data, setData] = useState<DeviceListResponse | null>(null);
@@ -57,6 +59,8 @@ export function DevicesPage({ active, groups, onProfilesChanged, onOpenAccount }
   }, []);
 
   useEffect(() => { if (active) void load(); }, [active, load]);
+
+  useEffect(() => { if (focus) setSelected(focus.serial); }, [focus]);
 
   const device = data?.devices.find(d => d.serial === selected) ?? null;
 
@@ -293,7 +297,7 @@ function UsersTable({ device, switching, onSwitch, onImport, onOpenAccount }: {
       <table className="w-full min-w-[36rem] text-left text-xs">
         <thead className="bg-zinc-900/60 text-[11px] text-zinc-500">
           <tr><th className="px-3 py-2 font-medium">Android user</th><th className="px-3 py-2 font-medium">Facebook</th>
-            <th className="px-3 py-2 font-medium">Network</th><th className="px-3 py-2 font-medium">Account</th><th className="px-3 py-2" /></tr>
+            <th className="px-3 py-2 font-medium">Network</th><th className="px-3 py-2 font-medium">Linked account</th><th className="px-3 py-2" /></tr>
         </thead>
         <tbody>
           {scan.users.map(user => <tr key={user.user_id} className="border-t border-zinc-800/70">
@@ -311,7 +315,8 @@ function UsersTable({ device, switching, onSwitch, onImport, onOpenAccount }: {
             </td>
             <td className="px-3 py-2.5">
               {user.control_user ? <span className="text-zinc-500">Not used for accounts</span>
-                : user.profile_id ? <button type="button" className="text-blue-300 underline-offset-2 hover:underline" onClick={() => onOpenAccount(user.profile_id!)}>{user.profile_name}</button>
+                : user.profile_id ? <button type="button" title="Open this account" className="inline-flex max-w-full items-center gap-1.5 text-blue-300 underline-offset-2 hover:underline" onClick={() => onOpenAccount(user.profile_id!)}>
+                  <UserRound className="h-3.5 w-3.5 shrink-0" aria-hidden="true" /><span className="truncate">{user.profile_name}</span></button>
                   : <Button size="sm" variant="outline" onClick={() => onImport(user)}>Import</Button>}
             </td>
             <td className="px-3 py-2.5 text-right">
