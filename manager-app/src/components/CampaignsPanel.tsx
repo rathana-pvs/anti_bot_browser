@@ -4,21 +4,24 @@ import { BatchPostCreator, CampaignKind } from './BatchPostCreator';
 import type { CreatedReelMedia } from '../types/reelCreator';
 import { PostingQueuePanel } from './PostingQueuePanel';
 import { cn } from './ui/cn';
-import { Clock, Flame, Plus, Radio, Send } from 'lucide-react';
+import { Flame, Radio, Send } from 'lucide-react';
+
+export type PostingSection = 'post' | 'queue';
 
 interface CampaignsPanelProps {
+  /** Post makes new work; Queue shows it running. Each has its own place in the left bar. */
+  section: PostingSection;
+  onSectionChange: (section: PostingSection) => void;
   profiles: Profile[];
   onSelectProfile: (profileId: string) => void;
   onEditProfile: (profileId: string) => void;
   onOpenAccount?: (profileId: string) => void;
   onAttentionChange?: (count: number) => void;
-  /** Set by other pages to bring the Queue tab forward, optionally showing one account. */
+  /** Set by other pages to bring Queue forward, optionally showing one account. */
   queueRequest?: { profileId?: string; key: number } | null;
   /** A photo, Reel, or Live video sent from Reel Studio, to start a campaign with. */
   reelRequest?: { media: CreatedReelMedia; key: number } | null;
 }
-
-type CampaignTab = 'queue' | 'create';
 
 const KINDS: { value: CampaignKind; label: string; description: string; icon: React.ReactNode }[] = [
   { value: 'posts', label: 'Posts and reels', description: 'Photos, videos, Reels, and text', icon: <Send className="h-4 w-4" /> },
@@ -27,6 +30,8 @@ const KINDS: { value: CampaignKind; label: string; description: string; icon: Re
 ];
 
 export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
+  section,
+  onSectionChange,
   profiles,
   onSelectProfile,
   onEditProfile,
@@ -35,14 +40,12 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
   queueRequest = null,
   reelRequest = null,
 }) => {
-  const [tab, setTab] = useState<CampaignTab>('queue');
   const [kind, setKind] = useState<CampaignKind>(() => {
     const saved = localStorage.getItem('campaign_kind');
     return saved === 'live' || saved === 'warmup' ? saved : 'posts';
   });
   const [attention, setAttention] = useState(0);
   useEffect(() => { onAttentionChange?.(attention); }, [attention, onAttentionChange]);
-  useEffect(() => { if (queueRequest) setTab('queue'); }, [queueRequest?.key]);
   const [incomingReel, setIncomingReel] = useState<CreatedReelMedia | null>(null);
   const consumeIncomingReel = useCallback(() => setIncomingReel(null), []);
   const chooseKind = (next: CampaignKind) => {
@@ -53,38 +56,17 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
     if (!reelRequest) return;
     setIncomingReel(reelRequest.media);
     setKind(reelRequest.media.postType === 'live' ? 'live' : 'posts');
-    setTab('create');
   }, [reelRequest?.key]);
-
-  const tabs: { value: CampaignTab; label: string; icon: React.ReactNode; badge?: number }[] = [
-    { value: 'queue', label: 'Queue', icon: <Clock className="h-3.5 w-3.5" />, badge: attention },
-    { value: 'create', label: 'Create', icon: <Plus className="h-3.5 w-3.5" /> },
-  ];
 
   return (
     <div className="flex-1 flex flex-col h-full bg-background overflow-hidden">
-      <header className="flex shrink-0 items-end gap-4 border-b border-border bg-surface/50 px-6 pt-3">
-        <div className="flex items-center gap-2 pb-2.5">
-          <h2 className="text-sm font-semibold text-zinc-100">Campaigns</h2>
-        </div>
-        <nav role="tablist" aria-label="Campaign sections" className="flex items-end gap-1 overflow-x-auto">
-          {tabs.map(option => <button key={option.value} type="button" role="tab" aria-selected={tab === option.value}
-            onClick={() => setTab(option.value)}
-            className={cn('flex shrink-0 items-center gap-2 border-b-2 px-3 pb-2.5 pt-1 text-xs font-semibold transition-colors',
-              tab === option.value ? 'border-blue-500 text-white' : 'border-transparent text-zinc-400 hover:text-zinc-200')}>
-            {option.icon}{option.label}
-            {!!option.badge && <span className="rounded-full bg-amber-500/20 px-1.5 text-[10px] text-amber-300" aria-label={`${option.badge} need attention`}>{option.badge}</span>}
-          </button>)}
-        </nav>
-      </header>
-
-      <div className={`min-h-0 flex-1 overflow-hidden p-6 ${tab === 'queue' ? '' : 'hidden'}`}>
+      <div className={`min-h-0 flex-1 overflow-hidden p-6 ${section === 'queue' ? '' : 'hidden'}`}>
         <PostingQueuePanel profiles={profiles} onAttentionChange={setAttention}
-          onWatchProfile={onSelectProfile} onOpenAccount={onOpenAccount} onCreate={() => setTab('create')}
+          onWatchProfile={onSelectProfile} onOpenAccount={onOpenAccount} onCreate={() => onSectionChange('post')}
           focusAccount={queueRequest?.profileId ? { profileId: queueRequest.profileId, key: queueRequest.key } : null} />
       </div>
 
-      <div className={`flex-1 overflow-y-auto p-6 ${tab === 'create' ? '' : 'hidden'}`}>
+      <div className={`flex-1 overflow-y-auto p-6 ${section === 'post' ? '' : 'hidden'}`}>
         <div className="mx-auto mb-4 max-w-7xl">
           <div role="radiogroup" aria-label="What to run" className="grid grid-cols-1 gap-2 sm:grid-cols-3">
             {KINDS.map(option => <button key={option.value} type="button" role="radio" aria-checked={kind === option.value}
@@ -98,7 +80,7 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
         </div>
         {/* Each kind keeps its own saved draft and settings, so remount on change. */}
         <BatchPostCreator key={kind} mode={kind} profiles={profiles} onEditProfile={onEditProfile}
-          onBatchCreated={() => setTab('queue')}
+          onBatchCreated={() => onSectionChange('queue')}
           incomingReel={kind === (incomingReel?.postType === 'live' ? 'live' : 'posts') ? incomingReel : null} onIncomingReelConsumed={consumeIncomingReel} />
       </div>
     </div>

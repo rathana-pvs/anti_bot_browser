@@ -376,8 +376,8 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
         <div className="flex flex-1 items-center justify-center gap-2 text-xs text-zinc-500"><Loader2 className="h-4 w-4 animate-spin" />Loading queue…</div>
       ) : executions.length === 0 ? (
         <EmptyState icon={<Clock className="h-6 w-6" />} title="Your queue is empty"
-          description="Create a campaign to schedule posts, reels, Live broadcasts, or warm-ups."
-          action={onCreate && <Button onClick={onCreate}><Plus className="h-3.5 w-3.5" />Create campaign</Button>} />
+          description="Go to Post to schedule posts, reels, Live broadcasts, or warm-ups."
+          action={onCreate && <Button onClick={onCreate}><Plus className="h-3.5 w-3.5" />New post</Button>} />
       ) : (
         <div className={cn('grid min-h-0 flex-1 gap-4', selected ? 'lg:grid-cols-[minmax(0,1fr)_22rem]' : 'grid-cols-1')}>
           <div className="min-h-0 space-y-4 overflow-y-auto pb-4 pr-1">

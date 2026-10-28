@@ -333,7 +333,7 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
 
   const fresh = !!job && !!render && render.key === reelKey(shown);
   const makePhoto = (scene: number) => reelApi.photo(docRef.current.reel, scene, photoRatio);
-  /** Hands the chosen output to Campaigns: a photo or the Reel to Posts, the Live video to Live. */
+  /** Hands the chosen output to Post: a photo or the Reel to Posts, the Live video to Live. */
   const send = (scene: number) => attempt(output === 'photo' ? 'photo' : null, async () => {
     const { reel, caption, goal, comment } = docRef.current;
     const words = { name: reel.scenes.find(s => s.headline)?.headline.replace(/\n/g, ' ').slice(0, 80) || 'News reel', caption,

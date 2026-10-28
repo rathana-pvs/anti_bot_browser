@@ -232,11 +232,11 @@ export const App: React.FC = () => {
   const [reelRequest, setReelRequest] = useState<{ media: CreatedReelMedia; key: number } | null>(null);
   const useCreatedReel = useCallback((media: CreatedReelMedia) => {
     setReelRequest({ media, key: Date.now() });
-    setPage('campaigns');
+    setPage('post');
   }, []);
 
   const openQueue = (profileId?: string) => {
-    setPage('campaigns');
+    setPage('queue');
     setQueueRequest({ profileId, key: Date.now() });
   };
 
@@ -376,7 +376,7 @@ export const App: React.FC = () => {
       <div className="flex-1 flex overflow-hidden">
         <NavRail page={page} onPageChange={(next) => { setPage(next); if (next === 'accounts' && page === 'accounts') setOpenAccount(null); }}
           onOpenSettings={() => setIsSettingsOpen(true)}
-          badges={{ accounts: accountsAttention, campaigns: campaignAttention }} />
+          badges={{ accounts: accountsAttention, queue: campaignAttention }} />
 
         <main className={`flex-1 flex min-w-0 overflow-hidden ${page === 'accounts' ? '' : 'hidden'}`}>
           {currentAccount && openAccount
@@ -389,8 +389,10 @@ export const App: React.FC = () => {
               busyIds={busyIds} onCreate={() => setIsCreateModalOpen(true)} />}
         </main>
 
-        <main className={`flex-1 flex min-w-0 overflow-hidden ${page === 'campaigns' ? '' : 'hidden'}`}>
+        <main className={`flex-1 flex min-w-0 overflow-hidden ${page === 'post' || page === 'queue' ? '' : 'hidden'}`}>
           <CampaignsPanel
+            section={page === 'queue' ? 'queue' : 'post'}
+            onSectionChange={setPage}
             profiles={profiles}
             queueRequest={queueRequest}
             reelRequest={reelRequest}
