@@ -118,10 +118,17 @@ def parse_free_storage_mb(df_output: str) -> int | None:
 
 
 def parse_screen_awake(dumpsys_power: str) -> bool | None:
-    """Screen state from `dumpsys power`; None when the format is not recognised."""
-    match = re.search(r"mWakefulness=(\w+)", dumpsys_power)
-    if match:
-        return match.group(1) == "Awake"
+    """Screen state from `dumpsys power`; None when the format is not recognised.
+
+    Android 17 prints `mWakefulness=Awake` globally and `mWakefulness=1` per
+    display group; the named value wins, and 1 is WAKEFULNESS_AWAKE.
+    """
+    values = re.findall(r"mWakefulness=(\w+)", dumpsys_power)
+    named = [value for value in values if not value.isdigit()]
+    if named:
+        return named[0] == "Awake"
+    if values:
+        return values[0] == "1"
     match = re.search(r"Display Power: state=(\w+)", dumpsys_power)
     return match.group(1) == "ON" if match else None
 
@@ -135,7 +142,7 @@ def parse_lock_screen_showing(output: str) -> bool | None:
     primary = re.findall(r"mKeyguardShowing=(true|false)", output)
     if primary:
         return "true" in primary
-    fallback = re.findall(r"(?:mShowingLockscreen|mDreamingLockscreen|isStatusBarKeyguard)=(true|false)", output)
+    fallback = re.findall(r"(?:isKeyguardShowing|mShowingLockscreen|mDreamingLockscreen|isStatusBarKeyguard)=(true|false)", output)
     return "true" in fallback if fallback else None
 
 
@@ -209,13 +216,26 @@ class AdbClient:
     def switch_user(self, serial: str, user_id: int) -> None:
         self.shell(serial, "am", "switch-user", str(int(user_id)), timeout=30)
 
+    def push(self, serial: str, local: str, remote: str) -> None:
+        self._run(["-s", validate_serial(serial), "push", local, remote], timeout=60)
+
+    def forward(self, serial: str, remote: str) -> int:
+        """Forward a free loopback port to `remote` and return the port."""
+        port = parse_int(self._run(["-s", validate_serial(serial), "forward", "tcp:0", remote]))
+        if not port:
+            raise AdbError("ADB did not report a forwarded port")
+        return port
+
+    def remove_forward(self, serial: str, port: int) -> None:
+        self._run(["-s", validate_serial(serial), "forward", "--remove", f"tcp:{int(port)}"])
+
     def screen_awake(self, serial: str) -> bool | None:
         return parse_screen_awake(self.shell(serial, "dumpsys", "power"))
 
     def lock_screen_showing(self, serial: str) -> bool | None:
         return parse_lock_screen_showing(self.shell(serial,
             "dumpsys activity activities | grep -i keyguardshowing; "
-            "dumpsys window | grep -iE 'ShowingLockscreen|DreamingLockscreen|isStatusBarKeyguard'; true"))
+            "dumpsys window | grep -iE 'isKeyguardShowing|ShowingLockscreen|DreamingLockscreen|isStatusBarKeyguard'; true"))
 
     def wake_screen(self, serial: str) -> None:
         self.shell(serial, "input", "keyevent", "KEYCODE_WAKEUP")

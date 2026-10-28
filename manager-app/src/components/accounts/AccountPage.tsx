@@ -4,6 +4,7 @@ import { Profile, ProfileUpdateRequest } from '../../types/profile';
 import { ProxyItem } from '../../types/proxy';
 import { QueueExecutionItem } from '../../types/automation';
 import { VncViewer } from '../VncViewer';
+import { PhoneLiveView } from '../devices/PhoneLiveView';
 import { MediaLightbox, LightboxMedia } from '../MediaLightbox';
 import { ActionMenu } from '../ui/ActionMenu';
 import { Button } from '../ui/Button';
@@ -34,8 +35,10 @@ export function AccountPage({ profile, tab: requestedTab, onTabChange, onBack, h
   const activity = activityFor(profile.id, executions);
   const run = (action: 'start' | 'stop' | 'pause' | 'unpause') => handlers.run([profile], action);
   const android = isAndroid(profile);
-  // Phone accounts have no browser or editable runtime settings yet.
-  const tabs = android ? TABS.filter(option => option.value === 'overview' || option.value === 'activity') : TABS;
+  // Phone accounts show the phone screen instead of a browser and have no editable runtime settings yet.
+  const tabs = android
+    ? [{ value: 'browser' as const, label: 'Phone' }, ...TABS.filter(option => option.value === 'overview' || option.value === 'activity')]
+    : TABS;
   const tab = tabs.some(option => option.value === requestedTab) ? requestedTab : 'overview';
 
   return <div className="flex min-h-0 flex-1 flex-col">
@@ -72,7 +75,9 @@ export function AccountPage({ profile, tab: requestedTab, onTabChange, onBack, h
       <span className="flex-1">Saved settings aren’t active yet. {profile.status === 'running' ? 'Stop and start' : 'Start'} this account to apply them.</span>
     </div>}
 
-    {tab === 'browser'
+    {tab === 'browser' && android && profile.runtime
+      ? <div className="flex min-h-0 flex-1"><PhoneLiveView key={profile.id} runtime={profile.runtime} /></div>
+      : tab === 'browser'
       ? <div className="flex min-h-0 flex-1"><VncViewer profile={profile} onAction={(_id, action) => run(action)} embedded /></div>
       : <div className="min-h-0 flex-1 overflow-y-auto p-6">
         {tab === 'overview' && <AccountOverview profile={profile} proxies={proxies} activity={activity} onOpenQueue={onOpenQueue} />}

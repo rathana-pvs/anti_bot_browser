@@ -1,6 +1,6 @@
 import { Profile } from '../types/profile';
 import { AndroidDevice, DeviceListResponse, SwitchReadiness } from '../types/device';
-import { API_BASE, apiError } from './api';
+import { API_BASE, apiError, backendWebSocketUrl } from './api';
 
 const devicePath = (serial: string) => `${API_BASE}/devices/${encodeURIComponent(serial)}`;
 
@@ -43,4 +43,8 @@ export async function importDeviceUser(serial: string, userId: number, name: str
   });
   if (!res.ok) throw await apiError(res, 'Failed to import the Android user');
   return res.json();
+}
+
+export function deviceLiveUrl(serial: string, userId: number): string {
+  return backendWebSocketUrl(`/devices/${encodeURIComponent(serial)}/live`, { user_id: String(userId) });
 }

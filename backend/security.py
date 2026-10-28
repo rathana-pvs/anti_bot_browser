@@ -23,3 +23,9 @@ class DesktopSessionAuthMiddleware(BaseHTTPMiddleware):
         if not provided or not hmac.compare_digest(provided, expected):
             return JSONResponse(status_code=403, content={"detail": "Desktop session authorization required"})
         return await call_next(request)
+
+
+def websocket_token_valid(provided: str) -> bool:
+    """HTTP middleware does not see WebSockets; endpoints check the token themselves."""
+    expected = os.environ.get("MANAGER_API_TOKEN", "")
+    return not expected or (bool(provided) and hmac.compare_digest(provided, expected))

@@ -96,6 +96,16 @@ def test_parse_screen_and_lock_screen_state():
     assert adb_client.parse_lock_screen_showing("  mKeyguardShowing=false\n    mDreamingLockscreen=true\n") is False
     assert adb_client.parse_lock_screen_showing("    mShowingLockscreen=false mShowingDream=false mDreamingLockscreen=true\n") is True
     assert adb_client.parse_lock_screen_showing("") is None
+    # Recorded from a Pixel 10 Pro XL on Android 17.
+    assert adb_client.parse_screen_awake(
+        "  mWakefulness=Awake\n  mWakefulnessChanging=false\n"
+        "Display Power: com.android.server.power.PowerManagerService$2@906ff57\nmWakefulness=1\n") is True
+    assert adb_client.parse_screen_awake("mWakefulness=1\n  mWakefulness=Asleep\n") is False
+    assert adb_client.parse_screen_awake("mWakefulness=0\n") is False
+    assert adb_client.parse_lock_screen_showing(
+        "    isKeyguardShowing=false\n  KeyguardController:\n    mKeyguardShowing=false\n    mKeyguardGoingAway=false\n"
+        "   KeyguardShowing=false AodShowing=false KeyguardGoingAway=false at display=0\n") is False
+    assert adb_client.parse_lock_screen_showing("    isKeyguardShowing=true\n") is True
 
 
 class FakeAdb:

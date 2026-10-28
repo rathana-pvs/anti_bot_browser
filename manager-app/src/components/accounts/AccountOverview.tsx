@@ -20,7 +20,7 @@ export function AccountOverview({ profile, proxies, activity, onOpenQueue }: {
   const upcoming = activity.recent.filter(item => ['pending', 'ready'].includes(item.status))
     .sort((a, b) => (new Date(a.scheduled_at).getTime() || 0) - (new Date(b.scheduled_at).getTime() || 0)).slice(0, 5);
   return <div className="mx-auto grid max-w-5xl gap-4 text-xs lg:grid-cols-2">
-    {android && <Alert className="lg:col-span-2">This account is on a phone. Proxy setup, live view and automation for phone accounts are not available yet, so it is skipped by the queue.</Alert>}
+    {android && <Alert className="lg:col-span-2">This account is on a phone. Use the Phone tab to see and control it. Proxy setup and automation for phone accounts are not available yet, so it is skipped by the queue.</Alert>}
     <section className={card} aria-labelledby="overview-status">
       <h3 id="overview-status" className="mb-3 text-sm font-semibold text-zinc-100">Status</h3>
       <dl className="grid grid-cols-[8rem_minmax(0,1fr)] gap-y-2 text-zinc-400">

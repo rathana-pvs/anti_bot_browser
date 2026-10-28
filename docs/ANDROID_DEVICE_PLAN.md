@@ -1,8 +1,7 @@
 # Android devices: design and implementation plan
 
-Date: 2026-10-28 · Revision: 1 · Status: Milestone 1 implemented except live view. ADB discovery, users, health and
-user switching timings checked on a Pixel 10 Pro XL (Android 17); the screen and lock
-screen readiness parsers are not yet checked on a real phone.
+Date: 2026-10-28 · Revision: 1 · Status: Milestone 1 implemented. ADB discovery, users, health, user switching
+with readiness and the scrcpy live view checked on a Pixel 10 Pro XL (Android 17).
 
 ## Recommendation
 
@@ -232,6 +231,15 @@ are never uploaded as evidence.
 scrcpy streamed into manager-app (WebCodecs) replaces noVNC for Android
 profiles. Loopback-only, like the current viewer. New UI uses the shared
 `Select` and `Checkbox` components.
+
+Implemented with scrcpy-server 3.3.4 (`backend/vendor/scrcpy`, SHA-256 pinned;
+3.3.1 crashes on Android 17, and 4.0 changed the stream format). The backend
+pushes the server, forwards its socket to a loopback port and bridges H.264
+packets and control messages over `WS /api/devices/{serial}/live?user_id=N`.
+The endpoint checks the desktop token itself, because HTTP middleware does not
+see WebSockets, and accepts only touch, a fixed set of keys, and text up to
+300 bytes. Opening the view switches the phone to user N and waits for
+readiness first. WebKitGTK 2.52 (Linux Tauri) decodes it with WebCodecs.
 
 ## UI/UX
 
