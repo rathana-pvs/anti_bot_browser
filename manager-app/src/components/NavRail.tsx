@@ -6,8 +6,8 @@ export type AppPage = 'accounts' | 'post' | 'queue' | 'reel_studio' | 'proxies';
 
 const ITEMS: { value: AppPage; label: string; icon: ReactNode }[] = [
   { value: 'accounts', label: 'Accounts', icon: <Users className="h-5 w-5" /> },
-  { value: 'post', label: 'Post', icon: <Send className="h-5 w-5" /> },
   { value: 'queue', label: 'Queue', icon: <Clock className="h-5 w-5" /> },
+  { value: 'post', label: 'Post', icon: <Send className="h-5 w-5" /> },
   { value: 'reel_studio', label: 'Reel Studio', icon: <Film className="h-5 w-5" /> },
   { value: 'proxies', label: 'Proxies', icon: <Globe className="h-5 w-5" /> },
 ];
