@@ -57,7 +57,7 @@ export function SourceInput({ active, looks, houseStyles, busy, goal, onGoal, on
     finally { setLoading(false); }
   };
   const drop = useFileDrop(files => { void addPhotos(files); }, busy || loading || photos.length >= MAX_PHOTOS);
-  usePastedImages(files => { void addPhotos(files); }, active && !busy && !loading && photos.length < MAX_PHOTOS);
+  const pasting = usePastedImages(files => addPhotos(files), active && !busy && !loading && photos.length < MAX_PHOTOS, setProblem);
   const ready = sourceKind(source) !== 'empty';
   const chips = [{ id: 'auto', name: 'Auto', accent: '#a1a1aa' }, ...looks];
 
@@ -88,9 +88,9 @@ export function SourceInput({ active, looks, houseStyles, busy, goal, onGoal, on
           className="absolute inset-0 flex items-center justify-center bg-black/60 opacity-0 transition-opacity focus:opacity-100 group-hover:opacity-100"><X className="h-4 w-4" /></button>
       </div>)}
       {photos.length > 0 && <span className="text-xs text-zinc-500">{photos.length} {photos.length === 1 ? 'scene' : 'scenes'}</span>}
-      {photos.length < MAX_PHOTOS && <Button type="button" variant="outline" size="sm" loading={loading} disabled={busy}
+      {photos.length < MAX_PHOTOS && <Button type="button" variant="outline" size="sm" loading={loading || pasting} disabled={busy}
         onClick={() => { void addPhotos(); }}><ImagePlus className="h-3.5 w-3.5" />Photos</Button>}
-      {photos.length < MAX_PHOTOS && <span className="text-xs text-zinc-500">or copy a photo and press Ctrl+V</span>}
+      {photos.length < MAX_PHOTOS && <span className="text-xs text-zinc-500">{pasting ? 'Adding the pasted photo…' : 'or copy a photo and press Ctrl+V'}</span>}
     </div>
 
     {problem && <p role="alert" className="text-xs text-red-400">{problem}</p>}

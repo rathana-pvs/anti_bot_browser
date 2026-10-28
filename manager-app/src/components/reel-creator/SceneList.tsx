@@ -29,6 +29,7 @@ interface Props {
   onMoreHooks: () => void;
   onPhoto: (index: number) => void;
   onPhotos: () => void;
+  addingPhotos?: boolean;
   onMove: (from: number, to: number) => void;
   onRemove: (index: number) => void;
   onAdd: () => void;
@@ -118,7 +119,7 @@ export function SceneList(p: Props) {
 
     <div className="flex gap-2">
       <Button variant="outline" size="sm" loading={p.adding} disabled={p.busy || p.reel.scenes.length >= MAX_SCENES} onClick={p.onAdd}><Plus className="h-3.5 w-3.5" />Scene</Button>
-      <Button variant="outline" size="sm" disabled={p.busy} onClick={p.onPhotos} title="Choose photos, or copy one and press Ctrl+V"><ImagePlus className="h-3.5 w-3.5" />Photos</Button>
+      <Button variant="outline" size="sm" loading={p.addingPhotos} disabled={p.busy} onClick={p.onPhotos} title="Choose photos, or copy one and press Ctrl+V"><ImagePlus className="h-3.5 w-3.5" />Photos</Button>
     </div>
   </section>;
 }

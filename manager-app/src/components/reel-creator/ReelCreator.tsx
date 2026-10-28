@@ -49,11 +49,12 @@ export function ReelCreator({ active, onUseReel }: Props) {
   };
   const hasReel = hasContent(doc.reel) || doc.reel.scenes.some(s => s.image_id) || started;
   // A pasted photo fills the selected scene when it has none; otherwise it is added like chosen photos.
-  usePastedImages(files => {
+  const pasting = usePastedImages(files => {
+    if (busy) { studio.setError('Wait for the current step to finish, then paste the photo again.'); return; }
     const current = doc.reel.scenes[scene];
-    if (files.length === 1 && current && !current.image_id && current.kind !== 'end') void studio.changePhoto(scene, files);
-    else void studio.addPhotos(files);
-  }, active && studio.loaded && hasReel);
+    if (files.length === 1 && current && !current.image_id && current.kind !== 'end') return studio.changePhoto(scene, files);
+    return studio.addPhotos(files);
+  }, active && studio.loaded && hasReel, studio.setError);
   useEffect(() => { setScene(0); setStarted(false); }, [studio.draftId]);
   useEffect(() => { setScene(index => Math.min(index, doc.reel.scenes.length - 1)); }, [doc.reel.scenes.length]);
 
@@ -92,6 +93,7 @@ export function ReelCreator({ active, onUseReel }: Props) {
     </header>
 
     {studio.error && <Alert variant="danger" role="alert">{studio.error}</Alert>}
+    {pasting && <div className="flex items-center gap-2 text-xs text-zinc-400"><Spinner label="Adding the pasted photo" className="text-violet-400" />Adding the pasted photo…</div>}
     {studio.notice && <Alert variant="success"><div className="flex flex-1 items-center justify-between gap-3"><span>{studio.notice}</span>
       {studio.undo && <Button variant="outline" size="sm" onClick={studio.undoRewrite}>Undo</Button>}</div></Alert>}
 
@@ -116,7 +118,7 @@ export function ReelCreator({ active, onUseReel }: Props) {
             onRatio={ratio => studio.setReel(reel => ({ ...reel, ratio }))} onLive={live => studio.setReel(reel => ({ ...reel, live }))}
             houseStyles={<HouseStylePicker styles={studio.houseStyles} reel={doc.reel} busy={!!busy} onPick={studio.pickHouseStyle}
               onSave={name => { void studio.saveHouseStyle(name); }} onDelete={id => { void studio.deleteHouseStyle(id); }} />} />
-          <SceneList reel={doc.reel} hooks={doc.hooks} selected={scene} busy={!!busy} writing={busy === 'hooks'} adding={busy === 'scene'} canWrite={canWrite}
+          <SceneList reel={doc.reel} hooks={doc.hooks} selected={scene} busy={!!busy} writing={busy === 'hooks'} adding={busy === 'scene'} addingPhotos={busy === 'photos' || pasting} canWrite={canWrite}
             rewriting={studio.rewriting} onRewrite={index => { void studio.rewriteScene(index); }}
             undoable={studio.undo?.index ?? null} onUndo={studio.undoRewrite} supports={supports}
             onSelect={setScene} onEdit={edit} onHook={studio.pickHook} onMoreHooks={() => { void studio.moreHooks(); }}

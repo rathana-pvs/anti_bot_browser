@@ -256,7 +256,7 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
     else {
       result = { assets: [] as ReelAsset[], errors: [] as string[] };
       for (const file of files) {
-        try { result.assets.push(await reelApi.upload('image', file)); } catch (err) { result.errors.push(`${file.name}: ${message(err)}`); }
+        try { result.assets.push(await reelApi.upload('image', file)); } catch (err) { result.errors.push(`${file.name.startsWith('pasted-') ? 'The pasted photo could not be added' : file.name}: ${message(err)}`); }
       }
     }
     if (!result) return [];
