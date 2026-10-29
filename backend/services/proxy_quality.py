@@ -27,7 +27,7 @@ def normalize_proxy(proxy):
     # passing retest is required to bring it back into Available.
     if quality in ('good', 'poor'):
         proxy['last_speed_quality'] = quality
-    group = ('Used' if proxy.get('assigned') or proxy.get('profile_id') else
+    group = ('Used' if proxy.get('assigned') or proxy.get('profile_id') or proxy.get('phone_profile_id') else
              'Poor proxy' if quality == 'check_failed' or proxy.get('last_speed_quality') == 'poor' else 'Available')
     old = proxy.get('group')
     if old and old.casefold() not in {name.casefold() for name in FOLDERS}:
