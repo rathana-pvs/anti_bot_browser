@@ -205,6 +205,27 @@ def persist_queue_execution_stage(execution_id: str, stage: str, timestamp: str 
     return save_posting_queue(queue)
 
 
+def persist_queue_execution_evidence(execution_id: str, lease_id: str, screenshot: str) -> bool:
+    """Link the first saved screenshot while its original attempt still owns the lease."""
+    from backend.services.execution_evidence import profile_evidence_root
+    with _QUEUE_IO_LOCK:
+        queue = load_posting_queue()
+        match = find_queue_execution(queue, execution_id)
+        if not match:
+            return False
+        execution = match['execution']
+        if (execution.get('scheduler_lease') or {}).get('lease_id') != lease_id:
+            return False
+        root = profile_evidence_root(PROFILES_DIR, str(execution.get('profile_id') or ''))
+        path = Path(screenshot)
+        directory = path.parent.resolve()
+        if (root is None or path.suffix != '.png' or path.is_symlink() or not path.is_file()
+                or directory == root or not directory.is_relative_to(root)):
+            return False
+        execution['evidence_dir'] = str(directory)
+        return save_posting_queue(queue)
+
+
 def complete_queue_preparation(execution_id: str, lease_id: str, result: dict) -> bool:
     """Commit preparation readiness and release its lease in the same queue write."""
     if result.get('status') != 'completed' or result.get('success') is not True or result.get('error'):

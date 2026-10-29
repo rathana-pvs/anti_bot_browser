@@ -22,6 +22,8 @@ from engine.vision import VisionEngine
 from modules.publication_result_verifier import ReelPublicationResultVerifier
 from modules.reel_top_post import first_header_region, retry_unreadable_header, profile_feed_is_loading
 from modules.reel_post_click_verifier import ReelPostClickVerifier
+from modules.reel_profile_readiness import wait_for_profile_ready
+from modules.post_timestamp import parse_header_timestamp
 from .base_task import BaseTask
 
 
@@ -1519,6 +1521,16 @@ class FacebookReelTask(BaseTask):
             return False
         self._reel_top_post_found = True
         header_items = self.vision.read_text(screen, region=region, min_confidence=.55)
+        # Retain the first card's author for the passive Reels-tab fallback.
+        # A timestamp-only header must not invent an owner from caption text.
+        rows = sorted((i for i in header_items if i.get('bounds') and i.get('confidence', 0) >= .55
+                       and region[1] <= i['bounds'][1] < region[1] + .065 * height),
+                      key=lambda i: (i['bounds'][1], i['bounds'][0]))
+        if rows:
+            author = rows[0].get('text', '').strip()
+            if (author and parse_header_timestamp(author) is None
+                    and not author.casefold().startswith(('published by', 'posted by'))):
+                self._reel_profile_author = author
         header_items, result = retry_unreadable_header(self.vision, screen, region, header_items)
         if result['reason'] == 'top_header_unreadable' and profile_feed_is_loading(screen, region):
             result = {'accepted': False, 'reason': 'profile_feed_loading'}
@@ -1529,6 +1541,13 @@ class FacebookReelTask(BaseTask):
     def _refresh_until_latest_reel_visible(self) -> bool:
         """Delegate template-independent profile verification to its module."""
         return ReelPublicationResultVerifier(self).verify_latest_reel()
+
+    def _wait_for_reel_profile_ready(self):
+        return wait_for_profile_ready(self)
+
+    def _verify_reel_gallery(self):
+        from modules.reel_gallery_verifier import ReelGalleryVerifier
+        return ReelGalleryVerifier(self).verify()
 
     def _scan_profile_for_latest_reel(self, max_scans: int = 6):
         """Scroll from the profile header until the first post has rendered."""
@@ -1574,7 +1593,8 @@ class FacebookReelTask(BaseTask):
 
     def post_reel_first_comment_after_refresh(self, comment_link: str) -> tuple[str, dict]:
         """Find the newly published Reel after bounded refreshes, then comment once."""
-        reel_already_confirmed = getattr(self, "_latest_reel_confirmed_on_profile", False)
+        gallery_permalink = getattr(self, '_verified_reel_gallery_permalink', None)
+        reel_already_confirmed = bool(gallery_permalink) or getattr(self, "_latest_reel_confirmed_on_profile", False)
         self._latest_reel_confirmed_on_profile = False
         if not reel_already_confirmed and not self._refresh_until_latest_reel_visible():
             self.log(
@@ -1583,6 +1603,12 @@ class FacebookReelTask(BaseTask):
             )
             return "failed_input_not_found", self.permalink_not_requested()
 
+        gallery_permalink = getattr(self, '_verified_reel_gallery_permalink', None)
+        if gallery_permalink:
+            # The fallback leaves the viewer on the matched Reel, not the feed.
+            status = self.post_first_comment(comment_link, post_url=gallery_permalink['post_url'],
+                                             prefer_permalink=True, warm_down_after_submit=False)
+            return status, gallery_permalink
         comment_status = self.post_first_comment(
             comment_link,
             reuse_profile_page=True,

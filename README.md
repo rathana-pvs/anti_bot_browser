@@ -518,13 +518,24 @@ If the profile feed or first post shows an avatar-and-two-bars loading placehold
 verification rechecks that position every two seconds for up to 15 seconds to
 allow the post to render, without refreshing or scrolling away. An unreadable
 header alone does not trigger this loading wait.
-If the top post stays loading, old or unreadable, the profile is refreshed up to
-twice, repeating the same loading wait and first-post check each time (three
-checks total). There is no extra delay before each refresh. The task never
-searches later posts for a newer timestamp. If still unconfirmed, the result
-remains uncertain and is not automatically republished.
-A Facebook success popup may still establish publication, but commenting still
-requires this top-post check. Timestamp checks alone do not prove media identity.
+Each profile navigation first waits up to 20 seconds for Chrome's reload control
+and two seconds of stable profile content. A visible Stop control or unrecognized
+browser toolbar cannot authorize a timestamp read. A readable old first post is
+polled in place for up to 15 seconds before refreshing. The profile is refreshed
+up to twice, with fresh readiness and loading budgets (three checks total).
+The task never searches later feed posts for a newer timestamp.
+After inconclusive profile checks, a passive Reels-tab fallback may open a tile
+only when its thumbnail matches the source video and remains in the same position
+on a fresh screenshot. Confirmation also requires a valid Reel URL, the same
+page author, a recent header timestamp, and matching caption or video in the
+viewer. Missing or conflicting proof remains uncertain; Post is never clicked
+again automatically. A fallback-confirmed first comment uses that exact Reel URL.
+The fallback uses the source video's four-second cover (or first frame when
+unavailable); other covers/layouts can remain unconfirmed. Unknown browser toolbar
+layouts also stop verification conservatively.
+A Facebook success popup may still establish publication, but commenting requires
+the top-post check or the matching-Reel fallback. Timestamp checks alone do not
+prove media identity.
 
 `about a minute ago` is parsed as a one-minute age, including attributed
 header rows. Conflicting timestamps still fail the recency check.

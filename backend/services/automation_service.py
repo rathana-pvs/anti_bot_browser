@@ -60,6 +60,7 @@ from backend.services.queue_service import (
     find_queue_execution,
     with_queue_claim_lock,
     persist_queue_execution_stage,
+    persist_queue_execution_evidence,
     apply_interrupted_execution_recovery,
     complete_queue_preparation,
 )
@@ -701,6 +702,8 @@ def claim_queue_execution(execution_id: str, kind: str = "publisher") -> dict:
         target_exec["ended_at"] = None
         target_exec["error"] = None
         target_exec["logs"] = []
+        if kind == 'publisher':
+            target_exec['evidence_dir'] = None
         recovery = target_exec.get("network_recovery")
         if kind == "publisher" and recovery and recovery.get("state") == "ready":
             recovery.update(state="retrying", retry_count=recovery["retry_count"] + 1,
@@ -1097,6 +1100,10 @@ async def _execute_queue_item_inner(execution_id: str, scheduler_kind: str = "pu
 
     worker_env = automation_worker_env()
     worker_env["AUTOMATION_BEHAVIOR_RUN_ID"] = f"{execution_id}:{target_exec.get('retry_count', 0)}"
+    worker_env['AUTOMATION_EVIDENCE_CONTEXT'] = json.dumps({
+        'execution_id': execution_id, 'lease_id': lease_id,
+        'owner_token': task_record['container_owner_token'],
+    })
     if target_exec.get("cloud_attempt_id"):
         worker_env["CLOUD_EXECUTION_ID"] = execution_id
     else:
@@ -1127,7 +1134,12 @@ async def _execute_queue_item_inner(execution_id: str, scheduler_kind: str = "pu
                         continue
                 except Exception:
                     pass
-            task_record["logs"].append(normalize_stored_log(line, profile_id))
+            entry = normalize_stored_log(line, profile_id)
+            task_record["logs"].append(entry)
+            if entry['message'].startswith('Evidence captured: ') and not task_record.get('evidence_dir'):
+                screenshot = entry['message'].removeprefix('Evidence captured: ')
+                if persist_queue_execution_evidence(execution_id, lease_id, screenshot):
+                    task_record['evidence_dir'] = str(Path(screenshot).parent.resolve())
             stage_match = re.match(r"^\[(.*?)\]\s*\[(.*?)\]\s*\[STAGE\]\s*Execution stage:\s*([a-z_]+)\s*$", line, re.IGNORECASE)
             if stage_match:
                 task_record["current_stage"] = stage_match.group(3)

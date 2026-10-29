@@ -162,15 +162,17 @@ class PublicationResultVerifierModule:
                 self.task._latest_reel_confirmed_on_profile = True
                 self.task.result_status = "published"
                 self.task.result_error = None
+                gallery_permalink = getattr(self.task, '_verified_reel_gallery_permalink', None)
                 return ModuleResult.success(
                     "latest_reel_confirmed_on_profile",
                     publication_status="published",
+                    **(gallery_permalink if isinstance(gallery_permalink, dict) else {}),
                 )
             if self.task.result_status == "uncertain":
                 return _task_result(self.task, success_reason="publication_unconfirmed")
             self.task._uncertain(
                 "reel_publish_not_found_after_verification",
-                "Post was clicked, but publication could not be confirmed after three profile checks. Review Facebook before retrying.",
+                "Post was clicked, but publication could not be confirmed by profile and matching-Reel checks. Review Facebook before retrying.",
             )
             return ModuleResult(
                 UNCERTAIN,

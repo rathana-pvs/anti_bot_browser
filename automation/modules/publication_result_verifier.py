@@ -23,12 +23,12 @@ class ImagePublicationResultVerifier:
         self._top_post_found = False
         self._toolbar_seen = False
 
-    def _matching_image_bounds(self, screen):
+    def _matching_image_bounds(self, screen, media_path=None):
         import cv2
         import numpy as np
 
         if self._source is None:
-            media = Path(self.task.media_path)
+            media = Path(media_path if media_path is not None else self.task.media_path)
             shared = profiles_dir() / "shared_media"
             if str(media).startswith("/data/shared_media/"):
                 media = shared / media.relative_to("/data/shared_media")
@@ -190,6 +190,21 @@ class ReelPublicationResultVerifier:
         self.task = task
         self.attempts = attempts
 
+    def _poll_old_first_post(self, screen):
+        """A readable old card can be stale content while Facebook updates it."""
+        deadline = time.monotonic() + 15.
+        self.task.log('INFO', 'The first post is old; polling this card for up to 15 seconds before refreshing.')
+        while time.monotonic() < deadline:
+            time.sleep(min(2., max(0., deadline - time.monotonic())))
+            screen = self.task.client.screenshot()
+            if self.task._latest_reel_is_visible(screen):
+                return True, screen
+            check = getattr(self.task, 'latest_reel_timestamp_check', None) or {}
+            if check.get('reason') not in {'old_top_post', 'profile_feed_loading',
+                                          'top_header_unreadable', 'top_timestamp_unreadable'}:
+                break
+        return False, screen
+
     def verify_latest_reel(self) -> bool:
         for attempt in range(1, self.attempts + 1):
             if not self.task._allow_reel_profile_navigation():
@@ -199,12 +214,17 @@ class ReelPublicationResultVerifier:
                 f"{'Opening' if attempt == 1 else 'Refreshing'} the profile to check for the latest Reel (attempt {attempt}/{self.attempts}).",
             )
             self.task.navigate_to("https://www.facebook.com/me", wait_seconds=3.0)
+            if not self.task._wait_for_reel_profile_ready():
+                continue
             visible, screen = self.task._scan_profile_for_latest_reel()
+            if not visible and (getattr(self.task, 'latest_reel_timestamp_check', None) or {}).get('reason') == 'old_top_post':
+                visible, screen = self._poll_old_first_post(screen)
             self.task.capture_evidence(
                 f"latest_reel_check_{attempt}",
                 screen,
                 latest_reel_visible=visible,
                 timestamp_check=getattr(self.task, 'latest_reel_timestamp_check', None),
+                readiness=getattr(self.task, 'reel_profile_readiness', None),
             )
             if visible:
                 return True
@@ -213,4 +233,8 @@ class ReelPublicationResultVerifier:
                     "INFO",
                     "Latest Reel is still unconfirmed after the profile check; refreshing and repeating the loading wait and timestamp read.",
                 )
+        # A gallery fallback is only safe after a fully settled profile scan.
+        readiness = getattr(self.task, 'reel_profile_readiness', None) or {}
+        if readiness.get('accepted') is True:
+            return self.task._verify_reel_gallery()
         return False

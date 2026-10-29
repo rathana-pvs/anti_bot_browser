@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Body
 from fastapi.responses import FileResponse
 
 from backend.config import PROFILES_DIR
+from backend.services.execution_evidence import resolve_execution_evidence
 from backend.services.caption_hook import prepare_scheduled_post
 from backend.services.queue_service import (
     load_posting_queue,
@@ -826,16 +827,7 @@ def _execution_evidence_dir(execution_id: str) -> Path | None:
     match = find_queue_execution(load_posting_queue(), execution_id)
     if not match:
         raise HTTPException(status_code=404, detail="Execution not found")
-    execution = match["execution"]
-    raw = execution.get("evidence_dir")
-    profile_id = str(execution.get("profile_id") or "")
-    if not raw or not profile_id or Path(profile_id).name != profile_id:
-        return None
-    root = (PROFILES_DIR / profile_id / "automation_evidence").resolve()
-    directory = Path(raw).resolve()
-    if directory == root or not directory.is_relative_to(root) or not directory.is_dir():
-        return None
-    return directory
+    return resolve_execution_evidence(PROFILES_DIR, match["execution"], match["post"].get("type", ""))
 
 
 @router.get("/execution/{execution_id}/evidence")

@@ -22,6 +22,18 @@ class EvidenceRecorder:
         self.run_id = f"{stamp}_{safe_task}"
         self.directory = os.path.join(root, self.run_id)
         os.makedirs(self.directory, exist_ok=True)
+        context = os.environ.get('AUTOMATION_EVIDENCE_CONTEXT')
+        if context:
+            attempt = json.loads(context)
+            if not isinstance(attempt, dict) or not all(
+                isinstance(attempt.get(key), str) and attempt[key]
+                for key in ('execution_id', 'lease_id', 'owner_token')
+            ):
+                raise ValueError('Invalid automation evidence context')
+            with open(os.path.join(self.directory, 'attempt.json'), 'w', encoding='utf-8') as stream:
+                json.dump({key: attempt[key] for key in ('execution_id', 'lease_id', 'owner_token')}, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
         self._sequence = 0
 
     @staticmethod

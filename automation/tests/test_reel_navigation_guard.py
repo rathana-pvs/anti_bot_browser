@@ -48,6 +48,7 @@ class ReelNavigationGuardTests(unittest.TestCase):
                 task.human = Mock()
                 task.capture_evidence = Mock()
                 task._allow_reel_profile_navigation = Mock(return_value=True)
+                task._wait_for_reel_profile_ready = Mock(return_value=True)
                 task.execute_publish_gate = Mock()
                 clock = [0.0]
                 navigations = []
