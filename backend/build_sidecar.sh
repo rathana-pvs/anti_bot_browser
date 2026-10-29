@@ -33,6 +33,7 @@ if [ ! -x "$BUILD_PYTHON" ]; then BUILD_PYTHON="python3"; fi
   --add-data "${ROOT_DIR}/automation/templates:automation/templates" \
   --add-data "${ROOT_DIR}/backend/services/reel_creator/fonts:backend/services/reel_creator/fonts" \
   --add-data "${ROOT_DIR}/backend/services/reel_creator/audio:backend/services/reel_creator/audio" \
+  --add-data "${ROOT_DIR}/backend/vendor/scrcpy:backend/vendor/scrcpy" \
   --collect-submodules fontTools.ttLib.tables \
   --collect-submodules glcontext \
   --collect-data trafilatura \

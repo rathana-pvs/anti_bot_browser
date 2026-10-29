@@ -29,6 +29,7 @@ export default defineConfig({
         target: backendTarget,
         headers: backendHeaders,
         changeOrigin: true,
+        ws: true,
       },
       '/shared_media': {
         target: backendTarget,

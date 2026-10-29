@@ -4,6 +4,10 @@ import type { HealthSignal } from './accountModel';
 
 /** Use the saved test for this account's selected pool proxy, never another proxy. */
 export function networkSignal(profile: Profile, proxies: ProxyItem[] = []): HealthSignal {
+  if (profile.runtime?.kind === 'android_user') {
+    return { label: 'Not set up', tone: 'muted', detail: "Phone's own network",
+      hint: "Proxy and kill switch for phone accounts are not set up yet. This account uses the phone's own network." };
+  }
   const network = profile.network;
   const preflight = profile.effective_environment?.network_preflight;
   if (!network.proxy_host) {

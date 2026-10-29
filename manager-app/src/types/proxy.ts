@@ -12,7 +12,10 @@ export interface ProxyItem {
   password?: string;
   type: string;
   assigned: boolean;
+  /** Browser account using this proxy. */
   profile_id: string | null;
+  /** Phone account using this proxy; one proxy serves at most one of each. */
+  phone_profile_id?: string | null;
   latency_ms: number | null;
   reachable?: boolean | null;
   country?: string | null;

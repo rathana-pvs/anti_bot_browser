@@ -31,6 +31,7 @@ import { SetupCenter } from './components/SetupCenter';
 import { SettingsModal } from './components/SettingsModal';
 import { NavRail, AppPage } from './components/NavRail';
 import { AccountsPage } from './components/accounts/AccountsPage';
+import { DevicesPage } from './components/devices/DevicesPage';
 import { AccountPage } from './components/accounts/AccountPage';
 import { MoveToGroupDialog } from './components/accounts/MoveToGroupDialog';
 import { AccountHandlers, FolderHandlers, ProfileAction } from './components/accounts/accountActions';
@@ -65,7 +66,8 @@ export const App: React.FC = () => {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [proxies, setProxies] = useState<ProxyItem[]>([]);
   const [page, setPage] = useState<AppPage>('accounts');
-  const [openAccount, setOpenAccount] = useState<{ id: string; tab: AccountTab } | null>(null);
+  const [openAccount, setOpenAccount] = useState<{ id: string; tab: AccountTab; from?: 'devices' } | null>(null);
+  const [phoneFocus, setPhoneFocus] = useState<{ serial: string } | null>(null);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [moveTargets, setMoveTargets] = useState<Profile[] | null>(null);
@@ -165,9 +167,14 @@ export const App: React.FC = () => {
 
   const { executions, reload: reloadExecutions } = useQueueExecutions(backendReady && page === 'accounts');
 
-  const openAccountPage = useCallback((profileId: string, tab: AccountTab = 'overview') => {
+  const openAccountPage = useCallback((profileId: string, tab: AccountTab = 'overview', from?: 'devices') => {
     setPage('accounts');
-    setOpenAccount({ id: profileId, tab });
+    setOpenAccount({ id: profileId, tab, from });
+  }, []);
+
+  const openPhone = useCallback((serial: string) => {
+    setPhoneFocus({ serial });
+    setPage('devices');
   }, []);
 
   const runProfiles = async (targets: Profile[], action: ProfileAction) => {
@@ -374,15 +381,23 @@ export const App: React.FC = () => {
       className="w-screen h-screen flex flex-col bg-background text-zinc-100 overflow-hidden font-sans"
     >
       <div className="flex-1 flex overflow-hidden">
-        <NavRail page={page} onPageChange={(next) => { setPage(next); if (next === 'accounts' && page === 'accounts') setOpenAccount(null); }}
+        {/* An account opened from Phones stays under Phones in the rail; leaving it by the rail closes it. */}
+        <NavRail page={page === 'accounts' && openAccount?.from === 'devices' ? 'devices' : page}
+          onPageChange={(next) => {
+            const fromPhones = page === 'accounts' && openAccount?.from === 'devices';
+            setPage(next);
+            if (fromPhones || (next === 'accounts' && page === 'accounts')) setOpenAccount(null);
+          }}
           onOpenSettings={() => setIsSettingsOpen(true)}
           badges={{ accounts: accountsAttention, queue: campaignAttention }} />
 
         <main className={`flex-1 flex min-w-0 overflow-hidden ${page === 'accounts' ? '' : 'hidden'}`}>
           {currentAccount && openAccount
             ? <AccountPage key={currentAccount.id} profile={currentAccount} tab={openAccount.tab}
-              onTabChange={(tab) => setOpenAccount({ id: currentAccount.id, tab })}
-              onBack={() => setOpenAccount(null)} handlers={handlers} busy={busyIds.has(currentAccount.id)}
+              onTabChange={(tab) => setOpenAccount({ ...openAccount, id: currentAccount.id, tab })}
+              backLabel={openAccount.from === 'devices' ? 'Phones' : 'Accounts'}
+              onBack={() => { const from = openAccount.from; setOpenAccount(null); if (from === 'devices') setPage('devices'); }}
+              onOpenPhone={openPhone} handlers={handlers} busy={busyIds.has(currentAccount.id)}
               executions={executions} proxies={proxies} groups={profileGroups} onSave={handleUpdate}
               onOpenQueue={() => openQueue(currentAccount.id)} />
             : <AccountsPage profiles={profiles} proxies={proxies} groups={profileGroups} executions={executions} handlers={handlers} folderHandlers={folderHandlers}
@@ -405,6 +420,11 @@ export const App: React.FC = () => {
 
         <main className={`flex-1 min-w-0 overflow-y-auto bg-background ${page === 'reel_studio' ? '' : 'hidden'}`}>
           <ReelCreatorBoundary><ReelCreator active={page === 'reel_studio'} onUseReel={useCreatedReel} /></ReelCreatorBoundary>
+        </main>
+
+        <main className={`flex-1 flex min-w-0 overflow-hidden ${page === 'devices' ? '' : 'hidden'}`}>
+          <DevicesPage active={page === 'devices'} groups={profileGroups} onProfilesChanged={loadData} focus={phoneFocus}
+            onOpenAccount={(profileId) => openAccountPage(profileId, 'overview', 'devices')} />
         </main>
 
         <main className={`flex-1 flex min-w-0 overflow-hidden ${page === 'proxies' ? '' : 'hidden'}`}>

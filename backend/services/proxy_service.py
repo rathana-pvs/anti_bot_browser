@@ -16,6 +16,8 @@ from backend.services.proxy_quality import normalize_proxy
 PROXY_POOL_FILE = ROOT_DIR / "proxies" / "proxy_pool.json"
 _proxy_assignment_lock = threading.Lock()
 GEO_LOOKUP_URL = "https://ipwho.is/"
+# Phone account using the proxy; `profile_id`/`assigned` remain the browser account.
+PHONE_SLOT = "phone_profile_id"
 
 def load_proxy_pool(*, raise_errors: bool = False) -> list:
     try:
@@ -111,6 +113,7 @@ def import_proxies_from_text(text: str) -> dict:
                         "type": "socks5",
                         "assigned": False,
                         "profile_id": None,
+                        "phone_profile_id": None,
                         "latency_ms": None,
                         "last_checked": None,
                         "timezone": None,
@@ -152,33 +155,54 @@ def assign_proxy(profile_id: str) -> dict | None:
                 return proxy
         return None
 
-def assign_proxy_by_id(profile_id: str, proxy_id: str) -> dict:
-    """Atomically reserve one explicit pool proxy for a profile."""
+def proxy_in_use(proxy: dict) -> bool:
+    return bool(proxy.get("assigned") or proxy.get("profile_id") or proxy.get(PHONE_SLOT))
+
+
+def assign_proxy_by_id(profile_id: str, proxy_id: str, kind: str = "browser") -> dict:
+    """Atomically reserve one explicit pool proxy for a profile.
+
+    A proxy has one browser slot (`profile_id`) and one phone slot (`phone_profile_id`), so it
+    can serve one browser account and one phone account at once, never two of the same kind.
+    """
+    if kind not in ("browser", "phone"):
+        raise ValueError("kind must be browser or phone")
+    slot = "profile_id" if kind == "browser" else PHONE_SLOT
     with _proxy_assignment_lock:
         pool = load_proxy_pool()
         selected = next((p for p in pool if p.get("id") == proxy_id), None)
         if not selected:
             raise ValueError("Selected proxy does not exist")
-        if (selected.get("assigned") or selected.get("profile_id")) and selected.get("profile_id") != profile_id:
-            raise ValueError("Selected proxy is already assigned")
+        owner = selected.get(slot)
+        # Older records can be marked assigned without a browser profile id; keep them reserved.
+        taken = owner or (kind == "browser" and selected.get("assigned"))
+        if taken and owner != profile_id:
+            raise ValueError(f"Selected proxy is already used by another {'browser' if kind == 'browser' else 'phone'} account")
         for proxy in pool:
-            if proxy.get("profile_id") == profile_id and proxy.get("id") != proxy_id:
-                proxy["assigned"] = False
-                proxy["profile_id"] = None
-        selected["assigned"] = True
-        selected["profile_id"] = profile_id
+            if proxy.get(slot) == profile_id and proxy.get("id") != proxy_id:
+                _clear_slot(proxy, slot)
+        selected[slot] = profile_id
+        if kind == "browser":
+            selected["assigned"] = True
         save_proxy_pool(pool)
         return dict(selected)
+
+
+def _clear_slot(proxy: dict, slot: str) -> None:
+    proxy[slot] = None
+    if slot == "profile_id":
+        proxy["assigned"] = False
+
 
 def release_proxy(profile_id: str) -> bool:
     with _proxy_assignment_lock:
         pool = load_proxy_pool()
         released = False
         for proxy in pool:
-            if proxy.get("profile_id") == profile_id:
-                proxy["assigned"] = False
-                proxy["profile_id"] = None
-                released = True
+            for slot in ("profile_id", PHONE_SLOT):
+                if proxy.get(slot) == profile_id:
+                    _clear_slot(proxy, slot)
+                    released = True
         if released:
             save_proxy_pool(pool)
         return released
@@ -233,7 +257,7 @@ def delete_proxies(proxy_ids: list[str]) -> dict:
                 kept.append(proxy)
                 continue
             found.add(proxy_id)
-            if proxy.get("assigned") or proxy.get("profile_id"):
+            if proxy_in_use(proxy):
                 blocked.append(proxy_id)
                 kept.append(proxy)
             else:

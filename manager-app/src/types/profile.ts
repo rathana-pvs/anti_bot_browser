@@ -1,3 +1,5 @@
+import type { AndroidRuntime } from './device';
+
 export interface ProfileFingerprint {
   webgl_vendor: string | null;
   webgl_renderer: string | null;
@@ -137,6 +139,7 @@ export interface ProfileAccount {
 
 export interface Profile {
   live?: { configured: boolean };
+  runtime?: AndroidRuntime;
   group?: string;
   schema_version?: number;
   configuration_revision?: number;

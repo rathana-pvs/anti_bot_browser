@@ -54,6 +54,15 @@ export async function probeBackendConnection(signal: AbortSignal): Promise<numbe
   return response.status;
 }
 
+/** WebSocket URL for a backend API path; WebSockets cannot send the token header, so it rides in the query. */
+export function backendWebSocketUrl(path: string, params: Record<string, string> = {}): string {
+  const url = new URL(`${API_BASE}${path}`, window.location.href);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value));
+  if (backendToken) url.searchParams.set('access_token', backendToken);
+  return url.toString();
+}
+
 export function getSharedMediaUrl(filename?: string | null): string {
   if (!filename) return '';
   if (filename.startsWith('http://') || filename.startsWith('https://')) return filename;
@@ -69,7 +78,7 @@ export async function fetchProfiles(): Promise<Profile[]> {
   return res.json();
 }
 
-async function apiError(res: Response, fallback: string): Promise<Error> {
+export async function apiError(res: Response, fallback: string): Promise<Error> {
   try {
     const text = await res.text();
     try {
