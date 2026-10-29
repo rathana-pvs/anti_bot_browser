@@ -1498,6 +1498,10 @@ def recover_stale_queue_executions(reason: str = "expired_scheduler_lease"):
                         modified = True
 
         for exec_item in find_stale_running_executions(queue, live_lease_ids):
+            # A delayed heartbeat is not evidence that the local attempt died.
+            # Retain its lease so final stage/result writes remain fenced to it.
+            if queue_attempt_still_active(exec_item):
+                continue
             stale_lease = exec_item.get("scheduler_lease")
             if exec_item.get("cloud_attempt_id"):
                 from backend.config import DATA_DIR
@@ -1531,6 +1535,24 @@ def recover_stale_queue_executions(reason: str = "expired_scheduler_lease"):
     except Exception as err:
         print(f"Error recovering stale queue leases: {err}")
 
+
+def queue_attempt_still_active(execution: dict) -> bool:
+    record = active_automation_tasks.get(execution.get("profile_id"))
+    lease_id = (execution.get("scheduler_lease") or {}).get("lease_id")
+    if (not record or not lease_id
+            or record.get("queue_execution_id") != execution.get("execution_id")
+            or (record.get("scheduler_lease") or {}).get("lease_id") != lease_id
+            or record.get("container_owner_token") != execution.get("container_owner_token")):
+        return False
+    task = _queue_execution_tasks.get(execution.get("execution_id"))
+    proc = record.get("process")
+    # Keep the attempt fenced while stdout/result draining or termination is
+    # pending, including records marked stale before their process has exited.
+    return bool((task is not None and not task.done())
+                or (proc is not None and proc.returncode is None)
+                or is_task_process_active(record))
+
+
 def heartbeat_scheduler_leases():
     now_ms = time.time() * 1000
     queue = load_posting_queue()
@@ -1538,13 +1560,19 @@ def heartbeat_scheduler_leases():
     scheduler_cfg = get_scheduler_config()
 
     for record in list(active_automation_tasks.values()):
-        if not is_task_process_active(record) or not record.get("scheduler_lease", {}).get("lease_id"):
+        if not is_task_process_active(record) or not (record.get("scheduler_lease") or {}).get("lease_id"):
             continue
 
         token = record.get("container_owner_token")
         if token and not lifecycle.heartbeat(record["profile_id"], token):
             record["status"] = "stale"
             record["error"] = "Absolute automation deadline exceeded or ownership lost"
+            proc = record.get("process")
+            if proc and proc.returncode is None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
             continue
 
         last_act = record.get("last_activity_at") or record.get("started_at") or ""
@@ -1553,7 +1581,7 @@ def heartbeat_scheduler_leases():
         except Exception:
             last_act_ms = 0.0
 
-        stage = record.get("current_stage") or record.get("result", {}).get("current_stage") or "unknown"
+        stage = record.get("current_stage") or (record.get("result") or {}).get("current_stage") or "unknown"
         silence_timeout = worker_silence_timeout_ms(stage, scheduler_cfg["lease_ttl_ms"])
 
         if now_ms - last_act_ms >= silence_timeout:

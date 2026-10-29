@@ -13,7 +13,12 @@ const environmentJs = ts.transpileModule(environmentSource, {
   compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext },
 }).outputText;
 const environmentUrl = `data:text/javascript;base64,${Buffer.from(environmentJs).toString('base64')}`;
+const timeoutJs = ts.transpileModule(readFileSync(new URL('../src/services/requestTimeout.ts', import.meta.url), 'utf8'), {
+  compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext },
+}).outputText;
+const timeoutUrl = `data:text/javascript;base64,${Buffer.from(timeoutJs).toString('base64')}`;
 const browserModule = outputText
+  .replace(/import \{ withRequestTimeout \} from '\.\/requestTimeout';/, `import { withRequestTimeout } from '${timeoutUrl}';`)
   .replace(/import \{ invoke \} from '@tauri-apps\/api\/core';/, 'const invoke = () => { throw new Error("Unexpected desktop call"); };')
   .replace(/import \{ isDesktopApp \} from '\.\/desktopEnvironment';/, `import { isDesktopApp } from '${environmentUrl}';`);
 const { detectNetworkTimezone, testNetworkSpeed, testSavedProxySpeed } = await import(`data:text/javascript;base64,${Buffer.from(browserModule).toString('base64')}`);

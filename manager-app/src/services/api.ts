@@ -5,6 +5,7 @@ import { ProxyItem } from '../types/proxy';
 import { BrainActionResponse, BrainCatalogResponse, BrainUploadResponse } from '../types/brain';
 import { invoke } from '@tauri-apps/api/core';
 import { isDesktopApp } from './desktopEnvironment';
+import { withRequestTimeout } from './requestTimeout';
 
 export let BACKEND_BASE = '';
 export let API_BASE = '/api';
@@ -678,17 +679,26 @@ export async function cancelNetworkRecovery(executionId: string): Promise<{ succ
   return res.json();
 }
 
-export async function fetchExecutionEvidence(executionId: string): Promise<string[]> {
-  const res = await fetch(`${API_BASE}/queue/execution/${encodeURIComponent(executionId)}/evidence`);
-  if (!res.ok) throw await apiError(res, 'Failed to load evidence screenshots');
-  return (await res.json()).images || [];
+export async function fetchExecutionEvidence(executionId: string, signal?: AbortSignal): Promise<string[]> {
+  return withRequestTimeout(async requestSignal => {
+    const res = await fetch(`${API_BASE}/queue/execution/${encodeURIComponent(executionId)}/evidence`, { signal: requestSignal });
+    if (!res.ok) throw await apiError(res, 'Failed to load evidence screenshots');
+    const data = await res.json();
+    if (!Array.isArray(data.images) || !data.images.every((name: unknown) => typeof name === 'string')) {
+      throw new Error('Invalid evidence response');
+    }
+    return data.images;
+  }, signal);
 }
 
 /** Loads a screenshot with the authenticated fetch and returns an object URL the caller must revoke. */
-export async function fetchExecutionEvidenceImage(executionId: string, filename: string): Promise<string> {
-  const res = await fetch(`${API_BASE}/queue/execution/${encodeURIComponent(executionId)}/evidence/${encodeURIComponent(filename)}`);
-  if (!res.ok) throw await apiError(res, 'Failed to load screenshot');
-  return URL.createObjectURL(await res.blob());
+export async function fetchExecutionEvidenceImage(executionId: string, filename: string, signal?: AbortSignal): Promise<string> {
+  const blob = await withRequestTimeout(async requestSignal => {
+    const res = await fetch(`${API_BASE}/queue/execution/${encodeURIComponent(executionId)}/evidence/${encodeURIComponent(filename)}`, { signal: requestSignal });
+    if (!res.ok) throw await apiError(res, 'Failed to load screenshot');
+    return res.blob();
+  }, signal);
+  return URL.createObjectURL(blob);
 }
 
 export async function runExecutionNow(executionId: string): Promise<{ success: boolean; queued?: boolean; message?: string }> {

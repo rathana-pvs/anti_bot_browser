@@ -9,7 +9,9 @@ const transpile = (path) => ts.transpileModule(readFileSync(new URL(path, import
 const moduleUrl = (source) => `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
 const environmentUrl = moduleUrl(transpile('../src/services/desktopEnvironment.ts'));
 const { isDesktopApp } = await import(environmentUrl);
+const timeoutUrl = moduleUrl(transpile('../src/services/requestTimeout.ts'));
 const apiSource = transpile('../src/services/api.ts')
+  .replace(/import \{ withRequestTimeout \} from '\.\/requestTimeout';/, `import { withRequestTimeout } from '${timeoutUrl}';`)
   .replace(/import \{ isDesktopApp \} from '\.\/desktopEnvironment';/, `import { isDesktopApp } from '${environmentUrl}';`)
   .replace(/import \{ invoke \} from '@tauri-apps\/api\/core';/,
     'const invoke = (...args) => globalThis.testDesktopInvoke(...args);');
