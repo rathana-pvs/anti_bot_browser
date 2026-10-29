@@ -7,6 +7,16 @@ Use the shared `manager-app/src/components/ui/Select.tsx` and
 checkboxes. Do not introduce native `<select>` or `<input type="checkbox">`
 controls in application UI.
 
+## Accounts, devices and proxies
+
+- An account is one Facebook identity and lives on exactly one device: the PC
+  (browser container) or one phone (Android user). Its surface is fixed at
+  creation; moving to another device means a new account and a fresh login.
+- A device is hardware: the PC, or one phone that holds many accounts (one per
+  Android user). Keep account data and device data separate.
+- One account, one proxy. Each account gets its own dedicated proxy, and a
+  proxy is never shared between accounts, including a PC and a phone account.
+
 ## Read cross-project context
 
 This repository is the local execution half of a two-project system.
