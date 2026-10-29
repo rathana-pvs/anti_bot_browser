@@ -16,7 +16,8 @@ from tasks.facebook_reel import FacebookReelTask
 from modules.publication_result_verifier import ImagePublicationResultVerifier
 
 ERRORS = {'reel_caption_not_entered', 'reel_publish_not_found_after_verification',
-          'image_publication_unconfirmed', 'caption_input_not_found', 'photo_button_not_found'}
+          'image_publication_unconfirmed', 'caption_input_not_found', 'photo_button_not_found',
+          'composer_load_timeout', 'photo_button_unstable'}
 
 
 class SavedFrame:
@@ -36,6 +37,8 @@ def replay(vision, execution, post, root):
         'reel_caption_not_entered': '*reel_caption_verification.png',
         'caption_input_not_found': '*caption_input_not_found.png',
         'photo_button_not_found': '*photo_button_not_found.png',
+        'composer_load_timeout': '*composer_load_timeout.png',
+        'photo_button_unstable': '*photo_button_unstable.png',
     }
     images = sorted(directory.glob(patterns[error]))
     if not images and error == 'reel_caption_not_entered':

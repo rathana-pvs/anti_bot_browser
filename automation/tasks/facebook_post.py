@@ -211,7 +211,7 @@ class FacebookPostTask(BaseTask):
             "photoivideo",
         }
 
-    def _stable_profile_media_target(self):
+    def _stable_profile_media_target(self, deadline: float | None = None):
         """Locate Photo/video only when it is anchored to the profile composer.
 
         Profile pages can contain other photo imagery above the composer, most
@@ -220,6 +220,8 @@ class FacebookPostTask(BaseTask):
         prompt first, then accept only the action row immediately beneath it.
         """
         def locate():
+            if deadline is not None and time.monotonic() >= deadline:
+                return None
             started = time.perf_counter()
             screen = self.client.screenshot()
             stream_region = self.vision.get_pixel_region(
@@ -235,6 +237,8 @@ class FacebookPostTask(BaseTask):
                 item for item in candidates
                 if self._is_caption_prompt(item["text"])
             ]
+            if prompts:
+                self._profile_composer_seen = True
             labels = [
                 item for item in candidates
                 if self._is_photo_video_label(item["text"])
@@ -293,6 +297,29 @@ class FacebookPostTask(BaseTask):
             return target
 
         return self.vision.find_stable(locate, attempts=2, tolerance_px=8.0)
+
+    @timed_telemetry_step("profile_media_readiness")
+    def _wait_for_profile_media_target(self, timeout: float = 35.0):
+        """Retry the guarded locator while the profile composer finishes loading."""
+        deadline = time.monotonic() + timeout
+        self._profile_composer_seen = False
+        local_misses = 0
+        while time.monotonic() < deadline:
+            target = self._stable_profile_media_target(deadline=deadline)
+            if target and time.monotonic() < deadline:
+                return "ready", target, None
+            screen = self.client.screenshot()
+            local_misses += 1
+            observation = self.recognizer.observe_safety_gate(screen)
+            if observation.state != ScreenState.ERROR_DIALOG and local_misses % 3 == 0:
+                observation = self.recognizer.observe(screen)
+            if observation.state == ScreenState.ERROR_DIALOG:
+                return "error", None, screen
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(2.0, remaining))
+        reason = "photo_button_unstable" if self._profile_composer_seen else "composer_load_timeout"
+        return reason, None, None
 
     def _stable_blue_text_target(self, labels, region="bottom_action_bar"):
         """Require an exact label token inside the detected blue button bounds."""
@@ -670,7 +697,10 @@ class FacebookPostTask(BaseTask):
             # Locate the action only inside the confirmed profile composer card.
             # Full-screen photo matching can confuse the Page cover image with
             # the media action and is intentionally not used here.
-            photo_btn = self._stable_profile_media_target()
+            self.log("INFO", "Waiting up to 35 seconds for a stable profile Photo/video action...")
+            photo_status, photo_btn, photo_screen = self._wait_for_profile_media_target()
+            if photo_status == "error":
+                return self._fail("profile_error", "Facebook displayed an error dialog on the profile page.", photo_screen)
 
             self.log_decision(
                 "Click Photo/video on profile",
@@ -679,7 +709,12 @@ class FacebookPostTask(BaseTask):
                 "click target to trigger GTK file chooser" if photo_btn else "fail safe",
             )
             if not photo_btn:
-                return self._fail("photo_button_not_found", "Photo/video button on profile could not be located confidently.")
+                message = (
+                    "Profile composer was not detected within the 35-second readiness wait."
+                    if photo_status == "composer_load_timeout" else
+                    "Profile composer was detected, but Photo/video did not become stable within the 35-second readiness wait."
+                )
+                return self._fail(photo_status, message)
 
             self.capture_evidence("before_click_photo_video", target=list(photo_btn))
             self.human.click(*photo_btn)

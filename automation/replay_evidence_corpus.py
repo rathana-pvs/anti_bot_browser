@@ -145,7 +145,8 @@ def run_frames(job):
                     entry['checks'].append(check('photo_composer_guard',
                         state in {'composer_open', 'media_ready', 'post_enabled'},
                         label == 'caption_entry_plan', state=state))
-            elif label in {'before_click_photo_video', 'photo_button_not_found'}:
+            elif label in {'before_click_photo_video', 'photo_button_not_found',
+                           'composer_load_timeout', 'photo_button_unstable'}:
                 target = task._stable_profile_media_target()
                 entry['checks'].append(check('photo_media_locator', target is not None,
                                               label == 'before_click_photo_video', target=target))

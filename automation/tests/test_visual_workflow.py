@@ -661,6 +661,93 @@ class ProfileMediaTargetTests(unittest.TestCase):
         task.vision.find_photo_video_button.assert_not_called()
 
 
+class ProfileMediaReadinessTests(ProfileMediaTargetTests):
+    def make_wait_task(self, reads):
+        task = self.make_task([])
+        # Exercise the real stability check: one visible frame is insufficient.
+        task.vision.find_stable = VisionEngine.find_stable.__get__(task.vision)
+        task.vision.read_text.side_effect = reads
+        task.recognizer = Mock()
+        task.recognizer.observe_safety_gate.return_value.state = ScreenState.UNKNOWN
+        task.recognizer.observe.return_value.state = ScreenState.UNKNOWN
+        return task
+
+    def wait(self, task, timeout=35.0):
+        clock = [0.0]
+        with unittest.mock.patch("tasks.facebook_post.time.monotonic", side_effect=lambda: clock[0]), \
+             unittest.mock.patch("time.sleep", side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)):
+            return task._wait_for_profile_media_target(timeout=timeout), clock[0]
+
+    def test_waits_through_loading_and_confirms_late_button(self):
+        visible = [
+            {"text": "What's on your mind?", "center": (1200, 516), "confidence": 0.99},
+            {"text": "Photo/video", "center": (1400, 577), "confidence": 0.99},
+        ]
+        # Like account 8, the first batch finds the button only on its last read.
+        task = self.make_wait_task([[], [], visible, visible, visible])
+        result, elapsed = self.wait(task)
+        self.assertEqual(result[:2], ("ready", (1400, 577)))
+        self.assertEqual(task.vision.read_text.call_count, 5)
+        self.assertLess(elapsed, 35.0)
+
+    def test_loading_timeout_never_returns_a_click_target(self):
+        task = self.make_wait_task(lambda *args, **kwargs: [])
+        result, elapsed = self.wait(task)
+        self.assertEqual(result, ("composer_load_timeout", None, None))
+        self.assertGreaterEqual(elapsed, 35.0)
+        self.assertLess(elapsed, 37.0)
+        task.vision.find_photo_video_button.assert_not_called()
+
+    def test_composer_without_media_action_has_distinct_timeout(self):
+        prompt = [{"text": "What's on your mind?", "center": (1200, 516), "confidence": 0.99}]
+        task = self.make_wait_task(lambda *args, **kwargs: prompt)
+        result, _ = self.wait(task)
+        self.assertEqual(result, ("photo_button_unstable", None, None))
+
+    def test_moving_button_never_becomes_a_click_target(self):
+        reads = [0]
+        def moving(*args, **kwargs):
+            reads[0] += 1
+            return [
+                {"text": "What's on your mind?", "center": (1200, 516), "confidence": 0.99},
+                {"text": "Photo/video", "center": (1400 + 40 * (reads[0] % 2), 577), "confidence": 0.99},
+            ]
+        task = self.make_wait_task(moving)
+        result, _ = self.wait(task)
+        self.assertEqual(result, ("photo_button_unstable", None, None))
+
+    def test_cover_photo_stays_rejected_through_readiness_wait(self):
+        detected = [
+            {"text": "Photo/video", "center": (1338, 311), "confidence": 0.99},
+            {"text": "What's on your mind?", "center": (1200, 516), "confidence": 0.99},
+        ]
+        task = self.make_wait_task(lambda *args, **kwargs: detected)
+        result, _ = self.wait(task)
+        self.assertEqual(result, ("photo_button_unstable", None, None))
+        for call in task.vision.find_photo_video_button.call_args_list:
+            self.assertGreaterEqual(call.kwargs["region"][1], 536)
+
+    def test_detection_completing_after_deadline_is_rejected(self):
+        task = self.make_wait_task([])
+        clock = [0.0]
+        def late_detection(**kwargs):
+            task._profile_composer_seen = True
+            clock[0] = 35.1
+            return (1400, 577)
+        task._stable_profile_media_target = Mock(side_effect=late_detection)
+        with unittest.mock.patch("tasks.facebook_post.time.monotonic", side_effect=lambda: clock[0]):
+            result = task._wait_for_profile_media_target()
+        self.assertEqual(result, ("photo_button_unstable", None, None))
+
+    def test_stops_waiting_on_facebook_error(self):
+        task = self.make_wait_task(lambda *args, **kwargs: [])
+        task.recognizer.observe_safety_gate.return_value.state = ScreenState.ERROR_DIALOG
+        result, elapsed = self.wait(task)
+        self.assertEqual(result[:2], ("error", None))
+        self.assertIs(result[2], task.client.screenshot.return_value)
+        self.assertLess(elapsed, 2.0)
+
+
 class ActionTargetTests(unittest.TestCase):
     def make_task(self, button_text, confidence=0.95):
         task = FacebookPostTask.__new__(FacebookPostTask)
