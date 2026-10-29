@@ -10,6 +10,7 @@ import json
 import secrets
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -107,17 +108,22 @@ def _profile_for(links: list[dict], serial: str, user_id: int, user_serial: int 
 
 
 def _health(client: AdbClient, serial: str) -> dict:
-    health: dict[str, Any] = {}
-    for key, read in (("battery", client.battery), ("free_storage_mb", client.free_storage_mb),
-                      ("storage_total_mb", client.total_storage_mb), ("cpu_percent", client.cpu_percent),
-                      ("memory", client.memory),
-                      ("current_user", client.current_user), ("max_users", client.max_users),
-                      ("facebook_version", client.package_version)):
+    """Read-only checks, run at once: the read takes as long as the slowest one (`top`), not their sum."""
+    reads = (("battery", client.battery), ("free_storage_mb", client.free_storage_mb),
+             ("storage_total_mb", client.total_storage_mb), ("cpu_percent", client.cpu_percent),
+             ("memory", client.memory),
+             ("current_user", client.current_user), ("max_users", client.max_users),
+             ("facebook_version", client.package_version))
+
+    def read_one(read) -> Any:
         try:
-            health[key] = read(serial)
+            return read(serial)
         except AdbError:
-            health[key] = None
-    return health
+            return None
+
+    with ThreadPoolExecutor(max_workers=len(reads)) as pool:
+        values = list(pool.map(read_one, [read for _, read in reads]))
+    return {key: value for (key, _), value in zip(reads, values)}
 
 
 def list_devices() -> dict:
@@ -144,6 +150,10 @@ def list_devices() -> dict:
     links = linked_profiles()
     devices = []
     serials = list(store["devices"]) + [s for s in connected if s not in store["devices"]]
+    online = [serial for serial in serials if (connected.get(serial) or {}).get("state") == "device"]
+    # Phones are read at once too, so more phones do not make a refresh slower.
+    with ThreadPoolExecutor(max_workers=max(1, len(online))) as pool:
+        healths = dict(zip(online, pool.map(lambda serial: _health(client, serial), online)))
     for serial in serials:
         saved = store["devices"].get(serial, {"serial": serial, "label": serial})
         live = connected.get(serial)
@@ -153,7 +163,7 @@ def list_devices() -> dict:
                  "profile_count": sum(1 for link in links if link["runtime"].get("device_serial") == serial),
                  "health": None}
         if state == "device":
-            entry["health"] = _health(client, serial)
+            entry["health"] = healths[serial]
         devices.append(entry)
     return {"adb_available": adb_error is None, "adb_error": adb_error, "devices": devices}
 
