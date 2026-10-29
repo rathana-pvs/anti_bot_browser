@@ -1,13 +1,17 @@
 import { ProfileGroupField } from './ProfileGroupField';
 import { ProxySpeedTest } from './ProxySpeedTest';
 import React, { useEffect, useRef, useState } from 'react';
-import { ChevronDown, Cpu, Globe, Loader2, Monitor, Shield, X } from 'lucide-react';
+import { ChevronDown, Cpu, Globe, Loader2, Monitor, Shield, Smartphone, X } from 'lucide-react';
 import { fetchProfileDefaults } from '../services/api';
-import { BehaviorMode, ProfileCreateRequest, ReelTemplateSelection, RequestedEnvironment, ResourceLimits, reelTemplateLabel } from '../types/profile';
-import { formatProxyGeography, ProxyItem } from '../types/proxy';
+import { BehaviorMode, ProfileCreateRequest, ReelTemplateSelection, RequestedEnvironment, ResourceLimits } from '../types/profile';
+import { formatProxyGeography, freeProxies, isPoorProxy, proxyOptionLabel, ProxyItem } from '../types/proxy';
+import { SavedProxyCheck } from './SavedProxyCheck';
 import { RESOLUTION_OPTIONS, getHostTimezone } from '../services/fingerprintPool';
 import { Select } from './ui/Select';
 import { useTimezoneConfirmation } from './TimezoneConfirmationDialog';
+import { AndroidDevice } from '../types/device';
+import { PhoneAccountForm, PhoneAccountRequest } from './devices/PhoneAccountForm';
+import { cn } from './ui/cn';
 
 interface CreateProfileModalProps {
   isOpen: boolean;
@@ -16,6 +20,12 @@ interface CreateProfileModalProps {
   existingCount: number;
   proxies?: ProxyItem[];
   groups?: string[];
+  devices?: AndroidDevice[];
+  /** Opens on the phone side with this Android user chosen, as Devices → Create account does. */
+  phonePreset?: { serial: string; userId: number } | null;
+  onCreatePhone: (serial: string, userId: number, request: PhoneAccountRequest) => Promise<void>;
+  /** Reloads proxies after a retest saved new results. */
+  onProxiesChanged: () => Promise<void> | void;
 }
 
 const fallbackEnvironment = (): RequestedEnvironment => ({
@@ -29,21 +39,22 @@ const fallbackEnvironment = (): RequestedEnvironment => ({
 });
 
 export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
-  isOpen, onClose, onCreate, existingCount, proxies = [], groups = [],
+  isOpen, onClose, onCreate, existingCount, proxies = [], groups = [], devices = [], phonePreset = null, onCreatePhone, onProxiesChanged,
 }) => {
+  // An account lives on one device for good, so this is the first choice in the dialog.
+  const [where, setWhere] = useState<'pc' | 'phone'>('pc');
   const { confirmTimezone, timezoneDialog, awaitingTimezoneConfirmation } = useTimezoneConfirmation();
   const [name, setName] = useState('');
   const [group, setGroup] = useState('');
   const [environment, setEnvironment] = useState<RequestedEnvironment>(fallbackEnvironment);
   const [resources, setResources] = useState<ResourceLimits>({ cpu_limit: 4, memory_mb: 4096 });
+  // Not shown when creating: new accounts take the server's defaults, editable later in Settings.
   const [behaviorMode, setBehaviorMode] = useState<BehaviorMode>('medium');
   const [reelTemplate, setReelTemplate] = useState<ReelTemplateSelection>('auto');
-  const [behaviorOptions, setBehaviorOptions] = useState<BehaviorMode[]>(['fast', 'medium', 'slow']);
-  const [reelTemplateOptions, setReelTemplateOptions] = useState<ReelTemplateSelection[]>(['auto', 't1', 't2', 't3']);
   const [cpuOptions, setCpuOptions] = useState([1, 2, 4, 6, 8]);
   const [memoryOptions, setMemoryOptions] = useState([1024, 2048, 3072, 4096, 6144, 8192]);
   const [resolutions, setResolutions] = useState(RESOLUTION_OPTIONS.map((item) => item.value));
-  const [networkChoice, setNetworkChoice] = useState(() => proxies.find((proxy) => !proxy.assigned && !proxy.profile_id && proxy.group !== 'Poor proxy')?.id || 'direct');
+  const [networkChoice, setNetworkChoice] = useState(() => freeProxies(proxies).find((proxy) => !isPoorProxy(proxy))?.id || 'direct');
   const networkChoiceRef = useRef(networkChoice);
   const networkTouched = useRef(false);
   const proxiesRef = useRef(proxies);
@@ -61,10 +72,11 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
 
   useEffect(() => {
     if (!isOpen) return;
+    setWhere(phonePreset ? 'phone' : 'pc');
     setName(`Account ${existingCountRef.current + 1}`);
     setGroup('');
     networkTouched.current = false;
-    const defaultChoice = proxiesRef.current.find((proxy) => !proxy.assigned && !proxy.profile_id && proxy.group !== 'Poor proxy')?.id || 'direct';
+    const defaultChoice = freeProxies(proxiesRef.current).find((proxy) => !isPoorProxy(proxy))?.id || 'direct';
     networkChoiceRef.current = defaultChoice;
     setNetworkChoice(defaultChoice);
     setAdvancedOpen(false);
@@ -87,8 +99,6 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
         setResources(defaults.default_resources);
         setBehaviorMode(defaults.default_behavior_mode);
         setReelTemplate(defaults.default_automation.reel_template);
-        setBehaviorOptions(defaults.behavior_modes);
-        setReelTemplateOptions(defaults.reel_template_options);
         setCpuOptions(defaults.resource_options.cpu_limits.filter((value) => value <= defaults.resource_options.host_cpu_threads));
         setMemoryOptions(defaults.resource_options.memory_mb.filter((value) => value <= defaults.resource_options.host_memory_mb));
         setResolutions(defaults.supported_resolutions);
@@ -105,7 +115,7 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
 
   useEffect(() => {
     if (!isOpen || isSaving || networkTouched.current) return;
-    const firstAvailable = proxies.find((proxy) => !proxy.assigned && !proxy.profile_id && proxy.group !== 'Poor proxy');
+    const firstAvailable = freeProxies(proxies).find((proxy) => !isPoorProxy(proxy));
     const choice = firstAvailable?.id || 'direct';
     if (choice === networkChoiceRef.current) return;
     networkChoiceRef.current = choice;
@@ -119,7 +129,7 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
 
   if (!isOpen) return null;
 
-  const availableProxies = proxies.filter((proxy) => !proxy.assigned && !proxy.profile_id && proxy.group !== 'Poor proxy');
+  const availableProxies = freeProxies(proxies);
   const selectedProxy = availableProxies.find((proxy) => proxy.id === networkChoice);
 
   const speedTestNetwork = networkChoice === 'custom'
@@ -184,11 +194,14 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
     }
   };
 
+  // A pool proxy checked on the Proxies page is not tested again; only its saved result is used.
+  const savedCheck = selectedProxy?.geo_source === 'proxy_exit_lookup';
+  const quick = networkChoice === 'direct' || savedCheck;
   const progressMessage = awaitingTimezoneConfirmation
     ? 'Waiting for timezone confirmation…'
     : creationStage === 'timezone'
-      ? networkChoice === 'direct' ? 'Detecting your computer’s timezone…' : 'Detecting timezone from the proxy’s exit IP…'
-      : networkChoice === 'direct' ? 'Creating profile…' : 'Checking the proxy and creating profile…';
+      ? networkChoice === 'direct' ? 'Detecting your computer’s timezone…' : savedCheck ? 'Using the proxy’s saved check…' : 'Detecting timezone from the proxy’s exit IP…'
+      : quick ? 'Creating account…' : 'Checking the proxy and creating account…';
 
   return (
     <>
@@ -198,10 +211,33 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
         <div className="flex items-center justify-between border-b border-border px-5 py-4">
           <div>
             <h2 className="text-sm font-semibold text-zinc-100">New account</h2>
-            <p className="mt-0.5 text-[11px] text-zinc-500">Identity and ports are allocated safely by the manager.</p>
+            <p className="mt-0.5 text-[11px] text-zinc-500">One account, one device, one proxy.</p>
           </div>
           <button type="button" disabled={isSaving} onClick={onClose} aria-label="Close create profile" className="text-zinc-400 hover:text-white disabled:opacity-40"><X className="h-4 w-4" /></button>
         </div>
+
+        <div className="space-y-1.5 border-b border-border px-5 py-3 text-xs">
+          <p className="font-medium text-zinc-400">Where does this account live?</p>
+          <div role="radiogroup" aria-label="Device" className="grid grid-cols-2 gap-2">
+            {([
+              { value: 'pc' as const, icon: Monitor, label: 'This PC', hint: 'Browser container', tone: 'text-violet-300' },
+              { value: 'phone' as const, icon: Smartphone, label: 'Phone', hint: 'An Android user', tone: 'text-teal-300' },
+            ]).map(option => <button key={option.value} type="button" role="radio" aria-checked={where === option.value} disabled={isSaving}
+              onClick={() => setWhere(option.value)}
+              className={cn('flex items-center gap-2 rounded-lg border p-2.5 text-left transition-colors disabled:opacity-50',
+                where === option.value ? 'border-blue-600 bg-blue-950/30' : 'border-zinc-800 hover:border-zinc-700')}>
+              <option.icon className={cn('h-4 w-4 shrink-0', option.tone)} aria-hidden="true" />
+              <span><span className="block font-medium text-zinc-100">{option.label}</span><span className="block text-[11px] text-zinc-500">{option.hint}</span></span>
+            </button>)}
+          </div>
+          <p className="text-[11px] text-zinc-500">This can’t be changed later. Moving means a new account and a fresh login.</p>
+        </div>
+
+        {where === 'phone'
+          ? <PhoneAccountForm key={phonePreset ? `${phonePreset.serial}:${phonePreset.userId}` : 'phone'} devices={devices} preset={phonePreset}
+            proxies={proxies} groups={groups} onCancel={onClose} onProxiesChanged={onProxiesChanged}
+            onCreate={async (serial, userId, request) => { await onCreatePhone(serial, userId, request); onClose(); }} />
+          :
 
         <form onSubmit={submit} aria-busy={isSaving && !awaitingTimezoneConfirmation} className="flex min-h-0 flex-1 flex-col">
           <div className="flex-1 space-y-4 overflow-y-auto p-5 text-xs">
@@ -225,12 +261,15 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
               <Select value={networkChoice} onValueChange={handleNetworkChange}
                 ariaLabel="Network connection"
                 options={[
-                  ...availableProxies.map((proxy) => ({ value: proxy.id, label: `${proxy.host}:${proxy.port} — ${formatProxyGeography(proxy)}` })),
+                  ...availableProxies.map((proxy) => ({ value: proxy.id, label: proxyOptionLabel(proxy) })),
                   { value: 'custom', label: 'Custom proxy' },
                   { value: 'direct', label: 'Direct connection' },
                 ]} />
               {selectedProxy && (
                 <p className="text-[11px] text-zinc-400">{formatProxyGeography(selectedProxy)}</p>
+              )}
+              {selectedProxy && isPoorProxy(selectedProxy) && (
+                <p className="text-[11px] text-amber-300">This proxy failed its last speed check (below 1 Mbps or the test failed). Pick a Good one if you can.</p>
               )}
               {networkChoice === 'custom' && (
                 <div className="grid grid-cols-3 gap-2">
@@ -244,24 +283,8 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
                     className="rounded border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-zinc-100" />
                 </div>
               )}
-              <ProxySpeedTest key={JSON.stringify(speedTestNetwork)} network={speedTestNetwork} disabled={isSaving} />
-            </div>
-
-            <div className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
-              <div className="font-medium text-zinc-300">Automation behavior</div>
-              <div className="grid grid-cols-2 gap-2">
-                <label className="text-zinc-500">Behavior mode
-                  <Select value={behaviorMode} onValueChange={(value) => setBehaviorMode(value as BehaviorMode)}
-                    ariaLabel="Behavior mode" className="mt-1 min-h-8 py-1.5"
-                    options={behaviorOptions.map((value) => ({ value, label: value[0].toUpperCase() + value.slice(1) }))} />
-                </label>
-                <label className="text-zinc-500">Reel template
-                  <Select value={reelTemplate} onValueChange={(value) => setReelTemplate(value as ReelTemplateSelection)}
-                    ariaLabel="Reel template" className="mt-1 min-h-8 py-1.5"
-                    options={reelTemplateOptions.map((value) => ({ value, label: reelTemplateLabel(value) }))} />
-                </label>
-              </div>
-              <p className="text-[10px] leading-relaxed text-zinc-500">Auto first detects Studio or Direct upload, then distinguishes Direct from Next / Share. A selected template bypasses selection and validates its expected screens.</p>
+              {selectedProxy && <SavedProxyCheck proxy={selectedProxy} disabled={isSaving} onRetested={onProxiesChanged} />}
+              {networkChoice === 'custom' && <ProxySpeedTest key={JSON.stringify(speedTestNetwork)} network={speedTestNetwork} disabled={isSaving} />}
             </div>
 
             <div className="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950">
@@ -331,7 +354,7 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
                 {!awaitingTimezoneConfirmation && <Loader2 aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />}
                 <div>
                   <p className="font-medium">{progressMessage}</p>
-                  {!awaitingTimezoneConfirmation && <p className="mt-1 text-[11px] text-blue-200/70">{networkChoice === 'direct' ? 'Please wait while the profile is prepared.' : 'Please wait. Proxy checks may take a few moments.'}</p>}
+                  {!awaitingTimezoneConfirmation && <p className="mt-1 text-[11px] text-blue-200/70">{quick ? 'Please wait while the account is prepared.' : 'Please wait. Proxy checks may take a few moments.'}</p>}
                 </div>
               </div>
             )}
@@ -343,7 +366,7 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
               </button>
             </div>
           </div>
-        </form>
+        </form>}
       </div>
     </div>
     </>

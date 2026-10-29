@@ -1,22 +1,23 @@
 import { useCallback, useEffect, useState } from 'react';
-import { BatteryCharging, BatteryMedium, Check, ChevronRight, CircleAlert, Copy, PencilLine, RefreshCw, ScanLine, ShieldCheck, Smartphone, Thermometer, Trash2, Usb, UserRound, Wifi } from 'lucide-react';
+import { BatteryCharging, BatteryMedium, Check, ChevronRight, CircleAlert, Copy, Cpu, MemoryStick, Monitor, PencilLine, Plus, RefreshCw, ScanLine, ShieldCheck, Smartphone, Thermometer, Trash2, Usb, UserRound, Wifi } from 'lucide-react';
 import { AndroidDevice, AndroidUserRow, DeviceListResponse } from '../../types/device';
-import { fetchDevices, forgetDevice, importDeviceUser, renameDevice, scanDevice, switchDeviceUser } from '../../services/devices';
+import { Profile, SystemStats } from '../../types/profile';
+import { fetchDevices, forgetDevice, renameDevice, scanDevice, switchDeviceUser } from '../../services/devices';
 import { API_BASE } from '../../services/api';
 import { writeHostClipboardText } from '../../services/clipboard';
 import { Alert } from '../ui/Alert';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
-import { Dialog } from '../ui/Dialog';
 import { EmptyState } from '../ui/EmptyState';
-import { Field } from '../ui/Field';
 import { IconButton } from '../ui/IconButton';
-import { Input } from '../ui/Input';
 import { useAppDialog } from '../ui/AppDialogProvider';
-import { ProfileGroupField } from '../ProfileGroupField';
 import { cn } from '../ui/cn';
+import { STATUS_LABEL, STATUS_TONE, isAndroid } from '../accounts/accountModel';
 
 const HOT_C = 40;
+/** List keys for the two entries that are not phones. ADB serials never take these values. */
+const THIS_PC = 'this-pc';
+const ADD_PHONE = 'add-phone';
 
 const STATE_LABEL: Record<string, { label: string; variant: 'success' | 'warning' | 'danger' | 'neutral' }> = {
   device: { label: 'Online', variant: 'success' },
@@ -29,20 +30,24 @@ function stateBadge(device: AndroidDevice) {
   return <Badge variant={state.variant}>{state.label}</Badge>;
 }
 
-/** Physical Android phones: inventory, health, and import of Android users as accounts. */
-export function DevicesPage({ active, groups, onProfilesChanged, onOpenAccount, focus }: {
-  active: boolean; groups: string[]; onProfilesChanged: () => void; onOpenAccount: (profileId: string) => void;
-  /** Phone to select when another page links here; a new object re-selects the same phone. */
-  focus?: { serial: string } | null;
+/** The hardware accounts live on: This PC (browser accounts) and physical Android phones. */
+export function DevicesPage({ active, profiles, stats, onImport, onOpenAccount, focus, rescan }: {
+  active: boolean; profiles: Profile[]; stats: SystemStats;
+  /** Opens New account for this Android user. */
+  onImport: (device: AndroidDevice, user: AndroidUserRow) => void;
+  onOpenAccount: (profileId: string) => void;
+  /** Device to select when another page links here (null is This PC); a new object re-selects it. */
+  focus?: { serial: string | null } | null;
+  /** Phone to scan again after one of its users became an account. */
+  rescan?: { serial: string } | null;
 }) {
   const { showAlert, showConfirm, showPrompt, showToast } = useAppDialog();
   const [data, setData] = useState<DeviceListResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string>(THIS_PC);
   const [scanning, setScanning] = useState<string | null>(null);
   const [switching, setSwitching] = useState<number | null>(null);
-  const [importing, setImporting] = useState<AndroidUserRow | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -50,7 +55,7 @@ export function DevicesPage({ active, groups, onProfilesChanged, onOpenAccount, 
       const next = await fetchDevices();
       setData(next);
       setLoadError('');
-      setSelected(current => current && next.devices.some(d => d.serial === current) ? current : next.devices[0]?.serial ?? null);
+      setSelected(current => current === THIS_PC || current === ADD_PHONE || next.devices.some(d => d.serial === current) ? current : THIS_PC);
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : 'Failed to load phones');
     } finally {
@@ -60,7 +65,7 @@ export function DevicesPage({ active, groups, onProfilesChanged, onOpenAccount, 
 
   useEffect(() => { if (active) void load(); }, [active, load]);
 
-  useEffect(() => { if (focus) setSelected(focus.serial); }, [focus]);
+  useEffect(() => { if (focus) setSelected(focus.serial ?? THIS_PC); }, [focus]);
 
   const device = data?.devices.find(d => d.serial === selected) ?? null;
 
@@ -75,6 +80,12 @@ export function DevicesPage({ active, groups, onProfilesChanged, onOpenAccount, 
       setScanning(null);
     }
   };
+
+  useEffect(() => {
+    if (rescan) void scan(rescan.serial).then(load);
+    // Only a new rescan request triggers this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rescan]);
 
   const rename = async (target: AndroidDevice) => {
     const label = await showPrompt('Name shown for this phone.', { title: 'Rename phone', defaultValue: target.label, confirmLabel: 'Rename' });
@@ -114,11 +125,12 @@ export function DevicesPage({ active, groups, onProfilesChanged, onOpenAccount, 
     }
   };
 
+  const phones = data?.devices ?? [];
   return <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
     <header className="flex items-center gap-3 border-b border-border px-5 py-3">
       <div className="min-w-0 flex-1">
-        <h1 className="text-sm font-semibold text-zinc-100">Phones</h1>
-        <p className="text-[11px] text-zinc-500">Each Android user on a phone can hold one Facebook account.</p>
+        <h1 className="text-sm font-semibold text-zinc-100">Devices</h1>
+        <p className="text-[11px] text-zinc-500">This PC runs browser accounts. Each Android user on a phone can hold one account. An account never moves between devices.</p>
       </div>
       <Button variant="outline" size="sm" onClick={() => void load()} loading={loading}>
         <RefreshCw className="mr-1.5 h-3.5 w-3.5" />Refresh
@@ -126,41 +138,31 @@ export function DevicesPage({ active, groups, onProfilesChanged, onOpenAccount, 
     </header>
 
     <div className="min-h-0 flex-1 overflow-y-auto p-5">
-      {loadError && (data ? <Alert variant="warning" className="mb-4">
+      {loadError && data && <Alert variant="warning" className="mb-4">
         <p className="font-medium">Couldn’t refresh phones</p>
         <p className="mt-1">Your last loaded phones are still shown. Try refreshing again.</p>
-      </Alert> : <PhoneUnavailable error={loadError} loading={loading} onRetry={() => void load()} />)}
+      </Alert>}
       {data && !data.adb_available && <Alert variant="warning" className="mb-4">
         <p className="font-medium">ADB is not available</p>
         <p className="mt-0.5 text-amber-200/80">{data.adb_error} Install Android platform-tools on this computer, then press Refresh.</p>
       </Alert>}
 
-      {data && data.devices.length === 0 && <section className="mx-auto max-w-2xl overflow-hidden rounded-panel border border-border bg-surface/70">
-        <div className="flex flex-col items-center px-6 py-10 text-center sm:px-10">
-          <div className="mb-5 flex h-16 w-16 items-center justify-center rounded-2xl border border-blue-500/20 bg-blue-500/10 text-blue-400">
-            <Smartphone className="h-8 w-8" aria-hidden="true" />
-          </div>
-          <h2 className="text-base font-semibold text-zinc-100">Connect your first phone</h2>
-          <p className="mt-2 max-w-sm text-xs leading-5 text-zinc-400">Your Android phones and their accounts will appear here once connected.</p>
-          <ol className="my-7 w-full space-y-4 text-left">
-            {[
-              { icon: Usb, title: 'Connect with USB', description: 'Use a USB cable that supports data transfer.' },
-              { icon: ShieldCheck, title: 'Allow USB debugging', description: 'Enable USB debugging in Developer options, then unlock the phone and allow this computer.' },
-              { icon: RefreshCw, title: 'Refresh your phones', description: 'Check for connected phones when you’re ready.' },
-            ].map(({ icon: Icon, title, description }, index) => <li key={title} className="flex gap-3">
-              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-control bg-elevated text-zinc-400"><Icon className="h-4 w-4" aria-hidden="true" /></span>
-              <div><p className="text-xs font-medium text-zinc-200">{index + 1}. {title}</p><p className="mt-1 text-xs leading-5 text-zinc-500">{description}</p></div>
-            </li>)}
-          </ol>
-          <Button onClick={() => void load()} loading={loading}><RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} aria-hidden="true" />{loading ? 'Checking for phones…' : 'Check for phones'}</Button>
-        </div>
-      </section>}
-
-      {data && data.devices.length > 0 && <div className="grid gap-5 lg:grid-cols-[18rem_minmax(0,1fr)]">
-        <div className="space-y-2" role="list" aria-label="Phones">
-          {data.devices.map(item => <DeviceCard key={item.serial} device={item} selected={item.serial === selected}
+      <div className="grid gap-5 lg:grid-cols-[18rem_minmax(0,1fr)]">
+        <div className="space-y-2" role="list" aria-label="Devices">
+          <PcCard profiles={profiles} stats={stats} selected={selected === THIS_PC} onSelect={() => setSelected(THIS_PC)} />
+          {phones.map(item => <DeviceCard key={item.serial} device={item} selected={item.serial === selected}
             onSelect={() => setSelected(item.serial)} />)}
+          {phones.length === 0 && <button type="button" role="listitem" onClick={() => setSelected(ADD_PHONE)} aria-current={selected === ADD_PHONE ? 'true' : undefined}
+            className={cn('flex w-full items-center gap-2 rounded-panel border border-dashed p-3 text-left text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+              selected === ADD_PHONE ? 'border-blue-700 bg-blue-950/25 text-zinc-100' : 'border-zinc-700 text-zinc-400 hover:bg-zinc-900')}>
+            <Plus className="h-4 w-4 shrink-0" aria-hidden="true" />{loadError && !data ? 'Phones unavailable' : 'Add a phone'}
+          </button>}
         </div>
+
+        {selected === THIS_PC && <PcDetail profiles={profiles} stats={stats} onOpenAccount={onOpenAccount} />}
+        {selected === ADD_PHONE && (loadError && !data
+          ? <PhoneUnavailable error={loadError} loading={loading} onRetry={() => void load()} />
+          : <ConnectPhone loading={loading} onCheck={() => void load()} />)}
         {device && <section aria-label={device.label} className="min-w-0 rounded-panel border border-zinc-800 bg-surface/70">
           <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-4 py-3">
             <div className="min-w-0 flex-1">
@@ -176,20 +178,107 @@ export function DevicesPage({ active, groups, onProfilesChanged, onOpenAccount, 
             <IconButton aria-label="Remove phone" onClick={() => void forget(device)}><Trash2 className="h-4 w-4" /></IconButton>
           </div>
           <DeviceWarnings device={device} />
-          <UsersTable device={device} switching={switching} onSwitch={switchTo} onImport={setImporting} onOpenAccount={onOpenAccount} />
+          <UsersTable device={device} switching={switching} onSwitch={switchTo} onImport={(user) => onImport(device, user)} onOpenAccount={onOpenAccount} />
         </section>}
-      </div>}
+      </div>
     </div>
-
-    {device && importing && <ImportDialog device={device} user={importing} groups={groups} onClose={() => setImporting(null)}
-      onImported={async (name) => {
-        setImporting(null);
-        showToast(`${name} added to Accounts`, 'success');
-        onProfilesChanged();
-        await scan(device.serial);
-        await load();
-      }} />}
   </div>;
+}
+
+function ConnectPhone({ loading, onCheck }: { loading: boolean; onCheck: () => void }) {
+  return <section className="min-w-0 overflow-hidden rounded-panel border border-border bg-surface/70">
+    <div className="flex flex-col items-center px-6 py-10 text-center sm:px-10">
+      <div className="mb-5 flex h-16 w-16 items-center justify-center rounded-2xl border border-teal-500/20 bg-teal-500/10 text-teal-300">
+        <Smartphone className="h-8 w-8" aria-hidden="true" />
+      </div>
+      <h2 className="text-base font-semibold text-zinc-100">Connect your first phone</h2>
+      <p className="mt-2 max-w-sm text-xs leading-5 text-zinc-400">Your Android phones and their accounts will appear here once connected.</p>
+      <ol className="my-7 w-full max-w-md space-y-4 text-left">
+        {[
+          { icon: Usb, title: 'Connect with USB', description: 'Use a USB cable that supports data transfer.' },
+          { icon: ShieldCheck, title: 'Allow USB debugging', description: 'Enable USB debugging in Developer options, then unlock the phone and allow this computer.' },
+          { icon: RefreshCw, title: 'Refresh your phones', description: 'Check for connected phones when you’re ready.' },
+        ].map(({ icon: Icon, title, description }, index) => <li key={title} className="flex gap-3">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-control bg-elevated text-zinc-400"><Icon className="h-4 w-4" aria-hidden="true" /></span>
+          <div><p className="text-xs font-medium text-zinc-200">{index + 1}. {title}</p><p className="mt-1 text-xs leading-5 text-zinc-500">{description}</p></div>
+        </li>)}
+      </ol>
+      <Button onClick={onCheck} loading={loading}><RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} aria-hidden="true" />{loading ? 'Checking for phones…' : 'Check for phones'}</Button>
+    </div>
+  </section>;
+}
+
+function pcFacts(profiles: Profile[], stats: SystemStats) {
+  const accounts = profiles.filter(p => !isAndroid(p));
+  const runtime = stats.runtime || stats.wsl_runtime;
+  return {
+    accounts,
+    running: accounts.filter(p => p.status === 'running').length,
+    cpu: runtime?.cpu_percent ?? stats.cpu_percent,
+    usedMb: runtime?.used_memory_mb ?? stats.used_memory_mb,
+    totalMb: runtime?.total_memory_mb ?? stats.total_memory_mb,
+  };
+}
+
+const gb = (mb: number) => (mb / 1024).toFixed(1);
+
+function PcCard({ profiles, stats, selected, onSelect }: { profiles: Profile[]; stats: SystemStats; selected: boolean; onSelect: () => void }) {
+  const facts = pcFacts(profiles, stats);
+  return <button type="button" role="listitem" onClick={onSelect} aria-current={selected ? 'true' : undefined}
+    className={cn('w-full rounded-panel border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+      selected ? 'border-blue-700 bg-blue-950/25' : 'border-zinc-800 bg-surface/70 hover:bg-zinc-900')}>
+    <div className="flex items-center gap-2">
+      <Monitor className="h-4 w-4 shrink-0 text-violet-300" />
+      <span className="min-w-0 flex-1 truncate text-xs font-medium text-zinc-100">This PC</span>
+      {stats.docker_running ? <Badge variant="success">Online</Badge> : <Badge variant="danger">Docker offline</Badge>}
+    </div>
+    <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-zinc-400">
+      <span>{facts.running} of {facts.accounts.length} running</span>
+      {facts.cpu != null && <span className="flex items-center gap-1"><Cpu className="h-3 w-3" />{Math.round(facts.cpu)}%</span>}
+      {facts.totalMb > 0 && <span className="flex items-center gap-1"><MemoryStick className="h-3 w-3" />{gb(facts.usedMb)} / {gb(facts.totalMb)} GB</span>}
+    </div>
+  </button>;
+}
+
+function PcDetail({ profiles, stats, onOpenAccount }: { profiles: Profile[]; stats: SystemStats; onOpenAccount: (profileId: string) => void }) {
+  const facts = pcFacts(profiles, stats);
+  return <section aria-label="This PC" className="min-w-0 rounded-panel border border-zinc-800 bg-surface/70">
+    <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-4 py-3">
+      <div className="min-w-0 flex-1">
+        <p className="flex items-center gap-2 truncate text-sm font-semibold text-zinc-100">This PC {stats.docker_running ? <Badge variant="success">Online</Badge> : <Badge variant="danger">Docker offline</Badge>}</p>
+        <p className="truncate text-[11px] text-zinc-500">Each browser account runs in its own container on this computer.</p>
+      </div>
+    </div>
+    <div className="space-y-2 px-4 pt-3">
+      <p className="text-[11px] text-zinc-500">{[
+        `${facts.running} of ${facts.accounts.length} browsers running`,
+        facts.cpu != null && `CPU ${Math.round(facts.cpu)}%`,
+        facts.totalMb > 0 && `RAM ${gb(facts.usedMb)} / ${gb(facts.totalMb)} GB`,
+      ].filter(Boolean).join(' · ')}</p>
+      {!stats.docker_running && <Alert variant="warning">Docker isn’t running, so browser accounts can’t start. Open Setup and repair from Settings.</Alert>}
+    </div>
+    <div className="p-4">
+      {facts.accounts.length === 0
+        ? <EmptyState icon={<Monitor className="h-6 w-6" />} title="No browser accounts yet" description="Create an account on This PC from the Accounts page." />
+        : <div className="overflow-x-auto rounded-control border border-zinc-800">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-zinc-900/60 text-[11px] text-zinc-500">
+              <tr><th className="px-3 py-2 font-medium">Account</th><th className="px-3 py-2 font-medium">Folder</th><th className="px-3 py-2 font-medium">Status</th></tr>
+            </thead>
+            <tbody>
+              {facts.accounts.map(account => <tr key={account.id} className="border-t border-zinc-800/70">
+                <td className="px-3 py-2.5">
+                  <button type="button" title="Open this account" className="inline-flex max-w-full items-center gap-1.5 text-blue-300 underline-offset-2 hover:underline" onClick={() => onOpenAccount(account.id)}>
+                    <UserRound className="h-3.5 w-3.5 shrink-0" aria-hidden="true" /><span className="truncate">{account.name}</span></button>
+                </td>
+                <td className="px-3 py-2.5 text-zinc-400">{account.group || 'No folder'}</td>
+                <td className={cn('px-3 py-2.5', STATUS_TONE[account.status])}>{STATUS_LABEL[account.status]}</td>
+              </tr>)}
+            </tbody>
+          </table>
+        </div>}
+    </div>
+  </section>;
 }
 
 function PhoneUnavailable({ error, loading, onRetry }: { error: string; loading: boolean; onRetry: () => void }) {
@@ -258,6 +347,8 @@ function DeviceCard({ device, selected, onSelect }: { device: AndroidDevice; sel
         {battery.charging ? <BatteryCharging className="h-3 w-3" /> : <BatteryMedium className="h-3 w-3" />}{battery.level}%</span>}
       {battery?.temperature_c != null && <span className={cn('flex items-center gap-1', hot && 'text-amber-300')}>
         <Thermometer className="h-3 w-3" />{battery.temperature_c.toFixed(0)}°C</span>}
+      {device.health?.cpu_percent != null && <span className="flex items-center gap-1"><Cpu className="h-3 w-3" />{device.health.cpu_percent}%</span>}
+      {device.health?.memory && <span className="flex items-center gap-1"><MemoryStick className="h-3 w-3" />{gb(device.health.memory.used_mb)} / {gb(device.health.memory.total_mb)} GB</span>}
       <span>{device.profile_count ?? 0} {device.profile_count === 1 ? 'account' : 'accounts'}</span>
     </div>
   </button>;
@@ -272,9 +363,13 @@ function DeviceWarnings({ device }: { device: AndroidDevice }) {
   if (health?.free_storage_mb != null && health.free_storage_mb < 1024) warnings.push(`Only ${health.free_storage_mb} MB of storage is free.`);
   if ((device.profile_count ?? 0) > 1) warnings.push(`${device.profile_count} accounts share this phone's hardware and network.`);
   const facts = [
+    health?.cpu_percent != null && `CPU ${health.cpu_percent}%`,
+    health?.memory && `RAM ${gb(health.memory.used_mb)} / ${gb(health.memory.total_mb)} GB`,
+    health?.free_storage_mb != null && (health.storage_total_mb
+      ? `Storage ${gb(health.free_storage_mb)} GB free of ${gb(health.storage_total_mb)} GB`
+      : `${gb(health.free_storage_mb)} GB free`),
     health?.facebook_version && `Facebook ${health.facebook_version}`,
     health?.max_users != null && `Up to ${health.max_users} Android users`,
-    health?.free_storage_mb != null && `${(health.free_storage_mb / 1024).toFixed(1)} GB free`,
   ].filter(Boolean);
   return <div className="space-y-2 px-4 pt-3">
     {facts.length > 0 && <p className="text-[11px] text-zinc-500">{facts.join(' · ')}</p>}
@@ -317,7 +412,7 @@ function UsersTable({ device, switching, onSwitch, onImport, onOpenAccount }: {
               {user.control_user ? <span className="text-zinc-500">Not used for accounts</span>
                 : user.profile_id ? <button type="button" title="Open this account" className="inline-flex max-w-full items-center gap-1.5 text-blue-300 underline-offset-2 hover:underline" onClick={() => onOpenAccount(user.profile_id!)}>
                   <UserRound className="h-3.5 w-3.5 shrink-0" aria-hidden="true" /><span className="truncate">{user.profile_name}</span></button>
-                  : <Button size="sm" variant="outline" onClick={() => onImport(user)}>Import</Button>}
+                  : <Button size="sm" variant="outline" onClick={() => onImport(user)}>Create account</Button>}
             </td>
             <td className="px-3 py-2.5 text-right">
               {!user.current && <Button size="sm" variant="ghost" disabled={!online || switching !== null} loading={switching === user.user_id}
@@ -328,38 +423,7 @@ function UsersTable({ device, switching, onSwitch, onImport, onOpenAccount }: {
       </table>
     </div>
     <p className="mt-2 text-[11px] text-zinc-500">
-      Scanned {new Date(scan.scanned_at).toLocaleString()}. Proxy setup and automation for phone accounts are not available yet.
+      Scanned {new Date(scan.scanned_at).toLocaleString()}. A phone account’s proxy is reserved now and used once the companion app is set up. Automation for phone accounts isn’t available yet.
     </p>
   </div>;
-}
-
-function ImportDialog({ device, user, groups, onClose, onImported }: {
-  device: AndroidDevice; user: AndroidUserRow; groups: string[]; onClose: () => void; onImported: (name: string) => void;
-}) {
-  const [name, setName] = useState(user.name);
-  const [group, setGroup] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-  const submit = async () => {
-    if (!name.trim()) { setError('Enter an account name'); return; }
-    setSaving(true);
-    try {
-      const profile = await importDeviceUser(device.serial, user.user_id, name.trim(), group);
-      onImported(profile.name);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Import failed');
-      setSaving(false);
-    }
-  };
-  return <Dialog open onOpenChange={(open) => { if (!open) onClose(); }} title="Import Android user"
-    description={`${user.name} (user ${user.user_id}) on ${device.label} becomes an account. Log in to Facebook on the phone yourself.`}
-    footer={<><Button variant="ghost" onClick={onClose}>Cancel</Button><Button onClick={() => void submit()} loading={saving}>Import</Button></>}>
-    <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
-      <Field label="Account name" htmlFor="import-account-name" error={error || undefined}>
-        <Input id="import-account-name" value={name} maxLength={120} autoFocus onChange={(e) => { setName(e.target.value); setError(''); }} />
-      </Field>
-      <ProfileGroupField value={group} onChange={setGroup} groups={groups} />
-      {user.facebook_installed === false && <Alert variant="warning">Facebook is not installed for this Android user yet.</Alert>}
-    </form>
-  </Dialog>;
 }

@@ -32,6 +32,9 @@ import { SettingsModal } from './components/SettingsModal';
 import { NavRail, AppPage } from './components/NavRail';
 import { AccountsPage } from './components/accounts/AccountsPage';
 import { DevicesPage } from './components/devices/DevicesPage';
+import { useDevices } from './components/devices/useDevices';
+import { importDeviceUser } from './services/devices';
+import type { PhoneAccountRequest } from './components/devices/PhoneAccountForm';
 import { AccountPage } from './components/accounts/AccountPage';
 import { MoveToGroupDialog } from './components/accounts/MoveToGroupDialog';
 import { AccountHandlers, FolderHandlers, ProfileAction } from './components/accounts/accountActions';
@@ -67,8 +70,11 @@ export const App: React.FC = () => {
   const [proxies, setProxies] = useState<ProxyItem[]>([]);
   const [page, setPage] = useState<AppPage>('accounts');
   const [openAccount, setOpenAccount] = useState<{ id: string; tab: AccountTab; from?: 'devices' } | null>(null);
-  const [phoneFocus, setPhoneFocus] = useState<{ serial: string } | null>(null);
+  const [phoneFocus, setPhoneFocus] = useState<{ serial: string | null } | null>(null);
+  const [phoneRescan, setPhoneRescan] = useState<{ serial: string } | null>(null);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [phonePreset, setPhonePreset] = useState<{ serial: string; userId: number } | null>(null);
+  const { devices, reload: reloadDevices } = useDevices();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [moveTargets, setMoveTargets] = useState<Profile[] | null>(null);
   const [folderDialog, setFolderDialog] = useState<FolderDialogState>(null);
@@ -172,7 +178,8 @@ export const App: React.FC = () => {
     setOpenAccount({ id: profileId, tab, from });
   }, []);
 
-  const openPhone = useCallback((serial: string) => {
+  /** Opens the Devices page on a phone, or on This PC when `serial` is null. */
+  const openDevice = useCallback((serial: string | null) => {
     setPhoneFocus({ serial });
     setPage('devices');
   }, []);
@@ -335,6 +342,15 @@ export const App: React.FC = () => {
     }
   };
 
+  // Rethrows so the dialog can show the error next to its Create button.
+  const handleCreatePhone = async (serial: string, userId: number, request: PhoneAccountRequest) => {
+    const profile = await importDeviceUser(serial, userId, request.name, request.group, request.proxyId);
+    showToast(`${profile.name} added to Accounts`, 'success');
+    setPhoneRescan({ serial });
+    await Promise.all([loadData(), reloadDevices()]);
+    openAccountPage(profile.id, 'overview', page === 'devices' ? 'devices' : undefined);
+  };
+
   // Rethrows so the settings form can show the error next to its Save button.
   const handleUpdate = async (profileId: string, updates: ProfileUpdateRequest) => {
     await updateProfile(profileId, updates);
@@ -393,15 +409,15 @@ export const App: React.FC = () => {
 
         <main className={`flex-1 flex min-w-0 overflow-hidden ${page === 'accounts' ? '' : 'hidden'}`}>
           {currentAccount && openAccount
-            ? <AccountPage key={currentAccount.id} profile={currentAccount} tab={openAccount.tab}
+            ? <AccountPage key={currentAccount.id} profile={currentAccount} devices={devices} tab={openAccount.tab}
               onTabChange={(tab) => setOpenAccount({ ...openAccount, id: currentAccount.id, tab })}
-              backLabel={openAccount.from === 'devices' ? 'Phones' : 'Accounts'}
+              backLabel={openAccount.from === 'devices' ? 'Devices' : 'Accounts'}
               onBack={() => { const from = openAccount.from; setOpenAccount(null); if (from === 'devices') setPage('devices'); }}
-              onOpenPhone={openPhone} handlers={handlers} busy={busyIds.has(currentAccount.id)}
+              onOpenDevice={openDevice} handlers={handlers} busy={busyIds.has(currentAccount.id)}
               executions={executions} proxies={proxies} groups={profileGroups} onSave={handleUpdate}
               onOpenQueue={() => openQueue(currentAccount.id)} />
-            : <AccountsPage profiles={profiles} proxies={proxies} groups={profileGroups} executions={executions} handlers={handlers} folderHandlers={folderHandlers}
-              busyIds={busyIds} onCreate={() => setIsCreateModalOpen(true)} />}
+            : <AccountsPage profiles={profiles} proxies={proxies} devices={devices} onOpenDevice={openDevice} groups={profileGroups} executions={executions} handlers={handlers} folderHandlers={folderHandlers}
+              busyIds={busyIds} onCreate={() => { setPhonePreset(null); setIsCreateModalOpen(true); }} />}
         </main>
 
         <main className={`flex-1 flex min-w-0 overflow-hidden ${page === 'post' || page === 'queue' ? '' : 'hidden'}`}>
@@ -423,7 +439,8 @@ export const App: React.FC = () => {
         </main>
 
         <main className={`flex-1 flex min-w-0 overflow-hidden ${page === 'devices' ? '' : 'hidden'}`}>
-          <DevicesPage active={page === 'devices'} groups={profileGroups} onProfilesChanged={loadData} focus={phoneFocus}
+          <DevicesPage active={page === 'devices'} profiles={profiles} stats={systemStats} focus={phoneFocus} rescan={phoneRescan}
+            onImport={(device, user) => { setPhonePreset({ serial: device.serial, userId: user.user_id }); setIsCreateModalOpen(true); }}
             onOpenAccount={(profileId) => openAccountPage(profileId, 'overview', 'devices')} />
         </main>
 
@@ -445,6 +462,10 @@ export const App: React.FC = () => {
         existingCount={profiles.length}
         proxies={proxies}
         groups={profileGroups}
+        devices={devices}
+        phonePreset={phonePreset}
+        onCreatePhone={handleCreatePhone}
+        onProxiesChanged={loadData}
       />
 
       <FolderNameDialog state={folderDialog} onSubmit={submitFolderName} onClose={() => setFolderDialog(null)} />

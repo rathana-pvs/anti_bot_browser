@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { FolderPlus, Loader2, Plus, Search, Smartphone, Users, X } from 'lucide-react';
+import { FolderPlus, Loader2, Plus, Search, Users, X } from 'lucide-react';
 import { Profile } from '../../types/profile';
 import { ProxyItem } from '../../types/proxy';
 import { QueueExecutionItem } from '../../types/automation';
+import { AndroidDevice } from '../../types/device';
 import { ActionMenu } from '../ui/ActionMenu';
 import { Button } from '../ui/Button';
 import { Checkbox } from '../ui/Checkbox';
@@ -14,20 +15,23 @@ import { AccountHandlers, FolderHandlers, accountMenu, bulkMenu, folderMenu } fr
 import { ACCOUNT_DRAG_TYPE, ALL_FOLDERS, ATTENTION, FolderList, NO_FOLDER } from './FolderList';
 import {
   AccountActivity, HealthSignal, STATUS_LABEL, STATUS_TONE, TONE_CLASS, activityFor, browserNotes, liveSignal, needsAttention,
-  isAndroid, networkSignal, openItemSignals, phoneLabel, warmupLabel,
+  deviceLabel, isAndroid, networkSignal, openItemSignals, phoneStatus, warmupLabel,
   ActivityPeriod, PERIOD_OPTIONS, periodStart,
 } from './accountModel';
 import { formatTime, kindLabel } from '../queue/queueModel';
+import { DeviceChip } from './DeviceChip';
 
 type StatusFilter = 'all' | 'running' | 'stopped';
 type TypeFilter = 'all' | 'browser' | 'android';
 
-export function AccountsPage({ profiles, proxies, groups, executions, handlers, folderHandlers, busyIds, onCreate }: {
-  profiles: Profile[]; proxies: ProxyItem[]; groups: string[]; executions: QueueExecutionItem[];
+export function AccountsPage({ profiles, proxies, devices, groups, executions, handlers, folderHandlers, busyIds, onCreate, onOpenDevice }: {
+  profiles: Profile[]; proxies: ProxyItem[]; devices: AndroidDevice[]; groups: string[]; executions: QueueExecutionItem[];
   handlers: AccountHandlers; folderHandlers: FolderHandlers;
   /** Accounts with a start/stop request in flight. */
   busyIds: Set<string>;
   onCreate: () => void;
+  /** Opens the Devices page on this phone serial, or on This PC when null. */
+  onOpenDevice: (serial: string | null) => void;
 }) {
   const [status, setStatus] = useState<StatusFilter>('all');
   const [kind, setKind] = useState<TypeFilter>('all');
@@ -64,9 +68,9 @@ export function AccountsPage({ profiles, proxies, groups, executions, handlers, 
       if (status === 'stopped' && p.status === 'running') return false;
       if (kind === 'browser' && isAndroid(p)) return false;
       if (kind === 'android' && !isAndroid(p)) return false;
-      return !q || p.name.toLowerCase().includes(q) || p.id.toLowerCase().includes(q) || (p.group || '').toLowerCase().includes(q);
+      return !q || [p.name, p.id, p.group || '', deviceLabel(p, devices)].some(value => value.toLowerCase().includes(q));
     }).sort((a, b) => Number(!a.group) - Number(!b.group) || (a.group || '').localeCompare(b.group || '') || a.name.localeCompare(b.name));
-  }, [profiles, status, kind, folder, search, activity]);
+  }, [profiles, devices, status, kind, folder, search, activity]);
 
   const attentionCount = profiles.filter(p => needsAttention(p, activity.get(p.id))).length;
   const runningCount = profiles.filter(p => p.status === 'running').length;
@@ -123,7 +127,7 @@ export function AccountsPage({ profiles, proxies, groups, executions, handlers, 
         <div className="ml-auto flex items-center gap-2">
           <div className="relative w-56">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500" />
-            <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Name, folder, or ID" aria-label="Search accounts" className="min-h-8 py-1 pl-8" />
+            <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Name, folder, device, or ID" aria-label="Search accounts" className="min-h-8 py-1 pl-8" />
           </div>
           <Button size="sm" onClick={onCreate}><Plus className="h-3.5 w-3.5" />New account</Button>
         </div>
@@ -135,9 +139,9 @@ export function AccountsPage({ profiles, proxies, groups, executions, handlers, 
         <button type="button" className={chip(status === 'stopped')} onClick={() => setStatus('stopped')}>Not running</button>
         {profiles.some(isAndroid) && <>
           <span className="mx-1 h-4 w-px bg-zinc-800" aria-hidden="true" />
-          <button type="button" className={chip(kind === 'all')} onClick={() => setKind('all')}>Any type</button>
-          <button type="button" className={chip(kind === 'browser')} onClick={() => setKind('browser')}>Browser</button>
-          <button type="button" className={chip(kind === 'android')} onClick={() => setKind('android')}>Phone</button>
+          <button type="button" className={chip(kind === 'all')} onClick={() => setKind('all')}>Any device</button>
+          <button type="button" className={chip(kind === 'browser')} onClick={() => setKind('browser')}>This PC</button>
+          <button type="button" className={chip(kind === 'android')} onClick={() => setKind('android')}>Phones</button>
         </>}
         <div role="radiogroup" aria-label="Activity period" className="ml-auto flex items-center gap-2">
           <span className="text-[11px] text-zinc-500">{totals.posted} posted{totals.warmed ? ` · ${totals.warmed} warmed` : ''}</span>
@@ -163,11 +167,11 @@ export function AccountsPage({ profiles, proxies, groups, executions, handlers, 
         <div className="overflow-hidden rounded-xl border border-zinc-800">
           <div className={cn(ROW_GRID, 'border-b border-zinc-800 bg-zinc-950/60 px-3 py-2 text-[11px] text-zinc-500')}>
             <Checkbox checked={allVisibleSelected ? true : selected.size > 0 ? 'indeterminate' : false} onCheckedChange={toggleAll} ariaLabel="Select all shown accounts" />
-            <span>Account</span><span>Status</span><span className="hidden md:block">Network</span><span className="hidden md:block">Live</span><span className="hidden md:block">{periodInfo.column}</span><span />
+            <span>Account</span><span>Device</span><span>Status</span><span className="hidden md:block">Network</span><span className="hidden md:block">Live</span><span className="hidden md:block">{periodInfo.column}</span><span />
           </div>
           {visible.length === 0 && <p className="px-3 py-10 text-center text-xs text-zinc-500">
             {folder !== ALL_FOLDERS && folder !== ATTENTION && !search && status === 'all' ? 'This folder is empty. Drag accounts here, or use Move to folder.' : 'No accounts match these filters.'}</p>}
-          {visible.map(profile => <AccountRow key={profile.id} profile={profile} activity={activity.get(profile.id)!}
+          {visible.map(profile => <AccountRow key={profile.id} profile={profile} devices={devices} onOpenDevice={onOpenDevice} activity={activity.get(profile.id)!}
             network={networkSignal(profile, proxies)} selected={selected.has(profile.id)} busy={busyIds.has(profile.id)} onToggle={() => toggle(profile.id)}
             onOpen={() => handlers.open(profile.id, 'overview')} onDragStart={startDrag(profile)}
             menuItems={() => accountMenu(profile, handlers, { failureCutoff: periodStart(period) })}
@@ -181,7 +185,7 @@ export function AccountsPage({ profiles, proxies, groups, executions, handlers, 
   </div>;
 }
 
-const ROW_GRID = 'grid grid-cols-[1.5rem_minmax(0,1.6fr)_7rem_minmax(0,1fr)_5.5rem_minmax(0,1.4fr)_2.5rem] items-center gap-3';
+const ROW_GRID = 'grid grid-cols-[1.5rem_minmax(0,1.4fr)_minmax(0,1.2fr)_7rem_minmax(0,1fr)_5.5rem_minmax(0,1.4fr)_2.5rem] items-center gap-3';
 
 function Signal({ signal, onOpenQueue }: { signal: HealthSignal; onOpenQueue?: () => void }) {
   return signal.opensQueue && onOpenQueue
@@ -190,13 +194,14 @@ function Signal({ signal, onOpenQueue }: { signal: HealthSignal; onOpenQueue?: (
     : <span title={signal.hint} className={cn('whitespace-nowrap', TONE_CLASS[signal.tone])}>{signal.label}</span>;
 }
 
-function AccountRow({ profile, network, activity, selected, busy, onToggle, onOpen, onOpenQueue, onDragStart, menuItems, onContextMenu, onMenuKey }: {
-  profile: Profile; network: HealthSignal; activity: AccountActivity; selected: boolean; busy: boolean;
+function AccountRow({ profile, devices, onOpenDevice, network, activity, selected, busy, onToggle, onOpen, onOpenQueue, onDragStart, menuItems, onContextMenu, onMenuKey }: {
+  profile: Profile; devices: AndroidDevice[]; onOpenDevice: (serial: string | null) => void; network: HealthSignal; activity: AccountActivity; selected: boolean; busy: boolean;
   onToggle: () => void; onOpen: () => void; onOpenQueue: () => void; onDragStart: (event: React.DragEvent) => void; menuItems: () => ReturnType<typeof accountMenu>;
   onContextMenu: (event: React.MouseEvent) => void; onMenuKey: (event: React.KeyboardEvent) => void;
 }) {
   const notes = browserNotes(profile);
   const openItems = openItemSignals(activity);
+  const phone = isAndroid(profile) ? phoneStatus(profile, devices) : null;
   const done = [activity.posted && `${activity.posted} posted`, activity.warmed && `${activity.warmed} warmed`].filter(Boolean).join(' · ');
   return <div tabIndex={0} draggable onDragStart={onDragStart} onClick={onOpen} onContextMenu={onContextMenu}
     onKeyDown={(e) => {
@@ -204,18 +209,18 @@ function AccountRow({ profile, network, activity, selected, busy, onToggle, onOp
       if (e.target === e.currentTarget && e.key === 'Enter') onOpen();
       if (e.target === e.currentTarget && e.key === ' ') { e.preventDefault(); onToggle(); }
     }}
-    aria-label={`${profile.name}, ${STATUS_LABEL[profile.status]}`}
+    aria-label={`${profile.name}, ${deviceLabel(profile, devices)}, ${phone?.label ?? STATUS_LABEL[profile.status]}`}
     className={cn(ROW_GRID, 'cursor-pointer border-b border-zinc-800/70 px-3 py-2.5 text-xs outline-none transition-colors last:border-b-0 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500',
       selected ? 'bg-blue-950/25' : 'hover:bg-zinc-900/60')}>
     <span onClick={(e) => e.stopPropagation()}><Checkbox checked={selected} onCheckedChange={onToggle} ariaLabel={`Select ${profile.name}`} /></span>
     <div className="min-w-0">
-      <p className="flex items-center gap-1.5 truncate font-medium text-zinc-100">
-        {isAndroid(profile) && <Smartphone className="h-3.5 w-3.5 shrink-0 text-zinc-400" aria-label="Phone account" />}{profile.name}</p>
-      <p className="truncate text-[11px] text-zinc-500">{[profile.group || 'No folder', isAndroid(profile) ? phoneLabel(profile) : warmupLabel(profile)].join(' · ')}</p>
+      <p className="truncate font-medium text-zinc-100">{profile.name}</p>
+      <p className="truncate text-[11px] text-zinc-500">{[profile.group || 'No folder', !phone && warmupLabel(profile)].filter(Boolean).join(' · ')}</p>
     </div>
+    <div className="min-w-0"><DeviceChip profile={profile} devices={devices} onClick={() => onOpenDevice(profile.runtime?.device_serial ?? null)} /></div>
     <div className="min-w-0">
-      {isAndroid(profile)
-        ? <span className="flex items-center gap-1.5 text-zinc-400"><span className="h-1.5 w-1.5 rounded-full bg-current" />On phone</span>
+      {phone
+        ? <span className={cn('flex items-center gap-1.5', phone.tone)}><span className="h-1.5 w-1.5 rounded-full bg-current" />{phone.label}</span>
         : <span className={cn('flex items-center gap-1.5', STATUS_TONE[profile.status])}>
           {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <span className="h-1.5 w-1.5 rounded-full bg-current" />}{STATUS_LABEL[profile.status]}
         </span>}

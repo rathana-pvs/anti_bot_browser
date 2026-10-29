@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Profile } from '../../types/profile';
+import { AndroidDevice } from '../../types/device';
 import { QueueExecutionItem } from '../../types/automation';
 import { fetchQueue } from '../../services/api';
 import { ACTIVE_STATUSES, FAILED_STATUSES, UNCERTAIN_STATUSES, WAITING_STATUSES, commentNeedsRetry, hasOpenRecovery, sectionOf } from '../queue/queueModel';
@@ -60,8 +61,23 @@ export function activityFor(profileId: string, executions: QueueExecutionItem[],
 /** Accounts that live on an Android user of a physical phone, not a browser container. */
 export const isAndroid = (profile: Profile) => profile.runtime?.kind === 'android_user';
 
-export function phoneLabel(profile: Profile) {
-  return profile.runtime ? `Phone · Android user ${profile.runtime.android_user_id}` : '';
+export function phoneOf(profile: Profile, devices: AndroidDevice[]) {
+  return profile.runtime ? devices.find(device => device.serial === profile.runtime!.device_serial) : undefined;
+}
+
+/** Where the account lives, e.g. "This PC" or "Pixel 10 · User 11". */
+export function deviceLabel(profile: Profile, devices: AndroidDevice[]) {
+  if (!profile.runtime) return 'This PC';
+  return `${phoneOf(profile, devices)?.label || profile.runtime.device_serial} · User ${profile.runtime.android_user_id}`;
+}
+
+/** A phone account's status comes from its phone: only the Android user on screen can be controlled. */
+export function phoneStatus(profile: Profile, devices: AndroidDevice[]): { label: string; tone: string } {
+  const phone = phoneOf(profile, devices);
+  if (!phone || phone.state !== 'device') return { label: 'Phone offline', tone: 'text-red-400' };
+  return phone.health?.current_user === profile.runtime?.android_user_id
+    ? { label: 'On screen', tone: 'text-emerald-400' }
+    : { label: 'In background', tone: 'text-zinc-500' };
 }
 
 /** Browser problems shown under the status. */

@@ -5,7 +5,7 @@ from fastapi import HTTPException
 
 from backend.models.profile import ProfileUpdateRequest
 from backend.routers import devices, profiles
-from backend.services import adb_client, android_devices, docker_service
+from backend.services import adb_client, android_devices, docker_service, proxy_service
 from backend.services.adb_client import AdbError, AndroidUser
 
 
@@ -77,6 +77,16 @@ def test_parsers_accept_pixel_android_17_output():
     assert adb_client.parse_free_storage_mb(
         "Filesystem       1K-blocks     Used Available Use% Mounted on\n"
         "/dev/block/dm-67 239543380 77177400 162234908  33% /data/user/0\n") == 158432
+    assert adb_client.parse_total_storage_mb(
+        "Filesystem       1K-blocks     Used Available Use% Mounted on\n"
+        "/dev/block/dm-67 239543380 75635448 163776860  32% /data/user/0\n") == 233929
+    assert adb_client.parse_memory("MemTotal:       15948992 kB\nMemFree:  451000 kB\nMemAvailable:    2330852 kB\n") == {
+        "used_mb": 13299, "total_mb": 15575}
+    assert adb_client.parse_cpu_percent(
+        "Tasks: 912 total,   2 running, 910 sleeping,   0 stopped,   0 zombie\n"
+        "  Mem:    15575M total,    15133M used,      441M free,        1M buffers\n"
+        "800%cpu  44%user   3%nice 119%sys 622%idle   0%iow   8%irq   3%sirq   0%host\n") == 22
+    assert adb_client.parse_cpu_percent("no summary") is None
 
 
 @pytest.mark.parametrize("serial", ["", "a b", "x;rm -rf /", "a" * 65])
@@ -158,6 +168,15 @@ class FakeAdb:
     def free_storage_mb(self, serial):
         return 2048
 
+    def total_storage_mb(self, serial):
+        return 65536
+
+    def cpu_percent(self, serial):
+        return 22
+
+    def memory(self, serial):
+        return {"used_mb": 13300, "total_mb": 15575}
+
     def switch_user(self, serial, user_id):
         self.switched.append(user_id)
         self.current = user_id
@@ -201,6 +220,8 @@ def test_list_devices_registers_authorized_phones_with_health(phone):
     by_serial = {device["serial"]: device for device in result["devices"]}
     assert set(by_serial) == {"R58M12345ABC", "192.168.1.40:5555", "0123456789ABCDEF"}
     assert by_serial["R58M12345ABC"]["health"]["battery"]["level"] == 80
+    assert by_serial["R58M12345ABC"]["health"]["cpu_percent"] == 22
+    assert by_serial["R58M12345ABC"]["health"]["memory"] == {"used_mb": 13300, "total_mb": 15575}
     # Unauthorized phones are shown but not remembered or queried.
     assert by_serial["0123456789ABCDEF"]["health"] is None
     stored = json.loads(android_devices.DEVICES_FILE.read_text())["devices"]
@@ -344,3 +365,21 @@ def test_android_profiles_never_reach_docker_or_edit_runtime_settings(phone, mon
     assert renamed["name"] == "Renamed"
     assert renamed["automation"]["enabled"] is False
     assert renamed["runtime"]["kind"] == "android_user"
+
+
+def test_import_reserves_one_free_proxy_for_the_phone_account(phone, tmp_path, monkeypatch):
+    pool = tmp_path / "proxy_pool.json"
+    pool.write_text(json.dumps([{"id": "p1", "host": "10.0.0.1", "port": 1080, "username": "u", "password": "pw",
+                                 "type": "socks5", "assigned": False, "profile_id": None}]))
+    monkeypatch.setattr(proxy_service, "PROXY_POOL_FILE", pool)
+    android_devices.scan_device("R58M12345ABC")
+    profile = android_devices.import_user("R58M12345ABC", 10, "News", proxy_id="p1")
+    assert profile["network"]["mode"] == "pool" and profile["network"]["proxy_id"] == "p1"
+    # Reserved only: the phone keeps its own network until the companion app is set up.
+    assert profile["android_network"] == {"status": "not_set_up"}
+    assert json.loads(pool.read_text())[0]["profile_id"] == profile["id"]
+
+    with pytest.raises(ValueError, match="already assigned"):
+        android_devices.import_user("R58M12345ABC", 11, "Second", proxy_id="p1")
+    # The refused import leaves no account behind.
+    assert len(android_devices.linked_profiles()) == 1

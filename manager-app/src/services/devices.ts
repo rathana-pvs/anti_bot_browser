@@ -37,9 +37,9 @@ export async function switchDeviceUser(serial: string, userId: number): Promise<
   return res.json();
 }
 
-export async function importDeviceUser(serial: string, userId: number, name: string, group: string): Promise<Profile> {
+export async function importDeviceUser(serial: string, userId: number, name: string, group: string, proxyId: string | null = null): Promise<Profile> {
   const res = await fetch(`${devicePath(serial)}/users/${userId}/import`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, group }),
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, group, proxy_id: proxyId }),
   });
   if (!res.ok) throw await apiError(res, 'Failed to import the Android user');
   return res.json();

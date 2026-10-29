@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react';
-import { fetchDevices } from '../../services/devices';
-import { AlertTriangle, ArrowLeft, Pause, Play, Smartphone, Square } from 'lucide-react';
+import { useState } from 'react';
+import { AlertTriangle, ArrowLeft, Pause, Play, Square } from 'lucide-react';
 import { Profile, ProfileUpdateRequest } from '../../types/profile';
 import { ProxyItem } from '../../types/proxy';
 import { QueueExecutionItem } from '../../types/automation';
+import { AndroidDevice } from '../../types/device';
 import { VncViewer } from '../VncViewer';
 import { PhoneLiveView } from '../devices/PhoneLiveView';
 import { MediaLightbox, LightboxMedia } from '../MediaLightbox';
@@ -12,21 +12,24 @@ import { Button } from '../ui/Button';
 import { useAppDialog } from '../ui/AppDialogProvider';
 import { cn } from '../ui/cn';
 import { AccountHandlers, accountMenu } from './accountActions';
-import { AccountTab, STATUS_LABEL, STATUS_TONE, activityFor, isAndroid } from './accountModel';
+import { AccountTab, STATUS_LABEL, STATUS_TONE, activityFor, isAndroid, phoneStatus } from './accountModel';
+import { DeviceChip } from './DeviceChip';
 import { AccountOverview } from './AccountOverview';
 import { AccountActivityTab } from './AccountActivityTab';
 import { ProfileSettings } from './ProfileSettings';
 
 const TABS: { value: AccountTab; label: string }[] = [
-  { value: 'browser', label: 'Browser' },
+  // The browser on PC accounts, the live phone screen on phone accounts.
+  { value: 'browser', label: 'Screen' },
   { value: 'overview', label: 'Overview' },
   { value: 'settings', label: 'Settings' },
   { value: 'activity', label: 'Activity' },
 ];
 
-export function AccountPage({ profile, tab: requestedTab, onTabChange, onBack, backLabel = 'Accounts', onOpenPhone, handlers, busy, executions, proxies, groups, onSave, onOpenQueue }: {
-  profile: Profile; tab: AccountTab; onTabChange: (tab: AccountTab) => void; onBack: () => void;
-  backLabel?: string; onOpenPhone?: (serial: string) => void;
+export function AccountPage({ profile, devices, tab: requestedTab, onTabChange, onBack, backLabel = 'Accounts', onOpenDevice, handlers, busy, executions, proxies, groups, onSave, onOpenQueue }: {
+  profile: Profile; devices: AndroidDevice[]; tab: AccountTab; onTabChange: (tab: AccountTab) => void; onBack: () => void;
+  /** Opens the Devices page on this phone serial, or on This PC when null. */
+  backLabel?: string; onOpenDevice?: (serial: string | null) => void;
   handlers: AccountHandlers; busy: boolean; executions: QueueExecutionItem[];
   proxies: ProxyItem[]; groups: string[];
   onSave: (profileId: string, updates: ProfileUpdateRequest) => Promise<void>;
@@ -38,32 +41,17 @@ export function AccountPage({ profile, tab: requestedTab, onTabChange, onBack, b
   const run = (action: 'start' | 'stop' | 'pause' | 'unpause') => handlers.run([profile], action);
   const android = isAndroid(profile);
   // Phone accounts show the phone screen instead of a browser and have no editable runtime settings yet.
-  const tabs = android
-    ? [{ value: 'browser' as const, label: 'Phone' }, ...TABS.filter(option => option.value === 'overview' || option.value === 'activity')]
-    : TABS;
+  const tabs = android ? TABS.filter(option => option.value !== 'settings') : TABS;
   const tab = tabs.some(option => option.value === requestedTab) ? requestedTab : 'overview';
-  const serial = profile.runtime?.device_serial;
-  const [phoneName, setPhoneName] = useState(serial || '');
-  useEffect(() => {
-    if (!serial) return;
-    let cancelled = false;
-    // The phone's name lives in the device list; the serial is a fine fallback.
-    fetchDevices().then(result => {
-      const label = result.devices.find(d => d.serial === serial)?.label;
-      if (!cancelled && label) setPhoneName(label);
-    }).catch(() => undefined);
-    return () => { cancelled = true; };
-  }, [serial]);
+  const phone = android ? phoneStatus(profile, devices) : null;
 
   return <div className="flex min-h-0 flex-1 flex-col">
     <header className="shrink-0 border-b border-border bg-surface/50 px-6 pt-3">
       <div className="flex flex-wrap items-center gap-3">
         <Button size="sm" variant="ghost" onClick={onBack} className="-ml-2"><ArrowLeft className="h-3.5 w-3.5" />{backLabel}</Button>
         <h1 className="min-w-0 truncate text-sm font-semibold text-zinc-100">{profile.name}</h1>
-        <span className={cn('flex items-center gap-1.5 text-xs', android ? 'text-zinc-400' : STATUS_TONE[profile.status])}><span className="h-1.5 w-1.5 rounded-full bg-current" />{android ? 'On phone' : STATUS_LABEL[profile.status]}</span>
-        {android && profile.runtime && <button type="button" title="Show this phone on the Phones page" onClick={() => onOpenPhone?.(profile.runtime!.device_serial)}
-          className="inline-flex items-center gap-1.5 text-xs text-blue-300 underline-offset-2 hover:underline">
-          <Smartphone className="h-3.5 w-3.5" aria-hidden="true" />{phoneName} · User {profile.runtime.android_user_id}</button>}
+        <DeviceChip profile={profile} devices={devices} onClick={onOpenDevice && (() => onOpenDevice(profile.runtime?.device_serial ?? null))} />
+        <span className={cn('flex items-center gap-1.5 text-xs', phone ? phone.tone : STATUS_TONE[profile.status])}><span className="h-1.5 w-1.5 rounded-full bg-current" />{phone ? phone.label : STATUS_LABEL[profile.status]}</span>
         {profile.group && <span className="text-xs text-zinc-500">{profile.group}</span>}
         <div className="ml-auto flex items-center gap-2">
           {android ? null : profile.status === 'stopped' || profile.status === 'error'

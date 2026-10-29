@@ -3,6 +3,10 @@ export type AdbState = 'device' | 'unauthorized' | 'offline' | 'no permissions' 
 export interface DeviceHealth {
   battery: { level: number | null; temperature_c: number | null; charging: boolean } | null;
   free_storage_mb: number | null;
+  storage_total_mb?: number | null;
+  /** Share of all cores in use, 0-100. */
+  cpu_percent?: number | null;
+  memory?: { used_mb: number; total_mb: number } | null;
   current_user: number | null;
   max_users: number | null;
   facebook_version: string | null;

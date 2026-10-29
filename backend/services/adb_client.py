@@ -117,6 +117,33 @@ def parse_free_storage_mb(df_output: str) -> int | None:
     return int(parts[3]) // 1024
 
 
+def parse_total_storage_mb(df_output: str) -> int | None:
+    lines = [line for line in df_output.splitlines() if line.strip()]
+    parts = lines[-1].split() if len(lines) >= 2 else []
+    return int(parts[1]) // 1024 if len(parts) >= 2 and parts[1].isdigit() else None
+
+
+def parse_memory(meminfo: str) -> dict | None:
+    """RAM in use, counted like the PC: total minus what Android reports as available."""
+    values = {}
+    for line in meminfo.splitlines():
+        match = re.match(r"(MemTotal|MemAvailable):\s+(\d+)\s*kB", line.strip())
+        if match:
+            values[match.group(1)] = int(match.group(2)) // 1024
+    if "MemTotal" not in values or "MemAvailable" not in values:
+        return None
+    return {"used_mb": values["MemTotal"] - values["MemAvailable"], "total_mb": values["MemTotal"]}
+
+
+def parse_cpu_percent(top_output: str) -> int | None:
+    """Share of all cores in use, from toybox top's summary line, e.g. `800%cpu ... 622%idle`."""
+    match = re.search(r"(\d+)%cpu\b.*?(\d+)%idle", top_output)
+    if not match or int(match.group(1)) <= 0:
+        return None
+    total, idle = int(match.group(1)), int(match.group(2))
+    return max(0, min(100, round((total - idle) * 100 / total)))
+
+
 def parse_screen_awake(dumpsys_power: str) -> bool | None:
     """Screen state from `dumpsys power`; None when the format is not recognised.
 
@@ -212,6 +239,15 @@ class AdbClient:
 
     def free_storage_mb(self, serial: str) -> int | None:
         return parse_free_storage_mb(self.shell(serial, "df", "-k", "/data"))
+
+    def total_storage_mb(self, serial: str) -> int | None:
+        return parse_total_storage_mb(self.shell(serial, "df", "-k", "/data"))
+
+    def memory(self, serial: str) -> dict | None:
+        return parse_memory(self.shell(serial, "cat", "/proc/meminfo"))
+
+    def cpu_percent(self, serial: str) -> int | None:
+        return parse_cpu_percent(self.shell(serial, "top", "-b", "-n", "1", "-m", "1"))
 
     def switch_user(self, serial: str, user_id: int) -> None:
         self.shell(serial, "am", "switch-user", str(int(user_id)), timeout=30)

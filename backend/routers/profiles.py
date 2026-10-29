@@ -67,6 +67,17 @@ def _proxy_timezone(network: dict) -> str | None:
         return None
 
 
+def _saved_exit_timezone(proxy: dict) -> str | None:
+    """The timezone the Proxies page measured through this proxy's exit IP, so creating an
+    account does not test the proxy again. Stored or endpoint-IP geography is never trusted."""
+    if proxy.get("geo_source") != "proxy_exit_lookup":
+        return None
+    try:
+        return validate_timezone(proxy.get("timezone"))
+    except Exception:
+        return None
+
+
 def _network_from_intent(profile_id: str, intent: dict) -> tuple[dict, str | None]:
     mode = intent["mode"]
     if mode == "direct":
@@ -84,6 +95,9 @@ def _network_from_intent(profile_id: str, intent: dict) -> tuple[dict, str | Non
             "proxy_user": proxy.get("username") or "",
             "proxy_pass": proxy.get("password") or "",
         }
+        saved = _saved_exit_timezone(proxy)
+        if saved:
+            return network, saved
     else:
         release_proxy(profile_id)
         network = {
@@ -153,6 +167,10 @@ def detect_network_timezone(intent: NetworkIntent):
         proxy = next((p for p in load_proxy_pool() if p["id"] == intent.proxy_id), None)
         if not proxy:
             raise HTTPException(status_code=404, detail="Selected proxy does not exist")
+        saved = _saved_exit_timezone(proxy)
+        if saved:
+            return {"detected": True, "timezone": saved, "source": "proxy",
+                    "timezone_options": defaults["timezone_options"], "fallback_timezone": FALLBACK_TIMEZONE}
         network = {"proxy_host": proxy["host"], "proxy_port": proxy["port"],
                    "proxy_user": proxy.get("username"), "proxy_pass": proxy.get("password")}
     else:

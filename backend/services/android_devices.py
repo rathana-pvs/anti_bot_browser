@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.config import DATA_DIR, PROFILES_DIR
+from backend.services import proxy_service
 from backend.services.adb_client import AdbClient, AdbError, FACEBOOK_PACKAGE, validate_serial
 from backend.services.profile_service import (
     DEFAULT_RESOURCE_LIMITS, PROFILE_SCHEMA_VERSION, allocate_profile_identity, atomic_write_json,
@@ -108,6 +109,8 @@ def _profile_for(links: list[dict], serial: str, user_id: int, user_serial: int 
 def _health(client: AdbClient, serial: str) -> dict:
     health: dict[str, Any] = {}
     for key, read in (("battery", client.battery), ("free_storage_mb", client.free_storage_mb),
+                      ("storage_total_mb", client.total_storage_mb), ("cpu_percent", client.cpu_percent),
+                      ("memory", client.memory),
                       ("current_user", client.current_user), ("max_users", client.max_users),
                       ("facebook_version", client.package_version)):
         try:
@@ -277,7 +280,17 @@ def switch_user(serial: str, user_id: int) -> dict:
         lock.release()
 
 
-def _android_profile(profile_id: str, name: str, group: str, serial: str, user: dict) -> dict:
+def _reserved_network(proxy: dict | None) -> dict:
+    if not proxy:
+        return {"mode": "direct", "proxy_id": None, "proxy_type": "socks5", "proxy_host": "",
+                "proxy_port": None, "proxy_user": "", "proxy_pass": ""}
+    return {"mode": "pool", "proxy_id": proxy["id"], "proxy_type": proxy.get("type") or "socks5",
+            "proxy_host": proxy["host"], "proxy_port": int(proxy["port"]),
+            "proxy_user": proxy.get("username") or "", "proxy_pass": proxy.get("password") or ""}
+
+
+def _android_profile(profile_id: str, name: str, group: str, serial: str, user: dict,
+                     proxy: dict | None = None) -> dict:
     requested = resolve_requested_environment(
         {"screen_resolution": "1920x1080", "timezone_policy": "host", "language": "en-US",
          "user_agent_policy": "browser_default", "user_agent": None, "rendering_mode": "host_gpu"},
@@ -293,9 +306,9 @@ def _android_profile(profile_id: str, name: str, group: str, serial: str, user: 
             "android_user_id": user["user_id"], "android_user_serial": user.get("user_serial"),
             "android_user_name": user.get("name"),
         },
-        # The phone's own network is used until the companion app sets up a proxy.
-        "network": {"mode": "direct", "proxy_id": None, "proxy_type": "socks5", "proxy_host": "",
-                    "proxy_port": None, "proxy_user": "", "proxy_pass": ""},
+        # The proxy is only reserved: the phone's own network is used until the companion app
+        # tunnels through it, which `android_network.status` reports.
+        "network": _reserved_network(proxy),
         "android_network": {"status": "not_set_up"},
         "requested_environment": requested,
         "effective_environment": None, "observed_environment": None,
@@ -313,7 +326,7 @@ def _android_profile(profile_id: str, name: str, group: str, serial: str, user: 
     }
 
 
-def import_user(serial: str, user_id: int, name: str, group: str = "") -> dict:
+def import_user(serial: str, user_id: int, name: str, group: str = "", proxy_id: str | None = None) -> dict:
     validate_serial(serial)
     name = name.strip()
     if not name or len(name) > 120:
@@ -332,7 +345,14 @@ def import_user(serial: str, user_id: int, name: str, group: str = "") -> dict:
             raise ValueError("This Android user is already linked to an account.")
         profile_id, _, _ = allocate_profile_identity(PROFILES_DIR)
         profile_dir = PROFILES_DIR / profile_id
-        profile = _android_profile(profile_id, name, group.strip(), serial, user)
-        profile_dir.mkdir(parents=True, exist_ok=False)
-        atomic_write_json(profile_dir / "config.json", profile)
+        # One account, one proxy: the pool refuses a proxy another account already holds.
+        proxy = proxy_service.assign_proxy_by_id(profile_id, proxy_id) if proxy_id else None
+        try:
+            profile = _android_profile(profile_id, name, group.strip(), serial, user, proxy)
+            profile_dir.mkdir(parents=True, exist_ok=False)
+            atomic_write_json(profile_dir / "config.json", profile)
+        except Exception:
+            if proxy:
+                proxy_service.release_proxy(profile_id)
+            raise
     return profile

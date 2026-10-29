@@ -80,3 +80,20 @@ def test_stale_pool_timezone_cannot_hide_failed_lookup(isolated_profiles, monkey
         ))
     assert proxy_service.load_proxy_pool()[0]['assigned'] is False
     assert not (isolated_profiles / 'profiles' / 'profile_001' / 'config.json').exists()
+
+
+def test_pool_proxy_checked_on_proxies_page_is_not_tested_again(isolated_profiles, monkeypatch):
+    proxy_service.save_proxy_pool([{
+        'id': 'proxy_1', 'host': 'proxy.example', 'port': 1080, 'assigned': False,
+        'timezone': 'Asia/Ho_Chi_Minh', 'geo_source': 'proxy_exit_lookup',
+    }])
+
+    def lookup(_proxy):
+        raise AssertionError('the saved exit-IP check must be reused')
+
+    monkeypatch.setattr(profiles, 'lookup_proxy_geography', lookup)
+    intent = NetworkIntent(mode='pool', proxy_id='proxy_1')
+    preview = profiles.detect_network_timezone(intent)
+    assert (preview['detected'], preview['timezone']) == (True, 'Asia/Ho_Chi_Minh')
+    created = profiles.create_profile(ProfileCreateRequest(name='Test', network=intent))
+    assert created['fingerprint']['timezone'] == 'Asia/Ho_Chi_Minh'

@@ -22,6 +22,7 @@ class UserImportRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     name: str = Field(min_length=1, max_length=120)
     group: str = Field(default="", max_length=80)
+    proxy_id: str | None = Field(default=None, min_length=1, max_length=120)
 
 
 class SwitchUserRequest(BaseModel):
@@ -70,7 +71,7 @@ def switch_user(serial: str, request: SwitchUserRequest):
 
 @router.post("/{serial}/users/{user_id}/import", status_code=201)
 def import_user(serial: str, user_id: int, request: UserImportRequest):
-    return _call(lambda: android_devices.import_user(serial, user_id, request.name, request.group))
+    return _call(lambda: android_devices.import_user(serial, user_id, request.name, request.group, request.proxy_id))
 
 
 @router.websocket("/{serial}/live")

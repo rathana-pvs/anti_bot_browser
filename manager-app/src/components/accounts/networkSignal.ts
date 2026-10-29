@@ -5,6 +5,9 @@ import type { HealthSignal } from './accountModel';
 /** Use the saved test for this account's selected pool proxy, never another proxy. */
 export function networkSignal(profile: Profile, proxies: ProxyItem[] = []): HealthSignal {
   if (profile.runtime?.kind === 'android_user') {
+    const reserved = profile.network.mode === 'pool' ? proxies.find(p => p.id === profile.network.proxy_id) : undefined;
+    if (reserved) return { label: 'Proxy reserved', tone: 'muted', detail: 'Not on phone yet',
+      hint: `${reserved.host}:${reserved.port} is reserved for this account. The phone uses its own network until the companion app tunnels through the proxy.` };
     return { label: 'Not set up', tone: 'muted', detail: "Phone's own network",
       hint: "Proxy and kill switch for phone accounts are not set up yet. This account uses the phone's own network." };
   }
