@@ -6,8 +6,14 @@ import type { HealthSignal } from './accountModel';
 export function networkSignal(profile: Profile, proxies: ProxyItem[] = []): HealthSignal {
   if (profile.runtime?.kind === 'android_user') {
     const reserved = profile.network.mode === 'pool' ? proxies.find(p => p.id === profile.network.proxy_id) : undefined;
-    if (reserved) return { label: 'Proxy reserved', tone: 'muted', detail: 'Not on phone yet',
-      hint: `${reserved.host}:${reserved.port} is reserved for this account. The phone uses its own network until the companion app tunnels through the proxy.` };
+    const check = profile.android_network;
+    const when = check?.checked_at ? `checked ${new Date(check.checked_at).toLocaleString()}` : '';
+    // Only a check run inside the phone's Android user can say the proxy is in use.
+    if (reserved && check?.status === 'verified') return { label: 'Proxy verified', tone: 'ok', detail: `Exit ${check.exit_ip} · ${when}`,
+      hint: `Measured inside the phone: traffic leaves through ${reserved.host}:${reserved.port} (exit ${check.exit_ip}), and the kill switch is on.` };
+    if (reserved && check?.status === 'blocked') return { label: 'Proxy blocked', tone: 'bad', detail: when, hint: check.reason || 'The last check failed.' };
+    if (reserved) return { label: 'Proxy reserved', tone: 'muted', detail: check?.checked_at ? 'Not set up on phone' : 'Not checked on phone yet',
+      hint: check?.reason || `${reserved.host}:${reserved.port} is reserved for this account. Open the account and press Verify now to check it on the phone.` };
     return { label: 'Not set up', tone: 'muted', detail: "Phone's own network",
       hint: "Proxy and kill switch for phone accounts are not set up yet. This account uses the phone's own network." };
   }

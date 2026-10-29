@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { AlertTriangle, ArrowLeft, Pause, Play, Square } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Pause, Play, Smartphone, Square } from 'lucide-react';
+import { openAccountOnPhone } from '../../services/devices';
 import { Profile, ProfileUpdateRequest } from '../../types/profile';
 import { ProxyItem } from '../../types/proxy';
 import { QueueExecutionItem } from '../../types/automation';
@@ -26,7 +27,7 @@ const TABS: { value: AccountTab; label: string }[] = [
   { value: 'activity', label: 'Activity' },
 ];
 
-export function AccountPage({ profile, devices, tab: requestedTab, onTabChange, onBack, backLabel = 'Accounts', onOpenDevice, handlers, busy, executions, proxies, groups, onSave, onOpenQueue }: {
+export function AccountPage({ profile, devices, tab: requestedTab, onTabChange, onBack, backLabel = 'Accounts', onOpenDevice, handlers, busy, executions, proxies, groups, onSave, onOpenQueue, onReload }: {
   profile: Profile; devices: AndroidDevice[]; tab: AccountTab; onTabChange: (tab: AccountTab) => void; onBack: () => void;
   /** Opens the Devices page on this phone serial, or on This PC when null. */
   backLabel?: string; onOpenDevice?: (serial: string | null) => void;
@@ -34,8 +35,10 @@ export function AccountPage({ profile, devices, tab: requestedTab, onTabChange, 
   proxies: ProxyItem[]; groups: string[];
   onSave: (profileId: string, updates: ProfileUpdateRequest) => Promise<void>;
   onOpenQueue: () => void;
+  onReload: () => Promise<void> | void;
 }) {
-  const { showToast } = useAppDialog();
+  const { showAlert, showToast } = useAppDialog();
+  const [opening, setOpening] = useState(false);
   const [lightbox, setLightbox] = useState<LightboxMedia | null>(null);
   const activity = activityFor(profile.id, executions);
   const run = (action: 'start' | 'stop' | 'pause' | 'unpause') => handlers.run([profile], action);
@@ -44,6 +47,27 @@ export function AccountPage({ profile, devices, tab: requestedTab, onTabChange, 
   const tabs = android ? TABS.filter(option => option.value !== 'settings') : TABS;
   const tab = tabs.some(option => option.value === requestedTab) ? requestedTab : 'overview';
   const phone = android ? phoneStatus(profile, devices) : null;
+
+  const openOnPhone = async () => {
+    setOpening(true);
+    try {
+      const result = await openAccountOnPhone(profile.id);
+      await onReload();
+      if (result.ready) {
+        const done = [result.stopped_users.length && `stopped ${result.stopped_users.length} other ${result.stopped_users.length === 1 ? 'account' : 'accounts'}`,
+          result.timezone_set && `phone time set to ${result.timezone_set}`, result.network?.status === 'verified' && 'proxy verified'].filter(Boolean);
+        showToast(`${profile.name} is on screen${done.length ? `: ${done.join(', ')}` : ''}.`, 'success');
+        onTabChange('browser');
+      } else {
+        await showAlert(`${result.reason ?? 'The phone didn’t confirm it.'} Don’t use Facebook on this account until this is fixed.`,
+          { title: `${profile.name} isn’t ready`, variant: 'warning' });
+      }
+    } catch (error) {
+      await showAlert(error instanceof Error ? error.message : 'Open failed', { title: 'Could not open on the phone', variant: 'danger' });
+    } finally {
+      setOpening(false);
+    }
+  };
 
   return <div className="flex min-h-0 flex-1 flex-col">
     <header className="shrink-0 border-b border-border bg-surface/50 px-6 pt-3">
@@ -54,7 +78,10 @@ export function AccountPage({ profile, devices, tab: requestedTab, onTabChange, 
         <span className={cn('flex items-center gap-1.5 text-xs', phone ? phone.tone : STATUS_TONE[profile.status])}><span className="h-1.5 w-1.5 rounded-full bg-current" />{phone ? phone.label : STATUS_LABEL[profile.status]}</span>
         {profile.group && <span className="text-xs text-zinc-500">{profile.group}</span>}
         <div className="ml-auto flex items-center gap-2">
-          {android ? null : profile.status === 'stopped' || profile.status === 'error'
+          {android ? <Button size="sm" loading={opening} onClick={() => void openOnPhone()}
+              title="Shows this account on the phone and checks its proxy. With one account at a time, other accounts on the phone stop and the phone takes this proxy’s time.">
+              <Smartphone className="h-3 w-3" />{opening ? 'Opening on phone…' : 'Open on phone'}</Button>
+            : profile.status === 'stopped' || profile.status === 'error'
             ? <Button size="sm" loading={busy} onClick={() => run('start')}><Play className="h-3 w-3" />Start</Button>
             : <>
               {profile.status === 'paused'
@@ -85,7 +112,7 @@ export function AccountPage({ profile, devices, tab: requestedTab, onTabChange, 
       : tab === 'browser'
       ? <div className="flex min-h-0 flex-1"><VncViewer profile={profile} onAction={(_id, action) => run(action)} embedded /></div>
       : <div className="min-h-0 flex-1 overflow-y-auto p-6">
-        {tab === 'overview' && <AccountOverview profile={profile} proxies={proxies} activity={activity} onOpenQueue={onOpenQueue} />}
+        {tab === 'overview' && <AccountOverview profile={profile} proxies={proxies} devices={devices} activity={activity} onOpenQueue={onOpenQueue} onOpenDevice={onOpenDevice} onChanged={onReload} />}
         {tab === 'settings' && <ProfileSettings profile={profile} onSave={onSave} proxies={proxies} groups={groups} />}
         {tab === 'activity' && <AccountActivityTab profile={profile} recent={activity.recent}
           onOpenImage={(url, label) => setLightbox({ url, type: 'photo', name: label })} onToast={showToast} />}

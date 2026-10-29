@@ -2,7 +2,10 @@ import { useCallback, useEffect, useState } from 'react';
 import { BatteryCharging, BatteryMedium, Check, ChevronRight, CircleAlert, Copy, Cpu, MemoryStick, Monitor, PencilLine, Plus, RefreshCw, ScanLine, ShieldCheck, Smartphone, Thermometer, Trash2, Usb, UserRound, Wifi } from 'lucide-react';
 import { AndroidDevice, AndroidUserRow, DeviceListResponse } from '../../types/device';
 import { Profile, SystemStats } from '../../types/profile';
-import { fetchDevices, forgetDevice, renameDevice, scanDevice, switchDeviceUser } from '../../services/devices';
+import { ProxyItem } from '../../types/proxy';
+import { fetchDevices, forgetDevice, openAccountOnPhone, renameDevice, scanDevice, setDeviceTimezone, switchDeviceUser, updateDeviceSettings } from '../../services/devices';
+import { Checkbox } from '../ui/Checkbox';
+import { formatUtcOffset, phoneTimeReport } from './phoneTime';
 import { API_BASE } from '../../services/api';
 import { writeHostClipboardText } from '../../services/clipboard';
 import { Alert } from '../ui/Alert';
@@ -31,8 +34,8 @@ function stateBadge(device: AndroidDevice) {
 }
 
 /** The hardware accounts live on: This PC (browser accounts) and physical Android phones. */
-export function DevicesPage({ active, profiles, stats, onImport, onOpenAccount, focus, rescan }: {
-  active: boolean; profiles: Profile[]; stats: SystemStats;
+export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpenAccount, focus, rescan }: {
+  active: boolean; profiles: Profile[]; proxies: ProxyItem[]; stats: SystemStats;
   /** Opens New account for this Android user. */
   onImport: (device: AndroidDevice, user: AndroidUserRow) => void;
   onOpenAccount: (profileId: string) => void;
@@ -109,10 +112,41 @@ export function DevicesPage({ active, profiles, stats, onImport, onOpenAccount, 
     }
   };
 
+  const setTimezone = async (target: AndroidDevice, zone: string) => {
+    if (!await showConfirm(`Set ${target.label} to ${zone} (${formatUtcOffset(zone)})? Every Android user on this phone sees the new time at once, and automatic time zone is turned off so Android won’t change it back.`,
+      { title: 'Set phone time', confirmLabel: 'Set time' })) return;
+    try {
+      await setDeviceTimezone(target.serial, zone);
+      showToast(`${target.label} now uses ${zone}`, 'success');
+      await load();
+    } catch (error) {
+      await showAlert(error instanceof Error ? error.message : 'Could not set the time zone', { title: 'Phone time not changed', variant: 'danger' });
+    }
+  };
+
+  const saveSettings = async (target: AndroidDevice, settings: Parameters<typeof updateDeviceSettings>[1]) => {
+    try {
+      await updateDeviceSettings(target.serial, settings);
+      await load();
+    } catch (error) {
+      await showAlert(error instanceof Error ? error.message : 'Could not save', { title: 'Setting not saved', variant: 'danger' });
+    }
+  };
+
   const switchTo = async (user: AndroidUserRow) => {
     if (!device) return;
     setSwitching(user.user_id);
     try {
+      // An account's user opens through the safe path: other users stop, time is set, proxy verified.
+      if (user.profile_id && device.one_account_at_a_time !== false) {
+        const opened = await openAccountOnPhone(user.profile_id);
+        if (opened.ready) showToast(`${user.profile_name ?? user.name} is on screen with its proxy verified`, 'success');
+        else await showAlert(`${opened.reason ?? 'The phone didn’t confirm it.'} Don’t use Facebook on this account until this is fixed.`,
+          { title: `${user.profile_name ?? user.name} isn’t ready`, variant: 'warning' });
+        await scan(device.serial);
+        await load();
+        return;
+      }
       const result = await switchDeviceUser(device.serial, user.user_id);
       if (result.ready) showToast(`Switched to ${user.name}`, 'success');
       else await showAlert(`${result.reason ?? 'The phone didn’t confirm the switch.'} Check the phone, then switch again.`,
@@ -150,7 +184,7 @@ export function DevicesPage({ active, profiles, stats, onImport, onOpenAccount, 
       <div className="grid gap-5 lg:grid-cols-[18rem_minmax(0,1fr)]">
         <div className="space-y-2" role="list" aria-label="Devices">
           <PcCard profiles={profiles} stats={stats} selected={selected === THIS_PC} onSelect={() => setSelected(THIS_PC)} />
-          {phones.map(item => <DeviceCard key={item.serial} device={item} selected={item.serial === selected}
+          {phones.map(item => <DeviceCard key={item.serial} device={item} timeIssue={(() => { const report = phoneTimeReport(item, profiles, proxies); return report.mixed || report.mismatched.length > 0; })()} selected={item.serial === selected}
             onSelect={() => setSelected(item.serial)} />)}
           {phones.length === 0 && <button type="button" role="listitem" onClick={() => setSelected(ADD_PHONE)} aria-current={selected === ADD_PHONE ? 'true' : undefined}
             className={cn('flex w-full items-center gap-2 rounded-panel border border-dashed p-3 text-left text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
@@ -177,7 +211,21 @@ export function DevicesPage({ active, profiles, stats, onImport, onOpenAccount, 
             <IconButton aria-label="Rename phone" onClick={() => void rename(device)}><PencilLine className="h-4 w-4" /></IconButton>
             <IconButton aria-label="Remove phone" onClick={() => void forget(device)}><Trash2 className="h-4 w-4" /></IconButton>
           </div>
-          <DeviceWarnings device={device} />
+          <label className="flex items-start gap-2 px-4 pt-3 text-xs text-zinc-300">
+            <Checkbox checked={device.switch_from_app_only !== false} onCheckedChange={(on) => void saveSettings(device, { switch_from_app_only: on })}
+              ariaLabel="Switch accounts from this app only" disabled={device.state !== 'device'} className="mt-0.5" />
+            <span><span className="font-medium">Switch accounts from this app only</span>
+              <span className="block text-[11px] text-zinc-500">Hides the user switcher on the phone, so accounts change only with Open on phone, where the proxy and time are checked first. Signing in still works on the phone after it opens.</span>
+              {device.switch_from_app_only !== false && device.health?.user_switcher === true && <span className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-amber-300">
+                The phone shows its user switcher again (turned on in Settings).
+                <Button size="sm" variant="outline" onClick={() => void saveSettings(device, { switch_from_app_only: true })}>Hide it</Button></span>}</span>
+          </label>
+          <label className="flex items-start gap-2 px-4 pt-3 text-xs text-zinc-300">
+            <Checkbox checked={device.one_account_at_a_time !== false} onCheckedChange={(on) => void saveSettings(device, { one_account_at_a_time: on })} ariaLabel="One account at a time" className="mt-0.5" />
+            <span><span className="font-medium">One account at a time</span>
+              <span className="block text-[11px] text-zinc-500">Opening an account stops this phone’s other accounts and sets the phone’s time to that account’s proxy, so nothing runs in the background on the wrong time or uses resources. Opening takes up to about two minutes while the proxy is checked.</span></span>
+          </label>
+          <DeviceWarnings device={device} profiles={profiles} proxies={proxies} onSetTimezone={(zone) => void setTimezone(device, zone)} />
           <UsersTable device={device} switching={switching} onSwitch={switchTo} onImport={(user) => onImport(device, user)} onOpenAccount={onOpenAccount} />
         </section>}
       </div>
@@ -329,7 +377,7 @@ function PhoneUnavailable({ error, loading, onRetry }: { error: string; loading:
   </section>;
 }
 
-function DeviceCard({ device, selected, onSelect }: { device: AndroidDevice; selected: boolean; onSelect: () => void }) {
+function DeviceCard({ device, timeIssue, selected, onSelect }: { device: AndroidDevice; timeIssue: boolean; selected: boolean; onSelect: () => void }) {
   const battery = device.health?.battery;
   const hot = (battery?.temperature_c ?? 0) >= HOT_C;
   return <button type="button" role="listitem" onClick={onSelect} aria-current={selected ? 'true' : undefined}
@@ -350,12 +398,17 @@ function DeviceCard({ device, selected, onSelect }: { device: AndroidDevice; sel
       {device.health?.cpu_percent != null && <span className="flex items-center gap-1"><Cpu className="h-3 w-3" />{device.health.cpu_percent}%</span>}
       {device.health?.memory && <span className="flex items-center gap-1"><MemoryStick className="h-3 w-3" />{gb(device.health.memory.used_mb)} / {gb(device.health.memory.total_mb)} GB</span>}
       <span>{device.profile_count ?? 0} {device.profile_count === 1 ? 'account' : 'accounts'}</span>
+      {timeIssue && <span className="text-amber-300">Time mismatch</span>}
     </div>
   </button>;
 }
 
-function DeviceWarnings({ device }: { device: AndroidDevice }) {
+function DeviceWarnings({ device, profiles, proxies, onSetTimezone }: {
+  device: AndroidDevice; profiles: Profile[]; proxies: ProxyItem[]; onSetTimezone: (zone: string) => void;
+}) {
   const health = device.health;
+  const time = phoneTimeReport(device, profiles, proxies);
+  const describe = (entries: typeof time.accounts) => entries.map(entry => `${entry.profile.name} (${entry.zone}, ${formatUtcOffset(entry.zone)})`).join(', ');
   const warnings: string[] = [];
   if (device.state === 'unauthorized') warnings.push('Unlock the phone and accept the "Allow USB debugging" prompt for this computer.');
   if (device.state === 'offline') warnings.push('This phone is not connected. Check the cable or Wi-Fi debugging.');
@@ -363,6 +416,7 @@ function DeviceWarnings({ device }: { device: AndroidDevice }) {
   if (health?.free_storage_mb != null && health.free_storage_mb < 1024) warnings.push(`Only ${health.free_storage_mb} MB of storage is free.`);
   if ((device.profile_count ?? 0) > 1) warnings.push(`${device.profile_count} accounts share this phone's hardware and network.`);
   const facts = [
+    time.zone && `Time ${time.zone} (${formatUtcOffset(time.zone)}${time.auto ? ', automatic' : ''})`,
     health?.cpu_percent != null && `CPU ${health.cpu_percent}%`,
     health?.memory && `RAM ${gb(health.memory.used_mb)} / ${gb(health.memory.total_mb)} GB`,
     health?.free_storage_mb != null && (health.storage_total_mb
@@ -374,6 +428,17 @@ function DeviceWarnings({ device }: { device: AndroidDevice }) {
   return <div className="space-y-2 px-4 pt-3">
     {facts.length > 0 && <p className="text-[11px] text-zinc-500">{facts.join(' · ')}</p>}
     {warnings.map(text => <Alert key={text} variant="warning">{text}</Alert>)}
+    {time.mixed
+      ? <Alert variant="warning">Accounts on this phone need different times: {describe(time.accounts)}. A phone has one time zone for all its accounts, so use proxies on the same time for accounts that share a phone.</Alert>
+      : time.suggested && <Alert variant="warning">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="min-w-0 flex-1">{time.mismatched.length > 0
+            ? `The phone is on ${time.zone} (${formatUtcOffset(time.zone!)}), but its accounts’ proxies are on ${describe(time.mismatched)}.`
+            : 'Automatic time zone is on, so Android can change the phone’s time away from its accounts’ proxies.'}</span>
+          <Button size="sm" variant="outline" onClick={() => onSetTimezone(time.suggested!)}>
+            {time.mismatched.length > 0 ? `Set phone time to ${time.suggested}` : `Lock time to ${time.suggested}`}</Button>
+        </div>
+      </Alert>}
   </div>;
 }
 

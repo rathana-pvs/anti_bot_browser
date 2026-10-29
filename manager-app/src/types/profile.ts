@@ -137,9 +137,20 @@ export interface ProfileAccount {
   last_post_date: string | null;
 }
 
+/** A phone account's network, from the last check run inside its Android user. */
+export interface AndroidNetwork {
+  status: 'not_set_up' | 'no_proxy' | 'tunnel_on' | 'blocked' | 'verified';
+  reason?: string | null;
+  checked_at?: string;
+  exit_ip?: string | null;
+  exit_timezone?: string | null;
+  agent_version?: string | null;
+}
+
 export interface Profile {
   live?: { configured: boolean };
   runtime?: AndroidRuntime;
+  android_network?: AndroidNetwork;
   group?: string;
   schema_version?: number;
   configuration_revision?: number;

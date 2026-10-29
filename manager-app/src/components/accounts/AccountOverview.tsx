@@ -3,30 +3,40 @@ import { ArrowRight, Loader2, RefreshCw } from 'lucide-react';
 import { Profile } from '../../types/profile';
 import { ProxyItem } from '../../types/proxy';
 import { QueueExecutionItem } from '../../types/automation';
+import { AndroidDevice } from '../../types/device';
 import { checkProfileFacebookResponse, checkProfileProxySpeed, FacebookResponseResult, ProxySpeedResult } from '../../services/api';
 import { Button } from '../ui/Button';
 import { cn } from '../ui/cn';
 import { FAILED_STATUSES, describe, formatTime, kindLabel } from '../queue/queueModel';
-import { AccountActivity, STATUS_LABEL, STATUS_TONE, TONE_CLASS, browserNotes, isAndroid, liveSignal, networkSignal, openItemSignals, warmupLabel } from './accountModel';
+import { AccountActivity, STATUS_LABEL, STATUS_TONE, TONE_CLASS, browserNotes, isAndroid, liveSignal, networkSignal, openItemSignals, phoneStatus, warmupLabel } from './accountModel';
 import { Alert } from '../ui/Alert';
+import { DeviceChip } from './DeviceChip';
+import { PhoneNetworkCard } from '../devices/PhoneNetworkCard';
 
 const card = 'rounded-xl border border-zinc-800 bg-zinc-950/40 p-4';
 
-export function AccountOverview({ profile, proxies, activity, onOpenQueue }: {
-  profile: Profile; proxies: ProxyItem[]; activity: AccountActivity; onOpenQueue: () => void;
+export function AccountOverview({ profile, proxies, devices, activity, onOpenQueue, onOpenDevice, onChanged }: {
+  profile: Profile; proxies: ProxyItem[]; devices: AndroidDevice[]; activity: AccountActivity; onOpenQueue: () => void;
+  onOpenDevice?: (serial: string | null) => void;
+  /** Reloads accounts after a check saved new results. */
+  onChanged: () => Promise<void> | void;
 }) {
   const network = networkSignal(profile, proxies);
   const android = isAndroid(profile);
   const upcoming = activity.recent.filter(item => ['pending', 'ready'].includes(item.status))
     .sort((a, b) => (new Date(a.scheduled_at).getTime() || 0) - (new Date(b.scheduled_at).getTime() || 0)).slice(0, 5);
   return <div className="mx-auto grid max-w-5xl gap-4 text-xs lg:grid-cols-2">
-    {android && <Alert className="lg:col-span-2">This account is on a phone. Use the Phone tab to see and control it. Proxy setup and automation for phone accounts are not available yet, so it is skipped by the queue.</Alert>}
+    {android && <Alert className="lg:col-span-2">This account is on a phone. Use the Screen tab to see and control it. {profile.network.mode !== 'pool'
+      ? 'It has no proxy, so it uses the phone’s own internet.'
+      : profile.android_network?.status === 'verified' ? 'Its proxy was verified inside the phone.'
+        : 'Don’t use Facebook on this account until Verify now shows its proxy working on the phone.'} Automation for phone accounts isn’t available yet, so the queue skips it.</Alert>}
     <section className={card} aria-labelledby="overview-status">
       <h3 id="overview-status" className="mb-3 text-sm font-semibold text-zinc-100">Status</h3>
       <dl className="grid grid-cols-[8rem_minmax(0,1fr)] gap-y-2 text-zinc-400">
         {android && profile.runtime
-          ? <><dt>Phone</dt><dd className="text-zinc-200">{profile.runtime.device_serial}</dd>
-            <dt>Android user</dt><dd className="text-zinc-200">{profile.runtime.android_user_name || 'User'} ({profile.runtime.android_user_id})</dd></>
+          ? <><dt>Phone</dt><dd><DeviceChip profile={profile} devices={devices} onClick={onOpenDevice && (() => onOpenDevice(profile.runtime!.device_serial))} />
+              <span className={cn('ml-2', phoneStatus(profile, devices).tone)}>{phoneStatus(profile, devices).label}</span></dd>
+            <dt>Android user</dt><dd className="text-zinc-200">{profile.runtime.android_user_name || 'User'} · User {profile.runtime.android_user_id}</dd></>
           : <><dt>Browser</dt><dd><span className={STATUS_TONE[profile.status]}>{STATUS_LABEL[profile.status]}</span>
             {browserNotes(profile).filter(n => n.label !== 'Browser error').map(n => <span key={n.label} title={n.hint} className={cn('ml-2', TONE_CLASS[n.tone])}>{n.label}</span>)}</dd></>}
         {profile.status === 'running' && <><dt>CPU</dt><dd className="text-zinc-200">{profile.cpu_usage || '0%'}</dd>
@@ -41,7 +51,7 @@ export function AccountOverview({ profile, proxies, activity, onOpenQueue }: {
       </dl>
     </section>
 
-    {!android && <NetworkChecks profile={profile} />}
+    {android ? <PhoneNetworkCard profile={profile} proxies={proxies} devices={devices} onChanged={onChanged} /> : <NetworkChecks profile={profile} />}
 
     <section className={cn(card, 'lg:col-span-2')} aria-labelledby="overview-work">
       <div className="mb-3 flex items-center justify-between">

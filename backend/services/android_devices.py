@@ -11,6 +11,9 @@ import secrets
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone as dt_timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +22,7 @@ from backend.services import proxy_service
 from backend.services.adb_client import AdbClient, AdbError, FACEBOOK_PACKAGE, validate_serial
 from backend.services.profile_service import (
     DEFAULT_RESOURCE_LIMITS, PROFILE_SCHEMA_VERSION, allocate_profile_identity, atomic_write_json,
-    compatibility_fingerprint, creation_lock, resolve_requested_environment, utc_now,
+    compatibility_fingerprint, creation_lock, resolve_requested_environment, utc_now, validate_timezone,
 )
 
 DEVICES_FILE = DATA_DIR / "android_devices.json"
@@ -111,7 +114,8 @@ def _health(client: AdbClient, serial: str) -> dict:
     """Read-only checks, run at once: the read takes as long as the slowest one (`top`), not their sum."""
     reads = (("battery", client.battery), ("free_storage_mb", client.free_storage_mb),
              ("storage_total_mb", client.total_storage_mb), ("cpu_percent", client.cpu_percent),
-             ("memory", client.memory),
+             ("memory", client.memory), ("timezone", client.timezone_state),
+             ("user_switcher", client.user_switcher_enabled),
              ("current_user", client.current_user), ("max_users", client.max_users),
              ("facebook_version", client.package_version))
 
@@ -159,6 +163,8 @@ def list_devices() -> dict:
         live = connected.get(serial)
         state = live["state"] if live else "offline"
         entry = {**saved, "state": state, "connection": (live or {}).get("connection"),
+                 "one_account_at_a_time": saved.get("one_account_at_a_time", True),
+                 "switch_from_app_only": saved.get("switch_from_app_only", True),
                  "model": saved.get("model") or (live or {}).get("model"),
                  "profile_count": sum(1 for link in links if link["runtime"].get("device_serial") == serial),
                  "health": None}
@@ -264,30 +270,111 @@ def user_readiness(client: AdbClient, serial: str, user_id: int) -> dict:
             "lock_screen_showing": locked, "ready": reason is None, "reason": reason}
 
 
-def switch_user(serial: str, user_id: int) -> dict:
+def utc_offset(zone: str, at: datetime | None = None) -> timedelta | None:
+    return (at or datetime.now(dt_timezone.utc)).astimezone(ZoneInfo(zone)).utcoffset()
+
+
+def account_timezones(serial: str) -> list[dict]:
+    """Each account on this phone with its proxy's saved timezone (None when it has none)."""
+    pool = {proxy.get("id"): proxy for proxy in proxy_service.load_proxy_pool()}
+    accounts = []
+    for link in linked_profiles():
+        if link["runtime"].get("device_serial") != serial:
+            continue
+        try:
+            config = json.loads((PROFILES_DIR / link["profile_id"] / "config.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        proxy = pool.get((config.get("network") or {}).get("proxy_id"))
+        accounts.append({"profile_id": link["profile_id"], "name": link["name"],
+                         "timezone": (proxy or {}).get("timezone") or None})
+    return accounts
+
+
+def set_timezone(serial: str, zone: str) -> dict:
+    """Set the phone's single timezone, refusing one that any account on it does not match."""
     validate_serial(serial)
+    zone = validate_timezone(zone)
+    wanted = utc_offset(zone)
+    # With one account at a time, the time is set again whenever another account opens.
+    conflicts = [] if one_account_at_a_time(serial) else [
+        account for account in account_timezones(serial)
+        if account["timezone"] and utc_offset(account["timezone"]) != wanted]
+    if conflicts:
+        names = ", ".join(f"{account['name']} ({account['timezone']})" for account in conflicts)
+        raise ValueError(f"Other accounts on this phone need a different time: {names}.")
     client = _client()
-    if user_id not in {user.user_id for user in client.users(serial)}:
-        raise DeviceNotFound("This Android user does not exist on the phone")
+    client.set_timezone(serial, zone)
+    state = client.timezone_state(serial)
+    if state["zone"] != zone:
+        raise AdbError(f"The phone kept {state['zone'] or 'its timezone'} instead of {zone}.")
+    return state
+
+
+@contextmanager
+def phone_lock(serial: str):
+    """One switch at a time per phone: only the user on screen can be seen and controlled."""
     with _store_lock:
         lock = _switch_locks.setdefault(serial, threading.Lock())
     if not lock.acquire(blocking=False):
         raise AdbError("This phone is already switching users. Wait for it to finish.")
     try:
-        client.switch_user(serial, user_id)
-        deadline = time.monotonic() + SWITCH_READY_TIMEOUT_S
-        while True:
-            state = user_readiness(client, serial, user_id)
-            if state["ready"] or time.monotonic() >= deadline:
-                return state
-            if state["current_user"] == user_id and state["running"]:
-                if state["screen_awake"] is False:
-                    client.wake_screen(serial)
-                elif state["lock_screen_showing"]:
-                    client.dismiss_lock_screen(serial)
-            time.sleep(SWITCH_POLL_S)
+        yield
     finally:
         lock.release()
+
+
+def switch_and_wait(client: AdbClient, serial: str, user_id: int) -> dict:
+    """Switches, then wakes the screen and dismisses a swipe lock until the user is ready. Hold `phone_lock`."""
+    client.switch_user(serial, user_id)
+    deadline = time.monotonic() + SWITCH_READY_TIMEOUT_S
+    while True:
+        state = user_readiness(client, serial, user_id)
+        if state["ready"] or time.monotonic() >= deadline:
+            return state
+        if state["current_user"] == user_id and state["running"]:
+            if state["screen_awake"] is False:
+                client.wake_screen(serial)
+            elif state["lock_screen_showing"]:
+                client.dismiss_lock_screen(serial)
+        time.sleep(SWITCH_POLL_S)
+
+
+def switch_user(serial: str, user_id: int) -> dict:
+    validate_serial(serial)
+    client = _client()
+    if user_id not in {user.user_id for user in client.users(serial)}:
+        raise DeviceNotFound("This Android user does not exist on the phone")
+    with phone_lock(serial):
+        return switch_and_wait(client, serial, user_id)
+
+
+def one_account_at_a_time(serial: str) -> bool:
+    """On (the default): opening an account stops the phone's other users and sets the phone's
+    time to that account's proxy, so no account runs in the background on the wrong time."""
+    return bool((load_store()["devices"].get(serial) or {}).get("one_account_at_a_time", True))
+
+
+def switch_from_app_only(serial: str) -> bool:
+    """On (the default): the phone's own user switcher is hidden, so accounts change only through
+    the app's safe flow. Someone holding the phone could still turn it back on in Settings."""
+    return bool((load_store()["devices"].get(serial) or {}).get("switch_from_app_only", True))
+
+
+def update_device_settings(serial: str, one_at_a_time: bool | None = None, app_only: bool | None = None) -> dict:
+    validate_serial(serial)
+    with _store_lock:
+        store = load_store()
+        if serial not in store["devices"]:
+            raise DeviceNotFound("Device not found")
+        if one_at_a_time is not None:
+            store["devices"][serial]["one_account_at_a_time"] = bool(one_at_a_time)
+        if app_only is not None:
+            # Applied before saving, so a disconnected phone keeps its old setting and the error shows.
+            _client().set_user_switcher(serial, not app_only)
+            store["devices"][serial]["switch_from_app_only"] = bool(app_only)
+        _save_store(store)
+        return store["devices"][serial]
 
 
 def _reserved_network(proxy: dict | None) -> dict:

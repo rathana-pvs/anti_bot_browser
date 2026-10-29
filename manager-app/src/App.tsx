@@ -415,7 +415,7 @@ export const App: React.FC = () => {
               onBack={() => { const from = openAccount.from; setOpenAccount(null); if (from === 'devices') setPage('devices'); }}
               onOpenDevice={openDevice} handlers={handlers} busy={busyIds.has(currentAccount.id)}
               executions={executions} proxies={proxies} groups={profileGroups} onSave={handleUpdate}
-              onOpenQueue={() => openQueue(currentAccount.id)} />
+              onOpenQueue={() => openQueue(currentAccount.id)} onReload={loadData} />
             : <AccountsPage profiles={profiles} proxies={proxies} devices={devices} onOpenDevice={openDevice} groups={profileGroups} executions={executions} handlers={handlers} folderHandlers={folderHandlers}
               busyIds={busyIds} onCreate={() => { setPhonePreset(null); setIsCreateModalOpen(true); }} />}
         </main>
@@ -439,7 +439,7 @@ export const App: React.FC = () => {
         </main>
 
         <main className={`flex-1 flex min-w-0 overflow-hidden ${page === 'devices' ? '' : 'hidden'}`}>
-          <DevicesPage active={page === 'devices'} profiles={profiles} stats={systemStats} focus={phoneFocus} rescan={phoneRescan}
+          <DevicesPage active={page === 'devices'} profiles={profiles} proxies={proxies} stats={systemStats} focus={phoneFocus} rescan={phoneRescan}
             onImport={(device, user) => { setPhonePreset({ serial: device.serial, userId: user.user_id }); setIsCreateModalOpen(true); }}
             onOpenAccount={(profileId) => openAccountPage(profileId, 'overview', 'devices')} />
         </main>

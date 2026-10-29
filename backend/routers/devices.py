@@ -6,7 +6,7 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.security import websocket_token_valid
-from backend.services import android_devices, android_live
+from backend.services import android_devices, android_live, android_network
 from backend.services.adb_client import AdbError, AdbUnavailable
 
 
@@ -23,6 +23,17 @@ class UserImportRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     group: str = Field(default="", max_length=80)
     proxy_id: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+class TimezoneRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    timezone: str = Field(min_length=1, max_length=64)
+
+
+class DeviceSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    one_account_at_a_time: bool | None = None
+    switch_from_app_only: bool | None = None
 
 
 class SwitchUserRequest(BaseModel):
@@ -67,6 +78,32 @@ def forget_device(serial: str):
 @router.post("/{serial}/switch-user")
 def switch_user(serial: str, request: SwitchUserRequest):
     return _call(lambda: android_devices.switch_user(serial, request.user_id))
+
+
+@router.get("/accounts/{profile_id}/network")
+def account_network(profile_id: str):
+    return _call(lambda: android_network.network_status(profile_id))
+
+
+@router.post("/accounts/{profile_id}/network/verify")
+def verify_account_network(profile_id: str):
+    return _call(lambda: android_network.verify(profile_id))
+
+
+@router.post("/accounts/{profile_id}/open")
+def open_account(profile_id: str):
+    return _call(lambda: android_network.open_account(profile_id))
+
+
+@router.put("/{serial}/settings")
+def update_device_settings(serial: str, request: DeviceSettingsRequest):
+    return _call(lambda: android_devices.update_device_settings(
+        serial, request.one_account_at_a_time, request.switch_from_app_only))
+
+
+@router.post("/{serial}/timezone")
+def set_timezone(serial: str, request: TimezoneRequest):
+    return _call(lambda: android_devices.set_timezone(serial, request.timezone))
 
 
 @router.post("/{serial}/users/{user_id}/import", status_code=201)

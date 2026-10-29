@@ -87,6 +87,10 @@ def test_parsers_accept_pixel_android_17_output():
         "  Mem:    15575M total,    15133M used,      441M free,        1M buffers\n"
         "800%cpu  44%user   3%nice 119%sys 622%idle   0%iow   8%irq   3%sirq   0%host\n") == 22
     assert adb_client.parse_cpu_percent("no summary") is None
+    assert adb_client.parse_timezone_state("Asia/Phnom_Penh\ntrue\n") == {"zone": "Asia/Phnom_Penh", "auto": True}
+    assert adb_client.parse_timezone_state("UTC\nfalse\n") == {"zone": "UTC", "auto": False}
+    assert adb_client.parse_timezone_state("") == {"zone": None, "auto": None}
+    assert [adb_client.parse_switch_flag(value) for value in ("1\n", "0", "null")] == [True, False, None]
 
 
 @pytest.mark.parametrize("serial", ["", "a b", "x;rm -rf /", "a" * 65])
@@ -170,6 +174,23 @@ class FakeAdb:
 
     def total_storage_mb(self, serial):
         return 65536
+
+    zone = "Asia/Bangkok"
+    auto_zone = True
+
+    def timezone_state(self, serial):
+        return {"zone": self.zone, "auto": self.auto_zone}
+
+    def set_timezone(self, serial, zone):
+        self.zone, self.auto_zone = zone, False
+
+    switcher = True
+
+    def user_switcher_enabled(self, serial):
+        return self.switcher
+
+    def set_user_switcher(self, serial, enabled):
+        self.switcher = enabled
 
     def cpu_percent(self, serial):
         return 22
@@ -383,3 +404,45 @@ def test_import_reserves_one_free_proxy_for_the_phone_account(phone, tmp_path, m
         android_devices.import_user("R58M12345ABC", 11, "Second", proxy_id="p1")
     # The refused import leaves no account behind.
     assert len(android_devices.linked_profiles()) == 1
+
+
+def _pool_with_timezones(tmp_path, monkeypatch, zones):
+    pool = tmp_path / "proxy_pool.json"
+    pool.write_text(json.dumps([{"id": proxy_id, "host": "10.0.0.1", "port": 1080, "type": "socks5",
+                                 "assigned": False, "profile_id": None, "timezone": zone}
+                                for proxy_id, zone in zones.items()]))
+    monkeypatch.setattr(proxy_service, "PROXY_POOL_FILE", pool)
+
+
+def test_phone_timezone_is_set_only_when_every_account_matches(phone, tmp_path, monkeypatch):
+    _pool_with_timezones(tmp_path, monkeypatch, {"vn": "Asia/Ho_Chi_Minh", "us": "America/New_York"})
+    android_devices.scan_device("R58M12345ABC")
+    assert android_devices.list_devices()["devices"][0]["health"]["timezone"] == {"zone": "Asia/Bangkok", "auto": True}
+    android_devices.import_user("R58M12345ABC", 10, "Vietnam", proxy_id="vn")
+
+    # Phnom Penh shares Vietnam's UTC+7, so it matches; automatic detection is turned off.
+    assert android_devices.set_timezone("R58M12345ABC", "Asia/Phnom_Penh") == {"zone": "Asia/Phnom_Penh", "auto": False}
+
+    android_devices.import_user("R58M12345ABC", 11, "New York", proxy_id="us")
+    # One account at a time (the default) sets the time per account, so a mixed phone is allowed.
+    assert android_devices.list_devices()["devices"][0]["one_account_at_a_time"] is True
+    android_devices.set_timezone("R58M12345ABC", "America/New_York")
+    android_devices.set_timezone("R58M12345ABC", "Asia/Phnom_Penh")
+    # With accounts running side by side, one phone time must fit them all.
+    android_devices.update_device_settings("R58M12345ABC", False)
+    with pytest.raises(ValueError, match="different time: Vietnam"):
+        android_devices.set_timezone("R58M12345ABC", "America/New_York")
+    assert phone.zone == "Asia/Phnom_Penh"
+    with pytest.raises(ValueError, match="Unknown timezone"):
+        android_devices.set_timezone("R58M12345ABC", "Mars/Olympus")
+
+
+def test_switching_from_the_app_only_hides_the_phones_switcher(phone):
+    android_devices.list_devices()
+    entry = android_devices.list_devices()["devices"][0]
+    assert entry["switch_from_app_only"] is True and entry["health"]["user_switcher"] is True
+    android_devices.update_device_settings("R58M12345ABC", app_only=True)
+    assert phone.switcher is False
+    android_devices.update_device_settings("R58M12345ABC", app_only=False)
+    assert phone.switcher is True
+    assert android_devices.list_devices()["devices"][0]["switch_from_app_only"] is False

@@ -3,6 +3,7 @@ import { Globe, Loader2, ScanLine } from 'lucide-react';
 import { AndroidDevice } from '../../types/device';
 import { freeProxies, isPoorProxy, proxyOptionLabel, ProxyItem } from '../../types/proxy';
 import { SavedProxyCheck } from '../SavedProxyCheck';
+import { formatUtcOffset, phoneZone, sameTime } from './phoneTime';
 import { scanDevice } from '../../services/devices';
 import { ProfileGroupField } from '../ProfileGroupField';
 import { Select } from '../ui/Select';
@@ -28,7 +29,10 @@ export function PhoneAccountForm({ devices, preset, proxies, groups, onCreate, o
   const [name, setName] = useState('');
   const [nameTouched, setNameTouched] = useState(false);
   const [group, setGroup] = useState('');
-  const available = freeProxies(proxies);
+  // The phone has one time zone for all its accounts, so proxies on the phone's time come first.
+  const zone = phoneZone(phone);
+  const matchesPhone = (proxy: ProxyItem) => Boolean(zone && proxy.timezone && sameTime(proxy.timezone, zone));
+  const available = freeProxies(proxies).sort((a, b) => Number(matchesPhone(b)) - Number(matchesPhone(a)));
   const [proxyChoice, setProxyChoice] = useState(available.find(proxy => !isPoorProxy(proxy))?.id ?? OWN_NETWORK);
   const [scanning, setScanning] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -103,10 +107,18 @@ export function PhoneAccountForm({ devices, preset, proxies, groups, onCreate, o
           <div className="flex items-center gap-1.5 font-medium text-zinc-300"><Globe className="h-3.5 w-3.5" />Proxy</div>
           <Select value={proxyChoice} onValueChange={setProxyChoice} ariaLabel="Proxy"
             options={[
-              ...available.map(proxy => ({ value: proxy.id, label: proxyOptionLabel(proxy) })),
+              ...available.map(proxy => ({ value: proxy.id,
+                label: zone && proxy.timezone ? `${proxyOptionLabel(proxy)} · ${matchesPhone(proxy) ? 'phone time ✓' : 'other time'}` : proxyOptionLabel(proxy) })),
               { value: OWN_NETWORK, label: 'No proxy for now' },
             ]} />
           {selectedProxy && <SavedProxyCheck proxy={selectedProxy} disabled={saving} onRetested={onProxiesChanged} />}
+          {selectedProxy && zone && selectedProxy.timezone && !matchesPhone(selectedProxy) && (phone?.one_account_at_a_time !== false
+            ? <p className="text-[11px] text-zinc-400">
+              This proxy is in {selectedProxy.timezone} ({formatUtcOffset(selectedProxy.timezone)}). The phone runs one account at a time,
+              so it switches to this time whenever this account opens.</p>
+            : <p className="text-[11px] text-amber-300">
+              This proxy is in {selectedProxy.timezone} ({formatUtcOffset(selectedProxy.timezone)}), but the phone is on {zone} ({formatUtcOffset(zone)}).
+              Every account on a phone shares its time, so pick a proxy marked “phone time ✓”, or turn on One account at a time for this phone.</p>)}
           {selectedProxy && isPoorProxy(selectedProxy) && <p className="text-[11px] text-amber-300">This proxy failed its last speed check (below 1 Mbps or the test failed). Pick a Good one if you can.</p>}
           <p className="text-[11px] text-zinc-500">{selectedProxy
             ? 'Only free proxies are listed, best first. This one is reserved for this account and used once the companion app is set up on the phone.'

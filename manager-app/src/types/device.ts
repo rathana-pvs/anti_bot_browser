@@ -7,6 +7,10 @@ export interface DeviceHealth {
   /** Share of all cores in use, 0-100. */
   cpu_percent?: number | null;
   memory?: { used_mb: number; total_mb: number } | null;
+  /** One timezone for the whole phone; `auto` is Android's automatic detection. */
+  timezone?: { zone: string | null; auto: boolean | null } | null;
+  /** Whether the phone shows its own user switcher (Quick Settings, lock screen). */
+  user_switcher?: boolean | null;
   current_user: number | null;
   max_users: number | null;
   facebook_version: string | null;
@@ -52,6 +56,10 @@ export interface AndroidDevice {
   last_seen?: string;
   last_scan?: DeviceScan;
   profile_count?: number;
+  /** Opening an account stops the phone's other users and sets its time to that account's proxy. */
+  one_account_at_a_time?: boolean;
+  /** The phone's own user switcher is hidden, so accounts change only through this app. */
+  switch_from_app_only?: boolean;
   health?: DeviceHealth | null;
 }
 

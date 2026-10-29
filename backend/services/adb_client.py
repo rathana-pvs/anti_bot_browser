@@ -144,6 +144,18 @@ def parse_cpu_percent(top_output: str) -> int | None:
     return max(0, min(100, round((total - idle) * 100 / total)))
 
 
+def parse_timezone_state(output: str) -> dict:
+    """`getprop persist.sys.timezone` then `cmd time_zone_detector is_auto_detection_enabled`."""
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    zone = lines[0] if lines and ("/" in lines[0] or lines[0] == "UTC") else None
+    auto = {"true": True, "false": False}.get(lines[1].casefold()) if len(lines) > 1 else None
+    return {"zone": zone, "auto": auto}
+
+
+def parse_switch_flag(output: str) -> bool | None:
+    return {"1": True, "0": False}.get(output.strip())
+
+
 def parse_screen_awake(dumpsys_power: str) -> bool | None:
     """Screen state from `dumpsys power`; None when the format is not recognised.
 
@@ -248,6 +260,31 @@ class AdbClient:
 
     def cpu_percent(self, serial: str) -> int | None:
         return parse_cpu_percent(self.shell(serial, "top", "-b", "-n", "1", "-m", "1"))
+
+    def timezone_state(self, serial: str) -> dict:
+        return parse_timezone_state(self.shell(
+            serial, "getprop persist.sys.timezone; cmd time_zone_detector is_auto_detection_enabled"))
+
+    def set_timezone(self, serial: str, zone: str) -> None:
+        """Phone-wide: every Android user sees the change at once. Automatic detection is
+        turned off first, or Android would switch the zone back (verified on Android 17)."""
+        self.shell(serial, "cmd", "time_zone_detector", "set_auto_detection_enabled", "false")
+        self.shell(serial, "cmd", "alarm", "set-timezone", zone)
+
+    def user_switcher_enabled(self, serial: str) -> bool | None:
+        """Whether the phone shows its own user switcher (Quick Settings, lock screen)."""
+        return parse_switch_flag(self.shell(serial, "settings", "get", "global", "user_switcher_enabled"))
+
+    def set_user_switcher(self, serial: str, enabled: bool) -> None:
+        """Hiding it removes switching from the phone's UI only; `am switch-user` still works (Android 17)."""
+        self.shell(serial, "settings", "put", "global", "user_switcher_enabled", "1" if enabled else "0")
+
+    def start_user(self, serial: str, user_id: int) -> None:
+        self.shell(serial, "am", "start-user", "-w", str(int(user_id)), timeout=60)
+
+    def stop_user(self, serial: str, user_id: int) -> None:
+        """Stops every app in the user, its VPN included. Android refuses the user on screen."""
+        self.shell(serial, "am", "stop-user", "-w", str(int(user_id)), timeout=60)
 
     def switch_user(self, serial: str, user_id: int) -> None:
         self.shell(serial, "am", "switch-user", str(int(user_id)), timeout=30)

@@ -89,6 +89,23 @@ broken tunnel can never lock the worker out of the phone.
   and controlled, so jobs on one phone run one at a time.
 - Job sequence: take device lock → `am switch-user N` if needed → wait for
   `am get-current-user` = N and screen unlocked → preflight gate → run.
+- Rule: every phone job starts with the same "Open on phone" flow the operator
+  uses (`android_network.open_account`) and runs only if it reports ready. The
+  job never trusts whatever is on screen: a manual switch, reboot or stopped VPN
+  between jobs is corrected by this step. A job that cannot open is blocked
+  before Facebook opens, never counted as failed or uncertain, and safe to retry.
+- One account at a time (per phone, on by default): opening an account switches
+  to it, then stops the phone's other users (Android cannot stop the user on
+  screen) and sets the phone's time to its proxy, then verifies the proxy. No
+  other account runs in the background on the wrong time or uses resources.
+  Measured on the Pixel 10 Pro XL: 21-24 s to open; a cold start can add
+  30-90 s while Android re-validates Private DNS.
+- Switch accounts from the app only (per phone, on by default): the phone's own
+  user switcher is hidden (`settings put global user_switcher_enabled 0`), so
+  accounts change only through the safe flow. On Android 17 this removed the
+  switcher from Quick Settings while `am switch-user` kept working. It is not a
+  lock: someone holding the phone can turn it back on in Settings; the Devices
+  page shows that, and opening an account hides it again.
 - Observed on a Pixel 10 Pro XL (Android 17): `am get-current-user` reports the
   new user about 0.5 s after `am switch-user`, but the user is only running
   about 1.8 s later, and the phone then sits with the screen off and the lock
@@ -147,8 +164,11 @@ A Kotlin APK installed in each Android user.
   `hev-socks5-tunnel`, `xjasonlzy/tun2socks`; licenses to be checked).
 - All apps in the user are tunneled; only the app's own upstream socket is
   excluded with `protect()`.
-- DNS is captured and resolved through the proxy. IPv6 is routed into the tunnel
-  and dropped unless the proxy supports it. UDP goes through SOCKS5 UDP when
+- DNS is captured and resolved through the proxy. The VPN is IPv4 only: it adds
+  no IPv6 address or route, so Android blocks IPv6 for the user and apps use IPv4.
+  Routing IPv6 into the tunnel (0.2.0) made Chrome connect over IPv6, which the
+  proxy cannot carry, and every such page failed with ERR_CONNECTION_RESET; fixed
+  in 0.2.1. UDP goes through SOCKS5 UDP when
   supported, otherwise blocked so Facebook falls back to TCP.
 - On proxy failure the tunnel stays up and drops packets.
 - Control: a ContentProvider called with `adb shell content call --user N`. It
@@ -214,11 +234,13 @@ before every manual login. Any failure blocks the job.
 
 ## Timezone
 
-Android has one timezone per phone. Rule: assign proxies so every profile on a
-phone shares a timezone (or UTC offset); the Devices page warns when a phone is
-mixed. Fallback, opt-in per phone: set the timezone during the user switch, before
-the gate. The command differs by Android version and must be verified. Facebook
-in background users will see the clock change, which is why this is not the default.
+Android has one timezone per phone. With one account at a time (the default),
+the phone takes each account's proxy time when the account opens, and the other
+users are stopped, so no background account sees the wrong clock; accounts on a
+phone may then use proxies in different zones. With accounts side by side, every
+profile on a phone must share a timezone (or UTC offset), and the Devices page
+warns when a phone is mixed. Setting the zone: `cmd time_zone_detector
+set_auto_detection_enabled false`, then `cmd alarm set-timezone <zone>` (Android 17).
 
 ## Manual Facebook login
 
@@ -394,6 +416,9 @@ using `android-agent/` and `android-agent/tools/agent_poc.py`:
   user was the proxy's address, by `ipwho.is` and by a literal-IPv4 HTTPS request.
 - With the tunnel pointed at an unreachable proxy, no request got out. IPv6 is
   dropped (the proxy does not carry it; the Wi-Fi had only local IPv6).
+- 2026-10-29, 0.2.1: with IPv6 removed from the VPN, Chrome in user 11 loads
+  Google again, the in-user IPv6 request fails at once ("Host unreachable"), and
+  the exit is still the proxy's address.
 - Private DNS (device-wide, `dns.adguard.com` on this phone) works through the
   tunnel. After an engine restart Android needs about 30 s to re-validate it;
   lookups fail, not leak, meanwhile. The app changes the VPN DNS address on each
