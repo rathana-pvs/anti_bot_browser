@@ -123,9 +123,10 @@ class AgentVpnService : VpnService() {
             .setSession("Network Agent")
             .setMtu(ProxyConfig.MTU)
             .addAddress(ProxyConfig.TUN_IPV4, 32)
-            .addAddress(ProxyConfig.TUN_IPV6, 128)
+            // IPv4 only. With no IPv6 address or route Android blocks IPv6 for this user (allowFamily is
+            // never called), so apps see no IPv6 and use IPv4. Routing IPv6 into the tunnel made apps
+            // such as Chrome connect over IPv6, which the proxy cannot carry, and fail with a reset.
             .addRoute("0.0.0.0", 0)
-            .addRoute("::", 0)
             .addDnsServer(dnsAddress)
             .setBlocking(false)
         config?.let { builder.excludeRoute(IpPrefix(it.address(), if (it.host.contains(':')) 128 else 32)) }

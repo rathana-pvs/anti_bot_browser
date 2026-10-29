@@ -14,8 +14,8 @@ android {
         minSdk = 33
         // Below 34 so the VPN service needs no foreground-service type declaration yet.
         targetSdk = 33
-        versionCode = 2
-        versionName = "0.2.0-poc"
+        versionCode = 3
+        versionName = "0.2.1-poc"
         ndk { abiFilters += listOf("arm64-v8a") }
         externalNativeBuild {
             ndkBuild {

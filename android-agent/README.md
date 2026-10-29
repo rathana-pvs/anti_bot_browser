@@ -6,7 +6,7 @@ traffic through the account's SOCKS5 proxy and blocks it when the proxy is unava
 
 ## How it works
 
-- `AgentVpnService` opens a VPN (tun) interface routing all IPv4 and IPv6 traffic and DNS
+- `AgentVpnService` opens a VPN (tun) interface routing all IPv4 traffic and DNS
   into [hev-socks5-tunnel](https://github.com/heiher/hev-socks5-tunnel) (MIT), which forwards
   it to the proxy. Only the proxy endpoint is routed outside the tunnel (`excludeRoute`).
 - DNS uses the engine's mapped DNS: names are answered with addresses in `100.64.0.0/10` and
