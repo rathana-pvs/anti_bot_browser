@@ -155,6 +155,8 @@ def main():
         extra = getattr(task, "result_extra", {})
         if isinstance(extra, dict):
             result.update(extra)
+        if getattr(task, "facebook_identity", None):
+            result.setdefault("facebook_identity", task.facebook_identity)
         if "telemetry" not in result:
             telemetry = getattr(task, "telemetry", None)
             if telemetry is not None:

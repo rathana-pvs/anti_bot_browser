@@ -416,6 +416,8 @@ class BaseTask:
         merged_extra = {**self.result_extra, **extra}
         if getattr(self, "step_results", None):
             merged_extra.setdefault("workflow_steps", list(self.step_results))
+        if getattr(self, "facebook_identity", None):
+            merged_extra.setdefault("facebook_identity", self.facebook_identity)
         telemetry = getattr(self, "telemetry", None)
         if telemetry is not None:
             try:

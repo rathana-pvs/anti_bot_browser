@@ -111,3 +111,21 @@ def test_stage_override_is_validated(tmp_path, monkeypatch):
         profiles.update_profile("profile_001", profiles.ProfileUpdateRequest(account={"stage_override": "resting"}))
     assert error.value.status_code == 400
     assert "Account stage" in error.value.detail
+
+
+def test_a_page_account_showing_the_personal_profile_needs_attention():
+    personal = dict(entry(2), identity="personal")
+    health = compute(config(), posts(12) + [personal], NOW)
+    assert health["stage"] == "attention"
+    assert "personal profile" in health["reason"]
+    back_on_page = dict(entry(1), identity="page")
+    assert compute(config(), posts(12) + [personal, back_on_page], NOW)["stage"] == "ready"
+    # A run that could not tell keeps the last known identity.
+    assert compute(config(), posts(12) + [personal, entry(1)], NOW)["stage"] == "attention"
+
+
+def test_history_keeps_the_identity(tmp_path, monkeypatch):
+    monkeypatch.setattr(account_health, "HISTORY_FILE", tmp_path / "history.json")
+    done = {"profile_id": "profile_001", "execution_id": "e1", "status": "skipped_session_unverified",
+            "scheduled_at": NOW.isoformat(), "facebook_identity": "personal"}
+    assert sync_history(queue(done), NOW)["profile_001"]["e1"]["identity"] == "personal"

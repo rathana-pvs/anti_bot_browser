@@ -916,6 +916,8 @@ async def _execute_queue_preparation_inner(execution_id: str):
         ex["preparation_telemetry"] = res.get("telemetry") or None
         ex['preparation_evidence_dir'] = res.get('evidence_dir')
         ex['evidence_dir'] = res.get('evidence_dir')
+        if res.get("facebook_identity") in ("page", "personal"):
+            ex["facebook_identity"] = res["facebook_identity"]
         ex['logs'] = res.get('logs') or task_record['logs']
 
         if reported_status and reported_status.startswith("skipped_"):
@@ -1230,6 +1232,8 @@ async def _execute_queue_item_inner(execution_id: str, scheduler_kind: str = "pu
             ex["evidence_dir"] = res["evidence_dir"]
         if res.get("telemetry"):
             ex["telemetry"] = res["telemetry"]
+        if res.get("facebook_identity") in ("page", "personal"):
+            ex["facebook_identity"] = res["facebook_identity"]
 
         ex["logs"] = [l["message"] for l in task_record["logs"]]
         network_recovery.refresh_recovery(ex, target_post.get("type"), time.time())
