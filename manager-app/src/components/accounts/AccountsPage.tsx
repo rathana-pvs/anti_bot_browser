@@ -227,7 +227,7 @@ function AccountRow({ profile, network, activity, stage, selected, busy, onToggl
     <div className="min-w-0">
       <p className="flex items-center gap-1.5 truncate font-medium text-zinc-100">
         {isAndroid(profile) && <Smartphone className="h-3.5 w-3.5 shrink-0 text-zinc-400" aria-label="Phone account" />}{profile.name}</p>
-      <p className="flex min-w-0 items-center gap-1.5 text-[11px] text-zinc-500"><StageBadge view={stage} quietReady />
+      <p className="flex min-w-0 items-center gap-1.5 text-[11px] text-zinc-500"><StageBadge view={stage} compact quietReady />
         <span className="truncate">{[profile.group || 'No folder', isAndroid(profile) && phoneLabel(profile)].filter(Boolean).join(' · ')}</span></p>
     </div>
     <div className="min-w-0">
