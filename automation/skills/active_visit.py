@@ -16,7 +16,7 @@ from engine.passive_browsing import PassiveBrowsing
 from engine.resource_signal import read_yield
 from skills.natural_navigation import HOME_URL, PROFILE_URL, page_key
 
-ACTIVITY_WEIGHTS = {"feed": 0.4, "own_page": 0.25, "reels": 0.2, "notifications": 0.15}
+ACTIVITY_WEIGHTS = {"feed": 0.4, "own_page": 0.25, "reels": 0.2, "notifications": 0.15, "idle": 0.05}
 
 
 class ActiveVisit:
@@ -29,6 +29,8 @@ class ActiveVisit:
         self.deadline = self.started + max_seconds * signal["elastic_scale"]
         self.stop_reason = None
         self.done = []
+        # When the current activity should hand over to the next one.
+        self.activity_until = self.deadline
 
     # Safe points -------------------------------------------------------------
 
@@ -55,7 +57,7 @@ class ActiveVisit:
     def plan(self, surface: str) -> list[str]:
         """Two to four activities, starting where the browser already is."""
         first = "own_page" if surface == "profile" else "feed"
-        others = [name for name in ACTIVITY_WEIGHTS if name != first]
+        others = [name for name in ACTIVITY_WEIGHTS if name not in (first, "idle")]
         self.rng.shuffle(others)
         chain = [first] + others[:self.rng.randint(1, 3)]
         if self.rng.random() < 0.3:
@@ -63,9 +65,15 @@ class ActiveVisit:
         return chain
 
     def run(self, surface: str) -> dict:
-        for activity in self.plan(surface):
+        chain = self.plan(surface)
+        for index, activity in enumerate(chain):
             if self.should_stop():
                 break
+            # Each activity gets its weighted share of the time that is left.
+            remaining = max(0.0, self.deadline - time.monotonic())
+            weights = [ACTIVITY_WEIGHTS[name] for name in chain[index:]]
+            self.activity_until = time.monotonic() + remaining * weights[0] / sum(weights)
+            self.task.log("INFO", f"Visit activity {index + 1}/{len(chain)}: {activity.replace('_', ' ')}.")
             try:
                 getattr(self, f"_{activity}")()
                 self.done.append(activity)
@@ -77,13 +85,13 @@ class ActiveVisit:
 
     # Activities --------------------------------------------------------------
 
-    def _browse(self, share: float) -> None:
-        """Scroll with reading pauses for a share of the remaining time, then return up."""
+    def _browse(self) -> None:
+        """Scroll with reading pauses until this activity's time is up, then return up."""
         task = self.task
         screen = task.client.screenshot()
         height, width = screen.shape[:2]
         browsing = PassiveBrowsing(task.behavior_session, width, height)
-        until = time.monotonic() + max(15.0, (self.deadline - time.monotonic()) * share)
+        until = max(self.activity_until, time.monotonic() + 15.0)
         previous, first = screen, True
         while time.monotonic() < until and not self.should_stop():
             step = browsing.next_step()
@@ -108,11 +116,11 @@ class ActiveVisit:
     def _feed(self) -> None:
         if page_key(self.task.current_url()) not in ("/", "/home.php"):
             self.task.navigate_to(HOME_URL, wait_seconds=3.0)
-        self._browse(ACTIVITY_WEIGHTS["feed"] * 1.5)
+        self._browse()
 
     def _own_page(self) -> None:
         self.task.navigate_to(PROFILE_URL, wait_seconds=3.0)
-        self._browse(ACTIVITY_WEIGHTS["own_page"] * 1.5)
+        self._browse()
 
     def _notifications(self) -> None:
         task = self.task
@@ -125,12 +133,10 @@ class ActiveVisit:
             task.human.key_press("Escape")
             return
         task.human.move_to(int(width * 0.86), int(height * 0.5))
-        for _ in range(self.rng.randint(0, 2)):
-            if self.should_stop():
-                break
+        while time.monotonic() < self.activity_until - 4 and not self.should_stop():
             self.pause(self.rng.uniform(3.0, 8.0))
             task.human.scroll("down", notches=self.rng.randint(1, 3))
-        self.pause(self.rng.uniform(2.0, 5.0))
+        self.pause(self.rng.uniform(2.0, 4.0))
         task.human.key_press("Escape")
         time.sleep(0.8)
 
@@ -154,10 +160,10 @@ class ActiveVisit:
             return
         task.click_reversible(tab["center"], label="page_reels_tab", bounds=tab.get("bounds"), max_offset_px=4)
         time.sleep(self.rng.uniform(1.5, 2.5))
-        self._browse(ACTIVITY_WEIGHTS["reels"])
+        self._browse()
 
     def _idle(self) -> None:
-        self.task.human.idle(min(self.rng.uniform(5.0, 20.0), max(0.0, self.deadline - time.monotonic())))
+        self.task.human.idle(min(self.rng.uniform(5.0, 20.0), max(0.0, self.activity_until - time.monotonic())))
 
     def _close_panels(self) -> None:
         try:
