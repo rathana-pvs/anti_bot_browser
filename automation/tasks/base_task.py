@@ -465,6 +465,8 @@ class BaseTask:
             merged_extra.setdefault("navigation_counts", dict(self._natural_navigation_counts))
         if getattr(self, "reel_upload_extension", None):
             merged_extra.setdefault("upload_extension", dict(self.reel_upload_extension))
+        if getattr(self, "facebook_identity", None):
+            merged_extra.setdefault("facebook_identity", self.facebook_identity)
         telemetry = getattr(self, "telemetry", None)
         if telemetry is not None:
             try:

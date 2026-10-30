@@ -1,5 +1,6 @@
 """Session preflight: confirm the profile is logged in before any workflow."""
 
+import re
 import time
 import urllib.parse
 
@@ -54,6 +55,22 @@ def has_strong_facebook_visual(observation: StateObservation) -> bool:
         ScreenState.POST_CONFIRMED,
     }
     return observation.state in workflow_states and bool(signals - {"facebook logo"})
+
+
+_PAGE_MARKERS = ("manage page", "professional dashboard", "creator dashboard", "meta business suite")
+_PERSONAL_MARKERS = re.compile(r"\b\d[\d.,]*k?\s+friends?\b|\badd to story\b|\bmemories\b", re.I)
+
+
+def facebook_identity(items) -> str | None:
+    """Whether Facebook shows a Page ("page") or the personal profile ("personal").
+
+    A Page shows its management sidebar or dashboard; the personal profile shows
+    a friend count, Add to story or Memories. Anything else stays unknown.
+    """
+    blob = " ".join(item.get("text", "") for item in items).casefold()
+    if any(marker in blob for marker in _PAGE_MARKERS):
+        return "page"
+    return "personal" if _PERSONAL_MARKERS.search(blob) else None
 
 
 class SessionCheck:
@@ -222,7 +239,15 @@ class SessionCheck:
             task.log("WARN", "Facebook session remained visually unverified after the 40-second safety timeout.")
             return False
         task.session_check_status = "authenticated"
-        self._remember_profile(target_url)
+        try:
+            task.facebook_identity = facebook_identity(task.vision.read_text(screen, min_confidence=0.6))
+        except Exception as exc:
+            task.log("DEBUG", f"Could not tell whether Facebook shows the Page or the personal profile: {exc}")
+        if getattr(task, "facebook_identity", None) == "personal":
+            # Never learn the personal profile's name as the Page's.
+            task.log("WARN", "Facebook is showing the personal profile, not the Page.")
+        else:
+            self._remember_profile(target_url)
         return True
 
     def _remember_profile(self, target_url: str) -> None:

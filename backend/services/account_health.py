@@ -67,7 +67,10 @@ def _entry(execution: dict, kind: str) -> dict | None:
     at = next((value for value in times if _parse(value)), None)
     if at is None:
         return None
-    return {"at": at, "kind": kind or "post", "status": status, "error": (execution.get("error") or "")[:200]}
+    entry = {"at": at, "kind": kind or "post", "status": status, "error": (execution.get("error") or "")[:200]}
+    if execution.get("facebook_identity") in ("page", "personal"):
+        entry["identity"] = execution["facebook_identity"]
+    return entry
 
 
 def sync_history(queue: dict, now: datetime | None = None) -> dict:
@@ -151,6 +154,13 @@ def compute(config: dict, entries: list[dict], now: datetime | None = None) -> d
     checkpoint = next((entry for entry in reversed(entries) if entry["status"] == "skipped_auth_required"), None)
     if checkpoint and checkpoint["at"] > last_success:
         result.update(stage="attention", reason="Facebook asked to log in or verify this account.")
+        return result
+    # Pages post as the Page; a session that showed the personal profile
+    # means the browser switched away from the Page.
+    identity = next((entry["identity"] for entry in reversed(entries) if entry.get("identity")), None)
+    if identity == "personal":
+        result.update(stage="attention",
+                      reason="Facebook was showing the personal profile instead of the Page. Switch back to the Page in the browser.")
         return result
     recent = entries[-FAILURE_STREAK:]
     if len(recent) == FAILURE_STREAK and all(entry["status"] in FAILURE_STATUSES for entry in recent):
