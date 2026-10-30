@@ -354,12 +354,67 @@ class BaseTask:
         self._write_status(status, error)
         self.result_extra = {**getattr(self, "result_extra", {}), **extra}
 
+    def workflow_steps(self, default_steps: tuple[str, ...]) -> tuple[str, ...] | None:
+        """Steps in the order the pinned Brain workflow lists them.
+
+        A workflow lists steps as states chained by ``on_success`` from
+        ``initial_state``; that chain must match the engine's steps exactly.
+        A workflow without step states (an older installed Brain) uses the
+        built-in order. Returns None when the listed steps do not match.
+        """
+        workflow = getattr(self, "brain_workflow", None)
+        if not workflow:
+            return default_steps
+        states = workflow.get("states", {})
+        chain, name = [], workflow.get("initial_state")
+        while name in states and name not in chain:
+            chain.append(name)
+            name = states[name].get("on_success")
+        if not set(chain) & set(default_steps):
+            self.log("INFO", "The pinned workflow does not list steps; using the built-in step order.")
+            return default_steps
+        if tuple(chain) != tuple(default_steps):
+            self.log("ERROR", f"The pinned workflow lists steps {chain}, expected {list(default_steps)}.")
+            return None
+        return tuple(chain)
+
+    def run_steps(self, steps) -> bool:
+        """Run workflow steps in order; each step is a ``_step_<name>`` method.
+
+        A step returns None to continue, or the task result (from set_outcome,
+        _fail and similar) to stop. Each step's outcome and duration are kept
+        for the final record.
+        """
+        self.step_results = []
+        for name in steps:
+            started = time.perf_counter()
+            try:
+                result = getattr(self, f"_step_{name}")()
+            except Exception:
+                self._record_step(name, started, "exception")
+                raise
+            if result is None:
+                self._record_step(name, started, "completed")
+                continue
+            self._record_step(name, started, self.result_status)
+            return result
+        raise RuntimeError("Workflow steps ended without an outcome")
+
+    def _record_step(self, name: str, started: float, outcome: str) -> None:
+        duration_ms = round((time.perf_counter() - started) * 1000.0, 1)
+        self.step_results.append({"step": name, "outcome": outcome, "duration_ms": duration_ms})
+        telemetry = getattr(self, "telemetry", None)
+        if telemetry is not None:
+            telemetry.record_step("workflow_step", duration_ms, outcome=outcome, step=name)
+
     def finalize_outcome(self, **extra) -> None:
         """Write the final task record once all pipeline modules have finished."""
         if getattr(self, "_outcome_finalized", False):
             return
         self._outcome_finalized = True
         merged_extra = {**self.result_extra, **extra}
+        if getattr(self, "step_results", None):
+            merged_extra.setdefault("workflow_steps", list(self.step_results))
         telemetry = getattr(self, "telemetry", None)
         if telemetry is not None:
             try:

@@ -86,11 +86,15 @@ class PublishModule:
 
     def run(self, context):
         self.task.defer_comment = True
-        self.task.run()
-        context.publish_attempted = any(
-            entry.get("stage") == "publish_clicked"
-            for entry in getattr(self.task, "stage_history", [])
-        )
+        try:
+            self.task.run()
+        finally:
+            # Record the click even when a later step raises, so the
+            # orchestrator reports the exception as uncertain.
+            context.publish_attempted = any(
+                entry.get("stage") == "publish_clicked"
+                for entry in getattr(self.task, "stage_history", [])
+            )
         status = getattr(self.task, "result_status", "failed_before_publish")
         if status in {"published", "completed", "pending_profile_verification"}:
             outputs = {"publish_phase_status": status}
