@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from engine.screen_state import ScreenState, StateObservation
 from skills.dialogs import KnownDialogs
+from skills.media import MediaAttachment
 from skills.navigation import Navigation
 from skills.session import SessionCheck, has_strong_facebook_visual, is_facebook_url
 
@@ -118,6 +119,47 @@ class SessionCheckTests(unittest.TestCase):
         host.navigate_to.assert_called_once_with(
             "https://www.facebook.com/me", wait_seconds=2.0, check_leave_dialog=False)
         host.recognizer.observe_session_gate.assert_not_called()
+
+
+class MediaAttachmentTests(unittest.TestCase):
+    def chooser_host(self):
+        visible = {"value": True}
+        host = fake_host(
+            FILE_CHOOSER_DIALOG_NAMES=("Open File", "File Upload"),
+            telemetry=Mock(),
+        )
+        host.find_visible_file_chooser = lambda: MediaAttachment(host).find_chooser()
+        host.client.find_windows.side_effect = lambda name: ["42"] if visible["value"] and name != ".*" else []
+        host.client.window_geometry.return_value = {"X": 100, "Y": 100, "WIDTH": 1000, "HEIGHT": 700}
+        host.client.file_exists.return_value = True
+        host.client.ensure_focus.return_value = 99
+        host.human.click.side_effect = lambda *_: visible.update(value=False)
+        return host
+
+    def test_attach_types_path_into_the_dialog_and_clicks_open(self):
+        host = self.chooser_host()
+        host.vision.find_text.return_value = {"center": (1020, 760)}
+        with patch("skills.media.time.sleep"):
+            self.assertTrue(MediaAttachment(host).attach("/data/shared_media/a.png"))
+        host.client.focus_window.assert_called_once_with("42")
+        host.human.type_native.assert_called_once_with("/data/shared_media/a.png")
+        host.human.click.assert_called_once_with(1020, 760)
+        self.assertEqual(host.telemetry.record_step.call_args.args[0], "media_upload")
+
+    def test_attach_refuses_blind_input_without_a_chooser(self):
+        host = self.chooser_host()
+        host.client.find_windows.side_effect = lambda name: []
+        with patch("skills.media.time.sleep"):
+            self.assertFalse(MediaAttachment(host).attach("/data/shared_media/a.png"))
+        host.human.type_native.assert_not_called()
+        host.human.key_press.assert_not_called()
+
+    def test_attach_stops_when_the_file_is_missing(self):
+        host = self.chooser_host()
+        host.client.file_exists.return_value = False
+        with patch("skills.media.time.sleep"):
+            self.assertFalse(MediaAttachment(host).attach("/data/shared_media/missing.png"))
+        host.human.type_native.assert_not_called()
 
 
 if __name__ == "__main__":
