@@ -690,6 +690,11 @@ class FacebookPostTask(BaseTask):
         "finish",
     )
 
+    # Safe pauses: before the composer exists, and short ones inside it
+    # before media, caption and review. Never from publish onward.
+    HOLD_LIMITS = {"preflight": 120.0, "open_composer": 120.0, "attach_media": 90.0,
+                   "enter_caption": 60.0, "review": 60.0}
+
     def run(self) -> bool:
         steps = self.workflow_steps(self.STEPS)
         if steps is None:

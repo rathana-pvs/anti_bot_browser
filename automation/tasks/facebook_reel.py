@@ -1633,6 +1633,10 @@ class FacebookReelTask(BaseTask):
         "finish",
     )
 
+    # Safe pauses only before the Reel entry opens: once its upload dialog
+    # is open, Facebook's processing and the composer budget keep running.
+    HOLD_LIMITS = {"preflight": 120.0, "open_reel_entry": 120.0}
+
     def run(self) -> bool:
         steps = self.workflow_steps(self.STEPS)
         if steps is None:

@@ -12,6 +12,7 @@ from engine.passive_browsing import PassiveBrowsing
 
 class FacebookPreparationTask(BaseTask):
     DURATION_RANGES = {"brief": (40.0, 55.0), "extended": (55.0, 70.0)}
+    MAX_BUSY_SLOT_EXTENSION_SECONDS = 60.0
 
     def __init__(self, profile_id: str, mode: str = "brief"):
         super().__init__(profile_id)
@@ -95,8 +96,16 @@ class FacebookPreparationTask(BaseTask):
 
         rng = self.behavior_session.stream("warming")
         duration_seconds = rng.uniform(*self.DURATION_RANGES[self.mode])
+        signal = self.resource_signal()
+        if signal["elastic_scale"] < 1.0:
+            # A busy machine shortens the flexible browsing time.
+            duration_seconds *= signal["elastic_scale"]
         started = time.monotonic()
         deadline = started + duration_seconds
+        # While every publish slot is busy this account would only wait
+        # idle after preparing, so it keeps browsing a little longer.
+        extension_limit = started + duration_seconds + self.MAX_BUSY_SLOT_EXTENSION_SECONDS
+        extended_seconds = 0.0
         previous = surface_screen if surface_screen is not None else self.client.screenshot()
         height, width = previous.shape[:2]
         browsing = PassiveBrowsing(self.behavior_session, width, height)
@@ -104,7 +113,13 @@ class FacebookPreparationTask(BaseTask):
         visible_changes = 0
         return_scroll_notches = 0
         self.log("STEP", f"Passive browsing on {warm_surface} for up to {duration_seconds:.0f}s.")
-        while time.monotonic() < deadline:
+        while True:
+            now = time.monotonic()
+            if now >= deadline:
+                if now >= extension_limit or not self.resource_signal()["publish_slots_full"]:
+                    break
+                extended_seconds += min(10.0, extension_limit - now)
+                deadline = min(now + 10.0, extension_limit)
             step = browsing.next_step()
             if step is None:
                 self.log("INFO", "The page did not respond after a bounded direction check; ending passive browsing.")
@@ -183,6 +198,7 @@ class FacebookPreparationTask(BaseTask):
             visible_scroll_changes=visible_changes,
             browsing_stop_reason=browsing.stopped_reason or "duration_complete",
             actual_browsing_seconds=actual_browsing_seconds,
+            busy_slot_extension_seconds=round(extended_seconds, 1),
             stable_observations=stable_observations,
             warming_surface_requested=requested_surface,
             warming_surface=warm_surface,

@@ -5,11 +5,12 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from engine.brain_runtime import BrainRegistry
+from engine.resource_signal import NEUTRAL, read_signal
 from modules.publishing_pipeline import build_publishing_pipeline
 from tasks.facebook_post import FacebookPostTask
 from tasks.facebook_reel import FacebookReelTask
@@ -148,6 +149,75 @@ class WorkflowStepTests(unittest.TestCase):
         recorded = task.evidence.write_result.call_args
         self.assertEqual(recorded.args[0], "uncertain")
         self.assertEqual(recorded.kwargs["workflow_steps"][-1]["step"], "verify")
+
+
+class Clock:
+    def __init__(self):
+        self.now = 0.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+class ResourceHoldTests(unittest.TestCase):
+    def run_with_signal(self, holds, task=None):
+        task = task or step_task()
+        task._pipeline_defer_finalization = True
+        signals = iter(holds)
+        task.resource_signal = lambda: {**NEUTRAL, "hold": next(signals, False), "reason": "memory 88%"}
+        clock = Clock()
+        with patch("tasks.base_task.time.monotonic", clock.monotonic), patch("tasks.base_task.time.sleep", clock.sleep):
+            task.run()
+        return task, clock
+
+    def test_holds_before_a_safe_step_until_pressure_clears(self):
+        task, clock = self.run_with_signal([True, True, True, False])
+        self.assertEqual(task.calls, list(FacebookPostTask.STEPS))
+        self.assertGreater(task.step_results[0].get("held_seconds", 0), 0)
+        self.assertLessEqual(task.step_results[0]["held_seconds"], 120)
+
+    def test_hold_is_capped_per_step_and_in_total(self):
+        task, clock = self.run_with_signal([True] * 10000)
+        self.assertEqual(task.calls, list(FacebookPostTask.STEPS))
+        held = [item.get("held_seconds", 0) for item in task.step_results]
+        self.assertLessEqual(max(held), 120)
+        self.assertLessEqual(sum(held), FacebookPostTask.MAX_TOTAL_HOLD_SECONDS + 6)
+
+    def test_never_holds_from_publish_onward(self):
+        task, _ = self.run_with_signal([True] * 10000)
+        for item in task.step_results:
+            if item["step"] in ("select_template", "review_next", "publish", "verify", "finish"):
+                self.assertNotIn("held_seconds", item)
+
+    def test_never_holds_once_the_publish_click_may_have_been_sent(self):
+        task = step_task()
+        task._publish_gate_consumed = True
+        task, _ = self.run_with_signal([True] * 10000, task)
+        self.assertTrue(all("held_seconds" not in item for item in task.step_results))
+
+    def test_reel_holds_only_before_its_entry_opens(self):
+        task, _ = self.run_with_signal([True] * 10000, step_task(FacebookReelTask))
+        held_steps = [item["step"] for item in task.step_results if item.get("held_seconds")]
+        self.assertTrue(set(held_steps) <= {"preflight", "open_reel_entry"})
+
+
+class ResourceSignalTests(unittest.TestCase):
+    def test_signal_is_neutral_outside_the_manager_or_when_stale(self):
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(read_signal(), NEUTRAL)
+        import json, tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "signal.json"
+            path.write_text(json.dumps({"hold": True, "elastic_scale": 0.1, "publish_slots_full": True,
+                                        "reason": "memory", "updated_at": 1000.0}))
+            self.assertEqual(read_signal(path, now=lambda: 1040.0), NEUTRAL)
+            fresh = read_signal(path, now=lambda: 1010.0)
+            self.assertEqual(fresh, {"hold": True, "elastic_scale": 0.3, "publish_slots_full": True, "reason": "memory"})
+            path.write_text("not json")
+            self.assertEqual(read_signal(path, now=lambda: 1010.0), NEUTRAL)
 
 
 if __name__ == "__main__":
