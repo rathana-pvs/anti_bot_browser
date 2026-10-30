@@ -8,7 +8,7 @@ for bounded interaction pacing. No detection guarantee is implied.
 import math
 import random
 import time
-from .container_client import ContainerClient
+from .driver import Driver
 from .behavior_timing import InteractionWait
 
 
@@ -30,7 +30,7 @@ def _ease_in_out(t: float) -> float:
 
 
 class HumanInput:
-    def __init__(self, client: ContainerClient, behavior_session=None):
+    def __init__(self, client: Driver, behavior_session=None):
         self.client = client
         self.behavior_session = behavior_session
 
@@ -120,7 +120,7 @@ class HumanInput:
         cp2_x = start_x + dx * 0.7 + perp_x * dev2
         cp2_y = start_y + dy * 0.7 + perp_y * dev2
 
-        commands = []
+        points = []
         for i in range(1, steps + 1):
             raw_t = i / steps
             eased_t = _ease_in_out(raw_t)
@@ -136,12 +136,12 @@ class HumanInput:
                 bx = target_x
                 by = target_y
 
-            commands.append(f"mousemove {int(bx)} {int(by)}")
+            points.append((int(bx), int(by)))
 
         # Execute smooth movement
         step_sleep = duration_sec / steps
-        for cmd in commands:
-            self.client.xdo(cmd)
+        for px, py in points:
+            self.client.pointer_move(px, py)
             time.sleep(step_sleep)
 
         # Micro-settle at destination
@@ -157,9 +157,9 @@ class HumanInput:
 
         rng = self._rng("click")
         time.sleep(self._duration("click", rng.uniform(0.03, 0.08)))
-        self.client.xdo("mousedown 1")
+        self.client.button("down")
         time.sleep(self._duration("click", rng.uniform(0.05, 0.11)))
-        self.client.xdo("mouseup 1")
+        self.client.button("up")
         time.sleep(self._duration("click", rng.uniform(0.05, 0.12)))
 
     def double_click(self, x: int | None = None, y: int | None = None) -> None:
@@ -172,8 +172,12 @@ class HumanInput:
         time.sleep(self._duration("click", rng.uniform(0.08, 0.15)))
         self.click()
 
-    def type_text(self, text: str, wpm: int | None = None, *, waiter=None) -> dict:
-        """Type a complete supported caption; line breaks never emit Return."""
+    def type_text(self, text: str, wpm: int | None = None, *, waiter=None, prose: bool = True) -> dict:
+        """Type a complete supported caption; line breaks never emit Return.
+
+        ``prose=False`` drops sentence and phrase pauses, for URLs and similar
+        strings where punctuation is not a reading break.
+        """
         if any(not (' ' <= char <= '~') for char in text):
             raise ValueError("Use full paste for Unicode or multiline content")
         rng = self._rng("typing")
@@ -193,10 +197,10 @@ class HumanInput:
             overhead = waiter.clock() - before
             dispatch_time += overhead
             delay = max(0, 60 / (phrase_wpm * 5) * rng.uniform(.85, 1.15) - overhead)
-            if char in '.!?':
+            if prose and char in '.!?':
                 delay += rng.triangular(.4, 1.2, .7)
                 phrase_words = 0
-            elif char == ' ':
+            elif prose and char == ' ':
                 phrase_words += 1
                 if phrase_words >= 5:
                     delay += rng.triangular(.2, .7, .35)
@@ -217,15 +221,37 @@ class HumanInput:
         Scroll using mouse wheel with variable notch speed and pauses.
         direction: 'down' (Button 5) or 'up' (Button 4).
         """
-        btn = "5" if direction.lower() == "down" else "4"
         rng = self._rng("scroll")
         for _ in range(notches):
-            self.client.xdo(f"click {btn}")
+            self.client.wheel(direction)
             time.sleep(self._duration("scroll", rng.uniform(0.08, 0.22)))
         time.sleep(self._duration("scroll", rng.uniform(0.3, 0.8)))
 
-    def key_press(self, key_name: str) -> None:
+    def key_press(self, key_name: str, *, clear_modifiers: bool = False, check: bool = True) -> None:
         """Press a keyboard key or combination (e.g. 'Return', 'ctrl+a', 'BackSpace')."""
-        self.client.xdo(f"key {key_name}")
+        self.client.key(key_name, clear_modifiers=clear_modifiers, check=check)
         rng = self._rng("click")
         time.sleep(self._duration("click", rng.uniform(0.08, 0.18)))
+
+    def type_native(self, text: str) -> None:
+        """Enter text into a native dialog outside the page, such as the GTK
+        file chooser. The page cannot observe it, so no cadence is applied."""
+        self.client.type_string(text)
+
+    def navigate(self, url: str, *, waiter=None) -> None:
+        """Open a URL through the address bar with human key timing."""
+        if not self.client.focus_address_bar():
+            self.key_press("ctrl+l", clear_modifiers=True)
+            time.sleep(0.2)
+        self.key_press("ctrl+a", clear_modifiers=True)
+        if all(' ' <= char <= '~' for char in url):
+            self.type_text(url, waiter=waiter, prose=False)
+        else:
+            self.client.write_clipboard(url)
+            self.key_press("ctrl+v", clear_modifiers=True)
+        time.sleep(self._duration("pause", self._rng("pause").uniform(0.15, 0.4)))
+        # Chrome may select a history-completed suffix (e.g. /live/producer/)
+        # after typing the Facebook root URL. Delete only that selected suffix;
+        # at an unselected end-of-line this is a no-op.
+        self.key_press("Delete", clear_modifiers=True)
+        self.key_press("Return", clear_modifiers=True)

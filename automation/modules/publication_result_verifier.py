@@ -154,9 +154,9 @@ class ImagePublicationResultVerifier:
     def _scan(self):
         self._top_post_found = False
         self._toolbar_seen = False
-        self.task.client.exec_cmd(["xdotool", "key", "ctrl+home"], check=False)
+        self.task.human.key_press("ctrl+home", check=False)
         time.sleep(0.8)
-        self.task.client.exec_cmd(["xdotool", "mousemove", "1150", "500"], check=False)
+        self.task.human.move_to(1150, 500)
         screen = None
         for scan in range(1, self.max_scans + 1):
             screen = self.task.client.screenshot()

@@ -51,13 +51,13 @@ class ComposerEntry:
         waiter.check()
         client.write_clipboard(marker)
         waiter.check()
-        client.xdo('key ctrl+a')
+        self.task.human.key_press('ctrl+a')
         waiter.check()
-        client.xdo('key ctrl+c')
+        self.task.human.key_press('ctrl+c')
         waiter.pause(.15)
         value = client.read_clipboard()
         waiter.check()
-        client.xdo('key Right')  # Collapse selection without changing the draft.
+        self.task.human.key_press('Right')  # Collapse selection without changing the draft.
         if value == marker:
             confirmed = empty_confirmed() if callable(empty_confirmed) else empty_confirmed
             return '' if confirmed else None

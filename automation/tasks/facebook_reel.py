@@ -1556,9 +1556,9 @@ class FacebookReelTask(BaseTask):
         # Navigating to the same profile URL can preserve Facebook's previous
         # scroll offset, which may leave the newest post's timestamp above the
         # viewport. Reset before the bounded downward scan.
-        self.client.exec_cmd(["xdotool", "key", "ctrl+home"], check=False)
+        self.human.key_press("ctrl+home", check=False)
         time.sleep(0.8)
-        self.client.exec_cmd(["xdotool", "mousemove", "1150", "500"], check=False)
+        self.human.move_to(1150, 500)
         last_screen = None
         for scan in range(1, max_scans + 1):
             last_screen = self.client.screenshot()

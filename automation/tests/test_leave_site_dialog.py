@@ -125,7 +125,7 @@ class BaseTaskLeaveSiteTests(unittest.TestCase):
         with patch.object(self.task, "handle_leave_site_dialog") as mock_handler, \
              patch("time.sleep", return_value=None):
             self.task.navigate_to("https://www.facebook.com/me", wait_seconds=2.0)
-            self.task.client.navigate_to.assert_called_once_with("https://www.facebook.com/me")
+            self.task.human.navigate.assert_called_once_with("https://www.facebook.com/me")
             mock_handler.assert_called_once()
 
     def test_task_start_navigation_can_defer_leave_dialog_ocr(self):

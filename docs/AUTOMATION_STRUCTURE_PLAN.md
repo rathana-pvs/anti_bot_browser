@@ -1,6 +1,6 @@
 # Automation structure: design and implementation plan
 
-Date: 2026-10-30 · Revision: 1 · Status: Proposed. Nothing implemented.
+Date: 2026-10-30 · Revision: 2 · Status: Milestone 1 implemented; evidence replay and a live run still to check.
 
 ## Recommendation
 
@@ -71,8 +71,10 @@ put_media(path) → handle · open_target(url|intent) · current_location
 screen_size · input_owner
 ```
 
-- `ContainerDriver` wraps `ContainerClient`. It is the only code that runs
-  `xdotool`, `scrot` or `docker exec` for input or capture.
+- `engine/driver.py` defines the `Driver` protocol. `ContainerClient`
+  (`engine/container_client.py`) is the container driver and the only code that
+  runs `xdotool`, `scrot` or `docker exec` for input or capture;
+  `tests/test_driver_boundary.py` enforces this.
 - `AndroidDriver` comes later (Android plan milestone 4).
 - Primitives are low level on purpose: timing and paths belong to the humanizer.
 
@@ -202,9 +204,12 @@ drift:
 
 ### 1. Driver and humanizer boundary
 
-`ContainerDriver`; `HumanInput` built on it; all raw `xdotool` calls removed
-from tasks, modules and engine outside the driver; Live clicks and URL typing
-go through `HumanInput`.
+Done: `Driver` protocol; named primitives on `ContainerClient` (`pointer_move`,
+`button`, `wheel`, `key`, window lookups, `file_exists`); `HumanInput` built on
+them; raw `xdotool` removed from tasks, modules and engine; Live clicks, Live
+keys, profile-feed hovers and URL typing (`HumanInput.navigate`) go through
+`HumanInput`. The GTK file chooser path is still typed at a fixed rate through
+`HumanInput.type_native`, because the page cannot observe that dialog.
 
 Exit: a test fails if `xdotool` or `exec_cmd` appears outside the driver;
 existing tests and `replay_evidence_corpus.py` pass; Live click telemetry shows

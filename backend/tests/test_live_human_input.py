@@ -44,6 +44,7 @@ class EditableClient:
         elif command == 'key ctrl+v':
             self.value = self.clipboard if self.selected else self.value + self.clipboard
             self.selected = False
+    def key(self, name, clear_modifiers=False, check=True): self.xdo('key ' + name)
     def type_character(self, char):
         self.typed.append(char)
         self.value = char if self.selected else self.value + char

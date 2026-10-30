@@ -1,7 +1,11 @@
-"""Container Client for Isolated Browser Automation.
+"""Container driver for isolated browser automation.
 
 Executes X11 mouse/keyboard commands and captures virtual display screenshots
 directly from the Docker container via pure OS-level events (zero CDP).
+
+This is the only module that runs xdotool, scrot or ``docker exec`` for input
+and capture. Primitives are deliberately low level: pointer paths, timing and
+typing cadence belong to ``engine.human_input.HumanInput``.
 """
 
 import subprocess
@@ -121,22 +125,6 @@ class ContainerClient:
         time.sleep(0.1)
         return True
 
-    def navigate_to(self, url: str) -> None:
-        """Navigate through Chrome's address bar using OS-level input."""
-        clean_modifiers = ["--clearmodifiers"]
-        if not self.focus_address_bar():
-            self.exec_cmd(["xdotool", "key"] + clean_modifiers + ["ctrl+l"])
-            time.sleep(0.2)
-        self.exec_cmd(["xdotool", "key"] + clean_modifiers + ["ctrl+a"])
-        time.sleep(0.1)
-        self.exec_cmd(["xdotool", "type"] + clean_modifiers + [url])
-        time.sleep(0.1)
-        # Chrome may select a history-completed suffix (e.g. /live/producer/)
-        # after typing the Facebook root URL. Delete only that selected suffix;
-        # at an unselected end-of-line this is a no-op.
-        self.exec_cmd(["xdotool", "key"] + clean_modifiers + ["Delete"])
-        self.exec_cmd(["xdotool", "key"] + clean_modifiers + ["Return"])
-
     def refresh_page(self) -> None:
         """Refresh the active browser tab via F5 keystroke."""
         win_id = self.ensure_focus()
@@ -178,6 +166,53 @@ class ContainerClient:
         """Execute an xdotool command inside the container."""
         cmd_args = ["xdotool"] + command.split()
         self.exec_cmd(cmd_args, check=True, timeout=10)
+
+    def pointer_move(self, x: int, y: int) -> None:
+        """Place the pointer at one point; HumanInput supplies the path."""
+        self.xdo(f"mousemove {int(x)} {int(y)}")
+
+    def button(self, action: str, button: int = 1) -> None:
+        if action not in {"down", "up"}:
+            raise ValueError("Button action must be 'down' or 'up'")
+        self.xdo(f"mouse{action} {int(button)}")
+
+    def wheel(self, direction: str) -> None:
+        """Send one wheel notch: 'down' is button 5, anything else button 4."""
+        self.xdo("click 5" if direction.lower() == "down" else "click 4")
+
+    def key(self, name: str, *, clear_modifiers: bool = False, check: bool = True) -> None:
+        """Press a key or combination such as 'Return' or 'ctrl+a'."""
+        flags = ["--clearmodifiers"] if clear_modifiers else []
+        self.exec_cmd(["xdotool", "key", *flags, name], check=check, timeout=10)
+
+    def type_string(self, text: str) -> None:
+        """Type a whole string at xdotool's fixed rate.
+
+        Only for native dialogs outside the page (the GTK file chooser). Page
+        text goes through HumanInput.type_text or the clipboard.
+        """
+        self.exec_cmd(["xdotool", "type", "--", text], check=False)
+
+    def active_window_name(self) -> str | None:
+        res = self.exec_cmd(["xdotool", "getactivewindow", "getwindowname"], check=False)
+        return res.stdout.strip() if res.returncode == 0 else None
+
+    def find_windows(self, name: str) -> list[str]:
+        """Visible window ids whose title matches ``name`` (an xdotool regex)."""
+        res = self.exec_cmd(["xdotool", "search", "--onlyvisible", "--name", name], check=False)
+        return res.stdout.strip().split() if res.returncode == 0 else []
+
+    def focus_window(self, win_id) -> None:
+        self.exec_cmd(["xdotool", "windowfocus", "--sync", str(win_id)], check=False)
+
+    def window_geometry(self, win_id) -> dict[str, int]:
+        """X, Y, WIDTH and HEIGHT of a window, or an empty dict when unreadable."""
+        geometry = self.exec_cmd(["xdotool", "getwindowgeometry", "--shell", str(win_id)], check=False)
+        values = dict(re.findall(r"^(X|Y|WIDTH|HEIGHT)=(\d+)$", geometry.stdout, re.MULTILINE))
+        return {key: int(value) for key, value in values.items()}
+
+    def file_exists(self, path: str) -> bool:
+        return self.exec_cmd(["test", "-f", path], check=False).returncode == 0
 
     def input_owner(self) -> tuple[str, str]:
         """Observable X11 focus/pointer state; does not detect all manual key input."""

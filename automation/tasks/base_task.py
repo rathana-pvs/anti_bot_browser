@@ -554,8 +554,8 @@ class BaseTask:
         started = time.perf_counter()
         outcome = "completed"
         try:
-            if hasattr(self, "client") and self.client is not None:
-                self.client.navigate_to(url)
+            if getattr(self, "human", None) is not None:
+                self.human.navigate(url)
             time.sleep(1.0)
             if check_leave_dialog:
                 self.handle_leave_site_dialog()
@@ -778,9 +778,9 @@ class BaseTask:
 
         # Check window title first because it is cheap and works without OCR.
         try:
-            res = self.client.exec_cmd(["xdotool", "getactivewindow", "getwindowname"], check=False)
-            if res.returncode == 0:
-                title = res.stdout.strip().lower()
+            title = self.client.active_window_name()
+            if title is not None:
+                title = title.lower()
                 if any(k in title for k in ("log in", "login", "sign up", "welcome to facebook")):
                     self.session_check_status = "auth_required"
                     self.log("WARN", f"Session expired or logged out (Window title: {title})")
@@ -902,13 +902,7 @@ class BaseTask:
     def find_visible_file_chooser(self) -> tuple[str, str] | None:
         """Return the visible GTK chooser window id and matched title pattern."""
         for dialog_name in self.FILE_CHOOSER_DIALOG_NAMES:
-            result = self.client.exec_cmd(
-                ["xdotool", "search", "--onlyvisible", "--name", dialog_name],
-                check=False,
-            )
-            if result.returncode != 0:
-                continue
-            window_ids = result.stdout.strip().split()
+            window_ids = self.client.find_windows(dialog_name)
             if window_ids:
                 return window_ids[-1], dialog_name
         return None
@@ -939,23 +933,18 @@ class BaseTask:
 
         if detected_chooser is not None:
             win_id, matched_dialog_name = detected_chooser
-            self.client.exec_cmd(["xdotool", "windowfocus", "--sync", str(win_id)], check=False)
+            self.client.focus_window(win_id)
             time.sleep(0.3)
         else:
             self.log("ERROR", "GTK file chooser window ('Open File') was not detected; refusing blind input.")
-            visible_windows = self.client.exec_cmd(
-                ["xdotool", "search", "--onlyvisible", "--name", ".*"],
-                check=False,
-            )
             self.capture_evidence(
                 "file_chooser_not_detected",
-                visible_window_ids=visible_windows.stdout.strip().split(),
+                visible_window_ids=self.client.find_windows(".*"),
                 searched_titles=list(self.FILE_CHOOSER_DIALOG_NAMES),
             )
             return False
 
-        file_check = self.client.exec_cmd(["test", "-f", file_path], check=False)
-        if file_check.returncode != 0:
+        if not self.client.file_exists(file_path):
             self.log("ERROR", f"Media file does not exist inside the container: {file_path}")
             return False
 
@@ -968,21 +957,17 @@ class BaseTask:
         time.sleep(0.2)
 
         # Type the path inside the container as a direct argv argument
-        self.client.exec_cmd(["xdotool", "type", "--", file_path], check=False)
+        self.human.type_native(file_path)
         time.sleep(0.5)
 
         # Locate and click the dialog's Open button to submit the selected file
-        geometry = self.client.exec_cmd(
-            ["xdotool", "getwindowgeometry", "--shell", str(win_id)],
-            check=False,
-        )
-        values = dict(re.findall(r"^(X|Y|WIDTH|HEIGHT)=(\d+)$", geometry.stdout, re.MULTILINE))
+        values = self.client.window_geometry(win_id)
         clicked_open = False
         if len(values) == 4:
-            dialog_x = int(values["X"])
-            dialog_y = int(values["Y"])
-            dialog_w = int(values["WIDTH"])
-            dialog_h = int(values["HEIGHT"])
+            dialog_x = values["X"]
+            dialog_y = values["Y"]
+            dialog_w = values["WIDTH"]
+            dialog_h = values["HEIGHT"]
             screen = self.client.screenshot()
             action_region = (
                 dialog_x + dialog_w // 2,
@@ -1014,15 +999,11 @@ class BaseTask:
                 clicked_open = True
 
         if not clicked_open:
-            self.client.exec_cmd(["xdotool", "key", "Return"], check=False)
+            self.human.key_press("Return", check=False)
 
         for _ in range(12):
             time.sleep(0.5)
-            check_dialog = self.client.exec_cmd(
-                ["xdotool", "search", "--onlyvisible", "--name", matched_dialog_name or "Open File"],
-                check=False,
-            )
-            if check_dialog.returncode != 0 or not check_dialog.stdout.strip():
+            if not self.client.find_windows(matched_dialog_name or "Open File"):
                 self.log("INFO", "GTK file chooser dismissed successfully.")
                 break
         else:
@@ -1151,7 +1132,7 @@ class BaseTask:
             self.log("INFO", "Reusing the verified post-publication profile feed for comment targeting.")
 
         # Move mouse over main post feed column (x ~ 1150, y ~ 500) so mouse wheel / keys scroll feed
-        self.client.exec_cmd(["xdotool", "mousemove", "1150", "500"], check=False)
+        self.human.move_to(1150, 500)
 
         # Comment success is more important than OCR cost here. Tall Reel cards
         # can require substantially more vertical travel than photo/text posts,

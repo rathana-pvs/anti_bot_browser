@@ -343,8 +343,8 @@ class LoginGateTests(unittest.TestCase):
         task.client = Mock()
         task.vision = Mock()
         task.vision.detect_theme.return_value = ("dark", 0.91)
-        task.client.navigate_to = Mock()
-        task.client.exec_cmd.return_value = Mock(returncode=0, stdout="Facebook")
+        task.human = Mock()
+        task.client.active_window_name.return_value = "Facebook"
         task.client.get_current_url.return_value = "https://www.facebook.com/"
         task.client.screenshot.return_value = np.zeros((100, 100, 3), dtype=np.uint8)
         task.recognizer = Mock()
@@ -379,7 +379,7 @@ class LoginGateTests(unittest.TestCase):
                 task.verify_logged_in(target_url="https://www.facebook.com/me")
             )
 
-        task.client.navigate_to.assert_called_once_with("https://www.facebook.com/me")
+        task.human.navigate.assert_called_once_with("https://www.facebook.com/me")
 
     def test_actual_login_screen_is_rejected(self):
         task = self.make_task([StateObservation(ScreenState.LOGIN_REQUIRED, 0.98, ["log in"])])
@@ -398,7 +398,7 @@ class LoginGateTests(unittest.TestCase):
             StateObservation(ScreenState.FEED_READY, 0.8, ["false positive"]),
             StateObservation(ScreenState.FEED_READY, 0.9, ["what's on your mind"]),
         ])
-        task.client.exec_cmd.return_value = Mock(returncode=0, stdout="")
+        task.client.active_window_name.return_value = ""
         with unittest.mock.patch("tasks.base_task.time.sleep", return_value=None):
             self.assertTrue(task.verify_logged_in())
         self.assertEqual(task.recognizer.observe_session_gate.call_count, 2)
@@ -416,7 +416,7 @@ class LoginGateTests(unittest.TestCase):
         with unittest.mock.patch("tasks.base_task.time.sleep", return_value=None):
             self.assertTrue(task.verify_logged_in())
         self.assertEqual(task.recognizer.observe_session_gate.call_count, 2)
-        self.assertEqual(task.client.navigate_to.call_count, 2)
+        self.assertEqual(task.human.navigate.call_count, 2)
 
     def test_login_gate_retries_navigation_when_browser_remains_off_facebook(self):
         task = self.make_task([
@@ -432,7 +432,7 @@ class LoginGateTests(unittest.TestCase):
         with unittest.mock.patch("tasks.base_task.time.sleep", return_value=None):
             self.assertTrue(task.verify_logged_in())
 
-        self.assertEqual(task.client.navigate_to.call_count, 2)
+        self.assertEqual(task.human.navigate.call_count, 2)
 
 
 class PostPublishPromptTests(unittest.TestCase):
@@ -474,13 +474,9 @@ class FileChooserTests(unittest.TestCase):
         stub_verified_entry(task)
         task.client = Mock()
 
-        def exec_cmd(args, check=False):
-            title = args[-1]
-            if title == "File Upload":
-                return Mock(returncode=0, stdout="17\n42\n")
-            return Mock(returncode=1, stdout="")
-
-        task.client.exec_cmd.side_effect = exec_cmd
+        task.client.find_windows.side_effect = (
+            lambda title: ["17", "42"] if title == "File Upload" else []
+        )
 
         self.assertEqual(task.find_visible_file_chooser(), ("42", "File Upload"))
 
@@ -494,18 +490,11 @@ class FileChooserTests(unittest.TestCase):
         task.capture_evidence = Mock()
         dialog_visible = {"value": True}
 
-        def exec_cmd(args, check=False):
-            if args[:4] == ["xdotool", "search", "--onlyvisible", "--name"]:
-                return Mock(returncode=0 if dialog_visible["value"] else 1, stdout="42\n" if dialog_visible["value"] else "")
-            if args[:3] == ["xdotool", "getwindowgeometry", "--shell"]:
-                return Mock(returncode=0, stdout="X=100\nY=100\nWIDTH=1000\nHEIGHT=700\n")
-            if args[:2] == ["test", "-f"]:
-                return Mock(returncode=0, stdout="")
-            if args[:3] == ["xdotool", "search", "--class"]:
-                return Mock(returncode=0, stdout="99\n")
-            return Mock(returncode=0, stdout="")
-
-        task.client.exec_cmd.side_effect = exec_cmd
+        task.client.find_windows.side_effect = (
+            lambda _title: ["42"] if dialog_visible["value"] else []
+        )
+        task.client.window_geometry.return_value = {"X": 100, "Y": 100, "WIDTH": 1000, "HEIGHT": 700}
+        task.client.file_exists.return_value = True
         task.client.ensure_focus.return_value = 99
         task.client.screenshot.return_value = np.zeros((1080, 1920, 3), dtype=np.uint8)
         task.vision.find_text.return_value = {"center": (1020, 760), "text": "Open", "confidence": 0.99}
@@ -516,8 +505,8 @@ class FileChooserTests(unittest.TestCase):
 
         task.human.click.assert_called_once_with(1020, 760)
         task.client.ensure_focus.assert_called_once_with()
-        self.assertFalse(any(call.args[0][:3] == ["xdotool", "search", "--class"]
-                             for call in task.client.exec_cmd.call_args_list))
+        task.client.get_chrome_window.assert_not_called()
+        task.human.type_native.assert_called_once_with("/data/shared_media/photo.png")
         task.human.key_press.assert_has_calls([
             unittest.mock.call("ctrl+l"),
             unittest.mock.call("ctrl+a"),
@@ -2597,10 +2586,7 @@ class FirstCommentTargetTests(unittest.TestCase):
         self.assertTrue(visible)
         self.assertIs(final_screen, screen)
         self.assertEqual(task.client.screenshot.call_count, 3)
-        task.client.exec_cmd.assert_any_call(
-            ["xdotool", "key", "ctrl+home"],
-            check=False,
-        )
+        task.human.key_press.assert_any_call("ctrl+home", check=False)
         self.assertEqual(task.human.scroll.call_count, 2)
         task.human.scroll.assert_called_with("down", notches=2)
 
