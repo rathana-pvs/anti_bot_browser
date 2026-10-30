@@ -340,6 +340,27 @@ export interface ResourceModeSettings {
       error: string | null;
     };
   };
+  adaptive?: {
+    enabled: boolean;
+    max_parallel: number | null;
+    reserve_percent: number;
+    decision: {
+      state: 'calm' | 'busy' | 'pressure';
+      limit: number;
+      ceiling: number;
+      start_spacing_ms: number;
+      admit: boolean;
+      hold: boolean;
+      reason: string;
+      predicted_memory_percent: number;
+      container_memory_mb: number;
+    };
+  };
+}
+
+export interface AdaptiveLimitsUpdate {
+  max_parallel?: number | null;
+  reserve_percent?: number;
 }
 
 export interface CreateBatchParams {

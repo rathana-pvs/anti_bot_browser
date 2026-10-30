@@ -637,6 +637,21 @@ export async function updateResourceMode(
   return res.json();
 }
 
+export async function updateAdaptiveLimits(
+  limits: import('../types/automation').AdaptiveLimitsUpdate
+): Promise<import('../types/automation').ResourceModeSettings> {
+  const res = await fetch(`${API_BASE}/settings/resource-mode`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(limits),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.detail || error.error || 'Failed to update automatic resource limits');
+  }
+  return res.json();
+}
+
 export async function createBatch(
   params: import('../types/automation').CreateBatchParams
 ): Promise<{ success: boolean; batch_id: string; total_executions: number; batch: import('../types/automation').DailyBatch }> {
