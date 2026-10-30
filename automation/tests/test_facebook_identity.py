@@ -26,7 +26,9 @@ class FacebookIdentityTests(unittest.TestCase):
 
     def test_friend_count_or_story_marks_the_personal_profile(self):
         self.assertEqual(facebook_identity(items("Sor R", "1 friend", "Add to story", "Edit profile")), "personal")
-        self.assertEqual(facebook_identity(items("Memories", "Saved", "Groups")), "personal")
+        # A Page's feed lists Memories too; that alone proves nothing.
+        self.assertIsNone(facebook_identity(items("Memories", "Saved", "Groups")))
+        self.assertEqual(facebook_identity(items("Grace Murray", "Business Dashboard", "Memories", "Reels")), "page")
 
     def test_unclear_screens_stay_unknown(self):
         self.assertIsNone(facebook_identity(items("Facebook", "Search Facebook", "Reels")))

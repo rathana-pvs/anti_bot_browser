@@ -57,15 +57,16 @@ def has_strong_facebook_visual(observation: StateObservation) -> bool:
     return observation.state in workflow_states and bool(signals - {"facebook logo"})
 
 
-_PAGE_MARKERS = ("manage page", "professional dashboard", "creator dashboard", "meta business suite")
-_PERSONAL_MARKERS = re.compile(r"\b\d[\d.,]*k?\s+friends?\b|\badd to story\b|\bmemories\b", re.I)
+_PAGE_MARKERS = ("manage page", "professional dashboard", "creator dashboard", "business dashboard", "meta business suite")
+# A Page's own feed also lists Memories, so only profile-page signs count.
+_PERSONAL_MARKERS = re.compile(r"\b\d[\d.,]*k?\s+friends?\b|\badd to story\b", re.I)
 
 
 def facebook_identity(items) -> str | None:
     """Whether Facebook shows a Page ("page") or the personal profile ("personal").
 
     A Page shows its management sidebar or dashboard; the personal profile shows
-    a friend count, Add to story or Memories. Anything else stays unknown.
+    a friend count or Add to story without them. Anything else stays unknown.
     """
     blob = " ".join(item.get("text", "") for item in items).casefold()
     if any(marker in blob for marker in _PAGE_MARKERS):
