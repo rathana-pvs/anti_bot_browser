@@ -212,5 +212,18 @@ class SessionCheck:
             task.log("WARN", "Facebook session remained visually unverified after the 40-second safety timeout.")
             return False
         task.session_check_status = "authenticated"
+        self._remember_profile(target_url)
         return True
+
+    def _remember_profile(self, target_url: str) -> None:
+        """A confirmed profile page is fully loaded: learn its name for natural navigation."""
+        from skills.natural_navigation import PROFILE_URL, NaturalNavigation
+
+        natural = NaturalNavigation(self.task)
+        if target_url != PROFILE_URL or not natural.enabled():
+            return
+        try:
+            natural.remember_profile()
+        except Exception as exc:
+            self.task.log("DEBUG", f"Could not remember the profile name: {exc}")
 
