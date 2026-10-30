@@ -145,5 +145,26 @@ class NaturalNavigationTests(unittest.TestCase):
         self.assertEqual(page_key(identity["profile_url"]), "/profile.php?id=100082211901107")
 
 
+    def test_name_is_learned_when_the_login_check_confirms_the_profile(self):
+        from skills.session import SessionCheck
+        task = host(address="facebook.com/profile.php?id=100082211901107")
+        task.navigate_to = Mock()
+        task.capture_evidence = Mock()
+        task.detect_visual_theme = Mock()
+        task.handle_leave_site_dialog = Mock(return_value=False)
+        task._is_facebook_url = lambda url: True
+        task._has_strong_facebook_visual = lambda observation: True
+        task.current_url = lambda: "https://facebook.com/profile.php?id=100082211901107"
+        task.client.active_window_name.return_value = "Facebook"
+        task.recognizer.observe_session_gate.return_value = StateObservation(ScreenState.FEED_READY, 0.9, ["photo/video"])
+        task.vision.read_text.side_effect = lambda screen, region=None, min_confidence=0.35: (
+            [{"text": "facebook.com/profile.php?id=100082211901107", "bounds": (158, 52, 600, 72), "confidence": 0.99}]
+            if region[1] == 48 else
+            [{"text": "News 429M", "bounds": (744, 196, 916, 228), "confidence": 0.99},
+             {"text": "3K followers", "bounds": (744, 236, 840, 252), "confidence": 0.99}])
+        self.assertTrue(SessionCheck(task).verify(PROFILE_URL))
+        self.assertEqual(load_identity(task)["profile_name"], "News 429M")
+
+
 if __name__ == "__main__":
     unittest.main()
