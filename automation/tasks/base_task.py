@@ -430,6 +430,8 @@ class BaseTask:
             merged_extra.setdefault("workflow_steps", list(self.step_results))
         if getattr(self, "_natural_navigation_counts", None):
             merged_extra.setdefault("navigation_counts", dict(self._natural_navigation_counts))
+        if getattr(self, "reel_upload_extension", None):
+            merged_extra.setdefault("upload_extension", dict(self.reel_upload_extension))
         telemetry = getattr(self, "telemetry", None)
         if telemetry is not None:
             try:

@@ -6,16 +6,75 @@ once the composer has closed; profile navigation must recheck that guard.
 
 from __future__ import annotations
 
+import re
 import time
 
 from engine.screen_state import ScreenState
 
 
+# OCR sometimes drops the % sign or reads it as a trailing 9 ("849").
+_UPLOAD_PERCENT = re.compile(r"uploading\s*(\d{1,3})\s*%?", re.I)
+
+
 class ReelPostClickVerifier:
     """Own the Not now -> fresh upload wait -> confirmation sequence."""
 
+    # A slow proxy can still be uploading when the normal wait ends. The wait
+    # continues only while Facebook's "Uploading N%" keeps rising.
+    MAX_UPLOAD_SECONDS = 240.0
+    UPLOAD_STALL_SECONDS = 30.0
+
     def __init__(self, task):
         self.task = task
+        self.upload_extension = None
+
+    def upload_percent(self, screen) -> int | None:
+        """The percentage Facebook shows on the Reel preview while uploading."""
+        if screen is None:
+            return None
+        height, width = screen.shape[:2]
+        # The label sits on the preview's centre line; a tighter crop
+        # separates it from a news headline drawn behind it.
+        regions = (
+            ((int(width * .5), int(height * .5), int(width * .3), int(height * .15)), 0.5),
+            ((int(width * .58), int(height * .56), int(width * .15), int(height * .04)), 0.3),
+        )
+        for region, confidence in regions:
+            values = []
+            for item in self.task.vision.read_text(screen, region=region, min_confidence=confidence):
+                match = _UPLOAD_PERCENT.search(item.get("text", ""))
+                if match:
+                    value = int(match.group(1))
+                    values.append(value if value <= 100 else value // 10)
+            if values:
+                return max(values)
+        return None
+
+    def _upload_still_moving(self, screen, now: float, hard_deadline: float) -> bool:
+        """After the normal wait, keep waiting only while the upload progresses."""
+        percent = self.upload_percent(screen)
+        extension = self.upload_extension
+        if extension is None:
+            if percent is None:
+                return False
+            extension = self.upload_extension = {
+                "started_at": now, "first_percent": percent, "last_percent": percent,
+                "progressed_at": now, "stop_reason": None,
+            }
+            self.task.log("INFO", f"The Reel is still uploading ({percent}%); waiting while the upload keeps moving.")
+            return True
+        if percent is not None and percent > extension["last_percent"]:
+            extension["last_percent"] = percent
+            extension["progressed_at"] = now
+            self.task.log("INFO", f"Reel upload progress {percent}%.")
+        if now >= hard_deadline:
+            extension["stop_reason"] = "max_wait"
+        elif now - extension["progressed_at"] >= self.UPLOAD_STALL_SECONDS:
+            extension["stop_reason"] = "stalled"
+        else:
+            return True
+        extension["extended_seconds"] = round(now - extension["started_at"], 1)
+        return False
 
     def _wait(self, seconds: float) -> None:
         """Natural sessions let the resting pointer drift during the upload wait."""
@@ -105,6 +164,7 @@ class ReelPostClickVerifier:
         popup_timeout: float = 30.0,
     ):
         upload_deadline = time.time() + timeout
+        hard_deadline = upload_deadline - timeout + max(timeout, self.MAX_UPLOAD_SECONDS)
         popup_deadline = None
         last = None
         prompt_dismissed = False
@@ -124,6 +184,7 @@ class ReelPostClickVerifier:
                     prompt_dismissed = True
                     now = time.time()
                     upload_deadline = now + timeout
+                    hard_deadline = now + max(timeout, self.MAX_UPLOAD_SECONDS)
                     popup_deadline = None
                     self.task.log("INFO", "Dismissed post-publish prompt ('Not now').")
                     self.task.log("INFO", f"Starting a fresh {timeout:g}-second composer/upload wait after Not now closed.")
@@ -165,7 +226,15 @@ class ReelPostClickVerifier:
 
             local_misses += 1
             if not composer_closed and now >= upload_deadline:
-                self.task.log("WARN", f"Reel composer closure was not confirmed within {timeout:g} seconds; stopping without refreshing it.")
+                if self._upload_still_moving(screen, now, hard_deadline):
+                    self._wait(2.0)
+                    continue
+                extension = self.upload_extension
+                if extension:
+                    self.task.log("WARN", f"Reel upload stopped at {extension['last_percent']}% ({extension['stop_reason']}) "
+                                  f"after {extension['extended_seconds']:g} extra seconds; stopping without refreshing it.")
+                else:
+                    self.task.log("WARN", f"Reel composer closure was not confirmed within {timeout:g} seconds; stopping without refreshing it.")
                 return "timed_out", last
             if composer_closed and popup_deadline is not None and now >= popup_deadline:
                 self.task.log("WARN", f"Reel success popup was not detected within {popup_timeout:g} seconds after the loading composer closed; checking the profile feed.")

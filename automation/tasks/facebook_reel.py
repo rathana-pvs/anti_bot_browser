@@ -265,10 +265,10 @@ class FacebookReelTask(BaseTask):
         # set_outcome turns this into uncertain once the publish click may have been sent.
         return self.set_outcome("failed_before_publish", code, message=message)
 
-    def _uncertain(self, code: str, message: str, screen=None) -> bool:
+    def _uncertain(self, code: str, message: str, screen=None, **fields) -> bool:
         self.log("WARN", message)
-        self.capture_evidence(code, screen, error_code=code, message=message)
-        return self.set_outcome("uncertain", code, message=message)
+        self.capture_evidence(code, screen, error_code=code, message=message, **fields)
+        return self.set_outcome("uncertain", code, message=message, **fields)
 
     def _needs_review(self, code: str, message: str, screen=None) -> bool:
         self.log("WARN", message)
@@ -1499,9 +1499,11 @@ class FacebookReelTask(BaseTask):
         timeout: float = POST_CLICK_VERIFICATION_TIMEOUT,
         popup_timeout: float = POST_CONFIRMATION_POPUP_TIMEOUT,
     ):
-        return ReelPostClickVerifier(self).verify(
-            before_publish, timeout=timeout, popup_timeout=popup_timeout,
-        )
+        verifier = ReelPostClickVerifier(self)
+        try:
+            return verifier.verify(before_publish, timeout=timeout, popup_timeout=popup_timeout)
+        finally:
+            self.reel_upload_extension = verifier.upload_extension
 
     def _latest_reel_is_visible(self, screen) -> bool:
         """Confirm only the first card's author/header timestamp, never its body."""
@@ -2016,6 +2018,16 @@ class FacebookReelTask(BaseTask):
                 )
             return self._fail("reel_publish_rejected", "Facebook displayed an error after Reel publication.", final_screen)
         if result == "timed_out":
+            extension = getattr(self, "reel_upload_extension", None)
+            if extension:
+                reason = "stopped moving" if extension["stop_reason"] == "stalled" else "reached the longest wait"
+                return self._uncertain(
+                    "reel_publish_loading_timeout",
+                    f"The Reel upload {reason} at {extension['last_percent']}% after "
+                    f"{upload_timeout + extension['extended_seconds']:g} seconds. The run was stopped without refreshing it.",
+                    final_screen,
+                    upload_extension=extension,
+                )
             return self._uncertain(
                 "reel_publish_loading_timeout",
                 f"The Reel composer was not confirmed closed within {upload_timeout:g} seconds. The run was stopped without refreshing it.",
