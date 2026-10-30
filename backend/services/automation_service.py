@@ -961,10 +961,12 @@ async def _run_owned_queue(execution_id, action, *args, preparation=False):
             prepared_queue = load_posting_queue()
             prepared = find_queue_execution(prepared_queue, execution_id)
             if prepared and prepared["execution"].get("status") == "ready":
-                hold = lifecycle.handoff(profile_id, token)
+                from backend.services.adaptive_runtime import handoff_seconds
+                handoff_for = handoff_seconds(PREPARATION_HANDOFF_SECONDS)
+                hold = lifecycle.handoff(profile_id, token, handoff_for)
                 if hold:
                     prepared['execution']['container_handoff_expires_at'] = datetime.fromtimestamp(
-                        time.time() + PREPARATION_HANDOFF_SECONDS, tz=timezone.utc,
+                        time.time() + handoff_for, tz=timezone.utc,
                     ).isoformat()
                     save_posting_queue(prepared_queue)
         return result
@@ -1763,7 +1765,8 @@ async def dispatch_pending_queue():
                     reservations["total"] -= 1
                     reservations["publishers" if slot_kind == "publisher" else "preparers"] -= 1
                     if admission.get("reason") == "container_start_spacing":
-                        asyncio.create_task(_delayed_dispatch(CONTAINER_START_SPACING_MS + 100))
+                        from backend.services.adaptive_runtime import current_start_spacing_ms
+                        asyncio.create_task(_delayed_dispatch(current_start_spacing_ms() + 100))
                     continue
 
             print(f"[Queue Dispatcher] Claiming {slot_kind} slot for {exec_id} on profile {pid}...")

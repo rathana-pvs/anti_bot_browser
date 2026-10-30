@@ -105,6 +105,31 @@ class ResourceSettingsManager:
         return self._settings.get("resource_mode", "auto")
 
     @property
+    def max_parallel(self) -> int | None:
+        value = self._settings.get("max_parallel")
+        return value if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 16 else None
+
+    @property
+    def reserve_percent(self) -> int:
+        value = self._settings.get("reserve_percent", 10)
+        return value if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 40 else 10
+
+    def update_adaptive_limits(self, *, max_parallel=None, reserve_percent=None, clear_max=False) -> None:
+        with self._lock:
+            if clear_max:
+                self._settings.pop("max_parallel", None)
+            elif max_parallel is not None:
+                if isinstance(max_parallel, bool) or not isinstance(max_parallel, int) or not 1 <= max_parallel <= 16:
+                    raise ValueError("max_parallel must be between 1 and 16")
+                self._settings["max_parallel"] = max_parallel
+            if reserve_percent is not None:
+                if isinstance(reserve_percent, bool) or not isinstance(reserve_percent, int) or not 0 <= reserve_percent <= 40:
+                    raise ValueError("reserve_percent must be between 0 and 40")
+                self._settings["reserve_percent"] = reserve_percent
+            self._settings["updated_at"] = datetime.now(timezone.utc).isoformat()
+            self._save()
+
+    @property
     def ocr_engine(self) -> str:
         value = self._settings.get("ocr_engine", DEFAULT_ENGINE)
         return value if value in ENGINES else DEFAULT_ENGINE

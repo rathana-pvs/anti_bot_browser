@@ -121,14 +121,14 @@ def heartbeat(profile_id, token):
         _write(owners)
         return True
 
-def handoff(profile_id, token):
+def handoff(profile_id, token, seconds=HANDOFF_SECONDS):
     with _locked():
         owners = _read()
         owner = owners.get(profile_id)
         if not owner or owner['token'] != token or owner['state'] != 'active':
             return False
         owner['state'] = 'handoff'
-        owner['heartbeat_expires_at'] = time.time() + HANDOFF_SECONDS
+        owner['heartbeat_expires_at'] = time.time() + seconds
         _write(owners)
         return True
 

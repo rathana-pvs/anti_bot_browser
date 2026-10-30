@@ -64,6 +64,27 @@ class FacebookPreparationTaskTests(unittest.TestCase):
             duration = task.set_outcome.call_args.kwargs["duration_seconds"]
             self.assertLessEqual(duration, FacebookPreparationTask.DURATION_RANGES["brief"][1])
 
+    def run_browsing(self, signal):
+        task = self.make_task(logged_in=True)
+        task.resource_signal = lambda: dict(signal)
+        clock = iter(x * 0.5 for x in range(1000000))
+        with patch("tasks.facebook_preparation.time.monotonic", side_effect=lambda: next(clock)), \
+             patch("tasks.facebook_preparation.time.sleep"):
+            task.run()
+        return task.set_outcome.call_args.kwargs
+
+    def test_busy_machine_shortens_preparation(self):
+        normal = self.run_browsing({"hold": False, "elastic_scale": 1.0, "publish_slots_full": False, "reason": ""})
+        busy = self.run_browsing({"hold": False, "elastic_scale": 0.5, "publish_slots_full": False, "reason": ""})
+        self.assertAlmostEqual(busy["duration_seconds"], normal["duration_seconds"] * 0.5, places=1)
+        self.assertEqual(busy["busy_slot_extension_seconds"], 0.0)
+
+    def test_full_publish_slots_extend_browsing_up_to_a_minute(self):
+        full = self.run_browsing({"hold": False, "elastic_scale": 1.0, "publish_slots_full": True, "reason": ""})
+        self.assertGreater(full["busy_slot_extension_seconds"], 0)
+        self.assertLessEqual(full["busy_slot_extension_seconds"], FacebookPreparationTask.MAX_BUSY_SLOT_EXTENSION_SECONDS)
+        self.assertGreater(full["actual_browsing_seconds"], full["duration_seconds"])
+
     def test_zero_duration_preparation_reaches_ready_without_scroll(self):
         task = self.make_task(logged_in=True)
         with patch.object(FacebookPreparationTask, "DURATION_RANGES", {"brief": (0.0, 0.0), "extended": (0.0, 0.0)}):

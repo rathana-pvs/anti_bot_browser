@@ -25,6 +25,7 @@ from engine.semantic_fallback import (
 )
 from engine.telemetry import TelemetryRecorder
 from engine.outcome import SUCCESS_STATUSES, PublicationStatus, resolve_status
+from engine.resource_signal import read_signal
 from skills.comment import (
     FirstComment,
     comment_match_confidence,
@@ -400,22 +401,54 @@ class BaseTask:
         """
         self.step_results = []
         for name in steps:
+            held = self._hold_before_step(name)
             started = time.perf_counter()
             try:
                 result = getattr(self, f"_step_{name}")()
             except Exception:
-                self._record_step(name, started, "exception")
+                self._record_step(name, started, "exception", held)
                 raise
             if result is None:
-                self._record_step(name, started, "completed")
+                self._record_step(name, started, "completed", held)
                 continue
-            self._record_step(name, started, self.result_status)
+            self._record_step(name, started, self.result_status, held)
             return result
         raise RuntimeError("Workflow steps ended without an outcome")
 
-    def _record_step(self, name: str, started: float, outcome: str) -> None:
+    # Longest wait before each step while the machine is under memory
+    # pressure. Steps not listed never wait; nothing waits after the publish
+    # click. Subclasses list only steps where pausing is safe.
+    HOLD_LIMITS: dict = {}
+    MAX_TOTAL_HOLD_SECONDS = 180.0
+
+    def resource_signal(self) -> dict:
+        return read_signal()
+
+    def _hold_before_step(self, name: str) -> float:
+        limit = self.HOLD_LIMITS.get(name)
+        if not limit or self.publish_attempted():
+            return 0.0
+        held_so_far = sum(item.get("held_seconds", 0.0) for item in getattr(self, "step_results", []))
+        limit = min(limit, self.MAX_TOTAL_HOLD_SECONDS - held_so_far)
+        started = time.monotonic()
+        signal = self.resource_signal()
+        if not signal["hold"] or limit <= 0:
+            return 0.0
+        self.log("INFO", f"Pausing before {name}: {signal['reason'] or 'the machine is under pressure'}.")
+        while signal["hold"] and time.monotonic() - started < limit:
+            # Uneven waits, so held accounts do not all resume together.
+            time.sleep(min(limit - (time.monotonic() - started), self.rng("pause").uniform(3.0, 6.0)))
+            signal = self.resource_signal()
+        held = round(time.monotonic() - started, 1)
+        self.log("INFO", f"Resuming {name} after {held:.0f}s.")
+        return held
+
+    def _record_step(self, name: str, started: float, outcome: str, held: float = 0.0) -> None:
         duration_ms = round((time.perf_counter() - started) * 1000.0, 1)
-        self.step_results.append({"step": name, "outcome": outcome, "duration_ms": duration_ms})
+        entry = {"step": name, "outcome": outcome, "duration_ms": duration_ms}
+        if held:
+            entry["held_seconds"] = held
+        self.step_results.append(entry)
         telemetry = getattr(self, "telemetry", None)
         if telemetry is not None:
             telemetry.record_step("workflow_step", duration_ms, outcome=outcome, step=name)
