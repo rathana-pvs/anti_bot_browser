@@ -33,7 +33,11 @@ class ReelPostClickVerifier:
             "add whatsapp button", "make it easier to contact you",
             "speak with people directly", "post settings", "post audience",
         )
-        if any(marker in blob for marker in composer_markers):
+        lines = [
+            " ".join(self.task._normalized_ocr_text(item.get("text", "")) for item in line)
+            for line in self.text_lines(items)
+        ]
+        if any(marker in line for line in lines for marker in composer_markers):
             return False
         if observation.state == ScreenState.POST_CONFIRMED:
             return True
@@ -48,6 +52,31 @@ class ReelPostClickVerifier:
             or all(word in blob.split() for word in ("like", "comment", "share"))
             or all(word in blob.split() for word in ("posts", "friends", "photos"))
         )
+
+    @staticmethod
+    def text_lines(items):
+        """Group OCR fragments that sit side by side on one visual line.
+
+        Composer phrases must not be matched across the whole screen: the
+        Page sidebar's "Boost Instagram post" above "Settings" then read as
+        "post settings" and kept a closed composer counted as open. Items
+        without bounds (test doubles) each form their own line.
+        """
+        lines = [[item] for item in items if not item.get("bounds")]
+        placed = sorted((item for item in items if item.get("bounds")), key=lambda item: item["bounds"][0])
+        rows = []
+        for item in placed:
+            left, top, right, bottom = item["bounds"]
+            middle = (top + bottom) / 2
+            max_gap = max(24, 1.5 * (bottom - top))
+            for row in rows:
+                last_left, last_top, last_right, last_bottom = row[-1]["bounds"]
+                if last_top <= middle <= last_bottom and -5 <= left - last_right <= max_gap:
+                    row.append(item)
+                    break
+            else:
+                rows.append([item])
+        return lines + rows
 
     def allow_profile_navigation(self) -> bool:
         """Recheck closure immediately before every profile verification navigation."""

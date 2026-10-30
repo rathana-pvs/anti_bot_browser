@@ -1997,6 +1997,27 @@ class ReelPublicationVerificationTests(unittest.TestCase):
         self.assertFalse(task._reel_composer_has_closed(
             task.client.screenshot(), StateObservation(ScreenState.FEED_READY, 0.68)))
 
+    def test_sidebar_rows_are_not_joined_into_composer_phrases(self):
+        task = self.make_task([], [])
+        task.vision.read_text.return_value = [
+            {"text": "Manage Page", "bounds": (16, 160, 170, 184)},
+            {"text": "Boost Instagram post", "bounds": (52, 548, 213, 570)},
+            {"text": "Settings", "bounds": (52, 592, 113, 614)},
+            {"text": "What's on your mind?", "bounds": (1121, 460, 1285, 482)},
+        ]
+        self.assertTrue(task._reel_composer_has_closed(
+            task.client.screenshot(), StateObservation(ScreenState.FEED_READY, 0.84)))
+
+    def test_composer_phrase_split_across_one_line_still_blocks(self):
+        task = self.make_task([], [])
+        task.vision.read_text.return_value = [
+            {"text": "Manage Page", "bounds": (16, 160, 170, 184)},
+            {"text": "Post", "bounds": (800, 300, 840, 322)},
+            {"text": "settings", "bounds": (846, 300, 910, 322)},
+        ]
+        self.assertFalse(task._reel_composer_has_closed(
+            task.client.screenshot(), StateObservation(ScreenState.FEED_READY, 0.84)))
+
     def test_composer_blocks_navigation_even_when_feed_text_is_visible(self):
         task = self.make_task([], [])
         task.recognizer.observe.return_value = StateObservation(ScreenState.FEED_READY, 0.8)
