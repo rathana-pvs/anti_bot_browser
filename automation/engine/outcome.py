@@ -14,6 +14,7 @@ class PublicationStatus(str, Enum):
     FAILED_AFTER_PUBLISH = "failed_after_publish"
     SKIPPED_AUTH_REQUIRED = "skipped_auth_required"
     SKIPPED_SESSION_UNVERIFIED = "skipped_session_unverified"
+    SKIPPED_PERSONAL_PROFILE = "skipped_personal_profile"
 
 
 SUCCESS_STATUSES = frozenset({PublicationStatus.PUBLISHED, PublicationStatus.COMPLETED})

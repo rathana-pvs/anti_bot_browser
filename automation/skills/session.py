@@ -84,6 +84,9 @@ class SessionCheck:
         if session_status in {"auth_required", "safety_blocked"}:
             status = "skipped_auth_required"
             message = "Facebook is logged out, expired, restricted, or requires an account checkpoint."
+        elif session_status == "personal_profile":
+            status = "skipped_personal_profile"
+            message = "Facebook is showing the personal profile instead of the Page, so nothing was posted. Switch back to the Page in the browser."
         else:
             status = "skipped_session_unverified"
             message = "Facebook did not reach a safely verified logged-in screen within 40 seconds."
@@ -244,10 +247,12 @@ class SessionCheck:
         except Exception as exc:
             task.log("DEBUG", f"Could not tell whether Facebook shows the Page or the personal profile: {exc}")
         if getattr(task, "facebook_identity", None) == "personal":
-            # Never learn the personal profile's name as the Page's.
-            task.log("WARN", "Facebook is showing the personal profile, not the Page.")
-        else:
-            self._remember_profile(target_url)
+            # Anything done now would happen as the personal profile, and its
+            # name must never be learned as the Page's.
+            task.session_check_status = "personal_profile"
+            task.log("WARN", "Facebook is showing the personal profile, not the Page; this profile will be skipped.")
+            return False
+        self._remember_profile(target_url)
         return True
 
     def _remember_profile(self, target_url: str) -> None:
