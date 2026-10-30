@@ -1,6 +1,6 @@
 # Automation structure: design and implementation plan
 
-Date: 2026-10-30 · Revision: 3 · Status: Milestones 1 and 2 implemented; sample evidence replay unchanged; a live run still to check.
+Date: 2026-10-30 · Revision: 4 · Status: Milestones 1–3 implemented; Reel runs on milestones 1–2 checked on real accounts; Post and Live live runs still to check.
 
 ## Recommendation
 
@@ -242,6 +242,31 @@ its real stages.
 Exit: `test_publishing_pipeline.py` and `test_fixed_orchestrator.py` cover the
 stage lists; no module sets `task.result_status`; an exception after the publish
 click still yields `uncertain`.
+
+Done, with these decisions:
+
+- Post and Reel `run()` are step lists (`STEPS`, one `_step_<name>` method each)
+  run by `BaseTask.run_steps`, which records each step's outcome and duration as
+  `workflow_steps` in the result. Post has 10 steps, Reel 11. The code is named
+  "steps" because `set_stage` already means the execution stage that recovery
+  and the queue read (`publish_clicked`, `verifying`), which is unchanged.
+- `engine/outcome.py` defines `PublicationStatus`. `BaseTask._write_status` is
+  the only code that assigns `result_status` (`tests/test_outcome.py` enforces
+  it) and turns a failure into `uncertain` once the publish click may have been
+  sent. Pipeline modules use `update_outcome`. Finalize still writes the result
+  record once, as before; stages report through `set_outcome`, `_fail` and
+  similar, which now all pass through the single writer.
+- The bundled Post and Reel workflows (1.1.0) list the steps as states chained
+  by `on_success`; the engine runs that chain when it matches its steps exactly.
+  A workflow containing any non-step state (installed 1.0.0 Brains) uses the
+  built-in order; a step list that differs stops before any action.
+- `PublishModule` records the publish click even when a step raises, so the
+  orchestrator reports such exceptions as `uncertain`.
+- Live is unchanged: its workflow already runs through `WorkflowInterpreter`,
+  dispatching prepare, start and end.
+- Checked with a differential run of the previous `run()` methods against the
+  new steps over 20,000 scripted scenarios each (identical helper calls and
+  endings), the test suites, and the sample evidence replay.
 
 ### 4. Session plan and persona
 
