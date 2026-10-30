@@ -32,7 +32,7 @@ FAILURE_STREAK = 3
 SUCCESS_STATUSES = {"published", "completed"}
 FAILURE_STATUSES = {"failed", "failed_before_publish", "skipped_session_unverified"}
 RECORDED_STATUSES = SUCCESS_STATUSES | FAILURE_STATUSES | {
-    "uncertain", "needs_review", "failed_after_publish", "skipped_auth_required",
+    "uncertain", "needs_review", "failed_after_publish", "skipped_auth_required", "skipped_personal_profile",
 }
 # Facebook itself refused the action, as opposed to a slow proxy or our own error.
 PUSHBACK_MARKERS = ("rejected", "blocked", "restricted")

@@ -126,6 +126,6 @@ def test_a_page_account_showing_the_personal_profile_needs_attention():
 
 def test_history_keeps_the_identity(tmp_path, monkeypatch):
     monkeypatch.setattr(account_health, "HISTORY_FILE", tmp_path / "history.json")
-    done = {"profile_id": "profile_001", "execution_id": "e1", "status": "skipped_session_unverified",
+    done = {"profile_id": "profile_001", "execution_id": "e1", "status": "skipped_personal_profile",
             "scheduled_at": NOW.isoformat(), "facebook_identity": "personal"}
     assert sync_history(queue(done), NOW)["profile_001"]["e1"]["identity"] == "personal"
