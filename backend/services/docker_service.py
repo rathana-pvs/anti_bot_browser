@@ -31,6 +31,7 @@ profile_disk_usage_cache: dict[str, str] = {}
 recent_cpu_samples: list[float] = []
 current_cpu_percent: float = 0.0
 current_gpu_percent: float = 0.0
+current_gpu_memory_percent: float | None = None
 gpu_model: str = "Integrated / Software"
 
 # Detect GPU model on init
@@ -85,11 +86,11 @@ def sustained_cpu_percent() -> float:
     return sum(recent_cpu_samples) / len(recent_cpu_samples)
 
 def sample_gpu():
-    global current_gpu_percent, gpu_model, _prev_gpu_rc6, _prev_gpu_time
+    global current_gpu_percent, current_gpu_memory_percent, gpu_model, _prev_gpu_rc6, _prev_gpu_time
     # 1. Check NVIDIA
     try:
         nv = subprocess.check_output(
-            ["nvidia-smi", "--query-gpu=name,utilization.gpu", "--format=csv,noheader,nounits"],
+            ["nvidia-smi", "--query-gpu=name,utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"],
             text=True,
             stderr=subprocess.DEVNULL,
             timeout=0.3,
@@ -98,6 +99,8 @@ def sample_gpu():
             parts = [s.strip() for s in nv.split(",")]
             gpu_model = parts[0] or "NVIDIA GPU"
             current_gpu_percent = float(parts[1]) if len(parts) > 1 else 0.0
+            if len(parts) > 3 and float(parts[3]) > 0:
+                current_gpu_memory_percent = round(float(parts[2]) / float(parts[3]) * 100, 1)
             return
     except Exception:
         pass
@@ -240,6 +243,15 @@ CONTAINER_START_SPACING_MS = 10000
 def get_scheduler_config() -> dict:
     mode_snapshot = settings_manager.get_snapshot()
     limits = mode_snapshot["limits"]
+    if settings_manager.resource_mode == "auto":
+        from backend.services import adaptive_runtime
+        decision = adaptive_runtime.current_decision()
+        limits = {
+            "max_publishers": decision.max_publishers,
+            "max_preparers": decision.max_preparers,
+            "max_total_automation_tasks": decision.limit,
+            "max_active_profile_containers": decision.max_containers,
+        }
     return {
         "max_publishers": limits["max_publishers"],
         "max_preparers": limits["max_preparers"],
@@ -257,13 +269,17 @@ def resource_mode_snapshot() -> dict:
     mem_used_pct = (used_mem / total_mem) * 100 if total_mem > 0 else 0.0
     cpu_pct = sustained_cpu_percent()
 
-    admission = resource_admission_decision(
-        memory_used_percent=mem_used_pct,
-        cpu_percent=cpu_pct,
-        paused_for_memory=memory_admission_paused,
-        milliseconds_since_last_start=(time.time() * 1000) - last_queue_container_start_at,
-        start_spacing_ms=CONTAINER_START_SPACING_MS,
-    )
+    from backend.services import adaptive_runtime
+    if adaptive_runtime.adaptive_enabled():
+        admission = adaptive_runtime.admission()
+    else:
+        admission = resource_admission_decision(
+            memory_used_percent=mem_used_pct,
+            cpu_percent=cpu_pct,
+            paused_for_memory=memory_admission_paused,
+            milliseconds_since_last_start=(time.time() * 1000) - last_queue_container_start_at,
+            start_spacing_ms=CONTAINER_START_SPACING_MS,
+        )
     memory_admission_paused = admission.get("memoryPaused", False)
 
     scheduler_cfg = get_scheduler_config()
@@ -305,6 +321,7 @@ def resource_mode_snapshot() -> dict:
             "admission_reason": admission["reason"],
             "memory_paused": memory_admission_paused,
         },
+        "adaptive": adaptive_runtime.snapshot(),
     }
 
 def claim_container_start_admission() -> dict:

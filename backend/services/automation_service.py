@@ -1763,7 +1763,8 @@ async def dispatch_pending_queue():
                     reservations["total"] -= 1
                     reservations["publishers" if slot_kind == "publisher" else "preparers"] -= 1
                     if admission.get("reason") == "container_start_spacing":
-                        asyncio.create_task(_delayed_dispatch(CONTAINER_START_SPACING_MS + 100))
+                        from backend.services.adaptive_runtime import current_start_spacing_ms
+                        asyncio.create_task(_delayed_dispatch(current_start_spacing_ms() + 100))
                     continue
 
             print(f"[Queue Dispatcher] Claiming {slot_kind} slot for {exec_id} on profile {pid}...")
