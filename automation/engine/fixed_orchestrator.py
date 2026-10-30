@@ -24,6 +24,7 @@ PIPELINE_ORDER = (
     "post_publish_prompt",
     "publication_result_verifier",
     "comment",
+    "linger",
     "finalize",
 )
 FINALIZE_MODULE_ID = "finalize"

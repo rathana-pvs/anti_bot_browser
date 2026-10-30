@@ -17,6 +17,13 @@ class ReelPostClickVerifier:
     def __init__(self, task):
         self.task = task
 
+    def _wait(self, seconds: float) -> None:
+        """Natural sessions let the resting pointer drift during the upload wait."""
+        if getattr(getattr(self.task, "behavior_session", None), "natural", False) is True:
+            self.task.human.idle(seconds)
+        else:
+            time.sleep(seconds)
+
     def composer_has_closed(self, screen, observation) -> bool:
         """Require feed/confirmation evidence and exclude the full Reel composer."""
         if screen is None or observation.state not in {
@@ -165,7 +172,7 @@ class ReelPostClickVerifier:
                 return "profile_fallback", last
             if not composer_closed:
                 popup_deadline = None
-                time.sleep(2.0)
+                self._wait(2.0)
                 continue
             if observation.state == ScreenState.FEED_READY:
                 if not unconfirmed_feed_logged:
@@ -176,4 +183,4 @@ class ReelPostClickVerifier:
                     unconfirmed_feed_logged = True
                 if popup_deadline is None:
                     popup_deadline = now + popup_timeout
-            time.sleep(2.0)
+            self._wait(2.0)

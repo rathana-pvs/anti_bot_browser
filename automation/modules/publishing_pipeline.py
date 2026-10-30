@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from engine.automation_context import AutomationContext
 from engine.fixed_orchestrator import FixedAutomationOrchestrator
+from skills.session_habits import SessionHabits
 from engine.module_contract import (
     FAILED_SAFE,
     NEEDS_REVIEW,
@@ -215,6 +216,28 @@ class CommentModule:
 
 
 @dataclass
+class LingerModule:
+    """Natural session: sometimes stay after a confirmed publish. Never stops
+    the pipeline and never changes the publication outcome."""
+
+    task: object
+    module_id: str = "linger"
+
+    def enabled(self, context):
+        return SessionHabits(self.task).wants_to_linger()
+
+    def run(self, context):
+        try:
+            summary = SessionHabits(self.task).linger()
+        except Exception as exc:
+            self.task.log("WARN", f"Staying after publishing stopped early: {exc}")
+            return ModuleResult.skipped(f"linger_error:{type(exc).__name__}")
+        if not summary.get("lingered"):
+            return ModuleResult.skipped(summary.get("reason", "not_chosen"))
+        return ModuleResult.success("lingered", **summary)
+
+
+@dataclass
 class FinalizeModule:
     task: object
     module_id: str = "finalize"
@@ -286,6 +309,7 @@ def build_publishing_pipeline(task, *, content_type: str, comment_text: str | No
         "post_publish_prompt": PostPublishPromptModule(task),
         "publication_result_verifier": PublicationResultVerifierModule(task, content_type),
         "comment": CommentModule(task, content_type),
+        "linger": LingerModule(task),
         "finalize": FinalizeModule(task),
     }
     return FixedAutomationOrchestrator(modules), context

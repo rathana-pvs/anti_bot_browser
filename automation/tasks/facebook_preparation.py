@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import random
 import time
 
 from .base_task import BaseTask
@@ -60,7 +59,7 @@ class FacebookPreparationTask(BaseTask):
         if session_already_stable:
             self.log("INFO", "Authenticated Facebook session is already stable; skipping navigation.")
         else:
-            requested_surface = random.choice(tuple(self.WARMING_SURFACES))
+            requested_surface = self.rng("warming").choice(tuple(self.WARMING_SURFACES))
             if not self.verify_logged_in(
                 target_url=self.WARMING_SURFACES[requested_surface]
             ):
@@ -95,6 +94,17 @@ class FacebookPreparationTask(BaseTask):
 
         rng = self.behavior_session.stream("warming")
         duration_seconds = rng.uniform(*self.DURATION_RANGES[self.mode])
+        session = self.behavior_session
+        if getattr(session, "natural", False):
+            # The batch's preparation mode stays the upper limit.
+            if session.chance(session.persona.preparation_skip_rate):
+                self.log("INFO", "Natural session: this account skips passive browsing this time.")
+                duration_seconds = 0.0
+            else:
+                duration_seconds = min(
+                    self.DURATION_RANGES[self.mode][1],
+                    duration_seconds * session.persona.preparation_scale * session.drift,
+                )
         started = time.monotonic()
         deadline = started + duration_seconds
         previous = surface_screen if surface_screen is not None else self.client.screenshot()
