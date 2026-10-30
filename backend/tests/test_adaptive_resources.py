@@ -91,11 +91,23 @@ def test_ceiling_respects_memory_and_the_user_maximum():
     assert small.ceiling == 1
 
 
-def test_container_memory_is_learned_from_running_containers():
+def test_container_memory_follows_the_largest_container_up_fast_and_down_slowly():
     controller = AdaptiveController()
-    for _ in range(30):
-        decision = controller.decide(sample(containers={"isolated_profile_001": {"memory_mb": 900.0}}), running_jobs=1)
-    assert 850 <= decision.container_memory_mb <= 950
+    busy = {"isolated_profile_001": {"memory_mb": 2600.0}, "isolated_profile_002": {"memory_mb": 400.0}}
+    for _ in range(4):
+        decision = controller.decide(sample(containers=busy), running_jobs=2)
+    assert decision.container_memory_mb >= 2400
+    idle = {"isolated_profile_001": {"memory_mb": 350.0}}
+    for _ in range(12):
+        decision = controller.decide(sample(containers=idle), running_jobs=1)
+    assert decision.container_memory_mb >= 1800
+
+
+def test_idle_containers_never_lower_the_estimate_below_the_floor():
+    controller = AdaptiveController()
+    for _ in range(500):
+        decision = controller.decide(sample(containers={"isolated_profile_001": {"memory_mb": 300.0}}), running_jobs=1)
+    assert decision.container_memory_mb == 800
 
 
 def test_spacing_blocks_until_it_has_passed():

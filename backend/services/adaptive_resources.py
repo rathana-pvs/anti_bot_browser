@@ -12,6 +12,7 @@ import time
 from dataclasses import asdict, dataclass
 
 DEFAULT_CONTAINER_MB = 1500.0
+MIN_CONTAINER_MB = 800.0
 CALM_SECONDS_BEFORE_GROWING = 120.0
 ABSOLUTE_MAX_PARALLEL = 16
 START_SPACING_MS = {"calm": 8000, "busy": 20000, "pressure": 30000}
@@ -70,10 +71,17 @@ class AdaptiveController:
 
     def _learn_container_memory(self, containers: dict) -> None:
         values = [item["memory_mb"] for item in containers.values() if item.get("memory_mb")]
-        if values:
-            observed = sum(values) / len(values)
-            # Slow moving average; containers grow while Chrome loads pages.
-            self.container_mb = 0.8 * self.container_mb + 0.2 * max(self.container_mb * 0.5, observed)
+        if not values:
+            return
+        # Plan for a container in the middle of a job, not an idle one: follow
+        # the largest container up quickly and down slowly. Idle browsers use
+        # a few hundred MB, so a floor keeps the forecast from trusting them.
+        observed = max(values)
+        if observed > self.container_mb:
+            self.container_mb = 0.5 * self.container_mb + 0.5 * observed
+        else:
+            self.container_mb = 0.98 * self.container_mb + 0.02 * observed
+        self.container_mb = max(MIN_CONTAINER_MB, self.container_mb)
 
     def _ceiling(self, sample: dict) -> int:
         target = self._targets()["memory"] / 100
