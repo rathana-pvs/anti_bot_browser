@@ -110,7 +110,8 @@ class ComposerEntry:
                 task.paste_text(text, expected_owner=owner)
                 waiter.pause(self.timing.sample(.2, .35, .6))
             else:
-                stats = task.human.type_text(text, wpm=plan.wpm, waiter=waiter)
+                # The field is read back right below, so a corrected slip can never stay.
+                stats = task.human.type_text(text, wpm=plan.wpm, waiter=waiter, allow_typos=True)
             waiter.check()
             entered = self.read_field(waiter)
             if entered != text:

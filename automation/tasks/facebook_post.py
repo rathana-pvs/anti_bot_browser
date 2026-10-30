@@ -667,7 +667,10 @@ class FacebookPostTask(BaseTask):
             else:
                 feed_streak = 0
 
-            time.sleep(1.5)
+            if getattr(getattr(self, "behavior_session", None), "natural", False) is True:
+                self.human.idle(1.5)
+            else:
+                time.sleep(1.5)
 
         # Never navigate away or begin commenting while a publishing/review modal
         # may still be open. This avoids confusing slow network processing with
