@@ -118,3 +118,19 @@ def test_psi_and_docker_sizes_are_parsed(tmp_path):
     assert list(usage) == ["isolated_profile_001"]
     assert usage["isolated_profile_001"]["cpu_percent"] == 12.5
     assert round(usage["isolated_profile_001"]["memory_mb"]) == 1229
+
+
+def test_prepared_containers_wait_less_under_pressure(monkeypatch):
+    from backend.services import adaptive_runtime
+    from backend.services.adaptive_resources import AdaptiveController
+
+    controller = AdaptiveController()
+    calm = controller.decide(sample(), running_jobs=1)
+    pressure = AdaptiveController().decide(sample(memory=95), running_jobs=1)
+    monkeypatch.setattr(adaptive_runtime, "adaptive_enabled", lambda: True)
+    monkeypatch.setattr(adaptive_runtime, "current_decision", lambda: calm)
+    assert adaptive_runtime.handoff_seconds(120.0) == 120.0
+    monkeypatch.setattr(adaptive_runtime, "current_decision", lambda: pressure)
+    assert adaptive_runtime.handoff_seconds(120.0) == 45.0
+    monkeypatch.setattr(adaptive_runtime, "adaptive_enabled", lambda: False)
+    assert adaptive_runtime.handoff_seconds(120.0) == 120.0

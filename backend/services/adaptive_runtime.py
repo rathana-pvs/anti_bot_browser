@@ -79,6 +79,20 @@ def current_start_spacing_ms() -> int:
     return docker_service.CONTAINER_START_SPACING_MS
 
 
+PRESSURE_HANDOFF_SECONDS = 45.0
+
+
+def handoff_seconds(default: float) -> float:
+    """How long a prepared container waits for its publish step.
+
+    Under pressure in Automatic mode an idle prepared container gives its
+    memory back sooner; it is prepared again when a slot opens.
+    """
+    if adaptive_enabled() and current_decision().state == "pressure":
+        return min(default, PRESSURE_HANDOFF_SECONDS)
+    return default
+
+
 def admission() -> dict:
     """Live start admission in Automatic mode (spacing is rechecked now)."""
     decision = current_decision()

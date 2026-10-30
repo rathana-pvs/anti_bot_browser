@@ -961,10 +961,12 @@ async def _run_owned_queue(execution_id, action, *args, preparation=False):
             prepared_queue = load_posting_queue()
             prepared = find_queue_execution(prepared_queue, execution_id)
             if prepared and prepared["execution"].get("status") == "ready":
-                hold = lifecycle.handoff(profile_id, token)
+                from backend.services.adaptive_runtime import handoff_seconds
+                handoff_for = handoff_seconds(PREPARATION_HANDOFF_SECONDS)
+                hold = lifecycle.handoff(profile_id, token, handoff_for)
                 if hold:
                     prepared['execution']['container_handoff_expires_at'] = datetime.fromtimestamp(
-                        time.time() + PREPARATION_HANDOFF_SECONDS, tz=timezone.utc,
+                        time.time() + handoff_for, tz=timezone.utc,
                     ).isoformat()
                     save_posting_queue(prepared_queue)
         return result
