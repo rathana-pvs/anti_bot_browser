@@ -2265,7 +2265,7 @@ class FirstCommentTargetTests(unittest.TestCase):
         task._open_permalink_comment_input = Mock()
 
         with unittest.mock.patch("time.sleep", return_value=None), \
-             unittest.mock.patch("tasks.base_task.random.uniform", return_value=2.5):
+             unittest.mock.patch("skills.comment.random.uniform", return_value=2.5):
             result = task.post_first_comment("https://example.com/link")
 
         self.assertEqual(result, "submitted_unverified")
@@ -2326,7 +2326,7 @@ class FirstCommentTargetTests(unittest.TestCase):
         task._open_profile_first_comment_input = Mock(return_value=((90, 75), screen))
 
         with unittest.mock.patch("time.sleep", return_value=None), \
-             unittest.mock.patch("tasks.base_task.random.uniform", return_value=1.0):
+             unittest.mock.patch("skills.comment.random.uniform", return_value=1.0):
             result = task.post_first_comment("A posting guide")
 
         self.assertEqual(result, "submitted_verified")
@@ -2351,7 +2351,7 @@ class FirstCommentTargetTests(unittest.TestCase):
         )
 
         with unittest.mock.patch("time.sleep", return_value=None), \
-             unittest.mock.patch("tasks.base_task.random.uniform", return_value=1.0):
+             unittest.mock.patch("skills.comment.random.uniform", return_value=1.0):
             result = task.post_first_comment("Canary comment test — September 25, 2026")
 
         self.assertEqual(result, "submitted_verified")
@@ -2382,7 +2382,7 @@ class FirstCommentTargetTests(unittest.TestCase):
         task._open_profile_first_comment_input = Mock(return_value=((70, 98), screen))
 
         with unittest.mock.patch("time.sleep", return_value=None), \
-             unittest.mock.patch("tasks.base_task.random.uniform", return_value=1.0):
+             unittest.mock.patch("skills.comment.random.uniform", return_value=1.0):
             result = task.post_first_comment("Source: RT")
 
         self.assertEqual(result, "submitted_verified")
@@ -2404,7 +2404,7 @@ class FirstCommentTargetTests(unittest.TestCase):
         task._open_permalink_comment_input = Mock(return_value=((70, 80), screen))
 
         with unittest.mock.patch("time.sleep", return_value=None), \
-             unittest.mock.patch("tasks.base_task.random.uniform", return_value=1.0):
+             unittest.mock.patch("skills.comment.random.uniform", return_value=1.0):
             result = task.post_first_comment(
                 "https://example.com/link",
                 post_url="https://www.facebook.com/permalink.php?story_fbid=123&id=456",
@@ -2650,7 +2650,7 @@ class FirstCommentTargetTests(unittest.TestCase):
         )
 
         with unittest.mock.patch("time.sleep", return_value=None), \
-             unittest.mock.patch("tasks.base_task.random.uniform", return_value=1.0):
+             unittest.mock.patch("skills.comment.random.uniform", return_value=1.0):
             result = task.post_first_comment("Verification comment — profile 002")
 
         self.assertEqual(result, "submitted_verified")
@@ -2678,7 +2678,7 @@ class FirstCommentTargetTests(unittest.TestCase):
         task._open_profile_first_comment_input = Mock(return_value=((1167, 839), screen))
 
         with unittest.mock.patch("time.sleep", return_value=None), \
-             unittest.mock.patch("tasks.base_task.random.uniform", return_value=1.0):
+             unittest.mock.patch("skills.comment.random.uniform", return_value=1.0):
             result = task.post_first_comment(
                 "https://asiandot.com/article/senate-rejects-sanders-led-effort-to-block-arms-sale-to-israel"
             )

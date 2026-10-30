@@ -121,7 +121,7 @@ class FacebookPreparationTaskTests(unittest.TestCase):
         task.select_and_open_warming_surface = BaseTask.select_and_open_warming_surface.__get__(task)
         task.open_warming_surface = Mock(return_value=(True, task.client.screenshot.return_value))
 
-        with patch("tasks.base_task.random.choice", return_value="profile"):
+        with patch("skills.navigation.random.choice", return_value="profile"):
             first = task.select_and_open_warming_surface()
             second = task.select_and_open_warming_surface()
 
@@ -140,7 +140,7 @@ class FacebookPreparationTaskTests(unittest.TestCase):
             (True, task.client.screenshot.return_value),
         ])
 
-        with patch("tasks.base_task.random.choice", return_value="news_feed"):
+        with patch("skills.navigation.random.choice", return_value="news_feed"):
             result = task.select_and_open_warming_surface()
 
         self.assertEqual(result[:3], ("news_feed", "profile", True))
@@ -208,7 +208,7 @@ class FacebookPreparationTaskTests(unittest.TestCase):
 
         task.open_warming_surface = Mock(side_effect=blocked)
         task.set_outcome.return_value = False
-        with patch('tasks.base_task.random.choice', return_value='profile'):
+        with patch('skills.navigation.random.choice', return_value='profile'):
             self.assertFalse(task.run())
         task.open_warming_surface.assert_called_once_with('profile')
         self.assertEqual(task.set_outcome.call_args.args[0], 'skipped_auth_required')

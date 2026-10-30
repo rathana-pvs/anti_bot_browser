@@ -1,17 +1,12 @@
 """Base Task Class for Browser Automation."""
 
-from modules.post_timestamp import parse_timestamp
-
 import json
 import math
 import os
-import random
-import re
 import time
-import urllib.parse
 import uuid
 import numpy as np
-from datetime import datetime, timezone
+from datetime import datetime
 from engine.container_client import ContainerClient
 from engine.runtime_paths import profiles_dir
 from engine.evidence import EvidenceRecorder
@@ -27,10 +22,22 @@ from engine.semantic_fallback import (
     SemanticFallbackEngine,
     collect_action_candidates,
 )
-from engine.telemetry import TelemetryRecorder, timed_telemetry_step
+from engine.telemetry import TelemetryRecorder
+from skills.comment import (
+    FirstComment,
+    comment_match_confidence,
+    first_comment_search_regions,
+    submitted_comment_region,
+)
 from skills.dialogs import KnownDialogs
 from skills.media import MediaAttachment
 from skills.navigation import Navigation
+from skills.permalink import (
+    Permalink,
+    is_recent_timestamp_text,
+    permalink_not_requested,
+    validate_facebook_permalink,
+)
 from skills.session import SessionCheck, has_strong_facebook_visual, is_facebook_url
 from skills.text_entry import TextEntry
 
@@ -549,232 +556,30 @@ class BaseTask:
 
     @staticmethod
     def _first_comment_search_regions(screen):
-        """Return the evidence-backed local crop and the existing broad fallback."""
-        height, width = screen.shape[:2]
-        narrow = (
-            int(width * 0.53),
-            int(height * 0.62),
-            int(width * 0.38),
-            int(height * 0.29),
-        )
-        broad = (
-            max(0, int(width * 0.28)),
-            0,
-            min(width - int(width * 0.28), int(width * 0.67)),
-            height,
-        )
-        return narrow, broad
+        return first_comment_search_regions(screen)
 
     @staticmethod
     def _submitted_comment_region(screen, comment_box_pos):
-        """Crop around the verified input and the newly rendered comment above it."""
-        height, width = screen.shape[:2]
-        anchor_x, anchor_y = comment_box_pos
-        x1 = max(int(width * 0.28), int(anchor_x - width * 0.08))
-        y1 = max(0, int(anchor_y - height * 0.20))
-        x2 = min(int(width * 0.95), int(anchor_x + width * 0.34))
-        y2 = min(height, int(anchor_y + height * 0.10))
-        return x1, y1, max(1, x2 - x1), max(1, y2 - y1)
+        return submitted_comment_region(screen, comment_box_pos)
 
     def _find_first_comment_input(self, screen=None, region=None):
-        """Locate the 'Comment as ...' or 'Write a comment...' input field."""
-        if hasattr(self.vision, "find_comment_input"):
-            regions = [region] if region is not None else None
-            res = self.vision.find_comment_input(screen=screen, regions=regions)
-            if res is not None and type(res).__name__ not in ("Mock", "MagicMock"):
-                return res
-        # Fallback / mock support
-        candidates = []
-        screen = self.client.screenshot() if screen is None and hasattr(self, "client") and self.client else screen
-        for item in self.vision.read_text(screen, region=region, min_confidence=0.15):
-            if VisionEngine.is_comment_input_text(item.get("text", "")):
-                candidates.append(item)
-        if not candidates:
-            return None
-        candidates.sort(key=lambda item: item["center"][1])
-        return candidates[0]["center"]
+        return FirstComment(self).find_input(screen, region)
 
     def _find_first_comment_action(self, screen):
-        """Return the topmost exact Comment action in the profile post stream."""
-        height, width = screen.shape[:2]
-        region = (
-            max(0, int(width * 0.28)),
-            0,
-            min(width - int(width * 0.28), 1050),
-            height,
-        )
-        candidates = []
-        for item in self.vision.read_text(screen, region=region, min_confidence=0.35):
-            normalized = re.sub(r"[^a-z]+", " ", item.get("text", "").casefold()).strip()
-            if normalized == "comment":
-                candidates.append(item)
-        if not candidates:
-            return None
-        candidates.sort(key=lambda item: item.get("center", (0, height + 1))[1])
-        return candidates[0]
+        return FirstComment(self).find_action(screen)
 
     def _find_first_comment_targets(self, screen, *, allow_broad_fallback=True):
-        """Search the expected comment crop, then the broad post/feed area."""
-        height = screen.shape[0]
-        narrow, broad = self._first_comment_search_regions(screen)
-        regions = [("narrow", narrow)]
-        if allow_broad_fallback:
-            regions.append(("broad", broad))
-
-        for tier, region in regions:
-            inputs = []
-            actions = []
-            for item in self.vision.read_text(screen, region=region, min_confidence=0.15):
-                normalized = re.sub(r"[^a-z0-9]+", " ", item.get("text", "").casefold()).strip()
-                if VisionEngine.is_comment_input_text(item.get("text", "")):
-                    inputs.append(item)
-                elif normalized == "comment":
-                    actions.append(item)
-
-            inputs.sort(key=lambda item: item.get("center", (0, height + 1))[1])
-            actions.sort(key=lambda item: item.get("center", (0, height + 1))[1])
-            input_target = inputs[0].get("center") if inputs else None
-            action_target = actions[0] if actions else None
-            if input_target or action_target:
-                self._last_comment_search_tier = tier
-                return input_target, action_target
-
-        self._last_comment_search_tier = "not_found"
-        return None, None
+        return FirstComment(self).find_targets(screen, allow_broad_fallback=allow_broad_fallback)
 
     def _open_profile_first_comment_input(self, *, navigate: bool = True):
-        """
-        Primary comment targeting method: navigate to the profile and select the
-        topmost comment field/action belonging to the first visible post.
-
-        Profiles managed by this application do not pin posts, so the first post
-        is the intended newly published item once the profile feed has refreshed.
-        """
-        self.log("STEP", "Primary comment method: opening the profile's first post...")
-        if navigate:
-            self.navigate_to("https://www.facebook.com/me", wait_seconds=3.0)
-        else:
-            self.log("INFO", "Reusing the verified post-publication profile feed for comment targeting.")
-
-        # Move mouse over main post feed column (x ~ 1150, y ~ 500) so mouse wheel / keys scroll feed
-        self.human.move_to(1150, 500)
-
-        # Comment success is more important than OCR cost here. Tall Reel cards
-        # can require substantially more vertical travel than photo/text posts,
-        # so every scan uses all detection regions and the bounded search goes
-        # far enough to expose the first card's action row.
-        for scan in range(1, 15):
-            screen = self.client.screenshot()
-            target, action_btn = self._find_first_comment_targets(
-                screen,
-                allow_broad_fallback=True,
-            )
-            search_tier = getattr(self, "_last_comment_search_tier", "unknown")
-            self.log_decision(
-                "Find 'Comment as ...' field",
-                "post card comment input ('Comment as ...' or 'Write a comment...')",
-                f"scan={scan}, tier={search_tier}, target={target}",
-                "click comment field" if target else "scroll and scan again",
-                level="INFO",
-            )
-            if target:
-                return target, screen
-
-            # The Comment action/icon is only a landmark. Clicking it can open a
-            # post overlay without focusing the editor, after which pasted text
-            # is lost. Move the feed just enough to expose the actual comment
-            # input below the action row, then require that input on a later
-            # scan before any text-entry click occurs.
-            if action_btn:
-                action_source = action_btn.get("source", "ocr_comment_label")
-                self.capture_evidence(
-                    "comment_action_observed",
-                    screen,
-                    target=list(action_btn["center"]),
-                    action_source=action_source,
-                    scan=scan,
-                )
-                self.log(
-                    "INFO",
-                    f"Observed '{action_source}' at {action_btn['center']}; scrolling to the comment input without clicking the action.",
-                )
-                self.human.scroll("down", notches=1)
-                time.sleep(0.8)
-                continue
-
-            if scan == 1:
-                time.sleep(0.8)
-                continue
-
-            # Move just enough to reveal the remainder of the first post. Large
-            # page jumps could make a later post become the topmost visible card.
-            self.human.scroll("down", notches=2)
-            time.sleep(0.8)
-
-        self.capture_evidence(
-            "comment_input_not_found",
-            self.client.screenshot(),
-            scans=14,
-            broad_post_area=True,
-            full_screen_fallback=False,
-        )
-        return None, None
+        return FirstComment(self).open_profile_input(navigate=navigate)
 
     def _open_permalink_comment_input(self, post_url: str | None):
-        """Fallback comment target used only before any comment submission."""
-        if not post_url:
-            return None, None
-        is_valid, clean_url = self.validate_facebook_permalink(post_url)
-        if not is_valid or not clean_url:
-            self.log("WARN", f"Comment permalink fallback rejected an invalid URL: {post_url}")
-            return None, None
-
-        self.log("STEP", f"Fallback comment method: opening verified permalink {clean_url}")
-        try:
-            self.navigate_to(clean_url, wait_seconds=3.0)
-            for scan in range(1, 4):
-                screen = self.client.screenshot()
-                _narrow, broad = self._first_comment_search_regions(screen)
-                target = self._find_first_comment_input(screen, region=broad)
-                self.log_decision(
-                    "Find permalink comment field",
-                    "'Comment as ...' field on the verified permalink",
-                    f"scan={scan}, target={target}",
-                    "use permalink field" if target else "wait and scan again",
-                    level="INFO",
-                )
-                if target:
-                    return target, screen
-                time.sleep(1.2)
-        except Exception as exc:
-            self.log("WARN", f"Could not use the permalink comment fallback: {exc}")
-        return None, None
+        return FirstComment(self).open_permalink_input(post_url)
 
     @staticmethod
     def _comment_match_confidence(comment_text: str, ocr_items: list[dict], max_y: int) -> float:
-        """Measure whether submitted comment text is visible above the input row."""
-        normalized_target = re.sub(r"[^a-z0-9]+", " ", comment_text.casefold()).strip()
-        target_tokens = [token for token in normalized_target.split() if len(token) >= 2]
-        if not target_tokens:
-            return 0.0
-
-        visible_parts = []
-        for item in ocr_items:
-            if item.get("center", (0, max_y + 1))[1] > max_y:
-                continue
-            normalized = re.sub(r"[^a-z0-9]+", " ", item.get("text", "").casefold()).strip()
-            if VisionEngine.is_comment_input_text(normalized):
-                continue
-            visible_parts.append(normalized)
-
-        visible_text = " ".join(visible_parts)
-        if not visible_text:
-            return 0.0
-        if normalized_target in visible_text:
-            return 1.0
-        visible_tokens = set(visible_text.split())
-        matched = sum(1 for token in target_tokens if token in visible_tokens)
-        return matched / len(target_tokens)
+        return comment_match_confidence(comment_text, ocr_items, max_y)
 
     def post_first_comment(
         self,
@@ -785,208 +590,13 @@ class BaseTask:
         prefer_permalink: bool = False,
         warm_down_after_submit: bool = True,
     ) -> str:
-        """
-        Locate the post's 'Comment as ...' field, click it, paste comment_link, and submit once with Return.
-        Returns: 'submitted_unverified' on submission, or 'failed_input_not_found'.
-        """
-        self.set_stage("commenting")
-        self.log("STEP", "Locating 'Comment as ...' field for first comment...")
-        time.sleep(1.5)
-        self.last_comment_method = None
-        comment_box_pos = None
-        comment_screen = None
-        if not prefer_permalink:
-            if reuse_profile_page:
-                comment_box_pos, comment_screen = self._open_profile_first_comment_input(
-                    navigate=False
-                )
-            else:
-                comment_box_pos, comment_screen = self._open_profile_first_comment_input()
-            if comment_box_pos:
-                self.last_comment_method = "profile_first_post"
-        if not comment_box_pos and reuse_profile_page and not prefer_permalink:
-            self.log(
-                "INFO",
-                "The reused profile feed did not expose a comment field; refreshing and running one full second pass.",
-            )
-            comment_box_pos, comment_screen = self._open_profile_first_comment_input(
-                navigate=True
-            )
-            if comment_box_pos:
-                self.last_comment_method = "profile_first_post_refresh"
-        if not comment_box_pos and post_url:
-            self.log("WARN", "Primary first-post comment target was not found; trying the verified permalink before submission.")
-            comment_box_pos, comment_screen = self._open_permalink_comment_input(post_url)
-            if comment_box_pos:
-                self.last_comment_method = "verified_permalink_fallback"
-        if not comment_box_pos:
-            self.log_decision(
-                "Submit first comment",
-                "'Comment as ...' field under post",
-                "no verified 'Comment as' field found after scanning",
-                "keep content published and skip comment",
-                level="WARN",
-            )
-            return "failed_input_not_found"
-
-        if comment_screen is None:
-            comment_screen = self.client.screenshot()
-
-        self.capture_evidence(
-            "before_first_comment",
-            comment_screen,
-            target=list(comment_box_pos),
-            comment_method=self.last_comment_method,
+        return FirstComment(self).post(
+            comment_link,
+            post_url,
+            reuse_profile_page=reuse_profile_page,
+            prefer_permalink=prefer_permalink,
+            warm_down_after_submit=warm_down_after_submit,
         )
-        self.log_decision(
-            "Submit first comment",
-            "'Comment as ...' field under post",
-            f"method={self.last_comment_method}, target={comment_box_pos}",
-            "click 'Comment as ...', paste configured comment, and submit once",
-        )
-        self.log("STEP", f"Clicking 'Comment as ...' at {comment_box_pos}...")
-        entry = self.composer_entry.enter(comment_link, comment_box_pos, field="comment",
-                                          empty_confirmed=lambda: self._find_first_comment_input() is not None,
-                                          deadline=time.monotonic() + 60)
-        if not entry.verified:
-            self.log("WARN", f"First comment entry stopped: {entry.status}; no submission sent.")
-            return "failed_input_not_found"
-        # Submission remains outside content entry and is sent once.
-        owner = self.composer_entry.last_owner
-        if self.input_cancelled:
-            return "failed_input_not_found"
-        try:
-            self.composer_entry.waiter(owner).check()
-        except Exception:
-            return "failed_input_not_found"
-        self.human.key_press("Return")
-        self.log("INFO", "First comment was submitted once; waiting for Facebook's Posting indicator to clear.")
-
-        after_comment = None
-        clear_streak = 0
-        visible_streak = 0
-        best_comment_confidence = 0.0
-        settled_observations = 0
-        local_verification_misses = 0
-        for _ in range(30):
-            time.sleep(2.0)
-            after_comment = self.client.screenshot()
-            screen_h, screen_w = after_comment.shape[:2]
-            # Verify around the known input first. After two local misses, use
-            # the established broad card crop so long comments and link-preview
-            # titles at the right edge still remain verifiable.
-            broad_comment_region = (
-                int(screen_w * 0.28),
-                int(screen_h * 0.22),
-                int(screen_w * 0.67),
-                int(screen_h * 0.73),
-            )
-            focused_comment_region = self._submitted_comment_region(
-                after_comment,
-                comment_box_pos,
-            )
-            comment_region = (
-                focused_comment_region
-                if local_verification_misses < 2
-                else broad_comment_region
-            )
-            comment_items = self.vision.read_text(
-                after_comment,
-                region=comment_region,
-                min_confidence=0.15,
-            )
-            normalized_comment_items = {
-                re.sub(r"[^a-z0-9]+", " ", item.get("text", "").casefold()).strip()
-                for item in comment_items
-            }
-            submission_pending = bool(normalized_comment_items.intersection({
-                "posting",
-                "posting comment",
-                "sending",
-                "sending comment",
-                "submitting",
-                "submitting comment",
-            }))
-            comment_confidence = self._comment_match_confidence(
-                comment_link,
-                comment_items,
-                # The submitted comment renders directly above the known
-                # input. Tall Reel cards can place both below 90% of the
-                # viewport, so bind the cutoff to that input instead of a
-                # fixed screen percentage.
-                max_y=min(screen_h - 1, int(comment_box_pos[1]) - 4),
-            )
-            best_comment_confidence = max(best_comment_confidence, comment_confidence)
-            if submission_pending:
-                clear_streak = 0
-                settled_observations = 0
-                visible_streak = 0
-                continue
-            clear_streak += 1
-            settled_observations += 1
-            if comment_confidence >= 0.60:
-                visible_streak += 1
-            else:
-                visible_streak = 0
-                local_verification_misses += 1
-            # Two consecutive visible observations confirm the comment. When
-            # OCR cannot match it, allow four settled observations before
-            # returning unverified so a slowly rendered link preview is not
-            # missed. Never resubmit automatically.
-            if (visible_streak >= 2 and clear_streak >= 2) or settled_observations >= 4:
-                break
-
-        if after_comment is None:
-            after_comment = self.client.screenshot()
-        comment_status = (
-            "submitted_verified"
-            if visible_streak >= 2
-            else "submitted_unverified"
-        )
-        self.capture_evidence(
-            "after_first_comment",
-            after_comment,
-            comment_status=comment_status,
-            comment_match_confidence=round(best_comment_confidence, 3),
-            comment_method=self.last_comment_method,
-        )
-
-        if clear_streak < 2:
-            self.log("WARN", "First comment is still submitting; leaving the post modal open and not retrying.")
-            return "submission_pending"
-
-        if comment_status == "submitted_verified":
-            self.log(
-                "SUCCESS",
-                f"First comment text was visibly verified (confidence={best_comment_confidence:.2f}).",
-            )
-        else:
-            self.log(
-                "WARN",
-                "First comment submission settled, but its text was not visibly verified; no automatic retry will be attempted.",
-            )
-
-        if not warm_down_after_submit:
-            self.log("INFO", "Comment verification complete; returning immediately for container shutdown.")
-            return comment_status
-
-        # The permalink/comment view is normally a centered modal. Click a
-        # resolution-relative point on the dimmed backdrop to close it without
-        # touching post actions, then linger briefly like a human operator.
-        screen_h, screen_w = after_comment.shape[:2]
-        backdrop_target = (
-            max(20, int(screen_w * 0.20)),
-            max(20, int(screen_h * 0.50)),
-        )
-        self.log("INFO", f"Closing the post modal from the outside backdrop at {backdrop_target}...")
-        self.human.click(*backdrop_target)
-
-        warm_seconds = random.uniform(1.0, 5.0)
-        self.set_stage("warming", seconds=round(warm_seconds, 2))
-        self.log("INFO", f"Post-comment warm-down for {warm_seconds:.1f}s...")
-        time.sleep(warm_seconds)
-        self.capture_evidence("after_comment_modal_close", self.client.screenshot())
-        return comment_status
 
     def post_first_comment_with_page_reuse(
         self,
@@ -995,124 +605,18 @@ class BaseTask:
         caption: str | None,
         media_type: str,
     ) -> tuple[str, dict]:
-        """Try the current profile feed before paying for navigation/correlation."""
-        comment_status = self.post_first_comment(
-            comment_link,
-            reuse_profile_page=True,
+        return FirstComment(self).post_with_page_reuse(
+            comment_link, caption=caption, media_type=media_type,
         )
-        if comment_status != "failed_input_not_found":
-            return comment_status, self.permalink_not_requested()
-
-        self.log(
-            "INFO",
-            "Current profile feed did not expose the comment input; refreshing once to correlate the published post.",
-        )
-        permalink_info = self.correlate_and_extract_permalink(
-            caption=caption,
-            media_type=media_type,
-        )
-        if not permalink_info.get("post_url"):
-            permalink_info.update({
-                "permalink_status": "missing",
-                "permalink_missing": True,
-                "permalink_recovery_attempted": False,
-            })
-            return comment_status, permalink_info
-
-        permalink_info = self.recover_missing_permalink(
-            permalink_info,
-            caption=caption,
-            media_type=media_type,
-        )
-        comment_status = self.post_first_comment(
-            comment_link,
-            post_url=permalink_info["post_url"],
-            prefer_permalink=True,
-        )
-        return comment_status, permalink_info
 
     @staticmethod
     def validate_facebook_permalink(url: str, post_type: str = "post") -> tuple[bool, str | None]:
-        """
-        Validate that the URL belongs to an allowed Facebook host and has a
-        legitimate permalink path shape (posts, reels, permalink.php, watch, etc.).
-        Returns (is_valid, normalized_clean_url).
-        """
-        if not url or not isinstance(url, str):
-            return False, None
-        url = url.strip()
-        try:
-            parsed = urllib.parse.urlparse(url)
-        except Exception:
-            return False, None
-
-        if parsed.scheme not in ("http", "https"):
-            return False, None
-
-        host = (parsed.netloc or "").lower().split(":")[0]
-        allowed_hosts = {
-            "facebook.com",
-            "www.facebook.com",
-            "m.facebook.com",
-            "web.facebook.com",
-            "mbasic.facebook.com",
-        }
-        if host not in allowed_hosts and not any(host.endswith("." + h) for h in ("facebook.com",)):
-            return False, None
-
-        path = parsed.path or ""
-        query = parsed.query or ""
-
-        # Reject naked home/profile/login pages
-        if path in ("", "/", "/me", "/home.php", "/login.php", "/checkpoint"):
-            return False, None
-        if re.match(r"^/profile\.php$", path):
-            q_params = urllib.parse.parse_qs(query)
-            if not ("story_fbid" in q_params or "fbid" in q_params):
-                return False, None
-
-        is_reel_pattern = (
-            bool(re.search(r"^/reel/\d+", path))
-            or bool(re.search(r"^/[^/]+/videos/\d+", path))
-            or (path.startswith("/watch") and "v=" in query)
-        )
-
-        is_post_pattern = (
-            bool(re.search(r"^/[^/]+/posts/[a-zA-Z0-9_-]+", path))
-            or (path == "/permalink.php" and "story_fbid=" in query)
-            or (path.startswith("/photo") and "fbid=" in query)
-            or (path.startswith("/story.php") and "story_fbid=" in query)
-            or bool(re.search(r"^/groups/[^/]+/permalink/\d+", path))
-            or is_reel_pattern
-        )
-
-        valid = is_reel_pattern if post_type == "reel" else is_post_pattern
-        if not valid:
-            return False, None
-
-        # Clean tracking query parameters while preserving story IDs
-        keep_params = {"story_fbid", "id", "fbid", "v", "set"}
-        q_dict = urllib.parse.parse_qs(query)
-        clean_q = {k: v for k, v in q_dict.items() if k in keep_params}
-        clean_query_str = urllib.parse.urlencode(clean_q, doseq=True) if clean_q else ""
-
-        clean_url = urllib.parse.urlunparse((
-            parsed.scheme,
-            parsed.netloc,
-            parsed.path,
-            "",
-            clean_query_str,
-            "",
-        ))
-        return True, clean_url
+        return validate_facebook_permalink(url, post_type)
 
     @staticmethod
     def _is_recent_timestamp_text(text: str) -> bool:
-        """Parse a known timestamp and require a strict age below ten minutes."""
-        parsed = parse_timestamp(text)
-        return parsed is not None and parsed.recent
+        return is_recent_timestamp_text(text)
 
-    @timed_telemetry_step("permalink_correlation")
     def correlate_and_extract_permalink(
         self,
         caption: str | None = None,
@@ -1120,170 +624,7 @@ class BaseTask:
         max_scans: int = 4,
         time_budget_seconds: float | None = None,
     ) -> dict:
-        """
-        Navigate to profile, locate newly created post card via multi-signal correlation
-        (caption tokens, recent timestamp, author), click the timestamp, and extract the URL.
-        Returns a dict: { "post_url": str | None, "post_url_verified_at": str | None, "post_match_confidence": float }
-        """
-        empty_res = {
-            "post_url": None,
-            "post_url_verified_at": None,
-            "post_match_confidence": 0.0,
-        }
-        deadline = (
-            time.monotonic() + max(0.0, time_budget_seconds)
-            if time_budget_seconds is not None
-            else None
-        )
-
-        self.log("STEP", "Navigating to profile to correlate published post and extract permalink...")
-        try:
-            self.navigate_to("https://www.facebook.com/me", wait_seconds=3.0)
-        except Exception as exc:
-            self.log("WARN", f"Could not navigate to profile for permalink correlation: {exc}")
-            return empty_res
-
-        # Tokenize caption for correlation if provided
-        search_tokens = set()
-        if caption:
-            normalized_cap = re.sub(r"[^a-z0-9]+", " ", caption.casefold()).strip()
-            all_tokens = [w for w in normalized_cap.split() if len(w) >= 3]
-            search_tokens = set(all_tokens[:8])
-
-        for scan in range(1, max_scans + 1):
-            if deadline is not None and time.monotonic() >= deadline:
-                self.log("INFO", "Permalink correlation stopped at its time budget.")
-                break
-            screen = self.client.screenshot()
-            ocr_items = self.vision.read_text(screen, min_confidence=0.18)
-
-            caption_match_center = None
-            timestamp_match_center = None
-            timestamp_match_text = None
-            timestamp_candidates = []
-            matched_tokens_count = 0
-
-            # Scan visible text items
-            for item in ocr_items:
-                text_clean = re.sub(r"[^a-z0-9]+", " ", item["text"].casefold()).strip()
-                item_tokens = set(text_clean.split())
-
-                # 1. Caption matching
-                if search_tokens:
-                    overlap = search_tokens.intersection(item_tokens)
-                    if len(overlap) > matched_tokens_count and len(overlap) >= min(2, len(search_tokens)):
-                        matched_tokens_count = len(overlap)
-                        caption_match_center = item["center"]
-
-                # 2. Timestamp matching
-                if self._is_recent_timestamp_text(item["text"]):
-                    timestamp_candidates.append(item)
-
-            # Bind the timestamp to the matched post card. A recent timestamp
-            # elsewhere on the feed must not be allowed to identify this post.
-            if caption_match_center:
-                cx, cy = caption_match_center
-                nearby_timestamps = [
-                    item for item in timestamp_candidates
-                    if 0 <= cy - item["center"][1] <= 120
-                    and abs(cx - item["center"][0]) <= 450
-                ]
-                if nearby_timestamps:
-                    nearby_timestamps.sort(
-                        key=lambda item: (
-                            cy - item["center"][1],
-                            -float(item.get("confidence", 0.0)),
-                        )
-                    )
-                    timestamp_match_center = nearby_timestamps[0]["center"]
-                    timestamp_match_text = nearby_timestamps[0]["text"]
-            elif not search_tokens and timestamp_candidates:
-                timestamp_match_center = timestamp_candidates[0]["center"]
-                timestamp_match_text = timestamp_candidates[0]["text"]
-
-            # If caption was matched, scan specifically in the header region above the caption for timestamp
-            if caption_match_center and not timestamp_match_center:
-                header_region = (
-                    max(0, caption_match_center[0] - 220),
-                    max(0, caption_match_center[1] - 80),
-                    400,
-                    70,
-                )
-                header_items = self.vision.read_text(screen, region=header_region, min_confidence=0.18)
-                for h_item in header_items:
-                    hx, hy = h_item["center"]
-                    rx, ry, rw, rh = header_region
-                    if (
-                        rx <= hx <= rx + rw
-                        and ry <= hy <= ry + rh
-                        and self._is_recent_timestamp_text(h_item["text"])
-                    ):
-                        timestamp_match_center = h_item["center"]
-                        timestamp_match_text = h_item["text"]
-                        break
-
-            # Compute correlation confidence
-            confidence = 0.0
-            if search_tokens and matched_tokens_count > 0:
-                fraction = matched_tokens_count / max(1, len(search_tokens))
-                confidence += 0.50 * min(1.0, fraction * 1.5)
-            elif not search_tokens:
-                confidence += 0.40
-
-            if timestamp_match_center:
-                confidence += 0.40
-
-            self.log_decision(
-                "Correlate published post",
-                f"caption tokens={search_tokens or 'none'}, recent timestamp",
-                f"scan={scan}, matched_tokens={matched_tokens_count}, ts_text={timestamp_match_text!r}, "
-                f"ts_target={timestamp_match_center}, confidence={confidence:.2f}",
-                "click timestamp link" if (confidence >= 0.50 and timestamp_match_center) else "scroll to next section",
-                level="INFO",
-            )
-
-            # If we have a confident match with a clickable timestamp:
-            if confidence >= 0.50 and timestamp_match_center:
-                self.capture_evidence("before_permalink_click", screen, target=list(timestamp_match_center), confidence=round(confidence, 2))
-                self.human.click(*timestamp_match_center)
-                time.sleep(2.5)
-
-                raw_url = self.client.get_current_url()
-                is_valid, clean_url = self.validate_facebook_permalink(raw_url or "", post_type=media_type)
-
-                after_click_screen = self.client.screenshot()
-                self.capture_evidence(
-                    "permalink_extraction",
-                    after_click_screen,
-                    raw_url=raw_url,
-                    clean_url=clean_url,
-                    is_valid=is_valid,
-                    confidence=round(confidence, 2),
-                )
-
-                if is_valid and clean_url:
-                    self.log("SUCCESS", f"Captured validated Facebook permalink: {clean_url} (confidence={confidence:.2f})")
-                    return {
-                        "post_url": clean_url,
-                        "post_url_verified_at": datetime.now(timezone.utc).isoformat(),
-                        "post_match_confidence": round(confidence, 2),
-                    }
-                else:
-                    self.log("WARN", f"Clicked timestamp, but resulting URL was not a valid permalink: {raw_url}")
-
-            # If not confident or timestamp not clickable, scroll down and scan next cards
-            self.human.scroll("down", notches=3)
-            if deadline is None:
-                time.sleep(1.2)
-            else:
-                remaining = max(0.0, deadline - time.monotonic())
-                if remaining <= 0:
-                    break
-                time.sleep(min(1.2, remaining))
-
-        self.log("WARN", "Permalink correlation was ambiguous or not found; leaving post_url null.")
-        self.capture_evidence("permalink_correlation_ambiguous")
-        return empty_res
+        return Permalink(self).correlate(caption, media_type, max_scans, time_budget_seconds)
 
     def recover_missing_permalink(
         self,
@@ -1293,58 +634,16 @@ class BaseTask:
         media_type: str,
         time_budget_seconds: float = 12.0,
     ) -> dict:
-        """Run one short post-comment recovery pass only when the URL is missing."""
-        result = dict(permalink_info or {})
-        result.setdefault("post_url", None)
-        result.setdefault("post_url_verified_at", None)
-        result.setdefault("post_match_confidence", 0.0)
-        if result.get("post_url"):
-            result.update({
-                "permalink_status": "captured",
-                "permalink_missing": False,
-                "permalink_recovery_attempted": False,
-            })
-            return result
-
-        self.log(
-            "INFO",
-            f"Initial permalink was unavailable; starting one bounded recovery pass "
-            f"after comment handling (budget={time_budget_seconds:.0f}s).",
-        )
-        recovered = self.correlate_and_extract_permalink(
+        return Permalink(self).recover_missing(
+            permalink_info,
             caption=caption,
             media_type=media_type,
-            max_scans=2,
             time_budget_seconds=time_budget_seconds,
         )
-        if recovered.get("post_url"):
-            result.update(recovered)
-            result.update({
-                "permalink_status": "recovered",
-                "permalink_missing": False,
-                "permalink_recovery_attempted": True,
-            })
-            return result
-
-        result.update({
-            "permalink_status": "missing",
-            "permalink_missing": True,
-            "permalink_recovery_attempted": True,
-        })
-        self.log("WARN", "Permalink recovery ended without a confident URL; publication remains successful.")
-        return result
 
     @staticmethod
     def permalink_not_requested() -> dict:
-        """Return explicit metadata when no downstream action needs a permalink."""
-        return {
-            "post_url": None,
-            "post_url_verified_at": None,
-            "post_match_confidence": None,
-            "permalink_status": "not_requested",
-            "permalink_missing": False,
-            "permalink_recovery_attempted": False,
-        }
+        return permalink_not_requested()
 
     def run_with_retry(self, max_retries: int = 2) -> bool:
         """Run task with retry logic and exponential backoff."""

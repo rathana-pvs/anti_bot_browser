@@ -11,9 +11,11 @@ import numpy as np
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from engine.screen_state import ScreenState, StateObservation
+from skills.comment import comment_match_confidence, first_comment_search_regions
 from skills.dialogs import KnownDialogs
 from skills.media import MediaAttachment
 from skills.navigation import Navigation
+from skills.permalink import permalink_not_requested, validate_facebook_permalink
 from skills.session import SessionCheck, has_strong_facebook_visual, is_facebook_url
 from skills.text_entry import TextEntry
 from modules.composer_entry import CaptionReviewFailure, ClipboardFailure
@@ -188,6 +190,35 @@ class TextEntryTests(unittest.TestCase):
             TextEntry(host).review("original")
         self.assertEqual(raised.exception.reason, "caption_changed_after_review")
         self.assertEqual(host.telemetry.record_step.call_args.kwargs["outcome"], "unconfirmed")
+
+
+class FirstCommentTests(unittest.TestCase):
+    def test_comment_must_render_above_the_input_row(self):
+        items = [
+            {"text": "Read more: example.com/news", "center": (900, 400)},
+            {"text": "Read more: example.com/news", "center": (900, 900)},
+        ]
+        self.assertEqual(comment_match_confidence("Read more: example.com/news", items[:1], 800), 1.0)
+        self.assertEqual(comment_match_confidence("Read more: example.com/news", items[1:], 800), 0.0)
+
+    def test_search_regions_scale_with_the_screen(self):
+        narrow, broad = first_comment_search_regions(np.zeros((1000, 2000, 3), dtype=np.uint8))
+        self.assertEqual(narrow, (1060, 620, 760, 290))
+        self.assertEqual(broad, (560, 0, 1340, 1000))
+
+
+class PermalinkTests(unittest.TestCase):
+    def test_profile_pages_are_not_permalinks(self):
+        self.assertEqual(validate_facebook_permalink("https://www.facebook.com/me"), (False, None))
+        self.assertEqual(validate_facebook_permalink("https://evil.example/reel/123", "reel"), (False, None))
+
+    def test_reel_permalink_is_accepted(self):
+        valid, clean = validate_facebook_permalink("https://www.facebook.com/reel/123456789/?s=1", "reel")
+        self.assertTrue(valid)
+        self.assertIn("/reel/123456789", clean)
+
+    def test_not_requested_is_explicit(self):
+        self.assertEqual(permalink_not_requested()["permalink_status"], "not_requested")
 
 
 if __name__ == "__main__":
