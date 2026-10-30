@@ -34,6 +34,7 @@ from skills.comment import (
 from skills.dialogs import KnownDialogs
 from skills.media import MediaAttachment
 from skills.navigation import Navigation
+from skills.natural_navigation import NaturalNavigation
 from skills.permalink import (
     Permalink,
     is_recent_timestamp_text,
@@ -118,6 +119,11 @@ class BaseTask:
         except Exception:
             self.profile_config = {}
             pass
+
+    def current_url(self) -> str | None:
+        """The browser's URL; natural sessions read the address bar first."""
+        natural = NaturalNavigation(self)
+        return natural.current_url() if natural.enabled() else self.client.get_current_url()
 
     def rng(self, channel: str):
         """The account's seeded random stream, or ``random`` for task doubles."""
@@ -422,6 +428,8 @@ class BaseTask:
         merged_extra = {**self.result_extra, **extra}
         if getattr(self, "step_results", None):
             merged_extra.setdefault("workflow_steps", list(self.step_results))
+        if getattr(self, "_natural_navigation_counts", None):
+            merged_extra.setdefault("navigation_counts", dict(self._natural_navigation_counts))
         telemetry = getattr(self, "telemetry", None)
         if telemetry is not None:
             try:

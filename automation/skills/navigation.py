@@ -4,6 +4,7 @@ feed/profile surfaces used for passive browsing."""
 import time
 
 from engine.screen_state import ScreenState
+from skills.natural_navigation import PROFILE_URL, NaturalNavigation
 
 
 class Navigation:
@@ -23,21 +24,39 @@ class Navigation:
         task = self.task
         started = time.perf_counter()
         outcome = "completed"
+        natural = NaturalNavigation(task)
+        method = None
         try:
-            if getattr(task, "human", None) is not None:
+            if natural.enabled():
+                try:
+                    method = natural.go(url)
+                except Exception as exc:
+                    task.log("WARN", f"Natural navigation fell back to typing the address: {exc}")
+            if method is None and getattr(task, "human", None) is not None:
                 task.human.navigate(url)
+                method = "typed"
             time.sleep(1.0)
             if check_leave_dialog:
                 task.handle_leave_site_dialog()
             if wait_seconds > 1.0:
                 time.sleep(wait_seconds - 1.0)
+            if natural.enabled():
+                natural._count(f"navigation_{method}")
+                if method == "typed" and url == PROFILE_URL:
+                    try:
+                        natural.remember_profile()
+                    except Exception as exc:
+                        task.log("DEBUG", f"Could not remember the profile name: {exc}")
         except Exception:
             outcome = "exception"
             raise
         finally:
             telemetry = getattr(task, "telemetry", None)
             if telemetry is not None:
-                telemetry.record_navigation(url, (time.perf_counter() - started) * 1000.0, outcome)
+                telemetry.record_navigation(
+                    url, (time.perf_counter() - started) * 1000.0, outcome,
+                    method=method if natural.enabled() else None,
+                )
 
     def open_surface(
         self,
@@ -77,7 +96,7 @@ class Navigation:
                 return False, last_screen
             if observation.state in valid_states:
                 try:
-                    current_url = task.client.get_current_url()
+                    current_url = task.current_url()
                 except Exception:
                     current_url = None
                 if task._is_facebook_url(current_url) and task._has_strong_facebook_visual(observation):
@@ -121,7 +140,10 @@ class Navigation:
         'Leave site?' beforeunload prompt.
         """
         task = self.task
-        if hasattr(task, "client") and task.client is not None:
+        natural = NaturalNavigation(task)
+        if natural.enabled():
+            natural.refresh()
+        elif hasattr(task, "client") and task.client is not None:
             task.client.refresh_page()
         time.sleep(1.0)
         task.handle_leave_site_dialog()

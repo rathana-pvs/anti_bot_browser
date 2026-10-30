@@ -105,7 +105,7 @@ class SessionCheck:
             pass
 
         try:
-            current_url = task.client.get_current_url()
+            current_url = task.current_url()
             blocked_paths = ("/login", "/checkpoint", "/recover", "/two_step_verification")
             if current_url and any(path in current_url.casefold() for path in blocked_paths):
                 task.session_check_status = "auth_required"
@@ -151,7 +151,7 @@ class SessionCheck:
                 break
             if observation.state in valid_logged_in_states:
                 try:
-                    current_url = task.client.get_current_url()
+                    current_url = task.current_url()
                 except Exception:
                     current_url = None
                 has_facebook_host = task._is_facebook_url(current_url)
