@@ -100,10 +100,41 @@ class NaturalNavigationTests(unittest.TestCase):
     def test_types_when_unsure(self):
         task = host(address="facebook.com")
         self.assertIsNone(NaturalNavigation(task).go(PROFILE_URL))  # name not learned yet
-        save_identity(task, "News 429M", PROFILE)
         self.assertIsNone(NaturalNavigation(host(address="example.com")).go(PROFILE_URL))
+        task.human.navigate.assert_not_called()
+        save_identity(task, "News 429M", PROFILE)
         self.assertIsNone(NaturalNavigation(host(state=ScreenState.COMPOSER_OPEN)).go(PROFILE_URL))
         self.assertIsNone(NaturalNavigation(task).go("https://www.facebook.com/reel/1"))
+
+    def test_cold_start_types_home_then_clicks_the_name(self):
+        task = host(address=["google.com", "google.com", "facebook.com", "facebook.com",
+                             "facebook.com/profile.php?id=100082211901107"],
+                    sidebar=[{"text": "News 429M", "center": (120, 224), "bounds": (76, 214, 166, 234), "confidence": 0.98}])
+        save_identity(task, "News 429M", PROFILE)
+        navigation = NaturalNavigation(task)
+        with patch.object(navigation, "_habit", return_value="sidebar"):
+            self.assertEqual(navigation.go(PROFILE_URL), "home_sidebar")
+        task.human.navigate.assert_called_once_with(HOME_URL)
+        self.assertEqual(task.click_reversible.call_args.args[0], (120, 224))
+
+    def test_cold_start_declines_when_home_does_not_load(self):
+        task = host(address="google.com")
+        save_identity(task, "News 429M", PROFILE)
+        navigation = NaturalNavigation(task)
+        clock = iter(range(0, 100, 5))
+        with patch.object(navigation, "_habit", return_value="avatar"), \
+             patch("skills.natural_navigation.time.monotonic", lambda: next(clock)):
+            self.assertIsNone(navigation.go(PROFILE_URL))
+        task.human.navigate.assert_called_once_with(HOME_URL)
+        task.click_reversible.assert_not_called()
+
+    def test_cold_start_keeps_the_typing_habit(self):
+        task = host(address="google.com")
+        save_identity(task, "News 429M", PROFILE)
+        navigation = NaturalNavigation(task)
+        with patch.object(navigation, "_habit", return_value="typed"):
+            self.assertIsNone(navigation.go(PROFILE_URL))
+        task.human.navigate.assert_not_called()
 
     def test_logo_click_goes_home(self):
         task = host(address=["facebook.com/profile.php?id=1", "facebook.com/profile.php?id=1", "facebook.com"])
