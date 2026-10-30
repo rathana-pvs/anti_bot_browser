@@ -17,7 +17,7 @@ from engine.runtime_paths import profiles_dir
 from engine.evidence import EvidenceRecorder
 from engine.human_input import HumanInput
 from engine.behavior_profile import load_behavior_session
-from modules.composer_entry import ComposerEntry, ClipboardFailure, CaptionReviewFailure
+from modules.composer_entry import ComposerEntry
 from modules.composer_review import ComposerReview
 from engine.post_publish_prompt import PostPublishPromptHandler
 from engine.screen_state import FacebookStateRecognizer, ScreenState, StateObservation
@@ -32,6 +32,7 @@ from skills.dialogs import KnownDialogs
 from skills.media import MediaAttachment
 from skills.navigation import Navigation
 from skills.session import SessionCheck, has_strong_facebook_visual, is_facebook_url
+from skills.text_entry import TextEntry
 
 
 class BaseTask:
@@ -515,39 +516,12 @@ class BaseTask:
         selection: str = "clipboard",
         expected_owner=None,
     ) -> None:
-        """
-        Copy text (including full Unicode & emojis) to container X11 clipboard
-        using xclip and paste it into the active element with the requested
-        shortcut. ``primary`` + Shift+Insert is available as an independent
-        fallback when a page ignores the regular clipboard shortcut.
-        """
-        try:
-            owner = expected_owner if expected_owner is not None else self.client.input_owner()
-            if self.input_cancelled or self.client.input_owner()[0] != owner[0]:
-                raise ClipboardFailure("Input ownership lost before clipboard write")
-            self.client.write_clipboard(text, selection)
-            if self.input_cancelled or self.client.input_owner()[0] != owner[0]:
-                raise ClipboardFailure("Input ownership lost before paste")
-            self.human.key_press(paste_key)
-        except Exception:
-            raise ClipboardFailure("Clipboard paste failed; typing fallback is disabled") from None
+        TextEntry(self).paste(
+            text, paste_key=paste_key, selection=selection, expected_owner=expected_owner,
+        )
 
     def review_composer(self, caption: str, media_revision: str = "", image_count: int = 0):
-        owner = getattr(self.composer_entry, "last_owner", None) or self.client.input_owner()
-        duration = self.composer_review.review(
-            caption, media_revision, image_count, self.composer_entry.waiter(owner),
-        )
-        if caption and hasattr(self.composer_entry, "last_owner"):
-            waiter = self.composer_entry.waiter(owner)
-            observed = self.composer_entry.read_field(waiter)
-            if observed != caption:
-                reason = ('caption_empty_after_review' if observed == '' else
-                          'caption_unreadable_after_review' if observed is None else
-                          'caption_changed_after_review')
-                self.telemetry.record_step('composer_review', duration * 1000,
-                                           outcome='unconfirmed', reason=reason)
-                raise CaptionReviewFailure(reason)
-        self.telemetry.record_step("composer_review", duration * 1000, outcome="completed")
+        TextEntry(self).review(caption, media_revision, image_count)
 
     @staticmethod
     def _is_facebook_url(url: str | None) -> bool:

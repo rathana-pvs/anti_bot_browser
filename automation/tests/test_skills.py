@@ -15,6 +15,8 @@ from skills.dialogs import KnownDialogs
 from skills.media import MediaAttachment
 from skills.navigation import Navigation
 from skills.session import SessionCheck, has_strong_facebook_visual, is_facebook_url
+from skills.text_entry import TextEntry
+from modules.composer_entry import CaptionReviewFailure, ClipboardFailure
 
 
 def fake_host(**overrides):
@@ -160,6 +162,32 @@ class MediaAttachmentTests(unittest.TestCase):
         with patch("skills.media.time.sleep"):
             self.assertFalse(MediaAttachment(host).attach("/data/shared_media/missing.png"))
         host.human.type_native.assert_not_called()
+
+
+class TextEntryTests(unittest.TestCase):
+    def test_paste_writes_clipboard_then_presses_paste_key(self):
+        host = fake_host(input_cancelled=False)
+        host.client.input_owner.return_value = ("chrome", "1|2")
+        TextEntry(host).paste("ខ្មែរ 😀")
+        host.client.write_clipboard.assert_called_once_with("ខ្មែរ 😀", "clipboard")
+        host.human.key_press.assert_called_once_with("ctrl+v")
+
+    def test_paste_stops_when_focus_moves(self):
+        host = fake_host(input_cancelled=False)
+        host.client.input_owner.return_value = ("other", "")
+        with self.assertRaises(ClipboardFailure):
+            TextEntry(host).paste("caption", expected_owner=("chrome", ""))
+        host.client.write_clipboard.assert_not_called()
+        host.human.key_press.assert_not_called()
+
+    def test_review_rejects_a_caption_changed_during_review(self):
+        host = fake_host(composer_entry=Mock(last_owner=("chrome", "")), composer_review=Mock(), telemetry=Mock())
+        host.composer_review.review.return_value = 2.5
+        host.composer_entry.read_field.return_value = "edited"
+        with self.assertRaises(CaptionReviewFailure) as raised:
+            TextEntry(host).review("original")
+        self.assertEqual(raised.exception.reason, "caption_changed_after_review")
+        self.assertEqual(host.telemetry.record_step.call_args.kwargs["outcome"], "unconfirmed")
 
 
 if __name__ == "__main__":
