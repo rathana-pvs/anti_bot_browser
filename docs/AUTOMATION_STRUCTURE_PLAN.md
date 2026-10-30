@@ -1,6 +1,6 @@
 # Automation structure: design and implementation plan
 
-Date: 2026-10-30 · Revision: 2 · Status: Milestone 1 implemented; evidence replay and a live run still to check.
+Date: 2026-10-30 · Revision: 3 · Status: Milestones 1 and 2 implemented; sample evidence replay unchanged; a live run still to check.
 
 ## Recommendation
 
@@ -219,6 +219,16 @@ curved, timed moves.
 
 Move the skills above out of `BaseTask` one at a time, each with its own tests.
 `BaseTask` shrinks to a thin compatibility shell.
+
+Done: `automation/skills/` holds `dialogs`, `session`, `navigation`, `media`,
+`text_entry`, `comment` and `permalink`. Each skill is a stateless class built on
+the host task (the `ComposerEntry` idiom); `BaseTask` keeps one-line wrappers, so
+workflows, modules and the pipeline are unchanged. Calls between skills go
+through the host, keeping existing patch points. `BaseTask` went from 1,865 to
+about 670 lines. `verify_on_profile` stays in the existing
+`modules/publication_result_verifier.py`, `reel_top_post.py` and
+`reel_gallery_verifier.py`, which were already separate; `ComposerEntry` and
+`ComposerReview` stay in `modules/`.
 
 Exit: each skill has unit tests with a fake driver; Post and Reel behavior and
 evidence replays unchanged.
