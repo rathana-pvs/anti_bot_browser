@@ -1,6 +1,6 @@
 # Automation structure: design and implementation plan
 
-Date: 2026-10-30 · Revision: 4 · Status: Milestones 1–3 implemented; Reel runs on milestones 1–2 checked on real accounts; Post and Live live runs still to check.
+Date: 2026-10-30 · Revision: 5 · Status: Milestones 1–3 on main; milestone 4 implemented on feat/session-plan behind a per-account switch, not yet run on real accounts.
 
 ## Recommendation
 
@@ -276,6 +276,41 @@ hours in the scheduler.
 Exit: telemetry shows varied session lengths per account within budget; no
 browse runs after an uncertain publication; persona is reproducible from the
 seed.
+
+Done on `feat/session-plan`, with these findings and decisions:
+
+- Browsing before posting already existed as the batch's session preparation
+  (`FacebookPreparationTask`, off / brief 40–55 s / extended 55–70 s), so no
+  separate pre-browse was added; preparation became per-account instead.
+- Everything is behind the per-account **Natural session** switch
+  (`automation.natural_session`, off by default, in account settings). With it
+  off, behavior is unchanged: the differential check against the previous
+  `run()` still matches and the evidence replay is unchanged.
+- `Persona` (`engine/behavior_profile.py`) derives stable habits from the
+  account's seed alone; a run-seeded `session` stream adds small drift. Existing
+  streams are untouched. Pointer speed, overshoot and typo rate are stored for
+  milestone 5.
+- Preparation is scaled by the persona and sometimes skipped; the batch mode
+  stays the upper limit. Passive browsing follows the persona's scroll size,
+  reread rate and reading speed.
+- A `linger` pipeline step sometimes stays 10–60 s after a confirmed publish:
+  pointer moves and scrolling only, never after uncertain or failed results, and
+  its errors cannot change the outcome.
+- Navigation (`skills/natural_navigation.py`): F5 when already on the own
+  profile, a click on the account's name (sidebar or avatar menu) or the logo,
+  each confirmed by the loaded address, typing as the fallback. The name and
+  profile address are learned after a typed profile visit only when the
+  follower/friend line confirms the header (checked on 61 real screenshots: 15
+  accounts, each with its correct name, no wrong names). The URL is read from
+  the address bar by OCR first (16 of 16 real screenshots correct).
+- Active hours: `backend/services/active_hours.py` holds pending desktop items
+  outside the account's hours, in its timezone. Cloud attempts, "start now"
+  batches and started items are never held; nothing waits more than 8 hours.
+  Applied at pickup (`ordered_due_executions`) rather than at batch creation.
+- Warming and preparation surface choices now use the account's seeded
+  streams.
+- Not yet verified on real accounts: the avatar and logo click positions, the
+  sidebar click on the feed, and how jobs feel with lingering.
 
 ### 5. Mouse and typing realism
 
