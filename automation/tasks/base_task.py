@@ -28,6 +28,7 @@ from engine.semantic_fallback import (
     collect_action_candidates,
 )
 from engine.telemetry import TelemetryRecorder, timed_telemetry_step
+from skills.dialogs import KnownDialogs
 
 
 class BaseTask:
@@ -465,81 +466,16 @@ class BaseTask:
         return last
 
     def handle_leave_site_dialog(self, screen=None) -> bool:
-        """
-        Check if Chrome displayed the 'Leave site? Changes you made may not be saved.'
-        modal dialog. If detected, click 'Leave' or send Return to dismiss it and unblock navigation.
-        Returns True if a dialog was detected and dismissed, False otherwise.
-        """
-        try:
-            vision = getattr(self, "vision", None)
-            if vision is None or not hasattr(vision, "find_leave_site_button"):
-                return False
-            coords = vision.find_leave_site_button(screen=screen)
-            if coords:
-                self.log("WARN", f"Detected 'Leave site?' navigation dialog. Clicking Leave at {coords}...")
-                self.capture_evidence("dismiss_leave_site_dialog", screen=screen)
-                human = getattr(self, "human", None)
-                if human and hasattr(human, "click"):
-                    human.click(coords[0], coords[1])
-                elif getattr(self, "client", None) and hasattr(self.client, "dismiss_dialog_key"):
-                    self.client.dismiss_dialog_key()
-                time.sleep(1.0)
-                return True
-        except Exception as exc:
-            self.log("DEBUG", f"Error during leave site dialog check: {exc}")
-        return False
+        return KnownDialogs(self).leave_site(screen)
 
     def find_post_publish_prompt(self, screen=None):
-        """Return a modal-scoped Not now match when the known prompt is visible."""
-        if screen is None:
-            screen = self.client.screenshot() if getattr(self, "client", None) else None
-        if screen is None:
-            return None
-        match = None
-        height, width = screen.shape[:2]
-        prompt_region = (
-            int(width * 0.15), int(height * 0.08),
-            int(width * 0.70), int(height * 0.87),
-        )
-        for item in self.vision.read_text(screen, region=prompt_region, min_confidence=0.15):
-            normalized = re.sub(r"[^a-z0-9]+", " ", item["text"].casefold()).strip()
-            compact = normalized.replace(" ", "")
-            words = set(normalized.split())
-            if compact in {"notnow", "notn0w"} or (
-                "not" in words and ("now" in words or "n0w" in words)
-            ):
-                if match is None or item["confidence"] > match["confidence"]:
-                    match = item
-        return match
+        return KnownDialogs(self).find_post_publish_prompt(screen)
 
     def check_and_dismiss_post_prompt(self, screen=None) -> bool:
-        """
-        Detect and dismiss Facebook post-publish prompts (e.g. 'Speak With People Directly',
-        'Add a button', WhatsApp prompts, or upsell modals) by clicking 'Not now'.
-        """
-        try:
-            match = self.find_post_publish_prompt(screen)
-            if match:
-                self.log("INFO", f"Detected post-publish prompt ('Not now'). Clicking at {match['center']}...")
-                self.capture_evidence("dismiss_post_prompt", screen, target=list(match["center"]))
-                self.click_reversible(
-                    match["center"],
-                    label="dismiss_post_prompt",
-                    bounds=match.get("bounds"),
-                    max_offset_px=4,
-                )
-                time.sleep(2.0)
-                return True
-        except Exception as exc:
-            self.log("DEBUG", f"Error during post prompt check: {exc}")
-        return False
+        return KnownDialogs(self).dismiss_post_prompt(screen)
 
     def handle_post_publish_prompt(self, screen=None) -> str:
-        """Use the shared prompt handler, with compatibility for lightweight task doubles."""
-        handler = getattr(self, "post_publish_prompt", None)
-        if handler is not None:
-            return handler.handle(screen)
-        return "dismissed" if self.check_and_dismiss_post_prompt(screen) else "absent"
+        return KnownDialogs(self).handle_post_publish_prompt(screen)
 
     def navigate_to(
         self,

@@ -28,7 +28,7 @@ def violations(path: Path) -> list[str]:
 
 class DriverBoundaryTests(unittest.TestCase):
     def test_raw_input_stays_inside_the_driver(self):
-        files = [AUTOMATION / name for name in ("engine", "modules", "tasks")]
+        files = [AUTOMATION / name for name in ("engine", "modules", "skills", "tasks")]
         sources = [path for folder in files for path in folder.rglob("*.py")]
         sources += list(AUTOMATION.glob("*.py"))
         found = [item for path in sources if path != DRIVER for item in violations(path)]
