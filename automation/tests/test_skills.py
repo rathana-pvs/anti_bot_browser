@@ -251,6 +251,22 @@ class SessionHabitsTests(unittest.TestCase):
         host.human.click.assert_not_called()
         host.human.key_press.assert_not_called()
 
+    def test_busy_machine_shortens_and_pressure_skips_the_stay(self):
+        busy = self.linger_host()
+        busy.resource_signal = lambda: {"hold": False, "elastic_scale": 0.75, "publish_slots_full": False, "reason": ""}
+        self.assertTrue(SessionHabits(busy).wants_to_linger())
+        clock = iter(x * 0.5 for x in range(100000))
+        with patch.object(busy.behavior_session, "chance", return_value=True), \
+             patch.object(busy.behavior_session, "session_seconds", return_value=40.0), \
+             patch("skills.session_habits.time.monotonic", side_effect=lambda: next(clock)), \
+             patch("skills.session_habits.time.sleep"):
+            summary = SessionHabits(busy).linger()
+        self.assertTrue(summary["lingered"])
+        self.assertIn("up to 30s", " ".join(str(call.args[1]) for call in busy.log.call_args_list))
+        pressure = self.linger_host()
+        pressure.resource_signal = lambda: {"hold": True, "elastic_scale": 0.5, "publish_slots_full": False, "reason": ""}
+        self.assertFalse(SessionHabits(pressure).wants_to_linger())
+
     def test_linger_error_never_changes_the_outcome(self):
         host = self.linger_host()
         host.client.get_screen_dimensions.side_effect = RuntimeError("display gone")

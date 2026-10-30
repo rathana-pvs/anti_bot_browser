@@ -85,6 +85,20 @@ class FacebookPreparationTaskTests(unittest.TestCase):
         self.assertLessEqual(full["busy_slot_extension_seconds"], FacebookPreparationTask.MAX_BUSY_SLOT_EXTENSION_SECONDS)
         self.assertGreater(full["actual_browsing_seconds"], full["duration_seconds"])
 
+    def test_persona_and_busy_machine_combine_under_the_batch_limit(self):
+        task = self.make_task(logged_in=True)
+        task.behavior_session = BehaviorSession("medium", 7, "combined", natural=True)
+        task.resource_signal = lambda: {"hold": False, "elastic_scale": 0.5, "publish_slots_full": False, "reason": ""}
+        clock = iter(x * 0.5 for x in range(1000000))
+        with patch.object(task.behavior_session, "chance", return_value=False), \
+             patch.object(task.behavior_session.stream("warming"), "uniform", return_value=50.0), \
+             patch("tasks.facebook_preparation.time.monotonic", side_effect=lambda: next(clock)), \
+             patch("tasks.facebook_preparation.time.sleep"):
+            task.run()
+        session = task.behavior_session
+        expected = min(55.0, 50.0 * session.persona.preparation_scale * session.drift) * 0.5
+        self.assertAlmostEqual(task.set_outcome.call_args.kwargs["duration_seconds"], expected, places=1)
+
     def test_zero_duration_preparation_reaches_ready_without_scroll(self):
         task = self.make_task(logged_in=True)
         with patch.object(FacebookPreparationTask, "DURATION_RANGES", {"brief": (0.0, 0.0), "extended": (0.0, 0.0)}):

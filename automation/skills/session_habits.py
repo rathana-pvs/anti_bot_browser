@@ -27,7 +27,13 @@ class SessionHabits:
             session is not None
             and getattr(session, "natural", False)
             and getattr(self.task, "result_status", None) == "published"
+            # Under resource pressure the machine needs this container back.
+            and self._machine_scale() > 0.5
         )
+
+    def _machine_scale(self) -> float:
+        signal = getattr(self.task, "resource_signal", None)
+        return signal()["elastic_scale"] if callable(signal) else 1.0
 
     def linger(self) -> dict:
         """Stay on the page for a short, bounded time after publishing."""
@@ -36,6 +42,8 @@ class SessionHabits:
         if not session.chance(session.persona.linger_rate):
             return {"lingered": False, "reason": "not_chosen"}
         budget = min(MAX_LINGER_SECONDS, session.session_seconds(*session.persona.linger_seconds))
+        # A busy machine shortens the stay.
+        budget *= self._machine_scale()
         started = time.monotonic()
         deadline = started + budget
         width, height = task.client.get_screen_dimensions()
