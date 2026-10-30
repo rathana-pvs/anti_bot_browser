@@ -8,6 +8,8 @@ from typing import Literal
 from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 from backend.services.profile_groups import list_groups, create_group, rename_group, delete_group
+from backend.services.account_health import DAILY_POST_LIMITS, OVERRIDE_STAGES, all_health
+from backend.services.queue_service import load_posting_queue
 
 from backend.config import CPU_THREADS, PROFILES_DIR, TOTAL_MEMORY_GB, FALLBACK_TIMEZONE
 from backend.models.profile import NetworkIntent, ProfileCreateRequest, ProfileUpdateRequest
@@ -39,6 +41,7 @@ def _default_account(account: dict | None = None) -> dict:
         "platform": "facebook", "email": "", "notes": "",
         "warming_start_date": None, "warming_complete": False,
         "warming_week": 1, "posts_today": 0, "last_post_date": None,
+        "stage_override": None,
     }
     value.update(account or {})
     return value
@@ -114,6 +117,12 @@ class GroupCreateRequest(BaseModel):
 @router.get("/groups")
 def get_profile_groups():
     return list_groups()
+
+
+@router.get("/health")
+def get_profile_health():
+    """Each account's health stage, worked out from its activity history."""
+    return {"profiles": all_health(load_posting_queue()), "daily_limits": DAILY_POST_LIMITS}
 
 
 @router.post("/groups", status_code=201)
@@ -297,6 +306,9 @@ def update_profile(profile_id: str, request: ProfileUpdateRequest):
                 existing["requested_environment"], existing.get("fingerprint")
             )
         if request.account is not None:
+            override = request.account.get("stage_override")
+            if override not in (None, "", *OVERRIDE_STAGES):
+                raise ValueError("Account stage must be automatic, new, warming_up or ready")
             existing["account"] = {**existing.get("account", {}), **request.account}
         if request.resources is not None:
             existing["resources"] = _validated_resources(request.resources.model_dump())
