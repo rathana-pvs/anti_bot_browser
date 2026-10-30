@@ -2,7 +2,8 @@
 
 Only used when the account's natural session switch is on. Going to the own
 profile clicks the account's name (sidebar or avatar menu) or refreshes when
-already there; going home clicks the Facebook logo. Every click is checked by
+already there, and from outside Facebook it types the home address first and
+then clicks the name; going home clicks the Facebook logo. Every click is checked by
 the address that loads, and any doubt falls back to typing the URL.
 """
 
@@ -110,7 +111,7 @@ class NaturalNavigation:
         screen = task.client.screenshot()
         current = self.current_url(screen)
         if not is_facebook_url(current):
-            return None
+            return self._cold_start(url)
         if task.recognizer.observe(screen).state not in _SETTLED_STATES:
             return None
         if url == HOME_URL:
@@ -124,11 +125,36 @@ class NaturalNavigation:
         habit = self._habit()
         if habit == "typed":
             return None
+        return self._click_name(screen, identity, habit)
+
+    def _cold_start(self, url: str) -> str | None:
+        """From outside Facebook, type the home address and click the own name.
+
+        A person rarely types their profile address; they open Facebook and
+        click their name. Without a learned name this declines, and the
+        caller types the profile address so the name can be learned.
+        """
+        if url != PROFILE_URL:
+            return None
+        identity = load_identity(self.task)
+        if identity is None:
+            return None
+        habit = self._habit()
+        if habit == "typed":
+            return None
+        self.task.human.navigate(HOME_URL)
+        screen = self._settled_home()
+        if screen is None:
+            return None
+        method = self._click_name(screen, identity, habit)
+        return f"home_{method}" if method else None
+
+    def _click_name(self, screen, identity, habit: str) -> str | None:
         for method in (habit, "avatar" if habit == "sidebar" else "sidebar"):
             clicked = self._click_sidebar_name(screen, identity) if method == "sidebar" else self._click_avatar_name(screen, identity)
             if clicked and self._landed(identity["profile_url"]):
                 return method
-            screen = task.client.screenshot()
+            screen = self.task.client.screenshot()
         return None
 
     def refresh(self) -> None:
@@ -227,6 +253,20 @@ class NaturalNavigation:
             if is_facebook_url(url) and page_key(url) in ({expected, "/home.php"} if expected == "/" else {expected}):
                 return True
         return False
+
+    def _settled_home(self, timeout: float = 15.0):
+        """The feed screen once Facebook's home page has loaded, else None."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            time.sleep(1.0)
+            screen = self.task.client.screenshot()
+            if browser_navigation_state(screen) != "idle":
+                continue
+            url = self.current_url(screen)
+            if (is_facebook_url(url) and page_key(url) in {"/", "/home.php"}
+                    and self.task.recognizer.observe(screen).state in _SETTLED_STATES):
+                return screen
+        return None
 
     def _count(self, name: str) -> None:
         counts = getattr(self.task, "_natural_navigation_counts", None)
