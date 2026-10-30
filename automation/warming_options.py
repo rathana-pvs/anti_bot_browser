@@ -11,6 +11,8 @@ DEFAULT_WARMING_OPTIONS = {
     "cursor_movement": True,
     "return_to_top": True,
     "max_seconds": 180,
+    # Planned by auto warming: a chain of read-only activities instead of one feed scroll.
+    "auto": False,
 }
 
 
@@ -23,7 +25,7 @@ def normalize_warming_options(value=None):
     if unknown:
         raise ValueError(f"Unknown warming options: {', '.join(sorted(unknown))}")
     options = {**DEFAULT_WARMING_OPTIONS, **value}
-    for key in ("random_scrolls", "reread", "long_breaks", "cursor_movement", "return_to_top"):
+    for key in ("random_scrolls", "reread", "long_breaks", "cursor_movement", "return_to_top", "auto"):
         if not isinstance(options[key], bool):
             raise ValueError(f"{key} must be a boolean")
     for key, lower, upper in (("min_scrolls", 1, 30), ("max_scrolls", 1, 30), ("max_seconds", 15, 900)):

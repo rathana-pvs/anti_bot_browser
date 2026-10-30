@@ -9,6 +9,8 @@ export interface WarmingOptions {
   cursor_movement: boolean;
   return_to_top: boolean;
   max_seconds: number;
+  /** Set by auto warming: a varied read-only visit instead of one feed scroll. */
+  auto?: boolean;
 }
 
 export interface AutomationLog {
@@ -408,4 +410,12 @@ export interface MediaItem {
   created_at?: string;
   type: 'photo' | 'reel';
   url?: string;
+}
+
+export interface AutoWarmingSummary {
+  enabled: boolean;
+  visits_today: number;
+  /** Accounts on a visit right now. */
+  running: string[];
+  last_choice: { profile_id: string; reason: string; at: string } | null;
 }

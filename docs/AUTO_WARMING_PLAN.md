@@ -1,6 +1,6 @@
 # Auto warming: design and implementation plan
 
-Date: 2026-10-31 · Revision: 1 · Status: plan, not started. Branch `feat/auto-warming`, built on `staging`
+Date: 2026-10-31 · Revision: 3 · Status: milestones 1–3 built on feat/auto-warming (queue rows show visits as Warm-up; the reason is in the execution data, not shown in the row yet). Not run on real accounts yet. Branch `feat/auto-warming`, built on `staging`
 (it needs account health, adaptive resources and the persona from the natural session work).
 
 ## Recommendation
@@ -13,11 +13,12 @@ slot, and when the post is for the same account, the open browser is handed stra
 | Choice | Decision and reason |
 | --- | --- |
 | Switch | Global, all accounts, off by default. Accounts in Needs attention are left out automatically. |
-| Where visits run | As queue items of the existing `warming` type in one system batch, "Auto warming". They reuse the dispatcher, slots, container admission, evidence, cancel and account history. |
+| Where visits run | As queue items of the existing `warming` type in one system batch per day, "Auto warming · <date>", kept at the end of the queue so it never changes the order of the user's batches. They reuse the dispatcher, slots, container admission, evidence, cancel and account history. |
 | Capacity | Spare only: never takes a slot needed by a post due within 15 minutes, never starts when the machine is busy or under pressure. |
 | Priority | Posts (desktop and cloud) always win. Warming yields at a safe point; a publisher is never interrupted. |
 | Same-account post | The warming session ends and keeps the container (the existing preparation handoff), and the post skips its own preparation. |
-| What a visit does | Read-only activities: feed, notifications, Reels, the Page itself. No likes, comments, shares, follows or chats. |
+| What a visit does | Read-only activities: feed, notifications, Reels, the Page itself, idle pauses. No likes, comments, shares, follows or chats. |
+| Reactions | Left out. They are public, can land on tragic news, and fast likes from young accounts are a classic bot signal. Revisit after two weeks of passive warming, as a separate switch for Ready accounts only (Like only, 0–2 a day, never on sensitive posts). |
 | Reporting | Only that the visit ran, how long, and why it stopped. Activity details (such as notifications opened) are not reported. |
 | Cloud | Desktop only. Cloud jobs are never held for warming. |
 

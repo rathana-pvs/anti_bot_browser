@@ -9,6 +9,7 @@ Simulates organic human browsing on Facebook:
 import time
 from .base_task import BaseTask
 from warming_options import normalize_warming_options
+from skills.active_visit import ActiveVisit
 
 
 class FacebookWarmingTask(BaseTask):
@@ -57,6 +58,9 @@ class FacebookWarmingTask(BaseTask):
                 reason="warming_surface_unavailable",
                 warming_surface_requested=requested_surface,
             )
+
+        if options["auto"]:
+            return self._run_active_visit(options, requested_surface, warm_surface, fallback_used)
 
         # Budget starts after authentication and surface verification.
         started = time.monotonic()
@@ -133,3 +137,20 @@ class FacebookWarmingTask(BaseTask):
             warming_surface=warm_surface,
             warming_surface_fallback=fallback_used,
         )
+
+    def _run_active_visit(self, options, requested_surface, warm_surface, fallback_used) -> bool:
+        """An auto warming visit: read-only activities chosen for this account."""
+        self.log("STEP", "Auto warming visit: browsing like this account usually does.")
+        visit = ActiveVisit(self, options["max_seconds"]).run(warm_surface)
+        self.log("INFO", f"Visit ended after {visit['duration_seconds']:g}s ({visit['stop_reason']}).")
+        self.capture_evidence("active_visit_done", stop_reason=visit["stop_reason"])
+        return self.set_outcome(
+            "completed",
+            duration_seconds=visit["duration_seconds"],
+            stop_reason=visit["stop_reason"],
+            warming_options=options,
+            warming_surface_requested=requested_surface,
+            warming_surface=warm_surface,
+            warming_surface_fallback=fallback_used,
+        )
+

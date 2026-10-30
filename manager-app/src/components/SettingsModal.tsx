@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Select } from './ui/Select';
 import { AppUpdates } from './AppUpdates';
 import { ResourceModeControl } from './ResourceModeControl';
+import { AutoWarmingControl } from './AutoWarmingControl';
 import { Check, Cpu, Eye, EyeOff, KeyRound, Settings, X } from 'lucide-react';
 
 interface SettingsModalProps {
@@ -188,6 +189,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
               <div className="max-w-xl space-y-4">
                 <p className="text-xs leading-5 text-zinc-400">Resource mode sets how many browsers can run, warm up, and post at the same time. Auto picks a level from this computer’s memory and CPU.</p>
                 <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4"><ResourceModeControl /></div>
+                <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4"><AutoWarmingControl /></div>
               </div>
             ) : <AppUpdates />}
           </div>

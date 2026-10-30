@@ -130,6 +130,18 @@ class ResourceSettingsManager:
             self._save()
 
     @property
+    def auto_warming(self) -> bool:
+        return self._settings.get("auto_warming") is True
+
+    def update_auto_warming(self, enabled) -> None:
+        if not isinstance(enabled, bool):
+            raise ValueError("enabled must be true or false")
+        with self._lock:
+            self._settings["auto_warming"] = enabled
+            self._settings["updated_at"] = datetime.now(timezone.utc).isoformat()
+            self._save()
+
+    @property
     def ocr_engine(self) -> str:
         value = self._settings.get("ocr_engine", DEFAULT_ENGINE)
         return value if value in ENGINES else DEFAULT_ENGINE

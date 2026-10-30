@@ -946,6 +946,36 @@ async def _execute_queue_preparation_inner(execution_id: str):
     return {"success": False, "status": task_record['status'], "code": code}
 
 
+def _hand_auto_visit_to_post(profile_id, token, visit_id, result) -> bool:
+    """A visit that gave way to its own account's post keeps the browser for it.
+
+    The post then counts as prepared, like a person who scrolls and then posts.
+    """
+    from backend.services import auto_warming
+    request = auto_warming.clear_yield(profile_id) or {}
+    target_id = request.get("handoff_to")
+    if not (target_id and result.get("success")):
+        return False
+    queue = load_posting_queue()
+    target = find_queue_execution(queue, target_id)
+    if not target or target["execution"].get("profile_id") != profile_id or target["execution"].get("status") != "pending":
+        return False
+    from backend.services.adaptive_runtime import handoff_seconds
+    seconds = handoff_seconds(PREPARATION_HANDOFF_SECONDS)
+    if not lifecycle.handoff(profile_id, token, seconds, execution_id=target_id):
+        return False
+    execution = target["execution"]
+    now = datetime.now(timezone.utc).isoformat()
+    if execution.get("preparation_status") == "pending":
+        execution.update(status="ready", stage="ready", preparation_status="ready", preparation_ended_at=now)
+    execution["container_handoff_expires_at"] = datetime.fromtimestamp(time.time() + seconds, tz=timezone.utc).isoformat()
+    execution.setdefault("stage_history", []).append({"stage": execution["stage"], "timestamp": now,
+                                                      "reason": "warmed_by_auto_visit", "visit_id": visit_id})
+    execution["stage_updated_at"] = now
+    save_posting_queue(queue)
+    return True
+
+
 async def _run_owned_queue(execution_id, action, *args, preparation=False):
     if execution_id in _queue_execution_tasks:
         raise RuntimeError("Execution is already running")
@@ -959,6 +989,8 @@ async def _run_owned_queue(execution_id, action, *args, preparation=False):
     _queue_execution_tasks[execution_id] = asyncio.current_task()
     try:
         result = await action(execution_id, *args)
+        if not preparation and profile_id and match and match["post"].get("type") == "warming":
+            hold = _hand_auto_visit_to_post(profile_id, token, execution_id, result)
         if preparation and result.get("success") and profile_id:
             prepared_queue = load_posting_queue()
             prepared = find_queue_execution(prepared_queue, execution_id)
@@ -1244,14 +1276,23 @@ async def _execute_queue_item_inner(execution_id: str, scheduler_kind: str = "pu
 
         cleanup = None
         cleanup_error = None
-        try:
-            cleanup = await stop_profile_container_after_report(profile_id)
-        except Exception as error:
-            cleanup_error = str(error)
+        from backend.services import auto_warming
+        # A finished visit that gave way to its own account's post keeps the
+        # browser open; the owner wrapper hands it to that post.
+        handing_off = (task_type == "warming" and ex["status"] == "completed"
+                       and bool((auto_warming.read_yields().get(profile_id) or {}).get("handoff_to")))
+        if not handing_off:
+            try:
+                cleanup = await stop_profile_container_after_report(profile_id)
+            except Exception as error:
+                cleanup_error = str(error)
 
         cleanup_q = load_posting_queue()
         cl_match = find_queue_execution(cleanup_q, execution_id)
-        if cl_match:
+        if cl_match and handing_off:
+            cl_match["execution"]["automation_container_owned"] = False
+            save_posting_queue(cleanup_q)
+        elif cl_match:
             cl_match["execution"]["container_stopped_at"] = datetime.now(timezone.utc).isoformat() if (cleanup and cleanup.get("stopped")) else None
             cl_match["execution"]["container_cleanup"] = cleanup
             cl_match["execution"]["container_cleanup_error"] = cleanup_error
@@ -1693,7 +1734,9 @@ async def dispatch_pending_queue():
         recover_stale_queue_executions("dispatcher_stale_lease")
         scheduler_cfg = get_scheduler_config()
         queue_snapshot = load_posting_queue()
-        due_executions = ordered_due_executions(queue_snapshot, time.time() * 1000)
+        # Auto warming visits always come after every post that is due.
+        due_executions = sorted(ordered_due_executions(queue_snapshot, time.time() * 1000),
+                                key=lambda execution: bool(execution.get("auto_warming")))
 
         initial_slots = scheduler_snapshot(
             queue_snapshot,
@@ -1707,7 +1750,16 @@ async def dispatch_pending_queue():
             "total": initial_slots["total"],
         }
 
+        from backend.services import auto_warming
         cooldown_retry_ms = None
+        # Once a post could not start in this pass, no auto visit may take a slot.
+        post_waiting = False
+
+        def make_room(post_match):
+            nonlocal post_waiting
+            post_waiting = True
+            auto_warming.yield_for_post(load_posting_queue(), post_match["execution"])
+
         for execution in due_executions:
             exec_id = execution["execution_id"]
             current_q = load_posting_queue()
@@ -1724,6 +1776,9 @@ async def dispatch_pending_queue():
 
             pid = match["execution"]["profile_id"]
             standalone_warming = match["post"].get("type") == "warming"
+            auto_visit = auto_warming.is_auto_batch(match["batch"])
+            if auto_visit and (post_waiting or not auto_warming.enabled()):
+                continue
             prep_mode = match["execution"].get("preparation_mode") or "off"
             needs_prep = (
                 not standalone_warming
@@ -1750,6 +1805,8 @@ async def dispatch_pending_queue():
                 continue
 
             if get_container_status(pid) != "running" and count_running_profile_containers() >= scheduler_cfg["max_active_profile_containers"]:
+                if not auto_visit:
+                    make_room(match)
                 continue
 
             slot_kind = "preparer" if (needs_prep or standalone_warming) else "publisher"
@@ -1757,9 +1814,13 @@ async def dispatch_pending_queue():
                 current_q, active_in_memory_scheduler_leases(), slot_kind, pid, scheduler_cfg
             )
             if not availability["allowed"]:
+                if not auto_visit:
+                    make_room(match)
                 continue
 
             if not _reserve_dispatch_slot(reservations, slot_kind, pid, scheduler_cfg):
+                if not auto_visit:
+                    make_room(match)
                 continue
 
             if get_container_status(pid) != "running":

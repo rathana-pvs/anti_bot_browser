@@ -121,13 +121,16 @@ def heartbeat(profile_id, token):
         _write(owners)
         return True
 
-def handoff(profile_id, token, seconds=HANDOFF_SECONDS):
+def handoff(profile_id, token, seconds=HANDOFF_SECONDS, execution_id=None):
+    """Keep the container for the next execution; `execution_id` names it when it differs."""
     with _locked():
         owners = _read()
         owner = owners.get(profile_id)
         if not owner or owner['token'] != token or owner['state'] != 'active':
             return False
         owner['state'] = 'handoff'
+        if execution_id:
+            owner['execution_id'] = execution_id
         owner['heartbeat_expires_at'] = time.time() + seconds
         _write(owners)
         return True

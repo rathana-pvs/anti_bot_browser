@@ -905,3 +905,17 @@ export async function cleanAllEvidence(days = 3): Promise<CleanAllEvidenceResult
   }
   return res.json();
 }
+
+export async function fetchAutoWarming(): Promise<import('../types/automation').AutoWarmingSummary> {
+  const res = await fetch(`${API_BASE}/settings/auto-warming`);
+  if (!res.ok) throw await apiError(res, 'Failed to load auto warming');
+  return res.json();
+}
+
+export async function updateAutoWarming(enabled: boolean): Promise<import('../types/automation').AutoWarmingSummary> {
+  const res = await fetch(`${API_BASE}/settings/auto-warming`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }),
+  });
+  if (!res.ok) throw await apiError(res, 'Failed to update auto warming');
+  return res.json();
+}

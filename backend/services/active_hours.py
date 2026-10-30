@@ -27,6 +27,27 @@ def _profile_config(profile_id: str, cache: dict) -> dict:
     return cache[profile_id]
 
 
+# Without a persona seed, a person is assumed awake from 08:00 to 22:00.
+DEFAULT_HOURS = (8, 14)
+
+
+def account_zone(config: dict):
+    zone_name = (config.get("fingerprint") or {}).get("timezone") or (config.get("requested_environment") or {}).get("timezone")
+    try:
+        return ZoneInfo(zone_name) if zone_name else timezone.utc
+    except (ZoneInfoNotFoundError, ValueError):
+        return timezone.utc
+
+
+def persona_hours_admit(config: dict, now_ms: float) -> bool:
+    """Whether the account's persona is awake now, whatever the switches say."""
+    seed = config.get("behavior_seed")
+    has_seed = isinstance(seed, int) and not isinstance(seed, bool) and seed >= 1
+    start, length = Persona.from_seed(seed).active_hours if has_seed else DEFAULT_HOURS
+    hour = datetime.fromtimestamp(now_ms / 1000, tz=account_zone(config)).hour
+    return (hour - start) % 24 < length
+
+
 def within_active_hours(config: dict, now_ms: float) -> bool:
     automation = config.get("automation")
     seed = config.get("behavior_seed")
@@ -34,14 +55,7 @@ def within_active_hours(config: dict, now_ms: float) -> bool:
         return True
     if not isinstance(seed, int) or isinstance(seed, bool) or seed < 1:
         return True
-    zone_name = (config.get("fingerprint") or {}).get("timezone") or (config.get("requested_environment") or {}).get("timezone")
-    try:
-        zone = ZoneInfo(zone_name) if zone_name else timezone.utc
-    except (ZoneInfoNotFoundError, ValueError):
-        zone = timezone.utc
-    start, length = Persona.from_seed(seed).active_hours
-    hour = datetime.fromtimestamp(now_ms / 1000, tz=zone).hour
-    return (hour - start) % 24 < length
+    return persona_hours_admit(config, now_ms)
 
 
 def admits(execution: dict, batch: dict, due_ms: float, now_ms: float, cache: dict) -> bool:
