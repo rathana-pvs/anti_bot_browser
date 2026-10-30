@@ -1980,16 +1980,70 @@ class ReelPublicationVerificationTests(unittest.TestCase):
     def test_logo_feed_detection_with_visible_composer_never_falls_back(self):
         task = self.make_task([
             StateObservation(ScreenState.FEED_READY, 0.68, ["facebook logo"]),
-        ], [0.7])
+        ] * 2, [0.7] * 2)
         task.vision.read_text.return_value = [
             {"text": "Create reel"}, {"text": "Uploading 95%"},
             {"text": "Make it easier to contact you"},
         ]
-        with unittest.mock.patch("modules.reel_post_click_verifier.time.time", side_effect=[0, 0, 91]), \
+        # The upload stays at 95%, so the extra wait ends after 30 seconds.
+        with unittest.mock.patch("modules.reel_post_click_verifier.time.time", side_effect=[0, 0, 91, 122]), \
              unittest.mock.patch("modules.reel_post_click_verifier.time.sleep"):
             status, _ = task._verify_reel_publication(task.client.screenshot())
         self.assertEqual(status, "timed_out")
+        self.assertEqual(task.reel_upload_extension["stop_reason"], "stalled")
         task.client.navigate_to.assert_not_called()
+
+    def upload_task(self, percents, closes=False):
+        steps = len(percents) + 2
+        observations = [StateObservation(ScreenState.PUBLISHING, 0.9)] * steps
+        if closes:
+            observations[-1] = StateObservation(ScreenState.POST_CONFIRMED, 0.98)
+        task = self.make_task(observations, [0.7] * (steps + 1))
+        remaining = list(percents)
+        task.vision.read_text.side_effect = lambda screen, region=None, min_confidence=0.0: (
+            [{"text": f"Uploading {remaining.pop(0)}%"}] if region and remaining else
+            [] if region else [{"text": "Manage Page"}])
+        return task
+
+    def test_slow_upload_keeps_waiting_while_progress_rises(self):
+        task = self.upload_task([70, 85], closes=True)
+        with unittest.mock.patch("modules.reel_post_click_verifier.time.time", side_effect=[0, 0, 91, 110, 130]), \
+             unittest.mock.patch("modules.reel_post_click_verifier.time.sleep"):
+            status, _ = task._verify_reel_publication(task.client.screenshot(), timeout=90)
+        self.assertEqual(status, "published")
+        self.assertEqual(task.reel_upload_extension["first_percent"], 70)
+        self.assertEqual(task.reel_upload_extension["last_percent"], 85)
+        task.client.navigate_to.assert_not_called()
+
+    def test_stuck_upload_stops_thirty_seconds_after_the_last_progress(self):
+        task = self.upload_task([70, 70, 70])
+        with unittest.mock.patch("modules.reel_post_click_verifier.time.time", side_effect=[0, 0, 91, 105, 122]), \
+             unittest.mock.patch("modules.reel_post_click_verifier.time.sleep"):
+            status, _ = task._verify_reel_publication(task.client.screenshot(), timeout=90)
+        self.assertEqual(status, "timed_out")
+        self.assertEqual(task.reel_upload_extension["stop_reason"], "stalled")
+        self.assertEqual(task.reel_upload_extension["extended_seconds"], 31)
+
+    def test_upload_wait_never_passes_four_minutes(self):
+        task = self.upload_task([10, 20, 30, 40, 50, 60, 70, 80])
+        times = [0, 0, 91, 115, 140, 165, 190, 215, 241]
+        with unittest.mock.patch("modules.reel_post_click_verifier.time.time", side_effect=times), \
+             unittest.mock.patch("modules.reel_post_click_verifier.time.sleep"):
+            status, _ = task._verify_reel_publication(task.client.screenshot(), timeout=90)
+        self.assertEqual(status, "timed_out")
+        self.assertEqual(task.reel_upload_extension["stop_reason"], "max_wait")
+
+    def test_upload_percent_is_read_from_the_preview(self):
+        from modules.reel_post_click_verifier import ReelPostClickVerifier
+        task = self.make_task([], [])
+        task.vision.read_text.return_value = [{"text": "POLITICS"}, {"text": "Uploading 70%"}]
+        verifier = ReelPostClickVerifier(task)
+        self.assertEqual(verifier.upload_percent(np.zeros((1080, 1920, 3), dtype=np.uint8)), 70)
+        self.assertEqual(task.vision.read_text.call_args.kwargs["region"], (960, 540, 576, 162))
+        task.vision.read_text.return_value = [{"text": "Justice Department"}, {"text": "Uploading 849"}]
+        self.assertEqual(verifier.upload_percent(np.zeros((1080, 1920, 3), dtype=np.uint8)), 84)
+        task.vision.read_text.return_value = [{"text": "Posting"}]
+        self.assertIsNone(verifier.upload_percent(np.zeros((1080, 1920, 3), dtype=np.uint8)))
 
     def test_logo_alone_does_not_prove_composer_closure(self):
         task = self.make_task([], [])
