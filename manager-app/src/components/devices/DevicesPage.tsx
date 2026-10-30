@@ -414,7 +414,6 @@ function DeviceWarnings({ device, profiles, proxies, onSetTimezone }: {
   if (device.state === 'offline') warnings.push('This phone is not connected. Check the cable or Wi-Fi debugging.');
   if ((health?.battery?.temperature_c ?? 0) >= HOT_C) warnings.push(`The phone is hot (${health!.battery!.temperature_c!.toFixed(0)}°C). Let it cool before running jobs.`);
   if (health?.free_storage_mb != null && health.free_storage_mb < 1024) warnings.push(`Only ${health.free_storage_mb} MB of storage is free.`);
-  if ((device.profile_count ?? 0) > 1) warnings.push(`${device.profile_count} accounts share this phone's hardware and network.`);
   const facts = [
     time.zone && `Time ${time.zone} (${formatUtcOffset(time.zone)}${time.auto ? ', automatic' : ''})`,
     health?.cpu_percent != null && `CPU ${health.cpu_percent}%`,
