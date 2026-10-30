@@ -131,6 +131,7 @@ class SessionCheck:
             ScreenState.POST_CONFIRMED,
         }
         navigation_retried = False
+        notice_attempts = 0
         while time.time() < deadline:
             screen = task.client.screenshot()
             # Navigation can still show the previous page after the address bar
@@ -143,8 +144,17 @@ class SessionCheck:
                 if task.handle_leave_site_dialog(screen):
                     time.sleep(1.0)
                     continue
-            if observation.state == ScreenState.UNKNOWN:
+            if observation.state == ScreenState.UNKNOWN and "meta_account_notice" not in observation.signals:
                 observation = task.recognizer.observe(screen)
+            if "meta_account_notice" in observation.signals:
+                # A logged-in account behind Meta's announcement: close it and
+                # look again. If it will not close, the check ends unverified.
+                if notice_attempts < 2:
+                    notice_attempts += 1
+                    task.dismiss_meta_account_notice(screen)
+                else:
+                    time.sleep(2.0)
+                continue
             if observation.state == ScreenState.LOGIN_REQUIRED:
                 break
             if observation.state == ScreenState.ERROR_DIALOG:

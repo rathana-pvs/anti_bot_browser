@@ -608,6 +608,9 @@ class BaseTask:
     def handle_leave_site_dialog(self, screen=None) -> bool:
         return KnownDialogs(self).leave_site(screen)
 
+    def dismiss_meta_account_notice(self, screen=None) -> str:
+        return KnownDialogs(self).dismiss_meta_account_notice(screen)
+
     def find_post_publish_prompt(self, screen=None):
         return KnownDialogs(self).find_post_publish_prompt(screen)
 
