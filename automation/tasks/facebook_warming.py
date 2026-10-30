@@ -6,7 +6,6 @@ Simulates organic human browsing on Facebook:
   - Configurable passive browsing with a bounded session
 """
 
-import random
 import time
 from .base_task import BaseTask
 from warming_options import normalize_warming_options
@@ -20,7 +19,9 @@ class FacebookWarmingTask(BaseTask):
 
     def run(self) -> bool:
         options = normalize_warming_options(getattr(self, "warming_options", None))
-        planned_scrolls = (random.randint(options["min_scrolls"], options["max_scrolls"])
+        rng = self.rng("warming")
+        mouse_rng = self.rng("mouse")
+        planned_scrolls = (rng.randint(options["min_scrolls"], options["max_scrolls"])
                            if options["random_scrolls"] else self.scroll_count)
         self.set_stage("warming", scroll_count=planned_scrolls)
         self.log("STEP", "Starting Facebook warming session...")
@@ -34,7 +35,7 @@ class FacebookWarmingTask(BaseTask):
 
         # Step 1: Pick the browsing surface first so authentication and warming
         # share one page load.
-        requested_surface = (random.choice(tuple(self.WARMING_SURFACES))
+        requested_surface = (rng.choice(tuple(self.WARMING_SURFACES))
                              if options["surface"] == "random" else options["surface"])
         self.log("STEP", "Verifying the Facebook session before passive browsing...")
         if not self.verify_logged_in(
@@ -71,45 +72,45 @@ class FacebookWarmingTask(BaseTask):
 
         def move_cursor():
             w, h = self.client.get_screen_dimensions()
-            self.human.move_to(random.randint(int(w * 0.25), int(w * 0.75)),
-                               random.randint(int(h * 0.2), int(h * 0.8)))
+            self.human.move_to(mouse_rng.randint(int(w * 0.25), int(w * 0.75)),
+                               mouse_rng.randint(int(h * 0.2), int(h * 0.8)))
 
         self.log("STEP", f"Browsing {warm_surface}: {planned_scrolls} cycles, {options['pace']} pace")
         if options["cursor_movement"]:
-            for _ in range(random.randint(2, 4)):
+            for _ in range(rng.randint(2, 4)):
                 if time.monotonic() >= deadline:
                     break
                 move_cursor()
-                pause(random.uniform(0.8, 2.2))
+                pause(rng.uniform(0.8, 2.2))
 
         for i in range(planned_scrolls):
             if time.monotonic() >= deadline:
                 break
-            notches = random.randint(2, 5)
+            notches = rng.randint(2, 5)
             self.log("INFO", f"Scroll {i + 1}/{planned_scrolls}: down {notches} notches")
             self.human.scroll("down", notches=notches)
             scroll_actions += 1
             completed_cycles += 1
-            pause(random.uniform(*reading_range))
+            pause(rng.uniform(*reading_range))
             if time.monotonic() >= deadline:
                 break
-            if options["reread"] and random.random() < 0.25:
+            if options["reread"] and rng.random() < 0.25:
                 self.log("INFO", "Scrolling back slightly to reread")
-                self.human.scroll("up", notches=random.randint(1, 2))
+                self.human.scroll("up", notches=rng.randint(1, 2))
                 scroll_actions += 1
-                pause(random.uniform(*reading_range))
+                pause(rng.uniform(*reading_range))
             if time.monotonic() >= deadline:
                 break
-            if options["cursor_movement"] and random.random() < 0.35:
+            if options["cursor_movement"] and rng.random() < 0.35:
                 move_cursor()
-            if options["long_breaks"] and i < planned_scrolls - 1 and random.random() < 0.2:
+            if options["long_breaks"] and i < planned_scrolls - 1 and rng.random() < 0.2:
                 self.log("INFO", "Taking a longer reading break")
-                pause(random.uniform(8.0, 15.0))
+                pause(rng.uniform(8.0, 15.0))
 
         if options["return_to_top"] and time.monotonic() < deadline:
-            self.human.scroll("up", notches=random.randint(3, 6))
+            self.human.scroll("up", notches=rng.randint(3, 6))
             scroll_actions += 1
-            pause(random.uniform(1.0, 2.5))
+            pause(rng.uniform(1.0, 2.5))
         duration = round(time.monotonic() - started, 2)
         self.log("INFO", f"Browsing finished: {completed_cycles} cycles, {scroll_actions} scrolls in {duration}s")
 

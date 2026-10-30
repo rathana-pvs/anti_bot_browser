@@ -111,7 +111,7 @@ def profile_defaults() -> dict[str, Any]:
         "default_resources": dict(DEFAULT_RESOURCE_LIMITS),
         "default_behavior_mode": "medium",
         "behavior_modes": list(BEHAVIOR_MODES),
-        "default_automation": {"reel_template": "auto"},
+        "default_automation": {"reel_template": "auto", "natural_session": False},
         "reel_template_options": list(REEL_TEMPLATE_OPTIONS),
         "resource_options": {
             "cpu_limits": [1, 2, 4, 6, 8],
@@ -289,6 +289,8 @@ def _apply_execution_preferences(profile: dict[str, Any]) -> None:
     automation["reel_template"] = (
         reel_template if reel_template in REEL_TEMPLATE_OPTIONS else "auto"
     )
+    if "natural_session" in automation:
+        automation["natural_session"] = automation["natural_session"] is True
     profile["automation"] = automation
 
 

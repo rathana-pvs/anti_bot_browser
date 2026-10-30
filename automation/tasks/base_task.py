@@ -3,6 +3,7 @@
 import json
 import math
 import os
+import random
 import time
 import uuid
 import numpy as np
@@ -117,6 +118,11 @@ class BaseTask:
         except Exception:
             self.profile_config = {}
             pass
+
+    def rng(self, channel: str):
+        """The account's seeded random stream, or ``random`` for task doubles."""
+        session = getattr(self, "behavior_session", None)
+        return session.stream(channel) if session is not None else random
 
     def detect_visual_theme(self, screen=None) -> tuple[str, float]:
         """Run visual theme preflight before any Facebook workflow locators."""

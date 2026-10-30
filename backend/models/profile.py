@@ -51,6 +51,7 @@ class AutomationPreferencesInput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     reel_template: Literal["auto", "t1", "t2", "t3"] = "auto"
+    natural_session: bool = False
 
 
 class ProfileCreateRequest(BaseModel):

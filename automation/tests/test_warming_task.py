@@ -28,9 +28,9 @@ class FacebookWarmingTaskTests(unittest.TestCase):
     def test_success_reports_completed_outcome(self):
         task = self.make_task()
         with patch("tasks.facebook_warming.time.sleep"), \
-                patch("tasks.facebook_warming.random.randint", return_value=3), \
-                patch("tasks.facebook_warming.random.uniform", return_value=1.0), \
-                patch("tasks.facebook_warming.random.choice", return_value="profile"):
+                patch("tasks.base_task.random.randint", return_value=3), \
+                patch("tasks.base_task.random.uniform", return_value=1.0), \
+                patch("tasks.base_task.random.choice", return_value="profile"):
             self.assertTrue(task.run())
 
         task.set_stage.assert_called_once_with("warming", scroll_count=2)
@@ -59,8 +59,8 @@ class FacebookWarmingTaskTests(unittest.TestCase):
         }
         task.select_and_open_warming_surface.return_value = ("news_feed", "news_feed", False, None)
         with patch("tasks.facebook_warming.time.sleep") as sleep, \
-                patch("tasks.facebook_warming.random.random", return_value=0), \
-                patch("tasks.facebook_warming.random.uniform", side_effect=lambda a, b: a):
+                patch("tasks.base_task.random.random", return_value=0), \
+                patch("tasks.base_task.random.uniform", side_effect=lambda a, b: a):
             self.assertTrue(task.run())
         task.verify_logged_in.assert_called_once_with(target_url="https://www.facebook.com/")
         self.assertEqual(task.set_outcome.call_args.kwargs["planned_scroll_count"], 3)
@@ -78,7 +78,7 @@ class FacebookWarmingTaskTests(unittest.TestCase):
             elapsed[0] += seconds
         with patch("tasks.facebook_warming.time.monotonic", side_effect=lambda: elapsed[0]), \
                 patch("tasks.facebook_warming.time.sleep", side_effect=sleep), \
-                patch("tasks.facebook_warming.random.uniform", return_value=10):
+                patch("tasks.base_task.random.uniform", return_value=10):
             self.assertTrue(task.run())
         result = task.set_outcome.call_args.kwargs
         self.assertEqual(result["duration_seconds"], 15)

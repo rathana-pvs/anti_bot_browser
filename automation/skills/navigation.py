@@ -1,7 +1,6 @@
 """Moving between Facebook surfaces: address-bar navigation, refresh, and the
 feed/profile surfaces used for passive browsing."""
 
-import random
 import time
 
 from engine.screen_state import ScreenState
@@ -93,7 +92,7 @@ class Navigation:
     ):
         """Choose either feed or profile independently, with one safe fallback."""
         task = self.task
-        requested = requested or random.choice(tuple(task.WARMING_SURFACES))
+        requested = requested or task.rng("warming").choice(tuple(task.WARMING_SURFACES))
         if requested not in task.WARMING_SURFACES:
             raise ValueError(f"Unknown warming surface: {requested}")
         fallback = next(surface for surface in task.WARMING_SURFACES if surface != requested)
