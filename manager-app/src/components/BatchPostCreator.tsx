@@ -1,6 +1,7 @@
 import { CaptionHookEditor, HookDraft, hookIsApproved } from "./CaptionHookEditor";
 import { LivePlaybackSettings, LivePlaybackMode } from './LivePlaybackSettings';
 import { GroupedProfileSelector } from './GroupedProfileSelector';
+import { StageBadge, stageView, useAccountHealth } from './accounts/accountHealth';
 import { WarmingSettings, defaultWarmingOptions } from './WarmingSettings';
 import { MediaLightbox, LightboxMedia } from './MediaLightbox';
 import React, { useState, useEffect, useMemo } from 'react';
@@ -99,6 +100,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
     return profiles.filter((p) => p.status === 'running').map((p) => p.id);
   });
   const [showProfileModal, setShowProfileModal] = useState(false);
+  const { health: accountHealth } = useAccountHealth();
 
   // Execution & Timing Settings
   const [executionMode, setExecutionMode] = useState<'now' | 'scheduled'>(() => {
@@ -465,6 +467,16 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
   const busySelected = selectedProfiles.filter(p => busyProfileIds.includes(p.id));
   const erroredSelected = selectedProfiles.filter(p => p.status === 'error');
   const liveSetupMissing = hasLive ? profiles.filter(p => !p.live?.configured) : [];
+  const stages = Object.fromEntries(profiles.map(p => [p.id, stageView(p, accountHealth[p.id])]));
+  // Advice only: the user can keep any of these accounts.
+  const stageWarnings = selectedProfiles.flatMap(p => {
+    const view = stages[p.id];
+    if (view.stage === 'attention') return [{ profile: p, view, note: view.reason }];
+    if (warmupMode) return [];
+    if (view.stage === 'new' || view.stage === 'resting') return [{ profile: p, view, note: view.reason }];
+    const left = view.health ? view.health.daily_limit - view.health.posts_today : Infinity;
+    return itemCount > left ? [{ profile: p, view, note: `${Math.max(0, left)} suggested post${left === 1 ? '' : 's'} left today; this batch has ${itemCount}.` }] : [];
+  });
 
 
   const startLabel = executionMode === 'now' ? 'Starts now' : `Starts at ${startTime}`;
@@ -731,6 +743,22 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
               </span>
               <ChevronRight className="w-4 h-4 text-zinc-500" />
             </button>
+            {stageWarnings.length > 0 && (
+              <details className="text-[11px] text-amber-300">
+                <summary className="cursor-pointer">{stageWarnings.length} selected account{stageWarnings.length === 1 ? ' isn’t' : 's aren’t'} suggested for {warmupMode ? 'this' : 'posting'} right now</summary>
+                <ul className="mt-2 space-y-1.5">
+                  {stageWarnings.slice(0, 8).map(({ profile, view, note }) => <li key={profile.id} className="flex items-start gap-2 text-zinc-300">
+                    <StageBadge view={view} compact className="mt-0.5" />
+                    <span className="min-w-0 flex-1"><span className="block truncate">{profile.name}</span><span className="block text-zinc-500">{note}</span></span>
+                  </li>)}
+                </ul>
+                <div className="mt-2 flex flex-wrap gap-3">
+                  <button type="button" className="text-blue-400 hover:text-blue-300"
+                    onClick={() => setSelectedProfileIds(selectedProfileIds.filter(id => !stageWarnings.some(w => w.profile.id === id)))}>Remove them</button>
+                  <span className="text-zinc-500">Or keep them: this is only a suggestion.</span>
+                </div>
+              </details>
+            )}
             {liveSetupMissing.length > 0 && (
               <details className="text-[11px] text-amber-300">
                 <summary className="cursor-pointer">{liveSetupMissing.length} account{liveSetupMissing.length === 1 ? ' needs' : 's need'} Live setup first</summary>
@@ -869,7 +897,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
             </div>
 
             <div className="overflow-y-auto p-4">
-              <GroupedProfileSelector busyProfileIds={busyProfileIds} disabledProfileIds={hasLive ? profiles.filter(p => !p.live?.configured).map(p => p.id) : []} profiles={profiles} selectedIds={selectedProfileIds} onChange={setSelectedProfileIds} />
+              <GroupedProfileSelector stages={stages} busyProfileIds={busyProfileIds} disabledProfileIds={hasLive ? profiles.filter(p => !p.live?.configured).map(p => p.id) : []} profiles={profiles} selectedIds={selectedProfileIds} onChange={setSelectedProfileIds} />
             </div>
 
             {/* Modal Footer */}

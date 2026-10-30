@@ -1,5 +1,5 @@
 import {
-  NetworkIntent, Profile, ProfileCreateRequest, ProfileDefaults, ProfileUpdateRequest, SystemStats,
+  AccountHealth, NetworkIntent, Profile, ProfileCreateRequest, ProfileDefaults, ProfileUpdateRequest, SystemStats,
 } from '../types/profile';
 import { ProxyItem } from '../types/proxy';
 import { BrainActionResponse, BrainCatalogResponse, BrainUploadResponse } from '../types/brain';
@@ -99,6 +99,12 @@ export async function apiError(res: Response, fallback: string): Promise<Error> 
 export async function fetchProfileGroups(): Promise<string[]> {
   const res = await fetch(`${API_BASE}/profiles/groups`);
   if (!res.ok) throw await apiError(res, 'Failed to fetch profile groups');
+  return res.json();
+}
+
+export async function fetchAccountHealth(): Promise<{ profiles: Record<string, AccountHealth>; daily_limits: Record<string, number> }> {
+  const res = await fetch(`${API_BASE}/profiles/health`);
+  if (!res.ok) throw await apiError(res, 'Failed to fetch account health');
   return res.json();
 }
 

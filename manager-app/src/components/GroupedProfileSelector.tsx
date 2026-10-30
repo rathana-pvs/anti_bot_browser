@@ -3,10 +3,13 @@ import { ChevronDown, ChevronRight, Folder, Loader2 } from 'lucide-react';
 import { Profile } from '../types/profile';
 import { groupProfiles } from '../utils/profileGroups';
 import { Checkbox } from './ui/Checkbox';
+import { STAGE_META, STAGE_ORDER, StageBadge, StageView } from './accounts/accountHealth';
 
-export function GroupedProfileSelector({ profiles, selectedIds, onChange, busyProfileIds = [], disabledProfileIds = [], maxHeightClass = 'max-h-[45vh]' }: {
+export function GroupedProfileSelector({ profiles, selectedIds, onChange, busyProfileIds = [], disabledProfileIds = [], maxHeightClass = 'max-h-[45vh]', stages }: {
   profiles: Profile[]; selectedIds: string[]; onChange: (ids: string[]) => void;
   disabledProfileIds?: string[]; busyProfileIds?: string[]; maxHeightClass?: string;
+  /** Account stages: shown as icons, and offered as quick selections. */
+  stages?: Record<string, StageView>;
 }) {
   const selectorId = useId();
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
@@ -25,6 +28,18 @@ export function GroupedProfileSelector({ profiles, selectedIds, onChange, busyPr
       <button type="button" className="text-zinc-400" onClick={() => onChange([])}>Clear all</button>
       <span className="ml-auto text-zinc-500">{profiles.filter((p) => selectedIds.includes(p.id)).length} selected</span>
     </div>
+    {stages && <div className="flex flex-wrap items-center gap-1.5 text-[11px]" aria-label="Select by account stage">
+      <span className="text-zinc-500">By stage:</span>
+      {STAGE_ORDER.map(stage => {
+        const ids = eligible.filter(p => stages[p.id]?.stage === stage).map(p => p.id);
+        if (!ids.length) return null;
+        const Icon = STAGE_META[stage].icon;
+        return <button key={stage} type="button" onClick={() => onChange(ids)} title={`Select only the ${STAGE_META[stage].label} accounts. ${STAGE_META[stage].suggestion}`}
+          className="inline-flex items-center gap-1 rounded-full border border-zinc-800 px-2 py-0.5 text-zinc-300 hover:border-zinc-600">
+          <Icon className={`h-3 w-3 ${STAGE_META[stage].tone}`} aria-hidden="true" />{STAGE_META[stage].label} <span className="text-zinc-500">{ids.length}</span>
+        </button>;
+      })}
+    </div>}
     <div className={`${maxHeightClass} space-y-1 overflow-y-auto pr-1`}>
       {groups.map((group) => {
         const ids = group.members.filter(p => !disabledProfileIds.includes(p.id)).map((p) => p.id);
@@ -51,7 +66,8 @@ export function GroupedProfileSelector({ profiles, selectedIds, onChange, busyPr
             {group.members.map((p) => <label htmlFor={`${selectorId}-profile-${p.id}`} key={p.id}
               className={`flex cursor-pointer items-center gap-3 px-3 py-2.5 transition-colors ${selectedIds.includes(p.id) ? 'bg-blue-500/10' : 'hover:bg-zinc-800/40'}`}>
               <Checkbox id={`${selectorId}-profile-${p.id}`} disabled={disabledProfileIds.includes(p.id)} checked={selectedIds.includes(p.id)} onCheckedChange={() => toggle([p.id])} ariaLabel={`Select ${p.name}`} />
-              <div className="min-w-0 flex-1"><div className="truncate text-xs font-medium text-zinc-200">{p.name}</div>
+              <div className="min-w-0 flex-1"><div className="flex items-center gap-1.5 text-xs font-medium text-zinc-200">
+                <span className="truncate">{p.name}</span>{stages?.[p.id] && <StageBadge view={stages[p.id]} compact />}</div>
                 <div className="truncate text-[10px] text-zinc-500">{p.id} · {disabledProfileIds.includes(p.id) ? 'Live setup required in Edit profile' : p.network?.proxy_host || 'Direct network'}</div></div>
               {busyProfileIds.includes(p.id) && <span className="flex shrink-0 items-center gap-1 text-[10px] text-amber-400"><Loader2 className="h-3 w-3 animate-spin" />Busy</span>}
               <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] uppercase ${p.status === 'running' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-zinc-900 text-zinc-500'}`}>{p.status}</span>

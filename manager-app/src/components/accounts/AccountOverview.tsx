@@ -7,7 +7,8 @@ import { checkProfileFacebookResponse, checkProfileProxySpeed, FacebookResponseR
 import { Button } from '../ui/Button';
 import { cn } from '../ui/cn';
 import { FAILED_STATUSES, describe, formatTime, kindLabel } from '../queue/queueModel';
-import { AccountActivity, STATUS_LABEL, STATUS_TONE, TONE_CLASS, browserNotes, isAndroid, liveSignal, networkSignal, openItemSignals, warmupLabel } from './accountModel';
+import { AccountActivity, STATUS_LABEL, STATUS_TONE, TONE_CLASS, browserNotes, isAndroid, liveSignal, networkSignal, openItemSignals } from './accountModel';
+import { STAGE_META, StageBadge, stageView, todayCount, useAccountHealth } from './accountHealth';
 import { Alert } from '../ui/Alert';
 
 const card = 'rounded-xl border border-zinc-800 bg-zinc-950/40 p-4';
@@ -17,6 +18,8 @@ export function AccountOverview({ profile, proxies, activity, onOpenQueue }: {
 }) {
   const network = networkSignal(profile, proxies);
   const android = isAndroid(profile);
+  const { health } = useAccountHealth();
+  const stage = stageView(profile, health[profile.id], activity);
   const upcoming = activity.recent.filter(item => ['pending', 'ready'].includes(item.status))
     .sort((a, b) => (new Date(a.scheduled_at).getTime() || 0) - (new Date(b.scheduled_at).getTime() || 0)).slice(0, 5);
   return <div className="mx-auto grid max-w-5xl gap-4 text-xs lg:grid-cols-2">
@@ -33,7 +36,11 @@ export function AccountOverview({ profile, proxies, activity, onOpenQueue }: {
           <dt>Memory</dt><dd className="text-zinc-200">{profile.ram_usage || 'Not measured'}</dd></>}
         <dt>Network</dt><dd title={network.hint} className={TONE_CLASS[network.tone]}>{network.label}{network.detail && <span className="ml-2 text-zinc-400">{network.detail}</span>}</dd>
         <dt>Facebook Live</dt><dd title={liveSignal(profile).hint} className={TONE_CLASS[liveSignal(profile).tone]}>{liveSignal(profile).label}</dd>
-        <dt>Warm-up</dt><dd className="text-zinc-200">{warmupLabel(profile)}</dd>
+        <dt>Stage</dt><dd className="space-y-0.5">
+          <StageBadge view={stage} />
+          <p className="text-zinc-400">{stage.reason}{todayCount(stage) && ` ${todayCount(stage)}`}</p>
+          <p className="text-zinc-500">{STAGE_META[stage.stage].suggestion}{stage.health?.manual ? ' Set by hand in Settings.' : ''}</p>
+        </dd>
         <dt>Today</dt><dd className="text-zinc-200">{activity.posted} posted{activity.warmed ? ` · ${activity.warmed} warmed` : ''}</dd>
         {openItemSignals(activity).length > 0 && <><dt>Needs you</dt><dd className="flex flex-wrap gap-x-2">{openItemSignals(activity).map(s =>
           <button key={s.label} type="button" title={s.hint} onClick={onOpenQueue} className={cn('underline decoration-dotted underline-offset-2 hover:decoration-solid', TONE_CLASS[s.tone])}>{s.label}</button>)}</dd></>}

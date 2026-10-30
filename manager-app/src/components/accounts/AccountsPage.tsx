@@ -11,10 +11,11 @@ import { Input } from '../ui/Input';
 import { useContextMenu } from '../ui/ContextMenu';
 import { cn } from '../ui/cn';
 import { AccountHandlers, FolderHandlers, accountMenu, bulkMenu, folderMenu } from './accountActions';
-import { ACCOUNT_DRAG_TYPE, ALL_FOLDERS, ATTENTION, FolderList, NO_FOLDER } from './FolderList';
+import { ACCOUNT_DRAG_TYPE, ALL_FOLDERS, ATTENTION, FolderList, NO_FOLDER, SystemFolder } from './FolderList';
+import { STAGE_FOLDER_PREFIX, STAGE_META, STAGE_ORDER, StageBadge, StageView, stageFolder, stageView, useAccountHealth } from './accountHealth';
 import {
-  AccountActivity, HealthSignal, STATUS_LABEL, STATUS_TONE, TONE_CLASS, activityFor, browserNotes, liveSignal, needsAttention,
-  isAndroid, networkSignal, openItemSignals, phoneLabel, warmupLabel,
+  AccountActivity, HealthSignal, STATUS_LABEL, STATUS_TONE, TONE_CLASS, activityFor, browserNotes, liveSignal,
+  isAndroid, networkSignal, openItemSignals, phoneLabel,
   ActivityPeriod, PERIOD_OPTIONS, periodStart,
 } from './accountModel';
 import { formatTime, kindLabel } from '../queue/queueModel';
@@ -39,6 +40,19 @@ export function AccountsPage({ profiles, proxies, groups, executions, handlers, 
   const menu = useContextMenu();
 
   const activity = useMemo(() => new Map(profiles.map(p => [p.id, activityFor(p.id, executions, period)])), [profiles, executions, period]);
+  const { health } = useAccountHealth();
+  // Stages use today's open items, whatever period the table shows.
+  const stages = useMemo(() => new Map(profiles.map(p => [p.id, stageView(p, health[p.id], activityFor(p.id, executions, 1))])),
+    [profiles, health, executions]);
+  const systemFolders: SystemFolder[] = STAGE_ORDER.map(stage => {
+    const meta = STAGE_META[stage];
+    const Icon = meta.icon;
+    return { key: stageFolder(stage), label: meta.label, icon: <Icon className={`h-3.5 w-3.5 ${meta.tone}`} />, tone: meta.tone, hint: meta.suggestion,
+      count: profiles.filter(p => stages.get(p.id)?.stage === stage).length };
+  });
+  // Older links to the Needs attention view open its system folder.
+  const activeFolder = folder === ATTENTION ? stageFolder('attention') : folder;
+  const stageFilter = activeFolder.startsWith(STAGE_FOLDER_PREFIX) ? activeFolder.slice(STAGE_FOLDER_PREFIX.length) : null;
   const periodInfo = PERIOD_OPTIONS.find(option => option.value === period)!;
   const totals = useMemo(() => {
     let posted = 0, warmed = 0;
@@ -51,24 +65,25 @@ export function AccountsPage({ profiles, proxies, groups, executions, handlers, 
 
   // A deleted or renamed folder must not leave the list filtered to nothing.
   useEffect(() => {
-    if (![ALL_FOLDERS, ATTENTION, NO_FOLDER].includes(folder) && !folders.some(f => f.name === folder)) setFolder(ALL_FOLDERS);
+    if (![ALL_FOLDERS, ATTENTION, NO_FOLDER].includes(folder) && !folder.startsWith(STAGE_FOLDER_PREFIX)
+      && !folders.some(f => f.name === folder)) setFolder(ALL_FOLDERS);
   }, [folder, folders]);
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
     return profiles.filter(p => {
-      if (folder === ATTENTION && !needsAttention(p, activity.get(p.id))) return false;
+      if (stageFilter && stages.get(p.id)?.stage !== stageFilter) return false;
       if (folder === NO_FOLDER && p.group) return false;
-      if (![ALL_FOLDERS, ATTENTION, NO_FOLDER].includes(folder) && (p.group || '') !== folder) return false;
+      if (!stageFilter && ![ALL_FOLDERS, NO_FOLDER].includes(folder) && (p.group || '') !== folder) return false;
       if (status === 'running' && p.status !== 'running') return false;
       if (status === 'stopped' && p.status === 'running') return false;
       if (kind === 'browser' && isAndroid(p)) return false;
       if (kind === 'android' && !isAndroid(p)) return false;
       return !q || p.name.toLowerCase().includes(q) || p.id.toLowerCase().includes(q) || (p.group || '').toLowerCase().includes(q);
     }).sort((a, b) => Number(!a.group) - Number(!b.group) || (a.group || '').localeCompare(b.group || '') || a.name.localeCompare(b.name));
-  }, [profiles, status, kind, folder, search, activity]);
+  }, [profiles, status, kind, folder, search, stages, stageFilter]);
 
-  const attentionCount = profiles.filter(p => needsAttention(p, activity.get(p.id))).length;
+  const attentionCount = profiles.filter(p => stages.get(p.id)?.stage === 'attention').length;
   const runningCount = profiles.filter(p => p.status === 'running').length;
   const selectedProfiles = profiles.filter(p => selected.has(p.id));
   const allVisibleSelected = visible.length > 0 && visible.every(p => selected.has(p.id));
@@ -107,10 +122,10 @@ export function AccountsPage({ profiles, proxies, groups, executions, handlers, 
 
   const chip = (active: boolean) => cn('rounded-full border px-3 py-1 text-xs transition-colors',
     active ? 'border-blue-600 bg-blue-950/40 text-blue-200' : 'border-zinc-800 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200');
-  const heading = folder === ALL_FOLDERS ? 'All accounts' : folder === ATTENTION ? 'Needs attention' : folder === NO_FOLDER ? 'No folder' : folder;
+  const heading = folder === ALL_FOLDERS ? 'All accounts' : stageFilter ? STAGE_META[stageFilter as keyof typeof STAGE_META].label : folder === NO_FOLDER ? 'No folder' : folder;
 
   return <div className="flex min-h-0 flex-1">
-    <FolderList value={folder} onChange={setFolder} folders={folders} total={profiles.length} attention={attentionCount}
+    <FolderList value={activeFolder} onChange={setFolder} folders={folders} total={profiles.length} attention={attentionCount} system={systemFolders}
       unfiled={profiles.filter(p => !p.group).length} onCreate={folderHandlers.create} onDropAccounts={dropAccounts}
       onFolderMenu={(event, name) => menu.open(event, menuForFolder(name), name)}
       onBlankMenu={(event) => menu.open(event, blankMenu)}
@@ -166,8 +181,9 @@ export function AccountsPage({ profiles, proxies, groups, executions, handlers, 
             <span>Account</span><span>Status</span><span className="hidden md:block">Network</span><span className="hidden md:block">Live</span><span className="hidden md:block">{periodInfo.column}</span><span />
           </div>
           {visible.length === 0 && <p className="px-3 py-10 text-center text-xs text-zinc-500">
-            {folder !== ALL_FOLDERS && folder !== ATTENTION && !search && status === 'all' ? 'This folder is empty. Drag accounts here, or use Move to folder.' : 'No accounts match these filters.'}</p>}
-          {visible.map(profile => <AccountRow key={profile.id} profile={profile} activity={activity.get(profile.id)!}
+            {stageFilter && !search && status === 'all' ? 'No accounts are in this stage right now.'
+              : folder !== ALL_FOLDERS && !search && status === 'all' ? 'This folder is empty. Drag accounts here, or use Move to folder.' : 'No accounts match these filters.'}</p>}
+          {visible.map(profile => <AccountRow key={profile.id} profile={profile} activity={activity.get(profile.id)!} stage={stages.get(profile.id)!}
             network={networkSignal(profile, proxies)} selected={selected.has(profile.id)} busy={busyIds.has(profile.id)} onToggle={() => toggle(profile.id)}
             onOpen={() => handlers.open(profile.id, 'overview')} onDragStart={startDrag(profile)}
             menuItems={() => accountMenu(profile, handlers, { failureCutoff: periodStart(period) })}
@@ -190,8 +206,8 @@ function Signal({ signal, onOpenQueue }: { signal: HealthSignal; onOpenQueue?: (
     : <span title={signal.hint} className={cn('whitespace-nowrap', TONE_CLASS[signal.tone])}>{signal.label}</span>;
 }
 
-function AccountRow({ profile, network, activity, selected, busy, onToggle, onOpen, onOpenQueue, onDragStart, menuItems, onContextMenu, onMenuKey }: {
-  profile: Profile; network: HealthSignal; activity: AccountActivity; selected: boolean; busy: boolean;
+function AccountRow({ profile, network, activity, stage, selected, busy, onToggle, onOpen, onOpenQueue, onDragStart, menuItems, onContextMenu, onMenuKey }: {
+  profile: Profile; network: HealthSignal; activity: AccountActivity; stage: StageView; selected: boolean; busy: boolean;
   onToggle: () => void; onOpen: () => void; onOpenQueue: () => void; onDragStart: (event: React.DragEvent) => void; menuItems: () => ReturnType<typeof accountMenu>;
   onContextMenu: (event: React.MouseEvent) => void; onMenuKey: (event: React.KeyboardEvent) => void;
 }) {
@@ -211,7 +227,8 @@ function AccountRow({ profile, network, activity, selected, busy, onToggle, onOp
     <div className="min-w-0">
       <p className="flex items-center gap-1.5 truncate font-medium text-zinc-100">
         {isAndroid(profile) && <Smartphone className="h-3.5 w-3.5 shrink-0 text-zinc-400" aria-label="Phone account" />}{profile.name}</p>
-      <p className="truncate text-[11px] text-zinc-500">{[profile.group || 'No folder', isAndroid(profile) ? phoneLabel(profile) : warmupLabel(profile)].join(' · ')}</p>
+      <p className="flex min-w-0 items-center gap-1.5 text-[11px] text-zinc-500"><StageBadge view={stage} quietReady />
+        <span className="truncate">{[profile.group || 'No folder', isAndroid(profile) && phoneLabel(profile)].filter(Boolean).join(' · ')}</span></p>
     </div>
     <div className="min-w-0">
       {isAndroid(profile)

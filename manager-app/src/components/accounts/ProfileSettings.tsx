@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { AlertTriangle, Check, ChevronDown } from 'lucide-react';
-import { BehaviorMode, Profile, ProfileUpdateRequest, ReelTemplateSelection, RequestedEnvironment, ResourceLimits, reelTemplateLabel } from '../../types/profile';
+import { AccountStageOverride, BehaviorMode, Profile, ProfileUpdateRequest, ReelTemplateSelection, RequestedEnvironment, ResourceLimits, reelTemplateLabel } from '../../types/profile';
 import { formatProxyGeography, ProxyItem } from '../../types/proxy';
 import { SCREEN_RESOLUTIONS, getHostTimezone } from '../../services/fingerprintPool';
 import { fetchProfileDefaults } from '../../services/api';
@@ -65,8 +65,7 @@ export function ProfileSettings({ profile, onSave, proxies = [], groups = [] }: 
   const [customPort, setCustomPort] = useState('1080');
   const [customUser, setCustomUser] = useState('');
   const [customPassword, setCustomPassword] = useState('');
-  const [warmingWeek, setWarmingWeek] = useState(1);
-  const [warmingComplete, setWarmingComplete] = useState(false);
+  const [stageOverride, setStageOverride] = useState<'auto' | AccountStageOverride>('auto');
   const [notes, setNotes] = useState('');
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -88,8 +87,8 @@ export function ProfileSettings({ profile, onSave, proxies = [], groups = [] }: 
     setBehaviorMode(profile.behavior_mode || 'medium');
     setReelTemplate(profile.automation?.reel_template || 'auto');
     setNaturalSession(profile.automation?.natural_session === true);
-    setWarmingWeek(profile.account.warming_week || 1);
-    setWarmingComplete(Boolean(profile.account.warming_complete));
+    // "Warm-up complete" from before stages existed reads as Ready.
+    setStageOverride(profile.account.stage_override || (profile.account.warming_complete ? 'ready' : 'auto'));
     setNotes(profile.account.notes || '');
     setError(null);
     setSaved(false);
@@ -167,7 +166,7 @@ export function ProfileSettings({ profile, onSave, proxies = [], groups = [] }: 
         name: name.trim(), group: group.trim(), network, requested_environment: confirmedEnvironment, resources,
         behavior_mode: behaviorMode,
         automation: { reel_template: reelTemplate, natural_session: naturalSession },
-        account: { warming_week: warmingWeek, warming_complete: warmingComplete, notes: notes.trim() },
+        account: { stage_override: stageOverride === 'auto' ? null : stageOverride, warming_complete: false, notes: notes.trim() },
       });
       setSaved(true);
     } catch (reason) {
@@ -187,11 +186,17 @@ export function ProfileSettings({ profile, onSave, proxies = [], groups = [] }: 
       <Section id="settings-general" title="General">
         <label className="block text-zinc-400">Name<input required value={name} onChange={(e) => setName(e.target.value)} className={input} /></label>
         <ProfileGroupField value={group} onChange={setGroup} groups={groups} />
-        <div className="grid grid-cols-2 gap-3">
-          <label className="text-zinc-400">Warm-up week<input type="number" min={1} value={warmingWeek} onChange={(e) => setWarmingWeek(Number(e.target.value))} className={input} /></label>
-          <label htmlFor="warming-complete" className="flex cursor-pointer items-end gap-2 pb-2 text-zinc-400">
-            <Checkbox id="warming-complete" checked={warmingComplete} onCheckedChange={(value) => { setWarmingComplete(value); setSaved(false); }} />Warm-up complete
-          </label>
+        <div className="block text-zinc-400">
+          <span className="mb-1 block">Account stage</span>
+          <Select value={stageOverride} ariaLabel="Account stage"
+            onValueChange={(value) => { setStageOverride(value as 'auto' | AccountStageOverride); setSaved(false); }}
+            options={[
+              { value: 'auto', label: 'Automatic (from history)' },
+              { value: 'new', label: 'New' },
+              { value: 'warming_up', label: 'Warming up' },
+              { value: 'ready', label: 'Ready (e.g. an older account)' },
+            ]} />
+          <p className="mt-1 text-[11px] text-zinc-500">Only a suggestion when creating posts. Resting and Needs attention still come from the account’s history.</p>
         </div>
         <label className="block text-zinc-400">Notes<textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} className={input} /></label>
       </Section>

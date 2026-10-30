@@ -136,6 +136,26 @@ export interface ProfileAccount {
   warming_week: number;
   posts_today: number;
   last_post_date: string | null;
+  /** Stage set by hand; empty or null lets the history decide. */
+  stage_override?: AccountStageOverride | '' | null;
+}
+
+export type AccountStage = 'new' | 'warming_up' | 'ready' | 'resting' | 'attention';
+export type AccountStageOverride = 'new' | 'warming_up' | 'ready';
+
+export interface AccountHealth {
+  stage: AccountStage;
+  /** Stage from age and posting history alone, before problems or limits. */
+  growth_stage: AccountStageOverride;
+  reason: string;
+  manual: boolean;
+  /** When a resting stage ends (ISO time). */
+  until: string | null;
+  age_days: number;
+  posts: number;
+  posts_today: number;
+  daily_limit: number;
+  last_post_at: string | null;
 }
 
 export interface Profile {
