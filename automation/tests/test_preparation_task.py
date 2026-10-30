@@ -44,6 +44,26 @@ class FacebookPreparationTaskTests(unittest.TestCase):
         task.set_outcome = Mock(return_value=logged_in)
         return task
 
+    def test_natural_session_can_skip_browsing(self):
+        task = self.make_task(logged_in=True)
+        task.behavior_session = BehaviorSession("medium", 123, "preparation-test", natural=True)
+        with patch.object(task.behavior_session, "chance", return_value=True):
+            self.assertTrue(task.run())
+        task.human.scroll.assert_not_called()
+        self.assertEqual(task.set_outcome.call_args.kwargs["duration_seconds"], 0.0)
+
+    def test_natural_session_never_browses_longer_than_the_batch_mode(self):
+        for seed in range(1, 60):
+            task = self.make_task(logged_in=True)
+            task.behavior_session = BehaviorSession("slow", seed, f"run-{seed}", natural=True)
+            clock = iter(range(0, 100000, 1000))
+            with patch.object(task.behavior_session, "chance", return_value=False), \
+                 patch("tasks.facebook_preparation.time.monotonic", side_effect=lambda: next(clock)), \
+                 patch("tasks.facebook_preparation.time.sleep"):
+                task.run()
+            duration = task.set_outcome.call_args.kwargs["duration_seconds"]
+            self.assertLessEqual(duration, FacebookPreparationTask.DURATION_RANGES["brief"][1])
+
     def test_zero_duration_preparation_reaches_ready_without_scroll(self):
         task = self.make_task(logged_in=True)
         with patch.object(FacebookPreparationTask, "DURATION_RANGES", {"brief": (0.0, 0.0), "extended": (0.0, 0.0)}):
@@ -88,7 +108,7 @@ class FacebookPreparationTaskTests(unittest.TestCase):
     def test_logged_out_session_is_safely_skipped(self):
         task = self.make_task(logged_in=False)
 
-        with patch("tasks.facebook_preparation.random.choice", return_value="news_feed"):
+        with patch.object(task.behavior_session.stream("warming"), "choice", return_value="news_feed"):
             result = task.run()
 
         self.assertFalse(result)
@@ -103,7 +123,7 @@ class FacebookPreparationTaskTests(unittest.TestCase):
         task = self.make_task(logged_in=True)
         task._current_session_is_stable.return_value = False
 
-        with patch("tasks.facebook_preparation.random.choice", return_value="profile"), \
+        with patch.object(task.behavior_session.stream("warming"), "choice", return_value="profile"), \
              patch.object(FacebookPreparationTask, "DURATION_RANGES", {"brief": (0.0, 0.0), "extended": (0.0, 0.0)}):
             result = task.run()
 
@@ -185,7 +205,7 @@ class FacebookPreparationTaskTests(unittest.TestCase):
         task.select_and_open_warming_surface = BaseTask.select_and_open_warming_surface.__get__(task)
         task.open_warming_surface = Mock(return_value=(False, task.client.screenshot.return_value))
         task.set_outcome.return_value = False
-        with patch('tasks.facebook_preparation.random.choice', return_value='profile'):
+        with patch.object(task.behavior_session.stream('warming'), 'choice', return_value='profile'):
             self.assertFalse(task.run())
         self.assertEqual(task.open_warming_surface.call_args_list, [
             unittest.mock.call('profile', navigate=False), unittest.mock.call('news_feed'),
