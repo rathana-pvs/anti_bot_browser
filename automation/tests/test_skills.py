@@ -10,7 +10,10 @@ import numpy as np
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from engine.screen_state import ScreenState, StateObservation
 from skills.dialogs import KnownDialogs
+from skills.navigation import Navigation
+from skills.session import SessionCheck, has_strong_facebook_visual, is_facebook_url
 
 
 def fake_host(**overrides):
@@ -73,6 +76,48 @@ class KnownDialogsTests(unittest.TestCase):
         host = fake_host(post_publish_prompt=handler, check_and_dismiss_post_prompt=Mock())
         self.assertEqual(KnownDialogs(host).handle_post_publish_prompt(), "dismissed")
         host.check_and_dismiss_post_prompt.assert_not_called()
+
+
+class NavigationTests(unittest.TestCase):
+    def test_go_to_types_through_human_and_checks_leave_dialog(self):
+        host = fake_host(handle_leave_site_dialog=Mock(return_value=False), telemetry=Mock())
+        with patch("skills.navigation.time.sleep"):
+            Navigation(host).go_to("https://www.facebook.com/me", wait_seconds=3.0)
+        host.human.navigate.assert_called_once_with("https://www.facebook.com/me")
+        host.handle_leave_site_dialog.assert_called_once_with()
+        url, _elapsed, outcome = host.telemetry.record_navigation.call_args.args
+        self.assertEqual((url, outcome), ("https://www.facebook.com/me", "completed"))
+
+    def test_select_surface_falls_back_once(self):
+        host = fake_host(
+            WARMING_SURFACES={"news_feed": "https://www.facebook.com/", "profile": "https://www.facebook.com/me"},
+            open_warming_surface=Mock(side_effect=[(False, "first"), (True, "second")]),
+            session_check_status="authenticated",
+        )
+        result = Navigation(host).select_and_open_surface("news_feed")
+        self.assertEqual(result, ("news_feed", "profile", True, "second"))
+
+
+class SessionCheckTests(unittest.TestCase):
+    def test_facebook_host_rejects_lookalikes(self):
+        self.assertTrue(is_facebook_url("https://www.facebook.com/me"))
+        self.assertFalse(is_facebook_url("https://facebook.com.evil.example/"))
+        self.assertFalse(is_facebook_url("javascript:facebook.com"))
+
+    def test_strong_visual_needs_a_facebook_signal(self):
+        self.assertTrue(has_strong_facebook_visual(
+            StateObservation(ScreenState.FEED_READY, 0.9, ["photo/video"])))
+        self.assertFalse(has_strong_facebook_visual(
+            StateObservation(ScreenState.FEED_READY, 0.9, ["facebook logo"])))
+
+    def test_login_window_title_stops_before_any_screen_polling(self):
+        host = fake_host(navigate_to=Mock())
+        host.client.active_window_name.return_value = "Log in to Facebook"
+        self.assertFalse(SessionCheck(host).verify("https://www.facebook.com/me"))
+        self.assertEqual(host.session_check_status, "auth_required")
+        host.navigate_to.assert_called_once_with(
+            "https://www.facebook.com/me", wait_seconds=2.0, check_leave_dialog=False)
+        host.recognizer.observe_session_gate.assert_not_called()
 
 
 if __name__ == "__main__":

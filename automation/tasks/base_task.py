@@ -29,6 +29,8 @@ from engine.semantic_fallback import (
 )
 from engine.telemetry import TelemetryRecorder, timed_telemetry_step
 from skills.dialogs import KnownDialogs
+from skills.navigation import Navigation
+from skills.session import SessionCheck, has_strong_facebook_visual, is_facebook_url
 
 
 class BaseTask:
@@ -483,27 +485,7 @@ class BaseTask:
         wait_seconds: float = 2.0,
         check_leave_dialog: bool = True,
     ) -> None:
-        """
-        Navigate to URL via container client and automatically handle any blocking
-        'Leave site?' beforeunload prompt.
-        """
-        started = time.perf_counter()
-        outcome = "completed"
-        try:
-            if getattr(self, "human", None) is not None:
-                self.human.navigate(url)
-            time.sleep(1.0)
-            if check_leave_dialog:
-                self.handle_leave_site_dialog()
-            if wait_seconds > 1.0:
-                time.sleep(wait_seconds - 1.0)
-        except Exception:
-            outcome = "exception"
-            raise
-        finally:
-            telemetry = getattr(self, "telemetry", None)
-            if telemetry is not None:
-                telemetry.record_navigation(url, (time.perf_counter() - started) * 1000.0, outcome)
+        Navigation(self).go_to(url, wait_seconds, check_leave_dialog)
 
     def open_warming_surface(
         self,
@@ -512,84 +494,17 @@ class BaseTask:
         *,
         navigate: bool = True,
     ):
-        """Navigate to and verify one passive Facebook browsing surface."""
-        url = self.WARMING_SURFACES.get(surface)
-        if url is None:
-            raise ValueError(f"Unknown warming surface: {surface}")
-
-        self.log("INFO", f"Opening warming surface: {surface}")
-        if navigate:
-            self.navigate_to(url, wait_seconds=2.0, check_leave_dialog=False)
-        else:
-            self.log("INFO", f"Reusing already verified warming surface: {surface}")
-        deadline = time.time() + timeout
-        last_screen = None
-        valid_states = {
-            ScreenState.FEED_READY,
-            ScreenState.COMPOSER_OPEN,
-            ScreenState.MEDIA_READY,
-            ScreenState.POST_ENABLED,
-        }
-        while time.time() < deadline:
-            last_screen = self.client.screenshot()
-            observation = self.recognizer.observe_session_gate(last_screen)
-            if observation.state == ScreenState.UNKNOWN:
-                observation = self.recognizer.observe(last_screen)
-            if observation.state == ScreenState.LOGIN_REQUIRED:
-                self.session_check_status = "auth_required"
-                return False, last_screen
-            if observation.state == ScreenState.ERROR_DIALOG:
-                return False, last_screen
-            if observation.state in valid_states:
-                try:
-                    current_url = self.client.get_current_url()
-                except Exception:
-                    current_url = None
-                if self._is_facebook_url(current_url) and self._has_strong_facebook_visual(observation):
-                    return True, last_screen
-            time.sleep(0.75)
-        return False, last_screen
+        return Navigation(self).open_surface(surface, timeout, navigate=navigate)
 
     def select_and_open_warming_surface(
         self,
         requested: str | None = None,
         already_open: str | None = None,
     ):
-        """Choose either feed or profile independently, with one safe fallback."""
-        requested = requested or random.choice(tuple(self.WARMING_SURFACES))
-        if requested not in self.WARMING_SURFACES:
-            raise ValueError(f"Unknown warming surface: {requested}")
-        fallback = next(surface for surface in self.WARMING_SURFACES if surface != requested)
-        for attempt, surface in enumerate((requested, fallback), start=1):
-            if attempt == 1 and surface == already_open:
-                ready, screen = self.open_warming_surface(surface, navigate=False)
-            else:
-                ready, screen = self.open_warming_surface(surface)
-            if ready:
-                used_fallback = attempt == 2
-                self.log(
-                    "INFO",
-                    f"Warming surface ready: {surface}"
-                    + (f" (fallback from {requested})" if used_fallback else ""),
-                )
-                return requested, surface, used_fallback, screen
-            if getattr(self, 'session_check_status', '') in {'auth_required', 'safety_blocked'}:
-                return requested, None, attempt == 2, screen
-            if attempt == 1:
-                self.log("WARN", f"Warming surface '{requested}' was not ready; trying '{fallback}' once.")
-        return requested, None, True, screen
+        return Navigation(self).select_and_open_surface(requested, already_open)
 
     def refresh_page(self, wait_seconds: float = 2.0) -> None:
-        """
-        Refresh active browser page via container client and automatically handle any blocking
-        'Leave site?' beforeunload prompt.
-        """
-        if hasattr(self, "client") and self.client is not None:
-            self.client.refresh_page()
-        time.sleep(1.0)
-        self.handle_leave_site_dialog()
-        if wait_seconds > 1.0:
-            time.sleep(wait_seconds - 1.0)
+        Navigation(self).refresh(wait_seconds)
 
     def paste_text(
         self,
@@ -635,205 +550,17 @@ class BaseTask:
 
     @staticmethod
     def _is_facebook_url(url: str | None) -> bool:
-        """Accept Facebook itself, but never lookalike hosts containing its name."""
-        if not url:
-            return False
-        try:
-            parsed = urllib.parse.urlparse(url)
-            hostname = (parsed.hostname or "").casefold().rstrip(".")
-            return parsed.scheme in {"http", "https"} and (
-                hostname == "facebook.com" or hostname.endswith(".facebook.com")
-            )
-        except (TypeError, ValueError):
-            return False
+        return is_facebook_url(url)
 
     @staticmethod
     def _has_strong_facebook_visual(observation: StateObservation) -> bool:
-        """Require a Facebook-specific UI signal in addition to its URL host."""
-        if observation.confidence < 0.75:
-            return False
-
-        signals = {signal.casefold() for signal in observation.signals}
-        if observation.state == ScreenState.FEED_READY:
-            strong_feed_signals = {
-                "what's on your mind",
-                "what’s on your mind",
-                "whats on your mind",
-                "what s on your mind",
-                "photo/video",
-                "photo / video",
-                "create story",
-                "your story",
-                "professional dashboard",
-                "photo/video text",
-                "logged-in dashboard/feed text",
-                "photo/video button visual",
-            }
-            return bool(signals & strong_feed_signals)
-
-        # These states require Facebook-specific modal/action structure in the
-        # recognizer, so their non-empty signals are independent visual proof.
-        workflow_states = {
-            ScreenState.COMPOSER_OPEN,
-            ScreenState.MEDIA_UPLOADING,
-            ScreenState.MEDIA_READY,
-            ScreenState.POST_ENABLED,
-            ScreenState.PUBLISHING,
-            ScreenState.POST_CONFIRMED,
-        }
-        return observation.state in workflow_states and bool(signals - {"facebook logo"})
+        return has_strong_facebook_visual(observation)
 
     def skip_unverified_session(self) -> bool:
-        """Finish safely without treating an expired session as an automation failure."""
-        session_status = getattr(self, "session_check_status", "unverified")
-        if session_status in {"auth_required", "safety_blocked"}:
-            status = "skipped_auth_required"
-            message = "Facebook is logged out, expired, restricted, or requires an account checkpoint."
-        else:
-            status = "skipped_session_unverified"
-            message = "Facebook did not reach a safely verified logged-in screen within 40 seconds."
-        self.log("WARN", f"Skipping profile: {message} No login action will be attempted.")
-        return self.set_outcome(
-            status,
-            error=message,
-            auth_preflight=session_status,
-        )
+        return SessionCheck(self).skip_unverified()
 
     def verify_logged_in(self, target_url: str = "https://www.facebook.com/") -> bool:
-        """
-        Verify that the container Chrome session is logged into Facebook.
-        Loading and transitional screens remain UNKNOWN and are polled rather
-        than being mistaken for a logged-out session.
-        """
-        self.log("INFO", "Verifying Facebook session login state...")
-        self.navigate_to(
-            target_url,
-            wait_seconds=2.0,
-            check_leave_dialog=False,
-        )
-
-        # Check window title first because it is cheap and works without OCR.
-        try:
-            title = self.client.active_window_name()
-            if title is not None:
-                title = title.lower()
-                if any(k in title for k in ("log in", "login", "sign up", "welcome to facebook")):
-                    self.session_check_status = "auth_required"
-                    self.log("WARN", f"Session expired or logged out (Window title: {title})")
-                    self.capture_evidence("session_preflight_auth_required")
-                    return False
-        except Exception:
-            pass
-
-        try:
-            current_url = self.client.get_current_url()
-            blocked_paths = ("/login", "/checkpoint", "/recover", "/two_step_verification")
-            if current_url and any(path in current_url.casefold() for path in blocked_paths):
-                self.session_check_status = "auth_required"
-                self.log("WARN", f"Facebook authentication checkpoint detected at {current_url}")
-                self.capture_evidence("session_preflight_auth_required")
-                return False
-        except Exception:
-            pass
-
-        # This is a safety preflight, not a login workflow. Profiles are assumed
-        # to be authenticated; a short bounded check only prevents blind actions
-        # after an expired session, checkpoint, or unexpected page.
-        deadline = time.time() + 40.0
-        observation = None
-        screen = None
-        valid_logged_in_states = {
-            ScreenState.FEED_READY,
-            ScreenState.COMPOSER_OPEN,
-            ScreenState.MEDIA_UPLOADING,
-            ScreenState.MEDIA_READY,
-            ScreenState.POST_ENABLED,
-            ScreenState.PUBLISHING,
-            ScreenState.POST_CONFIRMED,
-        }
-        navigation_retried = False
-        while time.time() < deadline:
-            screen = self.client.screenshot()
-            # Navigation can still show the previous page after the address bar
-            # changes. Refresh theme from each actual screenshot so browser
-            # chrome or a prior light page cannot lock Facebook into light-mode
-            # preprocessing.
-            self.detect_visual_theme(screen)
-            observation = self.recognizer.observe_session_gate(screen)
-            if "leave_site_dialog" in observation.signals:
-                if self.handle_leave_site_dialog(screen):
-                    time.sleep(1.0)
-                    continue
-            if observation.state == ScreenState.UNKNOWN:
-                observation = self.recognizer.observe(screen)
-            if observation.state == ScreenState.LOGIN_REQUIRED:
-                break
-            if observation.state == ScreenState.ERROR_DIALOG:
-                break
-            if observation.state in valid_logged_in_states:
-                try:
-                    current_url = self.client.get_current_url()
-                except Exception:
-                    current_url = None
-                has_facebook_host = self._is_facebook_url(current_url)
-                has_facebook_visual = self._has_strong_facebook_visual(observation)
-                if has_facebook_host and has_facebook_visual:
-                    break
-                self.log(
-                    "INFO",
-                    "Ignoring an unconfirmed/loading browser page "
-                    f"(url={current_url or 'unknown'}, "
-                    f"facebook_visual={has_facebook_visual}, signals={observation.signals}).",
-                )
-                if not navigation_retried and not has_facebook_host:
-                    self.log(
-                        "INFO",
-                        "The browser remained outside Facebook after the first navigation; retrying the target URL once.",
-                    )
-                    self.navigate_to(
-                        target_url,
-                        wait_seconds=2.0,
-                        check_leave_dialog=False,
-                    )
-                    navigation_retried = True
-                observation = StateObservation(
-                    ScreenState.UNKNOWN,
-                    0.0,
-                    ["facebook_host_or_visual_not_confirmed"],
-                )
-            if observation.state == ScreenState.UNKNOWN:
-                if self.handle_leave_site_dialog(screen):
-                    time.sleep(1.0)
-                    continue
-            self.log("INFO", "Facebook is still loading or the screen is transitional; checking again...")
-            time.sleep(2.0)
-
-        if observation is None or screen is None:
-            self.session_check_status = "unverified"
-            self.log("ERROR", "Facebook session verification produced no visual observation.")
-            return False
-
-        self.capture_evidence(
-            "login_check",
-            screen,
-            state=observation.state.value,
-            confidence=observation.confidence,
-            signals=observation.signals,
-        )
-        if observation.state == ScreenState.LOGIN_REQUIRED:
-            self.session_check_status = "auth_required"
-            self.log("WARN", "Facebook login screen was detected; this profile will be skipped.")
-            return False
-        if observation.state == ScreenState.ERROR_DIALOG:
-            self.session_check_status = "safety_blocked"
-            self.log("WARN", "Facebook displayed a restriction, checkpoint, CAPTCHA, or error; this profile will be skipped.")
-            return False
-        if observation.state not in valid_logged_in_states:
-            self.session_check_status = "unverified"
-            self.log("WARN", "Facebook session remained visually unverified after the 40-second safety timeout.")
-            return False
-        self.session_check_status = "authenticated"
-        return True
+        return SessionCheck(self).verify(target_url)
 
     def find_visible_file_chooser(self) -> tuple[str, str] | None:
         """Return the visible GTK chooser window id and matched title pattern."""
