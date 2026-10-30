@@ -1,6 +1,6 @@
 # Automation structure: design and implementation plan
 
-Date: 2026-10-30 · Revision: 5 · Status: Milestones 1–3 on main; milestone 4 implemented on feat/session-plan behind a per-account switch, not yet run on real accounts.
+Date: 2026-10-30 · Revision: 6 · Status: Milestones 1–3 on main; milestone 4 on feat/session-plan and milestone 5 on feat/input-realism (built on it), both behind the per-account switch and not yet run on real accounts.
 
 ## Recommendation
 
@@ -319,6 +319,28 @@ checked typos.
 
 Exit: input telemetry distributions differ per persona and stay within bounds;
 caption verification pass rate does not drop on the evidence corpus.
+
+Done on `feat/input-realism` (branched from `feat/session-plan`), only with the
+natural session switch on:
+
+- Mouse: Fitts-law duration from distance and target width (default 40 px when
+  a caller has no width), scaled by the persona's pointer speed; overshoot and
+  correction on moves over 250 px at the persona's rate; smooth sinusoidal
+  tremor and uneven step timing. Paths go to the container as one xdotool call
+  (`pointer_path`): per-point `docker exec` calls made long moves take 2–3 s on a
+  real container, now 0.3–1 s.
+- Clicks land within ±2 px of the confirmed point (on top of the existing
+  bounded points for reversible clicks), with a persona-scaled button hold.
+- Typing: per-key-pair timing, a short pause before the first key, and
+  neighbouring-key slips corrected with BackSpace at the persona's typo rate.
+  Slips are allowed only where the caller verifies the field (`ComposerEntry`),
+  never in URLs or file paths.
+- Idle drift of a few pixels during the Reel upload wait and the Post
+  publication check.
+- Checked: a differential of the previous `HumanInput` against the new one with
+  the switch off (399 seeds, identical calls and waits), the task differential,
+  the test suites, the evidence replay, and pointer moves and idle drift in a
+  real profile container (moves only, no clicks or typing).
 
 ## Risks
 
