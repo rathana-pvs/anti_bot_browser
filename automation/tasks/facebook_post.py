@@ -123,8 +123,8 @@ class FacebookPostTask(BaseTask):
     def _fail(self, code: str, message: str, screen=None) -> bool:
         self.log("ERROR", message)
         self.capture_evidence(code, screen, error_code=code, message=message)
-        status = "uncertain" if getattr(self, "current_stage", "") in ("publish_clicked", "verifying") else "failed_before_publish"
-        return self.set_outcome(status, code, message=message)
+        # set_outcome turns this into uncertain once the publish click may have been sent.
+        return self.set_outcome("failed_before_publish", code, message=message)
 
     def _uncertain(self, code: str, message: str, screen=None) -> bool:
         self.log("WARN", message)

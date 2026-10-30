@@ -23,6 +23,7 @@ from engine.semantic_fallback import (
     collect_action_candidates,
 )
 from engine.telemetry import TelemetryRecorder
+from engine.outcome import SUCCESS_STATUSES, PublicationStatus, resolve_status
 from skills.comment import (
     FirstComment,
     comment_match_confidence,
@@ -85,7 +86,7 @@ class BaseTask:
         self.semantic_fallback = SemanticFallbackEngine()
         self.post_publish_prompt = PostPublishPromptHandler(self)
         self.logs: list[dict] = []
-        self.result_status = "running"
+        self.result_status = PublicationStatus.RUNNING.value
         self.result_error: str | None = None
         self.result_extra: dict = {}
         self.session_check_status = "not_checked"
@@ -319,16 +320,39 @@ class BaseTask:
         self.human.click(*actual)
         return actual
 
+    def publish_attempted(self) -> bool:
+        """True once the publish click may have been sent."""
+        return bool(
+            getattr(self, "_publish_gate_consumed", False)
+            or getattr(self, "current_stage", "") in ("publish_clicked", "verifying")
+            or any(entry.get("stage") == "publish_clicked" for entry in getattr(self, "stage_history", []))
+        )
+
+    def _write_status(self, status, error: str | None) -> PublicationStatus:
+        """The only place that assigns ``result_status``.
+
+        Validates the status and applies the post-click rule, so no caller can
+        report a plain failure after the publish click may have been sent.
+        """
+        resolved = resolve_status(status, publish_clicked=self.publish_attempted())
+        self.result_status = resolved.value
+        self.result_error = error
+        return resolved
+
     def set_outcome(self, status: str, error: str | None = None, **extra) -> bool:
         """Persist a final outcome and return whether it represents publication."""
-        self.result_status = status
-        self.result_error = error
-        self.set_stage(status, error=error, **extra)
+        resolved = self._write_status(status, error)
+        self.set_stage(resolved.value, error=error, **extra)
         self.result_extra = extra
         if getattr(self, "_pipeline_defer_finalization", False):
-            return status in {"published", "completed"}
+            return resolved in SUCCESS_STATUSES
         self.finalize_outcome()
-        return status in {"published", "completed"}
+        return resolved in SUCCESS_STATUSES
+
+    def update_outcome(self, status: str, error: str | None = None, **extra) -> None:
+        """Change the status from a later pipeline module, keeping earlier details."""
+        self._write_status(status, error)
+        self.result_extra = {**getattr(self, "result_extra", {}), **extra}
 
     def finalize_outcome(self, **extra) -> None:
         """Write the final task record once all pipeline modules have finished."""

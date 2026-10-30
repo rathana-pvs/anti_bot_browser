@@ -121,8 +121,7 @@ class PostPublishPromptModule:
         if status not in {"dismissed", "failed"}:
             status = self.task.handle_post_publish_prompt()
         if status == "failed":
-            self.task.result_status = "failed_after_publish"
-            self.task.result_error = "known_post_publish_prompt_did_not_close"
+            self.task.update_outcome("failed_after_publish", "known_post_publish_prompt_did_not_close")
             return ModuleResult(
                 FAILED_SAFE,
                 "known_post_publish_prompt_did_not_close",
@@ -149,8 +148,7 @@ class PublicationResultVerifierModule:
             if not self.task._verify_latest_image_post():
                 self.task._image_post_not_found()
                 return _task_result(self.task, success_reason="image_publication_verified")
-            self.task.result_status = "published"
-            self.task.result_error = None
+            self.task.update_outcome("published")
             return ModuleResult.success("latest_image_confirmed_on_profile", publication_status="published")
         if status in {"published", "completed"}:
             return ModuleResult.success(
@@ -160,8 +158,7 @@ class PublicationResultVerifierModule:
         if status == "pending_profile_verification" and self.content_type == "reel":
             if self.task._refresh_until_latest_reel_visible():
                 self.task._latest_reel_confirmed_on_profile = True
-                self.task.result_status = "published"
-                self.task.result_error = None
+                self.task.update_outcome("published")
                 gallery_permalink = getattr(self.task, '_verified_reel_gallery_permalink', None)
                 return ModuleResult.success(
                     "latest_reel_confirmed_on_profile",
@@ -234,12 +231,14 @@ class FinalizeModule:
                 None,
             )
             if stopping_result is not None:
-                self.task.result_status = {
-                    FAILED_SAFE: "failed_before_publish",
-                    UNCERTAIN: "uncertain",
-                    NEEDS_REVIEW: "needs_review",
-                }[stopping_result.outcome]
-                self.task.result_error = stopping_result.reason
+                self.task.update_outcome(
+                    {
+                        FAILED_SAFE: "failed_before_publish",
+                        UNCERTAIN: "uncertain",
+                        NEEDS_REVIEW: "needs_review",
+                    }[stopping_result.outcome],
+                    stopping_result.reason,
+                )
         final_outputs = dict(context.outputs)
         if "first_comment" not in final_outputs:
             final_outputs["first_comment"] = (
