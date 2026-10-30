@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from engine.brain_runtime import BrainRegistry
 from modules.publishing_pipeline import build_publishing_pipeline
 from tasks.facebook_post import FacebookPostTask
+from tasks.facebook_reel import FacebookReelTask
 
 AUTOMATION = Path(__file__).resolve().parents[1]
 
@@ -65,6 +66,18 @@ class WorkflowStepTests(unittest.TestCase):
         task.brain_workflow = package.workflow
         self.assertEqual(task.workflow_steps(FacebookPostTask.STEPS), FacebookPostTask.STEPS)
 
+    def test_bundled_reel_workflow_lists_the_engine_steps(self):
+        package = BrainRegistry(AUTOMATION / "brains").resolve("facebook_reel")
+        task = step_task(FacebookReelTask)
+        task.brain_workflow = package.workflow
+        self.assertEqual(task.workflow_steps(FacebookReelTask.STEPS), FacebookReelTask.STEPS)
+
+    def test_reel_steps_run_in_order(self):
+        task = step_task(FacebookReelTask)
+        task._pipeline_defer_finalization = True
+        self.assertTrue(task.run())
+        self.assertEqual(task.calls, list(FacebookReelTask.STEPS))
+
     def test_older_workflow_without_steps_uses_the_built_in_order(self):
         task = step_task()
         task.brain_workflow = {
@@ -72,6 +85,20 @@ class WorkflowStepTests(unittest.TestCase):
             "states": {"feed_ready": {"on_success": "composer_open"}, "composer_open": {"on_success": "completed"}},
         }
         self.assertEqual(task.workflow_steps(FacebookPostTask.STEPS), FacebookPostTask.STEPS)
+
+    def test_older_reel_workflow_sharing_a_step_name_uses_the_built_in_order(self):
+        task = step_task(FacebookReelTask)
+        task.brain_workflow = {
+            "initial_state": "profile_ready",
+            "states": {
+                "profile_ready": {"on_success": "select_video"},
+                "select_video": {"on_success": "composer_ready"},
+                "composer_ready": {"on_success": "publish"},
+                "publish": {"on_success": "verify_publication"},
+                "verify_publication": {"on_success": "completed"},
+            },
+        }
+        self.assertEqual(task.workflow_steps(FacebookReelTask.STEPS), FacebookReelTask.STEPS)
 
     def test_reordered_steps_stop_before_any_action(self):
         steps = list(FacebookPostTask.STEPS)

@@ -65,6 +65,7 @@ class FacebookReelTask(BaseTask):
         self.preflight_complete = preflight_complete
         self.defer_comment = defer_comment
         self.brain_metadata = brain_package.metadata() if brain_package is not None else None
+        self.brain_workflow = brain_package.workflow if brain_package is not None else None
         configured = (
             (getattr(self, "profile_config", {}).get("automation") or {})
             .get("reel_template", "auto")
@@ -1616,7 +1617,32 @@ class FacebookReelTask(BaseTask):
         )
         return comment_status, self.permalink_not_requested()
 
+    # Workflow steps, in order. The pinned facebook_reel workflow.yaml lists
+    # the same steps; see BaseTask.workflow_steps.
+    STEPS = (
+        "preflight",
+        "open_reel_entry",
+        "detect_entry",
+        "attach_media",
+        "early_caption",
+        "next_steps",
+        "enter_caption",
+        "wait_publish_ready",
+        "publish",
+        "verify",
+        "finish",
+    )
+
     def run(self) -> bool:
+        steps = self.workflow_steps(self.STEPS)
+        if steps is None:
+            return self._fail(
+                "workflow_steps_invalid",
+                "The pinned workflow lists steps that do not match this engine; nothing was done.",
+            )
+        return self.run_steps(steps)
+
+    def _step_preflight(self):
         self.set_stage("preparing")
         self.log("STEP", "Starting guarded Facebook Reel task...")
 
@@ -1627,7 +1653,9 @@ class FacebookReelTask(BaseTask):
                 return self.skip_unverified_session()
 
         self.log("INFO", "Reusing the verified profile page for Reel creation.")
+        return None
 
+    def _step_open_reel_entry(self):
         self.log("STEP", "Locating Reel button on profile page...")
         def locate_reel_button():
             target = self._find_profile_reel_action()
@@ -1637,13 +1665,13 @@ class FacebookReelTask(BaseTask):
             time.sleep(0.8)
             return self._find_profile_reel_action()
 
-        reel_btn_status, reel_button, screen = self._wait_for_target(
+        reel_btn_status, reel_button, self._screen = self._wait_for_target(
             locate_reel_button,
             timeout=35.0,
             label="profile_reel_button_ready",
         )
         if reel_btn_status == "error":
-            return self._fail("profile_error", "Facebook displayed an error dialog on the profile page.", screen)
+            return self._fail("profile_error", "Facebook displayed an error dialog on the profile page.", self._screen)
         if not reel_button:
             return self._fail("profile_reel_button_not_found", "Reel creation button could not be located on the profile page.")
 
@@ -1656,10 +1684,13 @@ class FacebookReelTask(BaseTask):
         self.capture_evidence("before_click_reel_button", target=list(reel_button))
         self.click_reversible(reel_button, label="profile_reel", max_offset_px=4)
         time.sleep(2.5)
+        return None
 
+    def _step_detect_entry(self):
         self.set_stage("composing")
         self.log("STEP", "Detecting direct file chooser or Reel Studio upload flow...")
-        entry_status, entry_target, screen = self._wait_for_reel_entry(timeout=35.0)
+        entry_status, entry_target, self._screen = self._wait_for_reel_entry(timeout=35.0)
+        screen = self._screen
         if entry_status == "error":
             return self._fail("reel_studio_error", "Facebook displayed an error in Reel Studio.", screen)
         if entry_status == "timeout" or not entry_target:
@@ -1690,18 +1721,23 @@ class FacebookReelTask(BaseTask):
                 f"The observed Reel entry does not match assigned template {self.reel_template_selection!r}.",
                 screen,
             )
+        self._entry_status = entry_status
+        self._entry_target = entry_target
+        return None
 
+    def _step_attach_media(self):
+        entry_status = self._entry_status
         container_path = self.video_path
         if not container_path.startswith("/"):
             container_path = f"/data/shared_media/{container_path}"
 
         chooser_window = None
         if entry_status == "direct_file_chooser":
-            chooser_window = entry_target
+            chooser_window = self._entry_target
             self.log("INFO", "Facebook opened the Reel file chooser directly; using the direct-upload flow.")
         else:
             self.log("INFO", "Facebook opened Reel Studio; using the Upload/Add video flow.")
-            self.click_reversible(entry_target, label="reel_upload", max_offset_px=6)
+            self.click_reversible(self._entry_target, label="reel_upload", max_offset_px=6)
             time.sleep(1.5)
 
         if not self.attach_file_gtk(container_path, chooser_window=chooser_window):
@@ -1712,12 +1748,14 @@ class FacebookReelTask(BaseTask):
         # existing shared 120-second composer budget.
         self._video_composer_started_at = time.monotonic()
         self._reel_caption_entered = False
+        self._media_screen = None
         if entry_status == "direct_file_chooser":
             self.log("INFO", "Confirming that the new Reel layout accepted the selected video...")
             media_status, media_screen = self._ensure_direct_reel_media_attached(
                 container_path,
                 timeout=45.0,
             )
+            self._media_screen = media_screen
             if media_status == "error":
                 return self._fail(
                     "reel_processing_error",
@@ -1750,48 +1788,55 @@ class FacebookReelTask(BaseTask):
                     f"The Direct Reel composer does not match assigned template {self.reel_template_selection!r}.",
                     media_screen,
                 )
+        return None
 
-        if self.caption and entry_status == "direct_file_chooser":
-            caption_timeout = self._remaining_video_composer_wait(15.0)
-            if caption_timeout <= 0:
-                return self._video_composer_timeout(media_screen)
-            self.log(
-                "STEP",
-                "Entering the Reel caption immediately while the video continues processing...",
+    def _step_early_caption(self):
+        if not (self.caption and self._entry_status == "direct_file_chooser"):
+            return None
+        caption_timeout = self._remaining_video_composer_wait(15.0)
+        if caption_timeout <= 0:
+            return self._video_composer_timeout(self._media_screen)
+        self.log(
+            "STEP",
+            "Entering the Reel caption immediately while the video continues processing...",
+        )
+        early_caption_status, early_caption_screen = self._enter_reel_caption(timeout=caption_timeout)
+        if early_caption_status == 'review_failed':
+            return self._needs_review('reel_caption_review_unconfirmed',
+                                      'Caption was entered but did not remain verified during review; check the draft before retrying.',
+                                      early_caption_screen)
+        if early_caption_status == "error":
+            return self._fail(
+                "reel_description_error",
+                "Facebook displayed an error during early caption entry.",
+                early_caption_screen,
             )
-            early_caption_status, early_caption_screen = self._enter_reel_caption(timeout=caption_timeout)
-            if early_caption_status == 'review_failed':
-                return self._needs_review('reel_caption_review_unconfirmed',
-                                          'Caption was entered but did not remain verified during review; check the draft before retrying.',
-                                          early_caption_screen)
-            if early_caption_status == "error":
-                return self._fail(
-                    "reel_description_error",
-                    "Facebook displayed an error during early caption entry.",
-                    early_caption_screen,
-                )
-            if early_caption_status == "verification_failed":
-                return self._fail(
-                    "reel_caption_not_entered",
-                    "The Reel caption entry was not confirmed; publication was stopped. See caption entry diagnostics for the reason.",
-                    early_caption_screen,
-                )
-            if early_caption_status == "unavailable":
-                self.log(
-                    "INFO",
-                    "The caption field is not ready yet; continuing the layout transition and retrying on the final composer.",
-                )
+        if early_caption_status == "verification_failed":
+            return self._fail(
+                "reel_caption_not_entered",
+                "The Reel caption entry was not confirmed; publication was stopped. See caption entry diagnostics for the reason.",
+                early_caption_screen,
+            )
+        if early_caption_status == "unavailable":
+            self.log(
+                "INFO",
+                "The caption field is not ready yet; continuing the layout transition and retrying on the final composer.",
+            )
+        return None
 
+    def _step_next_steps(self):
+        entry_status = self._entry_status
         direct_next_share_flow = self._reel_template_uses_share_review(
             self.reel_template_id
         )
+        self._direct_next_share_flow = direct_next_share_flow
         if entry_status == "direct_file_chooser" and not direct_next_share_flow:
             # Preserve the existing direct composer behavior exactly.
             self.log(
                 "INFO",
                 "Direct Reel composer and attached media are already confirmed; skipping the obsolete Next check.",
             )
-            next_status, next_button, screen = "final_composer", None, media_screen
+            next_status, next_button, self._screen = "final_composer", None, self._media_screen
         else:
             if direct_next_share_flow:
                 self.log(
@@ -1802,15 +1847,15 @@ class FacebookReelTask(BaseTask):
                 self.log("INFO", "Waiting for video processing, an enabled Next action, or the final Reel composer...")
             composer_timeout = self._remaining_video_composer_wait()
             if composer_timeout <= 0:
-                return self._video_composer_timeout(screen)
-            next_status, next_button, screen = self._wait_for_reel_post_upload_transition(
+                return self._video_composer_timeout(self._screen)
+            next_status, next_button, self._screen = self._wait_for_reel_post_upload_transition(
                 timeout=composer_timeout,
                 label="reel_next_ready",
             )
         if next_status == "error":
-            return self._fail("reel_processing_error", "Facebook displayed a Reel processing error.", screen)
+            return self._fail("reel_processing_error", "Facebook displayed a Reel processing error.", self._screen)
         if next_status == "timeout":
-            return self._video_composer_timeout(screen)
+            return self._video_composer_timeout(self._screen)
 
         if next_status == "next" and next_button:
             self.log("STEP", f"Clicking Next action at {next_button}...")
@@ -1821,26 +1866,28 @@ class FacebookReelTask(BaseTask):
             # final composer. Facebook variants do not all include Edit reel.
             edit_timeout = self._remaining_video_composer_wait(15.0)
             if edit_timeout <= 0:
-                return self._video_composer_timeout(screen)
-            edit_next_status, edit_next_button, screen = self._wait_for_reel_post_upload_transition(
+                return self._video_composer_timeout(self._screen)
+            edit_next_status, edit_next_button, self._screen = self._wait_for_reel_post_upload_transition(
                 timeout=edit_timeout,
                 label="reel_edit_next_ready",
             )
             if edit_next_status == "error":
-                return self._fail("reel_edit_error", "Facebook displayed an error on the Reel edit step.", screen)
+                return self._fail("reel_edit_error", "Facebook displayed an error on the Reel edit step.", self._screen)
             if edit_next_status == "timeout" and self._remaining_video_composer_wait() <= 0:
-                return self._video_composer_timeout(screen)
+                return self._video_composer_timeout(self._screen)
             if edit_next_status == "next" and edit_next_button:
                 self.log("STEP", f"Clicking intermediate Next action on Edit reel step at {edit_next_button}...")
                 self.click_reversible(edit_next_button, label="reel_edit_next", max_offset_px=5)
                 time.sleep(2.0)
         else:
             self.log("INFO", "Facebook skipped the Reel Next/Edit steps and opened the final composer directly.")
+        return None
 
+    def _step_enter_caption(self):
         if self.caption and not self._reel_caption_entered:
             caption_timeout = self._remaining_video_composer_wait(30.0)
             if caption_timeout <= 0:
-                return self._video_composer_timeout(screen)
+                return self._video_composer_timeout(self._screen)
             self.log("STEP", "Locating Reel description input...")
             caption_status, caption_screen = self._enter_reel_caption(timeout=caption_timeout)
             if caption_status == 'review_failed':
@@ -1867,7 +1914,9 @@ class FacebookReelTask(BaseTask):
             self.log("INFO", "Reel caption was already entered while the video was processing.")
         else:
             self.log("INFO", "No Reel caption requested; skipping the description-field wait.")
+        return None
 
+    def _step_wait_publish_ready(self):
         self._requires_review = False
         if self.reel_template_id == "t1":
             publish_timeout = self.T1_FINAL_POST_BUTTON_WAIT_TIMEOUT
@@ -1884,13 +1933,14 @@ class FacebookReelTask(BaseTask):
                 f"Waiting up to {publish_timeout:g} seconds for enabled Post / Publish action (background processing / copyright check).",
             )
             if publish_timeout <= 0:
-                return self._video_composer_timeout(screen)
-        publish_status, publish_button, screen = self._wait_for_target(
+                return self._video_composer_timeout(self._screen)
+        publish_status, publish_button, self._screen = self._wait_for_target(
             self._find_stable_reel_publish_action,
             timeout=publish_timeout,
             label="reel_publish_ready",
             fallback_locator=self._find_explicit_legacy_reel_publish_action,
         )
+        screen = self._screen
         if publish_status == "error":
             return self._fail("reel_publish_error", "Facebook displayed an error before publication.", screen)
         if not publish_button:
@@ -1910,20 +1960,26 @@ class FacebookReelTask(BaseTask):
                 )
             return self._fail("reel_publish_not_found", "Enabled Reel Post / Publish action could not be confirmed.")
 
-        if direct_next_share_flow:
+        if self._direct_next_share_flow:
             self._t2b_final_stage_confirmed = True
+        self._publish_button = publish_button
+        return None
 
+    def _step_publish(self):
+        publish_button = self._publish_button
         self.set_stage("ready_to_publish", target=list(publish_button))
-        before_publish = self.client.screenshot()
-        self.capture_evidence("before_reel_publish", before_publish, target=list(publish_button))
+        self._before_publish = self.client.screenshot()
+        self.capture_evidence("before_reel_publish", self._before_publish, target=list(publish_button))
         self.log("STEP", f"Clicking final Reel Post action once at {publish_button}...")
         if not self.execute_publish_gate(publish_button, publish_kind="reel"):
             return self._fail(
                 "reel_publish_gate_rejected",
                 "The engine-owned publish gate rejected the final Reel action; no click was sent.",
-                screen,
+                self._screen,
             )
+        return None
 
+    def _step_verify(self):
         self.set_stage("verifying")
         upload_timeout = self.POST_CLICK_VERIFICATION_TIMEOUT
         popup_timeout = self.POST_CONFIRMATION_POPUP_TIMEOUT
@@ -1932,7 +1988,7 @@ class FacebookReelTask(BaseTask):
             f"Monitoring an active Reel upload for up to {upload_timeout:g} seconds. After the loading composer closes, the success popup gets up to {popup_timeout:g} seconds before profile verification.",
         )
         result, verification = self._verify_reel_publication(
-            before_publish,
+            self._before_publish,
             timeout=upload_timeout,
             popup_timeout=popup_timeout,
         )
@@ -1948,6 +2004,8 @@ class FacebookReelTask(BaseTask):
             )
         else:
             final_screen = None
+        self._publication_result = result
+        self._final_screen = final_screen
 
         if result == "failed":
             if getattr(getattr(self, "post_publish_prompt", None), "last_status", None) == "failed":
@@ -1965,13 +2023,18 @@ class FacebookReelTask(BaseTask):
             )
         if result != "published" and self._new_share_post_is_still_pending(
             final_screen,
-            direct_next_share_flow,
+            self._direct_next_share_flow,
         ):
             return self._uncertain(
                 "reel_share_post_still_visible",
                 "The Post action remained visible after the single click attempt; profile refresh was suppressed to preserve the pending Share page.",
                 final_screen,
             )
+        return None
+
+    def _step_finish(self):
+        result = self._publication_result
+        final_screen = self._final_screen
         if self.defer_comment:
             if result != "published":
                 self.log(

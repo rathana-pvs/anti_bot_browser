@@ -2,59 +2,106 @@ schema_version: 1
 brain_api_version: 1
 workflow_id: facebook_reel
 
+# Each state is one engine step (FacebookReelTask._step_<name>). The engine
+# follows on_success from initial_state and runs the steps in that order; the
+# chain must match the engine's step list exactly. Template routing (T1 Studio,
+# T2A Direct, T2B Next/Share) happens inside detect_entry and attach_media;
+# early_caption and next_steps pass through on layouts that do not need them.
+
 limits:
   max_steps: 80
   max_runtime_seconds: 600
   max_recovery_attempts: 3
 
-initial_state: profile_ready
+initial_state: preflight
 
 states:
-  profile_ready:
+  preflight:
+    actions:
+      - capability: observe_screen
+    on_success: open_reel_entry
+    on_failure: failed_safe
+
+  open_reel_entry:
     actions:
       - capability: find_text
         target: reel_entry
       - capability: click_candidate
         target: reel_entry
-    on_success: select_video
-    on_timeout: operator_review
+    on_success: detect_entry
     on_failure: failed_safe
 
-  select_video:
+  detect_entry:
+    actions:
+      - capability: find_template
+    on_success: attach_media
+    on_rejected: operator_review
+    on_failure: failed_safe
+
+  attach_media:
     actions:
       - capability: select_media
         input: media_path
-    on_success: composer_ready
-    on_known_dialog: select_video
-    on_timeout: failed_safe
+    on_success: early_caption
+    on_rejected: operator_review
     on_failure: failed_safe
 
-  composer_ready:
+  early_caption:
     actions:
       - capability: type_text
         target: caption_input
         input: caption
-        when: caption_present
+        when: direct_upload_and_caption_present
+    on_success: next_steps
+    on_rejected: operator_review
+    on_failure: failed_safe
+
+  next_steps:
+    actions:
+      - capability: click_candidate
+        target: next_button
+        when: layout_uses_next
+    on_success: enter_caption
+    on_timeout: failed_safe
+    on_failure: failed_safe
+
+  enter_caption:
+    actions:
+      - capability: type_text
+        target: caption_input
+        input: caption
+        when: caption_not_yet_entered
+    on_success: wait_publish_ready
+    on_rejected: operator_review
+    on_failure: failed_safe
+
+  wait_publish_ready:
+    actions:
       - capability: wait_for_state
         state: post_enabled
     on_success: publish
+    on_rejected: operator_review
     on_timeout: failed_safe
-    on_failure: failed_safe
 
   publish:
     actions:
       - capability: request_publish
         target: publish_button
-    on_success: verify_publication
+    on_success: verify
     on_rejected: operator_review
-    on_uncertain: uncertain
     on_failure: failed_safe
 
-  verify_publication:
+  verify:
+    actions:
+      - capability: verify_publication
+    on_success: finish
+    on_timeout: uncertain
+    on_uncertain: uncertain
+    on_failure: uncertain
+
+  finish:
     actions:
       - capability: verify_publication
     on_success: completed
-    on_timeout: uncertain
     on_uncertain: uncertain
-    on_rejected: uncertain
     on_failure: uncertain

@@ -359,7 +359,8 @@ class BaseTask:
 
         A workflow lists steps as states chained by ``on_success`` from
         ``initial_state``; that chain must match the engine's steps exactly.
-        A workflow without step states (an older installed Brain) uses the
+        A workflow with any state that is not a step (an older installed
+        Brain, whose states may share a name such as ``publish``) uses the
         built-in order. Returns None when the listed steps do not match.
         """
         workflow = getattr(self, "brain_workflow", None)
@@ -370,7 +371,7 @@ class BaseTask:
         while name in states and name not in chain:
             chain.append(name)
             name = states[name].get("on_success")
-        if not set(chain) & set(default_steps):
+        if not chain or not set(chain) <= set(default_steps):
             self.log("INFO", "The pinned workflow does not list steps; using the built-in step order.")
             return default_steps
         if tuple(chain) != tuple(default_steps):
