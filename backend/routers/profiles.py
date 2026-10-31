@@ -379,6 +379,46 @@ def release_profile(profile_id: str):
     return _set_hold(profile_id, None)
 
 
+@router.post("/{profile_id}/check")
+async def check_profile(profile_id: str):
+    """Check now: one short read-only visit that confirms a fixed account."""
+    from backend.services import account_check
+    from backend.services.automation_service import dispatch_pending_queue
+    from backend.services.queue_service import save_posting_queue, with_queue_claim_lock
+    config_path = _profile_dir(profile_id) / "config.json"
+    if not config_path.exists():
+        raise HTTPException(status_code=404, detail="Profile not found")
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    if (config.get("runtime") or {}).get("kind") == ANDROID_RUNTIME:
+        raise HTTPException(status_code=400, detail="Phone accounts can't be checked yet.")
+    if account_hold.on_hold(config):
+        raise HTTPException(status_code=409, detail="Release the hold first; nothing automatic runs on an account on hold.")
+
+    def enqueue():
+        queue = load_posting_queue()
+        existing = account_check.open_check(queue, profile_id)
+        if existing:
+            return existing, False
+        execution = account_check.add_check(queue, profile_id, datetime.now(timezone.utc))
+        if not save_posting_queue(queue):
+            raise HTTPException(status_code=500, detail="Could not save the check")
+        return execution, True
+
+    import asyncio
+    for attempt in range(10):
+        try:
+            execution, created = with_queue_claim_lock(enqueue)
+            break
+        except RuntimeError as error:
+            # The dispatcher holds the queue lock only briefly.
+            if str(error) != "queue_claim_in_progress" or attempt == 9:
+                raise HTTPException(status_code=503, detail="The queue is busy; try again in a moment.") from error
+            await asyncio.sleep(0.3)
+    if created:
+        asyncio.create_task(dispatch_pending_queue())
+    return {"execution_id": execution["execution_id"], "status": execution["status"], "created": created}
+
+
 @router.post("/{profile_id}/proxy-latency")
 def check_profile_proxy_latency(profile_id: str):
     config_path = _profile_dir(profile_id) / "config.json"
