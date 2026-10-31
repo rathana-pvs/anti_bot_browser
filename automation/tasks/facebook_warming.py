@@ -38,11 +38,16 @@ class FacebookWarmingTask(BaseTask):
         # share one page load.
         requested_surface = (rng.choice(tuple(self.WARMING_SURFACES))
                              if options["surface"] == "random" else options["surface"])
+        if options["check"]:
+            # The account's own profile shows best whether it is the Page or the personal profile.
+            requested_surface = "profile"
         self.log("STEP", "Verifying the Facebook session before passive browsing...")
         if not self.verify_logged_in(
             target_url=self.WARMING_SURFACES[requested_surface]
         ):
             return self.skip_unverified_session()
+        if options["check"]:
+            return self._finish_check(options)
 
         requested_surface, warm_surface, fallback_used, surface_screen = (
             self.select_and_open_warming_surface(
@@ -137,6 +142,22 @@ class FacebookWarmingTask(BaseTask):
             warming_surface=warm_surface,
             warming_surface_fallback=fallback_used,
         )
+
+    def _finish_check(self, options) -> bool:
+        """A requested account check passed: logged in, no checkpoint, not the personal profile."""
+        identity = getattr(self, "facebook_identity", None)
+        if identity != "page":
+            # A pass must be proof: without reading the Page's own signs, the account stays flagged.
+            message = "Logged in with no checkpoint, but the check could not confirm the Page is showing."
+            self.log("WARN", f"Account check not passed: {message}")
+            self.capture_evidence("account_check_unconfirmed", facebook_identity=identity)
+            return self.set_outcome("skipped_session_unverified", error=message, account_check=True,
+                                    auth_preflight="page_unconfirmed")
+        self.log("SUCCESS", "Account check passed: logged in, no checkpoint, and the Page is showing.")
+        self.capture_evidence("account_check_passed", facebook_identity=identity)
+        return self.set_outcome("completed", account_check=True, warming_options=options,
+                                warming_surface_requested="profile", warming_surface="profile",
+                                warming_surface_fallback=False)
 
     def _run_active_visit(self, options, requested_surface, warm_surface, fallback_used) -> bool:
         """An auto warming visit: read-only activities chosen for this account."""

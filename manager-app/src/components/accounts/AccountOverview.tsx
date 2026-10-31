@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowRight, Loader2, RefreshCw } from 'lucide-react';
+import { ArrowRight, Loader2, RefreshCw, ShieldCheck } from 'lucide-react';
 import { Profile } from '../../types/profile';
 import { ProxyItem } from '../../types/proxy';
 import { QueueExecutionItem } from '../../types/automation';
-import { checkProfileFacebookResponse, checkProfileProxySpeed, FacebookResponseResult, ProxySpeedResult } from '../../services/api';
+import { checkProfile, checkProfileFacebookResponse, checkProfileProxySpeed, FacebookResponseResult, ProxySpeedResult } from '../../services/api';
 import { Button } from '../ui/Button';
 import { cn } from '../ui/cn';
 import { FAILED_STATUSES, describe, formatTime, kindLabel } from '../queue/queueModel';
 import { AccountActivity, AccountTab, STATUS_LABEL, STATUS_TONE, TONE_CLASS, browserNotes, isAndroid, liveSignal, networkSignal, openItemSignals } from './accountModel';
-import { STAGE_META, StageBadge, restartEnds, stageView, todayCount, useAccountHealth } from './accountHealth';
+import { STAGE_META, StageBadge, StageView, refreshAccountHealth, restartEnds, stageView, todayCount, useAccountHealth } from './accountHealth';
 import { Alert } from '../ui/Alert';
 
 const card = 'rounded-xl border border-zinc-800 bg-zinc-950/40 p-4';
@@ -58,6 +58,7 @@ export function AccountOverview({ profile, proxies, activity, onOpenQueue, onOpe
           {stage.stage !== 'on_hold' && stage.health?.proxy_restart && <p className="text-amber-300/90">
             Back to normal {restartEnds(stage.health)}.{stage.health.proxy_restart.visited ? '' : ' Posts wait for the first warming visit from the new IP.'}</p>}
           <p className="text-zinc-500">{STAGE_META[stage.stage].suggestion}{stage.health?.manual ? ' Set by hand in Settings.' : ''}</p>
+          {!android && <AccountCheck profile={profile} stage={stage} recent={activity.recent} onOpenQueue={onOpenQueue} />}
         </dd>
         <dt>Today</dt><dd className="text-zinc-200">{activity.posted} posted{activity.warmed ? ` · ${activity.warmed} warmed` : ''}</dd>
         {openItemSignals(activity).length > 0 && <><dt>Needs you</dt><dd className="flex flex-wrap gap-x-2">{openItemSignals(activity).map(s =>
@@ -85,6 +86,58 @@ export function AccountOverview({ profile, proxies, activity, onOpenQueue, onOpe
     </section>
 
     {!android && <TechnicalDetails profile={profile} />}
+  </div>;
+}
+
+const CHECK_BATCH = 'account_check_';
+const OPEN_CHECK = new Set(['pending', 'ready', 'preparing', 'running']);
+const CHECK_RESULT: Record<string, string> = {
+  completed: 'passed', skipped_auth_required: 'Facebook still asks to log in or verify',
+  skipped_personal_profile: 'still on the personal profile',
+};
+
+/** Check now: after fixing an account, one read-only visit confirms it and clears Needs attention. */
+function AccountCheck({ profile, stage, recent, onOpenQueue }: {
+  profile: Profile; stage: StageView; recent: QueueExecutionItem[]; onOpenQueue: (executionId?: string) => void;
+}) {
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState('');
+  const last = recent.find(item => item.batch_id?.startsWith(CHECK_BATCH));
+  const running = Boolean(last && OPEN_CHECK.has(last.status));
+  const wasRunning = useRef(running);
+  // A check that just finished changes the stage; reload it now instead of on the next poll.
+  useEffect(() => {
+    if (wasRunning.current && !running) refreshAccountHealth();
+    wasRunning.current = running;
+  }, [running]);
+  // Only history problems (login, checkpoint, personal profile, failures) are cleared by a check;
+  // open queue items are resolved in the Queue.
+  const checkable = stage.health?.stage === 'attention';
+  if (!checkable && !last) return null;
+  const start = async () => {
+    setStarting(true);
+    setError('');
+    try { await checkProfile(profile.id); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Couldn’t start the check.'); }
+    finally { setStarting(false); }
+  };
+  const result = last && !running ? CHECK_RESULT[last.status] || last.error || describe(last) : '';
+  return <div className="space-y-1 pt-1">
+    {checkable && !profile.account?.on_hold && <div className="flex flex-wrap items-center gap-2">
+      <Button size="sm" variant="outline" onClick={start} disabled={starting || running}>
+        {starting || running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldCheck className="h-3.5 w-3.5" />}
+        {running ? 'Checking…' : 'Check now'}
+      </Button>
+      <span className="text-[11px] text-zinc-500">{running
+        ? 'Opening Facebook to confirm the account. About a minute.'
+        : 'Fixed it? One short read-only visit confirms it and moves the account out of Needs attention.'}</span>
+    </div>}
+    {last && !running && <p className="text-[11px] text-zinc-500">
+      Last check {formatTime(last.stage_updated_at || last.scheduled_at)}:{' '}
+      <button type="button" onClick={() => onOpenQueue(last.execution_id)}
+        className={cn('underline decoration-dotted underline-offset-2 hover:decoration-solid', last.status === 'completed' ? 'text-emerald-300' : 'text-amber-300')}>{result}</button>
+    </p>}
+    {error && <p role="alert" className="text-[11px] text-red-400">{error}</p>}
   </div>;
 }
 

@@ -219,6 +219,13 @@ export async function holdProfile(profileId: string, note: string): Promise<Prof
   return res.json();
 }
 
+/** Check now: one short read-only visit that confirms a fixed account. */
+export async function checkProfile(profileId: string): Promise<{ execution_id: string; status: string; created: boolean }> {
+  const res = await fetch(`${API_BASE}/profiles/${profileId}/check`, { method: 'POST' });
+  if (!res.ok) throw await apiError(res, 'Failed to start the check');
+  return res.json();
+}
+
 export async function releaseProfileHold(profileId: string): Promise<Profile> {
   const res = await fetch(`${API_BASE}/profiles/${profileId}/release`, { method: 'POST' });
   if (!res.ok) throw await apiError(res, 'Failed to release the hold');
