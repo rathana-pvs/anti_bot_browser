@@ -3,7 +3,8 @@ import { CircleCheck, Flame, Hand, LucideIcon, Moon, Pin, Sprout, TriangleAlert 
 import { AccountHealth, AccountStage, Profile } from '../../types/profile';
 import { fetchAccountHealth } from '../../services/api';
 import { cn } from '../ui/cn';
-import { AccountActivity, attentionBreakdown } from './accountModel';
+import { AccountActivity, AccountTab, attentionBreakdown } from './accountModel';
+import { describe, kindLabel } from '../queue/queueModel';
 
 /** System folders: one per stage. They cannot be renamed, deleted or dropped onto.
  * All fill themselves from history except On hold, which the user sets from the account menu. */
@@ -21,18 +22,37 @@ export const STAGE_META: Record<AccountStage, { label: string; icon: LucideIcon;
   on_hold: { label: 'On hold', icon: Hand, tone: 'text-sky-300', suggestion: 'Nothing automatic runs: no posts, no warming, no cloud jobs. Release the hold when you are done, e.g. after changing the proxy.' },
 };
 
-export interface StageView { stage: AccountStage; reason: string; health?: AccountHealth }
+/** Something the user can open to see why: a queue item (with its screenshots) or an account tab. */
+export interface StageEvidence { label: string; detail?: string; at?: string | null; executionId?: string; tab?: AccountTab }
+export interface StageView { stage: AccountStage; reason: string; health?: AccountHealth; evidence?: StageEvidence[] }
+
+const HISTORY_KIND: Record<string, string> = { warming: 'Warm-up', reel: 'Reel', photo: 'Photo', video: 'Feed video', text: 'Text post', live: 'Live' };
+const HISTORY_STATUS: Record<string, string> = {
+  skipped_auth_required: 'Facebook asked to log in', skipped_personal_profile: 'Personal profile was showing',
+  skipped_session_unverified: 'Session not verified', failed_before_publish: 'Failed before posting', failed: 'Failed',
+  uncertain: 'Not confirmed', needs_review: 'Needs review', failed_after_publish: 'Clicked but not found', published: 'Posted', completed: 'Finished',
+};
+
+function historyEvidence(health?: AccountHealth): StageEvidence[] {
+  return (health?.evidence || []).map(item => ({
+    label: `${HISTORY_KIND[item.kind] || 'Post'} · ${HISTORY_STATUS[item.status] || item.status.replace(/_/g, ' ')}`,
+    detail: item.error || undefined, at: item.at, executionId: item.execution_id,
+  }));
+}
 
 /** Problems the app already knows about locally (browser, network, open queue items). */
-function localAttention(profile: Profile, activity?: AccountActivity): string | null {
-  if (profile.status === 'error') return 'The browser reported an error.';
-  if (profile.restart_required) return 'Saved settings apply after the next restart.';
+function localAttention(profile: Profile, activity?: AccountActivity): { reason: string; evidence: StageEvidence[] } | null {
+  if (profile.status === 'error') return { reason: 'The browser reported an error.', evidence: [{ label: 'Open the browser to see it', tab: 'browser' }] };
+  if (profile.restart_required) return { reason: 'Saved settings apply after the next restart.', evidence: [{ label: 'Review the saved settings', tab: 'settings' }] };
   const preflight = profile.effective_environment?.network_preflight;
-  if (preflight && !preflight.startsWith('passed:')) return 'The network check did not pass.';
+  if (preflight && !preflight.startsWith('passed:')) return { reason: 'The network check did not pass.', evidence: [{ label: 'Network check result', detail: preflight, tab: 'settings' }] };
   if (activity?.attention.length) {
     const open = attentionBreakdown(activity.attention);
-    if (open.unconfirmed) return `${open.unconfirmed} post${open.unconfirmed > 1 ? 's' : ''} could not be confirmed.`;
-    return 'Open items in the queue need you.';
+    const evidence = activity.attention.slice(0, 5).map(item => ({
+      label: `${kindLabel(item)} · ${describe(item)}`, at: item.stage_updated_at || item.scheduled_at, executionId: item.execution_id,
+    }));
+    if (open.unconfirmed) return { reason: `${open.unconfirmed} post${open.unconfirmed > 1 ? 's' : ''} could not be confirmed.`, evidence };
+    return { reason: 'Open items in the queue need you.', evidence };
   }
   return null;
 }
@@ -46,9 +66,9 @@ export function stageView(profile: Profile, health?: AccountHealth, activity?: A
     return { stage: 'on_hold', reason: `On hold${note ? `: ${note}` : ''}.`, health };
   }
   const local = localAttention(profile, activity);
-  if (local) return { stage: 'attention', reason: local, health };
+  if (local) return { stage: 'attention', reason: local.reason, health, evidence: local.evidence };
   if (!health) return { stage: 'ready', reason: 'Stage not worked out yet.' };
-  return { stage: health.stage, reason: health.reason, health };
+  return { stage: health.stage, reason: health.reason, health, evidence: historyEvidence(health) };
 }
 
 export function restingLeft(until: string | null | undefined) {
@@ -86,7 +106,8 @@ export function todayCount(view: StageView) {
 
 export function stageTooltip(view: StageView) {
   const today = todayCount(view);
-  return `${stageLabel(view)}: ${view.reason}${today ? ` ${today}` : ''} ${STAGE_META[view.stage].suggestion}${view.health?.manual ? ' Stage set by hand.' : ''}`;
+  const evidence = view.evidence?.length ? ` Evidence: ${view.evidence[0].label}${view.evidence.length > 1 ? ` (+${view.evidence.length - 1} more)` : ''}. Open the account to view it.` : '';
+  return `${stageLabel(view)}: ${view.reason}${today ? ` ${today}` : ''} ${STAGE_META[view.stage].suggestion}${view.health?.manual ? ' Stage set by hand.' : ''}${evidence}`;
 }
 
 /** Stage icon, with its label unless `compact`. Ready stays quiet in lists. */

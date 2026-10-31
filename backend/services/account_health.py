@@ -102,6 +102,17 @@ def sync_history(queue: dict, now: datetime | None = None) -> dict:
         return history
 
 
+def entries_for(history: dict, profile_id: str) -> list[dict]:
+    """One account's history entries, each carrying its queue execution id."""
+    return [{**entry, "execution_id": execution_id} for execution_id, entry in (history.get(profile_id) or {}).items()]
+
+
+def _evidence(*entries) -> list[dict]:
+    """The queue items behind a stage, so the user can open them."""
+    return [{key: entry.get(key) for key in ("execution_id", "at", "kind", "status", "error")}
+            for entry in entries if entry and entry.get("execution_id")]
+
+
 def _zone(config: dict):
     name = (config.get("fingerprint") or {}).get("timezone") or (config.get("requested_environment") or {}).get("timezone")
     try:
@@ -162,18 +173,21 @@ def compute(config: dict, entries: list[dict], now: datetime | None = None) -> d
     last_success = successes[-1]["at"] if successes else ""
     checkpoint = next((entry for entry in reversed(entries) if entry["status"] == "skipped_auth_required"), None)
     if checkpoint and checkpoint["at"] > last_success:
-        result.update(stage="attention", reason="Facebook asked to log in or verify this account.")
+        result.update(stage="attention", reason="Facebook asked to log in or verify this account.",
+                      evidence=_evidence(checkpoint))
         return result
     # Pages post as the Page; a session that showed the personal profile
     # means the browser switched away from the Page.
-    identity = next((entry["identity"] for entry in reversed(entries) if entry.get("identity")), None)
-    if identity == "personal":
+    identified = next((entry for entry in reversed(entries) if entry.get("identity")), None)
+    if identified and identified["identity"] == "personal":
         result.update(stage="attention",
-                      reason="Facebook was showing the personal profile instead of the Page. Switch back to the Page in the browser.")
+                      reason="Facebook was showing the personal profile instead of the Page. Switch back to the Page in the browser.",
+                      evidence=_evidence(identified))
         return result
     recent = entries[-FAILURE_STREAK:]
     if len(recent) == FAILURE_STREAK and all(entry["status"] in FAILURE_STATUSES for entry in recent):
-        result.update(stage="attention", reason=f"The last {FAILURE_STREAK} sessions failed before posting.")
+        result.update(stage="attention", reason=f"The last {FAILURE_STREAK} sessions failed before posting.",
+                      evidence=_evidence(*reversed(recent)))
         return result
 
     window = account_hold.restart(config, now)
@@ -193,7 +207,7 @@ def compute(config: dict, entries: list[dict], now: datetime | None = None) -> d
     if pushback:
         until = _parse(pushback["at"]) + timedelta(hours=PUSHBACK_REST_HOURS)
         if until > now:
-            result.update(stage="resting", until=until.isoformat(),
+            result.update(stage="resting", until=until.isoformat(), evidence=_evidence(pushback),
                           reason="Facebook refused a recent action, so this account rests for a few days.")
             return result
     if limit and posts_today >= limit:
@@ -217,5 +231,5 @@ def _profile_configs() -> dict[str, dict]:
 def all_health(queue: dict, now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     history = sync_history(queue, now)
-    return {profile_id: compute(config, list((history.get(profile_id) or {}).values()), now)
+    return {profile_id: compute(config, entries_for(history, profile_id), now)
             for profile_id, config in _profile_configs().items()}

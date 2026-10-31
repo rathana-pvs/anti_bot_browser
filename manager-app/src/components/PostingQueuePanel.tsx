@@ -38,7 +38,8 @@ interface PostingQueuePanelProps {
   onOpenAccount?: (profileId: string) => void;
   onCreate?: () => void;
   /** Set from other pages to show one account's items; a new `key` re-applies it. */
-  focusAccount?: { profileId: string; key: number } | null;
+  /** Show one account's items, with one item's details open when `executionId` is given. */
+  focusAccount?: { profileId: string; executionId?: string; key: number } | null;
 }
 
 const TYPE_FILTERS: { value: QueueTypeFilter; label: string }[] = [
@@ -108,7 +109,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
     setTypeFilter('all');
     setBatchFilter(ALL_BATCHES);
     setSearch('');
-    setSelectedId(null);
+    setSelectedId(focusAccount.executionId ?? null);
   }, [focusAccount?.key]);
 
   const profileById = useMemo(() => new Map(profiles.map(p => [p.id, p])), [profiles]);

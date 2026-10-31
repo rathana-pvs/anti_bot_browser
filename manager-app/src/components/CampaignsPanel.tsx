@@ -18,7 +18,7 @@ interface CampaignsPanelProps {
   onOpenAccount?: (profileId: string) => void;
   onAttentionChange?: (count: number) => void;
   /** Set by other pages to bring Queue forward, optionally showing one account. */
-  queueRequest?: { profileId?: string; key: number } | null;
+  queueRequest?: { profileId?: string; executionId?: string; key: number } | null;
   /** A photo, Reel, or Live video sent from Reel Studio, to start a campaign with. */
   reelRequest?: { media: CreatedReelMedia; key: number } | null;
 }
@@ -63,7 +63,7 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
       <div className={`min-h-0 flex-1 overflow-hidden p-6 ${section === 'queue' ? '' : 'hidden'}`}>
         <PostingQueuePanel profiles={profiles} onAttentionChange={setAttention}
           onWatchProfile={onSelectProfile} onOpenAccount={onOpenAccount} onCreate={() => onSectionChange('post')}
-          focusAccount={queueRequest?.profileId ? { profileId: queueRequest.profileId, key: queueRequest.key } : null} />
+          focusAccount={queueRequest?.profileId ? { profileId: queueRequest.profileId, executionId: queueRequest.executionId, key: queueRequest.key } : null} />
       </div>
 
       <div className={`flex-1 overflow-y-auto p-6 ${section === 'post' ? '' : 'hidden'}`}>

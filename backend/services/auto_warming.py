@@ -247,7 +247,7 @@ def plan_once(now: datetime | None = None) -> dict | None:
     choice = None
     if not waiting and _machine_calm():
         configs = _profile_configs()
-        health = {pid: account_health.compute(config, list((history.get(pid) or {}).values()), now)
+        health = {pid: account_health.compute(config, account_health.entries_for(history, pid), now)
                   for pid, config in configs.items()}
         held = {pid for pid in health if _needs_restart_visit(health, pid)}
         if spare_capacity(queue, active_in_memory_scheduler_leases(), get_scheduler_config(), now_ms, held):
