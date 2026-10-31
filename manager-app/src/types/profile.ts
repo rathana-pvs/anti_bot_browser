@@ -102,7 +102,6 @@ export const reelTemplateLabel = (value: ReelTemplateSelection): string => ({
 
 export interface AutomationPreferences {
   reel_template: ReelTemplateSelection;
-  natural_session?: boolean;
 }
 
 export interface EffectiveResourceLimits extends ResourceLimits {

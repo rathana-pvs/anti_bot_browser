@@ -1,4 +1,4 @@
-"""Active hours hold only natural-session desktop items, and never for long."""
+"""Active hours hold desktop items outside the account's waking hours, and never for long."""
 import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -61,8 +61,8 @@ def test_items_that_are_never_held(tmp_path, monkeypatch):
     assert len(ordered_due_executions(queue(scheduled_ms=late), outside)) == 1
 
 
-def test_switch_off_is_never_held(tmp_path, monkeypatch):
+def test_an_old_switched_off_account_is_held_too(tmp_path, monkeypatch):
     monkeypatch.setattr(active_hours, "PROFILES_DIR", tmp_path)
     write_profile(tmp_path, natural=False)
     outside, _ = outside_and_inside()
-    assert len(ordered_due_executions(queue(scheduled_ms=outside - 60000), outside)) == 1
+    assert ordered_due_executions(queue(scheduled_ms=outside - 60000), outside) == []
