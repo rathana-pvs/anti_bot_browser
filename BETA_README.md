@@ -12,6 +12,26 @@ run on a new machine.
 - Python 3.10 or newer
 - `jq`, `zip`, and standard Linux desktop utilities
 
+### What a new Linux PC needs
+
+`bash install.sh --check` reports each of these; the installer stops in the
+first minute when a blocker is missing.
+
+| Need | Required | Notes |
+|---|---|---|
+| System | Ubuntu, Debian, or a system based on them (Linux Mint, Pop!_OS, Zorin) | |
+| Processor | Intel or AMD (x86_64) | Chrome for Linux and the proxy tunnel exist only for x86_64 |
+| Free disk | 25 GiB for a first install | Then about 0.3-1.5 GiB per account; housekeeping keeps it from growing |
+| Memory and CPU | 8 GB and 4 threads (16 GB or more for several accounts) | Below this only a warning: fewer accounts run at once |
+| Internet | Reachable `pypi.org` and `dl.google.com` | A first install downloads several GB |
+| Proxy tunnel | `/dev/net/tun` | Loaded by setup if missing; without it proxy accounts cannot start |
+| Administrator rights | One password prompt | Installs packages and Docker; afterwards **sign out and back in** once for Docker access |
+| NVIDIA GPU (optional) | NVIDIA driver installed first | Setup then installs GPU OCR and verifies it; with no driver, an old driver, or no NVIDIA card it uses CPU OCR. The end of setup prints which one is used |
+
+Desktop package: prefer the `.deb`. The AppImage needs FUSE 2, which Ubuntu
+22.04 and later do not install by default (`sudo apt install libfuse2t64`, or
+`libfuse2` on 22.04).
+
 ## Smart installation
 
 Linux or WSL2:
