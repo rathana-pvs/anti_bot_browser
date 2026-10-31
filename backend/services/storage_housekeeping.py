@@ -67,6 +67,31 @@ ACTIVE_STATUSES = {"pending", "ready", "preparing", "running"}
 PROOF_MARKERS = ("before_publish", "before_reel_publish", "publication_verification", "latest_", "after_first_comment")
 
 _run_lock = threading.Lock()
+# Accounts whose Chrome cache is being trimmed right now; their browser start waits.
+_trimming: set[str] = set()
+_trimming_lock = threading.Lock()
+
+
+def running() -> bool:
+    return bool(_progress.get("running")) or _run_lock.locked()
+
+
+def cleaning() -> bool:
+    """A real pass is running (a preview changes nothing, so it locks nothing)."""
+    return running() and not _progress.get("dry_run")
+
+
+def cache_locked(profile_id: str) -> bool:
+    with _trimming_lock:
+        return profile_id in _trimming
+
+
+async def wait_for_cache_trim(profile_id: str, timeout: float = 60.0) -> None:
+    """Hold a browser start until housekeeping has finished trimming its cache."""
+    import asyncio
+    deadline = time.monotonic() + timeout
+    while cache_locked(profile_id) and time.monotonic() < deadline:
+        await asyncio.sleep(0.2)
 
 # Shown as a progress bar while a pass runs.
 STEPS = (("evidence", "Evidence screenshots"), ("chrome_cache", "Browser caches"), ("queue", "Queue archive"),
@@ -262,19 +287,26 @@ def trim_chrome_caches(dry_run: bool = False) -> dict:
         total = sum(size for _at, size, _path in entries)
         if total <= CACHE_TRIM_ABOVE:
             continue
-        if not _browser_stopped(profile_id):
-            report["skipped_running"] += 1
-            continue
-        freed = 0
-        for _at, size, path in sorted(entries):
-            if total - freed <= CACHE_TRIM_TO:
-                break
-            if not dry_run:
-                try:
-                    path.unlink()
-                except OSError:
-                    continue
-            freed += size
+        with _trimming_lock:
+            _trimming.add(profile_id)
+        try:
+            # Checked again once locked, so a browser that just started is left alone.
+            if not _browser_stopped(profile_id):
+                report["skipped_running"] += 1
+                continue
+            freed = 0
+            for _at, size, path in sorted(entries):
+                if total - freed <= CACHE_TRIM_TO:
+                    break
+                if not dry_run:
+                    try:
+                        path.unlink()
+                    except OSError:
+                        continue
+                freed += size
+        finally:
+            with _trimming_lock:
+                _trimming.discard(profile_id)
         report["profiles_trimmed"] += 1
         report["freed_bytes"] += freed
     return report
@@ -400,6 +432,10 @@ def run(dry_run: bool = False, reason: str = "manual") -> dict:
     """One housekeeping pass. Only one runs at a time."""
     if not _run_lock.acquire(blocking=False):
         return {"busy": True, **read_state()}
+    if not _progress.get("running"):
+        # The daily pass starts here directly; show it from the first moment too.
+        _progress.clear()
+        _progress.update(running=True, dry_run=dry_run, percent=0.0, freed_bytes=0, step="prepare", label="Getting ready")
     try:
         from backend.services import account_health
         from backend.services.queue_service import load_posting_queue
@@ -449,7 +485,7 @@ def run(dry_run: bool = False, reason: str = "manual") -> dict:
 
 def start(dry_run: bool = False, reason: str = "manual") -> bool:
     """Run a pass in the background; False when one is already running."""
-    if _progress.get("running") or _run_lock.locked():
+    if running():
         return False
     # Shown at once, before the pass has gathered what to protect.
     _progress.clear()

@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, ExternalLink, Sparkles } from 'lucide-react'
 import { Profile } from '../../types/profile';
 import { QueueExecutionItem } from '../../types/automation';
 import { cleanProfileEvidence } from '../../services/api';
+import { useStorageCleaning } from '../StorageControl';
 import { Button } from '../ui/Button';
 import { cn } from '../ui/cn';
 import { EvidenceViewer } from '../queue/EvidenceViewer';
@@ -18,6 +19,7 @@ export function AccountActivityTab({ profile, recent, onOpenImage, onToast }: {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [limit, setLimit] = useState(PAGE);
   const [cleaning, setCleaning] = useState(false);
+  const storageCleaning = useStorageCleaning();
   const finished = recent.filter(item => !['pending', 'ready'].includes(item.status));
 
   const clean = async () => {
@@ -69,7 +71,8 @@ export function AccountActivityTab({ profile, recent, onOpenImage, onToast }: {
         <h3 className="text-sm font-semibold text-zinc-100">Storage</h3>
         <p className="mt-0.5 text-zinc-500">{profile.disk_usage ? `${profile.disk_usage} used. ` : ''}Screenshots older than 3 days can be removed; recent ones are kept.</p>
       </div>
-      <Button size="sm" variant="outline" loading={cleaning} onClick={clean}><Sparkles className="h-3.5 w-3.5" />Clean old evidence</Button>
+      <Button size="sm" variant="outline" loading={cleaning} disabled={storageCleaning}
+        title={storageCleaning ? 'Storage cleanup is running. This waits until it finishes.' : undefined} onClick={clean}><Sparkles className="h-3.5 w-3.5" />Clean old evidence</Button>
     </section>
   </div>;
 }

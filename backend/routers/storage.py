@@ -10,7 +10,7 @@ def get_storage():
     """Free disk space now, plus usage and results from the last housekeeping run."""
     return {"free_bytes": housekeeping.disk_free(), "low_disk_bytes": housekeeping.LOW_DISK_BYTES,
             "critical_disk_bytes": housekeeping.CRITICAL_DISK_BYTES, "last_run": housekeeping.read_state() or None,
-            "progress": housekeeping.progress()}
+            "progress": {**housekeeping.progress(), "running": housekeeping.running()}}
 
 
 @router.post("/clean")

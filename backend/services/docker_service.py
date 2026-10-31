@@ -375,6 +375,9 @@ async def run_profile_action(profile_id: str, action: str) -> dict:
     if action not in ("start", "stop", "pause", "unpause"):
         raise ValueError("Invalid action")
     ensure_not_android(profile_id, "Starting or stopping a browser")
+    if action == "start":
+        from backend.services.storage_housekeeping import wait_for_cache_trim
+        await wait_for_cache_trim(profile_id)
     original_status = get_container_status(profile_id)
     script_path = SCRIPTS_DIR / "run_profile.sh"
     cmd = ["bash", str(script_path), profile_id, action]
