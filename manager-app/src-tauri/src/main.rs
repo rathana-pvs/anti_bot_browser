@@ -923,7 +923,7 @@ fn runtime_version_current(root: &Path) -> bool {
 #[cfg(not(target_os = "windows"))]
 fn setup_state(root: Option<&PathBuf>) -> (bool, bool, bool, bool, bool) {
     let system_ready = std::fs::read_to_string("/etc/os-release")
-        .map(|contents| contents.contains("ID=ubuntu") || contents.contains("ID=debian"))
+        .map(|contents| debian_family(&contents))
         .unwrap_or(false);
     let platform_ready = command_succeeds("docker", &["info"]);
     let image_ready = platform_ready
@@ -945,6 +945,19 @@ fn setup_state(root: Option<&PathBuf>) -> (bool, bool, bool, bool, bool) {
         image_ready,
         configuration_ready,
     )
+}
+
+/// Ubuntu, Debian, or a system based on them (Linux Mint, Pop!_OS, Zorin...).
+#[cfg(not(target_os = "windows"))]
+fn debian_family(os_release: &str) -> bool {
+    os_release.lines().any(|line| {
+        let Some((key, value)) = line.split_once('=') else { return false };
+        (key == "ID" || key == "ID_LIKE")
+            && value
+                .trim_matches('"')
+                .split_whitespace()
+                .any(|name| name == "ubuntu" || name == "debian")
+    })
 }
 
 fn setup_snapshot(app: &AppHandle) -> SetupSnapshot {
@@ -1889,6 +1902,15 @@ fn main() {
 #[cfg(all(test, not(target_os = "windows")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ubuntu_based_systems_are_supported() {
+        assert!(debian_family("ID=ubuntu\nVERSION_ID=\"24.04\""));
+        assert!(debian_family("ID=linuxmint\nID_LIKE=\"ubuntu debian\""));
+        assert!(debian_family("ID=pop\nID_LIKE=\"ubuntu debian\""));
+        assert!(!debian_family("ID=fedora\nID_LIKE=\"rhel centos\""));
+        assert!(!debian_family("VERSION_ID=ubuntu"));
+    }
 
     #[test]
     fn local_service_discovery_accepts_desktop_and_standalone_tokens() {
