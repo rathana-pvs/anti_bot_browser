@@ -40,12 +40,7 @@ UPDATE_DISK_GB=5
 MIN_RAM_GB=8
 MIN_CPU_THREADS=4
 LOG_FILE="${ROOT_DIR}/data/install.log"
-IS_WSL=false
 RELOGIN_REQUIRED=false
-
-if grep -qiE '(microsoft|wsl)' /proc/version 2>/dev/null; then
-  IS_WSL=true
-fi
 
 if [ "${MODE}" != "check" ] && [ "${MODE}" != "system" ]; then
   mkdir -p "${ROOT_DIR}/data"
@@ -125,13 +120,7 @@ docker_accessible() {
 }
 
 nvidia_smi_path() {
-  if command -v nvidia-smi >/dev/null 2>&1; then
-    command -v nvidia-smi
-  elif [ -x /usr/lib/wsl/lib/nvidia-smi ]; then
-    printf '%s\n' /usr/lib/wsl/lib/nvidia-smi
-  else
-    return 1
-  fi
+  command -v nvidia-smi
 }
 
 run_checks() {
@@ -142,11 +131,7 @@ run_checks() {
   local image_ready=false
   print_header "Preflight"
   load_os_release || failures=$((failures + 1))
-  if [ "${IS_WSL}" = true ]; then
-    echo "Environment: ${PRETTY_NAME:-Linux} / WSL2"
-  else
-    echo "Environment: ${PRETTY_NAME:-Linux}"
-  fi
+  echo "Environment: ${PRETTY_NAME:-Linux}"
 
   local arch
   arch="$(uname -m)"
@@ -217,9 +202,7 @@ run_checks() {
   done
 
 
-  if [ -c /dev/dxg ]; then
-    echo "OK: WSL DirectX GPU bridge is available"
-  elif [ -d /dev/dri ]; then
+  if [ -d /dev/dri ]; then
     echo "OK: Linux DRM GPU device is available"
   else
     echo "WARN: No browser GPU device is visible; profiles will use software rendering"
@@ -228,9 +211,6 @@ run_checks() {
 
   if docker_accessible; then
     echo "OK: Docker daemon is available"
-  elif [ "${IS_WSL}" = true ]; then
-    echo "ERROR: Docker is unavailable inside WSL2. Start Docker Desktop and enable WSL integration."
-    failures=$((failures + 1))
   elif command -v docker >/dev/null 2>&1; then
     echo "ERROR: Docker is installed, but the daemon or current-user permission is unavailable"
     failures=$((failures + 1))

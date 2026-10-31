@@ -1,4 +1,4 @@
-"""Run the source web UI and an authenticated backend against desktop data (Linux/WSL)."""
+"""Run the source web UI and an authenticated backend against desktop data."""
 import os
 from pathlib import Path
 import secrets
@@ -31,7 +31,7 @@ def interrupted(*_):
 
 def main():
     if os.name != 'posix':
-        raise SystemExit('Run web development in Linux or WSL with the installed Python runtime.')
+        raise SystemExit('Run web development on Linux with the installed Python runtime.')
     source = Path(__file__).resolve().parents[1]
     default_data = Path(os.environ.get('XDG_DATA_HOME', str(Path.home() / '.local/share')))
     runtime = Path(os.environ.get('AUTOMAT_FB_ROOT', str(default_data / 'com.isolatedbrowser.manager/runtime'))).expanduser().resolve()

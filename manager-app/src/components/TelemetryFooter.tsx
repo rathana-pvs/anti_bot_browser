@@ -12,23 +12,20 @@ const gb = (value: number | undefined) => ((value || 0) / 1024).toFixed(1);
 
 export const TelemetryFooter: React.FC<TelemetryFooterProps> = ({ stats, loading = false }) => {
   if (loading) return <footer role="status" className="flex h-8 shrink-0 items-center border-t border-border bg-zinc-950 px-4 text-xs text-zinc-400">Loading system status…</footer>;
-  const runtime = stats.runtime || stats.wsl_runtime || {
+  const displayHost = stats.runtime || {
     cpu_percent: stats.cpu_percent || 0,
     cpu_threads: stats.cpu_cores || 1,
-    cpu_model: stats.cpu_model || 'WSL CPU',
+    cpu_model: stats.cpu_model || 'CPU',
     used_memory_mb: stats.used_memory_mb,
     total_memory_mb: stats.total_memory_mb,
+    gpu_percent: stats.gpu_percent,
+    gpu_model: stats.gpu_model,
   };
-  const host = stats.windows_host;
-  const hasWindowsHost = Boolean(host?.available && host.total_memory_mb);
-  const displayHost = hasWindowsHost ? host : runtime;
-  const hostPlatform = hasWindowsHost ? 'Windows' : 'Linux';
+  const hostPlatform = 'Linux';
 
   const hostCpu = percent(displayHost?.cpu_percent);
   const hostGpu = percent(displayHost?.gpu_percent);
   const hostRam = Math.round(((displayHost?.used_memory_mb || 0) / (displayHost?.total_memory_mb || 1)) * 100);
-  const runtimeCpu = percent(runtime.cpu_percent);
-  const runtimeRam = Math.round((runtime.used_memory_mb / runtime.total_memory_mb) * 100);
   const healthStatus = stats.health?.status || (stats.docker_running ? 'ready' : 'degraded');
   const healthLabel = healthStatus === 'ready' ? 'Ready' : healthStatus === 'degraded' ? 'Degraded' : 'Not ready';
   const healthClass = healthStatus === 'ready'
@@ -102,18 +99,6 @@ export const TelemetryFooter: React.FC<TelemetryFooterProps> = ({ stats, loading
           </div>
       </>
 
-      {stats.runtime_environment === 'wsl' && hasWindowsHost && <>
-        <span className="text-zinc-700">|</span>
-        <span className="text-violet-400 font-semibold">WSL</span>
-        <div className="flex items-center gap-1.5" title={`WSL/Docker runtime CPU (${runtime.cpu_threads} logical threads)`}>
-          <Cpu className="w-3 h-3 text-zinc-500" /><span>CPU</span>
-          <span className={textColor(runtimeCpu)}>{runtimeCpu.toFixed(1)}% ({runtime.cpu_threads}T)</span>
-        </div>
-        <div className="flex items-center gap-1.5" title="Memory visible to the WSL/Docker runtime">
-          <HardDrive className="w-3 h-3 text-zinc-500" /><span>RAM</span>
-          <span className={textColor(runtimeRam)}>{gb(runtime.used_memory_mb)}/{gb(runtime.total_memory_mb)} GB ({runtimeRam}%)</span>
-        </div>
-      </>}
 
       <span className="text-zinc-700">|</span>
       <div className="flex items-center gap-1.5 shrink-0">

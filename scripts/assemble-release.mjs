@@ -7,7 +7,7 @@ import { verifySignedAsset } from './verify-updater-asset.mjs';
 
 export function buildManifest(version, assets, repository, notes = '') {
   if (!/^[\w.-]+\/[\w.-]+$/.test(repository)) throw new Error('Invalid release repository');
-  const types = { '.deb': 'linux-x86_64-deb', '.AppImage': 'linux-x86_64-appimage', '.exe': 'windows-x86_64-nsis', '.msi': 'windows-x86_64-msi' };
+  const types = { '.deb': 'linux-x86_64-deb', '.AppImage': 'linux-x86_64-appimage' };
   const platforms = {};
   for (const { name, signature } of assets) {
     const suffix = Object.keys(types).find(ext => name.endsWith(ext));
@@ -24,7 +24,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const input = resolve(process.argv[2]); const output = resolve(process.argv[3]);
   const version = checkVersion(root, process.env.RELEASE_TAG?.replace(/^v/, ''));
   const walk = dir => readdirSync(dir, { withFileTypes: true }).flatMap(entry => entry.isDirectory() ? walk(join(dir, entry.name)) : [join(dir, entry.name)]);
-  const paths = walk(input).filter(p => /\.(deb|AppImage|exe|msi)$/.test(p));
+  const paths = walk(input).filter(p => /\.(deb|AppImage)$/.test(p));
   const assets = paths.map(path => ({ name: basename(path), signature: readFileSync(path + '.sig', 'utf8') }));
   const publicKey = JSON.parse(readFileSync(join(root,'manager-app/src-tauri/tauri.conf.json'),'utf8')).plugins.updater.pubkey;
   for (let i=0; i<paths.length; i++) verifySignedAsset(paths[i], assets[i].signature, publicKey, version);

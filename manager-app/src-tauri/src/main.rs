@@ -1,6 +1,3 @@
-// Prevents additional console window on Windows in release, DO NOT REMOVE!!
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-
 use serde::Serialize;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -31,14 +28,7 @@ struct ApiSessionInfo {
     token: String,
 }
 
-#[cfg(target_os = "windows")]
-fn suppress_console_window(command: &mut Command) {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-    command.creation_flags(CREATE_NO_WINDOW);
-}
 
-#[cfg(not(target_os = "windows"))]
 fn suppress_console_window(_command: &mut Command) {}
 
 #[derive(Clone, Serialize)]
@@ -55,7 +45,7 @@ struct SetupStep {
 #[serde(rename_all = "camelCase")]
 struct GpuCompatibility {
     host_gpu: Option<String>,
-    wsl_gpu_visible: bool,
+    runtime_gpu_visible: bool,
     browser_acceleration_available: bool,
     cuda_runtime_available: bool,
     runtime_install_required: bool,
@@ -117,20 +107,13 @@ fn command_output(program: &str, args: &[&str]) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
-#[cfg(not(target_os = "windows"))]
 fn container_platform_installed() -> bool {
     command_succeeds("which", &["docker"])
 }
 
-#[cfg(target_os = "windows")]
-fn container_platform_installed() -> bool {
-    find_ubuntu_distribution()
-        .map(|name| command_succeeds("wsl.exe", &["-d", &name, "--", "docker", "--version"]))
-        .unwrap_or(false)
-}
 
 fn development_root() -> Option<PathBuf> {
-    #[cfg(all(debug_assertions, not(target_os = "windows")))]
+    #[cfg(debug_assertions)]
     {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()?
@@ -178,10 +161,9 @@ fn find_install_root(app: &AppHandle) -> Option<PathBuf> {
     }
     candidates
         .into_iter()
-        .find(|path| path.join("install.sh").exists() || path.join("install-windows.ps1").exists())
+        .find(|path| path.join("install.sh").exists())
 }
 
-#[cfg(not(target_os = "windows"))]
 fn copy_setup_payload(
     source: &std::path::Path,
     destination: &std::path::Path,
@@ -213,7 +195,6 @@ fn copy_setup_payload(
     Ok(())
 }
 
-#[cfg(not(target_os = "windows"))]
 fn root_has_profiles(root: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(root.join("profiles")) else {
         return false;
@@ -223,7 +204,6 @@ fn root_has_profiles(root: &Path) -> bool {
         .any(|entry| entry.path().join("config.json").is_file())
 }
 
-#[cfg(not(target_os = "windows"))]
 fn copy_user_data_tree(source: &Path, destination: &Path) -> Result<(), String> {
     if !source.exists() {
         return Ok(());
@@ -260,7 +240,6 @@ fn copy_user_data_tree(source: &Path, destination: &Path) -> Result<(), String> 
     Ok(())
 }
 
-#[cfg(not(target_os = "windows"))]
 fn migrate_legacy_user_data(source: &Path, destination: &Path) -> Result<bool, String> {
     let marker_dir = destination.join("data");
     let completed_marker = marker_dir.join("legacy_profile_migration_v1");
@@ -310,7 +289,6 @@ fn migrate_legacy_user_data(source: &Path, destination: &Path) -> Result<bool, S
     Ok(true)
 }
 
-#[cfg(not(target_os = "windows"))]
 fn find_legacy_data_root(destination: &Path) -> Option<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(path) = std::env::var_os("AUTOMAT_FB_LEGACY_ROOT") {
@@ -339,7 +317,6 @@ fn find_legacy_data_root(destination: &Path) -> Option<PathBuf> {
         .find(|candidate| candidate != destination && root_has_profiles(candidate))
 }
 
-#[cfg(not(target_os = "windows"))]
 fn prepare_install_root(app: &AppHandle) -> Result<PathBuf, String> {
     if development_root().is_some() {
         // Development code comes from the checkout; user data keeps the same
@@ -387,13 +364,6 @@ fn prepare_install_root(app: &AppHandle) -> Result<PathBuf, String> {
     }
 }
 
-#[cfg(target_os = "windows")]
-fn prepare_install_root(app: &AppHandle) -> Result<PathBuf, String> {
-    find_install_root(app).ok_or_else(|| {
-        "Installation payload was not found. Reinstall from the complete release package."
-            .to_string()
-    })
-}
 
 fn manager_api_port() -> u16 {
     std::env::var("MANAGER_API_PORT")
@@ -418,29 +388,6 @@ fn backend_is_running() -> bool {
     backend_is_running_on_port(manager_api_port())
 }
 
-#[cfg(target_os = "windows")]
-fn backend_runtime_version() -> Option<String> {
-    let address = SocketAddr::from(([127, 0, 0, 1], manager_api_port()));
-    let token = std::env::var("MANAGER_API_TOKEN").ok()?;
-    let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(500)).ok()?;
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
-    let request = format!(
-        "GET /api/system/runtime-version HTTP/1.0\r\nHost: 127.0.0.1\r\nX-Manager-Token: {token}\r\nConnection: close\r\n\r\n"
-    );
-    stream.write_all(request.as_bytes()).ok()?;
-    let mut response = String::new();
-    stream.read_to_string(&mut response).ok()?;
-    if !response.starts_with("HTTP/1.0 200") && !response.starts_with("HTTP/1.1 200") {
-        return None;
-    }
-    let body = response.split("\r\n\r\n").nth(1)?;
-    serde_json::from_str::<serde_json::Value>(body)
-        .ok()?
-        .get("version")?
-        .as_str()
-        .map(str::to_string)
-}
 
 // Attach to a separately managed worker backend without taking ownership of it.
 // The descriptor contains only the local API token, never the cloud credential.
@@ -499,59 +446,9 @@ fn worker_service_session(app: &AppHandle) -> Option<ApiSession> {
     None
 }
 
-#[cfg(target_os = "windows")]
-fn installed_wsl_runtime_version(distribution: &str) -> Option<String> {
-    command_output(
-        "wsl.exe",
-        &[
-            "-d",
-            distribution,
-            "--",
-            "bash",
-            "-lc",
-            "cat \"$HOME/automat_fb-beta/data/runtime-installed-version\" 2>/dev/null",
-        ],
-    )
-    .map(|value| value.trim().to_string())
-    .filter(|value| !value.is_empty())
-}
 
-#[cfg(target_os = "windows")]
-fn stop_wsl_backend_on_port(distribution: Option<&str>, port: u16) {
-    let Some(distribution) = distribution else {
-        return;
-    };
-    let stop_command =
-        format!("pkill -f '[u]vicorn backend.main:app.*--port {port}' >/dev/null 2>&1 || true");
-    let _ = command_succeeds(
-        "wsl.exe",
-        &["-d", distribution, "--", "bash", "-lc", &stop_command],
-    );
-    for _ in 0..20 {
-        if !backend_is_running_on_port(port) {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
 
-#[cfg(target_os = "windows")]
-fn stop_wsl_backend(distribution: Option<&str>) {
-    stop_wsl_backend_on_port(distribution, manager_api_port());
-}
 
-#[cfg(target_os = "windows")]
-fn stop_orphaned_wsl_backends(distribution: &str) {
-    let script = "pkill -f '[u]vicorn backend.main:app' >/dev/null 2>&1 || true";
-    let mut command = Command::new("wsl.exe");
-    command
-        .args(["-d", distribution, "--", "bash", "-lc", script])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    suppress_console_window(&mut command);
-    let _ = command.status();
-}
 
 #[tauri::command]
 fn get_api_session(state: State<'_, ApiSession>) -> ApiSessionInfo {
@@ -603,14 +500,15 @@ fn available_download_path(downloads_dir: &Path, filename: &str) -> PathBuf {
 }
 
 #[tauri::command]
-fn save_support_bundle(filename: String, bytes: Vec<u8>) -> Result<String, String> {
+fn save_support_bundle(app: AppHandle, filename: String, bytes: Vec<u8>) -> Result<String, String> {
     if bytes.is_empty() {
         return Err("The generated support ZIP was empty.".to_string());
     }
-    let user_profile = std::env::var_os("USERPROFILE")
-        .map(PathBuf::from)
-        .ok_or_else(|| "Could not locate the Windows user profile.".to_string())?;
-    let downloads_dir = user_profile.join("Downloads");
+    let downloads_dir = app
+        .path()
+        .download_dir()
+        .or_else(|_| app.path().home_dir().map(|home| home.join("Downloads")))
+        .map_err(|_| "Could not locate the Downloads folder.".to_string())?;
     std::fs::create_dir_all(&downloads_dir)
         .map_err(|error| format!("Could not create the Downloads folder: {error}"))?;
     let destination = available_download_path(&downloads_dir, &safe_support_filename(&filename));
@@ -619,35 +517,7 @@ fn save_support_bundle(filename: String, bytes: Vec<u8>) -> Result<String, Strin
     Ok(destination.display().to_string())
 }
 
-#[cfg(target_os = "windows")]
-fn decode_windows_text(bytes: &[u8]) -> String {
-    if bytes.len() >= 2 && bytes[1] == 0 {
-        let words: Vec<u16> = bytes
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-            .collect();
-        String::from_utf16_lossy(&words)
-    } else {
-        String::from_utf8_lossy(bytes).into_owned()
-    }
-}
 
-#[cfg(target_os = "windows")]
-fn find_ubuntu_distribution() -> Option<String> {
-    use std::os::windows::process::CommandExt;
-    let output = Command::new("wsl.exe")
-        .args(["--list", "--quiet"])
-        .creation_flags(0x08000000)
-        .output()
-        .ok()?;
-    decode_windows_text(&output.stdout)
-        .lines()
-        .map(|line| {
-            line.trim_matches(|character: char| character == '\0' || character.is_whitespace())
-        })
-        .find(|line| line.to_ascii_lowercase().contains("ubuntu"))
-        .map(str::to_owned)
-}
 
 fn gpu_compatibility(
     host_gpu: Option<String>,
@@ -656,13 +526,13 @@ fn gpu_compatibility(
     cuda_device: Option<String>,
     runtime_install_required: bool,
 ) -> GpuCompatibility {
-    let wsl_gpu_visible = runtime_gpu.is_some();
+    let runtime_gpu_visible = runtime_gpu.is_some();
     let cuda_runtime_available = cuda_device.is_some();
     let fallback_reason = if runtime_install_required {
         Some("The selected OCR runtime package must be installed during setup.".into())
     } else if cuda_runtime_available {
         None
-    } else if wsl_gpu_visible {
+    } else if runtime_gpu_visible {
         Some("GPU detected, but the selected OCR CUDA runtime is unavailable; OCR will use CPU.".into())
     } else {
         Some(
@@ -672,7 +542,7 @@ fn gpu_compatibility(
     };
     GpuCompatibility {
         host_gpu: host_gpu.or_else(|| runtime_gpu.clone()),
-        wsl_gpu_visible,
+        runtime_gpu_visible,
         browser_acceleration_available,
         cuda_runtime_available,
         runtime_install_required,
@@ -693,94 +563,8 @@ fn gpu_compatibility(
     }
 }
 
-#[cfg(target_os = "windows")]
-fn detect_gpu_compatibility(
-    distribution: Option<&String>,
-    _root: Option<&PathBuf>,
-    runtime_ready: bool,
-) -> GpuCompatibility {
-    let host_gpu = command_output(
-        "powershell.exe",
-        &[
-            "-NoProfile",
-            "-Command",
-            "$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new(); (Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name) -join ' / '",
-        ],
-    );
-    let Some(name) = distribution else {
-        return gpu_compatibility(host_gpu, None, false, None, runtime_ready);
-    };
-    let runtime_gpu = command_output(
-        "wsl.exe",
-        &[
-            "-d",
-            name,
-            "--",
-            "bash",
-            "-lc",
-            "if command -v nvidia-smi >/dev/null 2>&1; then nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1; elif [ -x /usr/lib/wsl/lib/nvidia-smi ]; then /usr/lib/wsl/lib/nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1; fi",
-        ],
-    );
-    let browser_acceleration_available = command_succeeds(
-        "wsl.exe",
-        &[
-            "-d",
-            name,
-            "--",
-            "bash",
-            "-lc",
-            "(test -d /dev/dri && find /dev/dri -mindepth 1 -maxdepth 1 -print -quit | grep -q .) || (test -c /dev/dxg && test -f /usr/lib/wsl/lib/libd3d12.so && test -f /usr/lib/wsl/lib/libdxcore.so)",
-        ],
-    );
-    let ocr_probe = if runtime_ready {
-        command_output(
-            "wsl.exe",
-            &[
-                "-d",
-                name,
-                "--",
-                "bash",
-                "-lc",
-                "timeout 20 ~/automat_fb-beta/automation/venv/bin/python ~/automat_fb-beta/automation/probe_ocr_runtime.py 2>/dev/null",
-            ],
-        )
-    } else {
-        None
-    };
-    let mut probe_lines = ocr_probe.as_deref().unwrap_or("").lines();
-    let ocr_version = probe_lines.next().filter(|value| !value.trim().is_empty());
-    let cuda_device = probe_lines
-        .next()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned);
-    let cuda_fallback_recorded = command_succeeds(
-        "wsl.exe",
-        &[
-            "-d",
-            name,
-            "--",
-            "bash",
-            "-lc",
-            "test -f ~/automat_fb-beta/data/torch_runtime.json && grep -q '\"cuda_attempted\": true' ~/automat_fb-beta/data/torch_runtime.json",
-        ],
-    );
-    let runtime_install_required = runtime_ready
-        && (ocr_version.is_none()
-            || (runtime_gpu.is_some() && cuda_device.is_none() && !cuda_fallback_recorded
-                && !ocr_version.unwrap_or("").starts_with("paddleocr-")));
-    gpu_compatibility(
-        host_gpu,
-        runtime_gpu,
-        browser_acceleration_available,
-        cuda_device,
-        runtime_install_required,
-    )
-}
 
-#[cfg(not(target_os = "windows"))]
 fn detect_gpu_compatibility(
-    _distribution: Option<&String>,
     root: Option<&PathBuf>,
     runtime_ready: bool,
 ) -> GpuCompatibility {
@@ -795,7 +579,7 @@ fn detect_gpu_compatibility(
         "bash",
         &[
             "-lc",
-            "(test -d /dev/dri && find /dev/dri -mindepth 1 -maxdepth 1 -print -quit | grep -q .) || (test -c /dev/dxg && test -f /usr/lib/wsl/lib/libd3d12.so && test -f /usr/lib/wsl/lib/libdxcore.so)",
+            "(test -d /dev/dri && find /dev/dri -mindepth 1 -maxdepth 1 -print -quit | grep -q .)",
         ],
     );
     let ocr_probe = if runtime_ready {
@@ -845,82 +629,13 @@ fn detect_gpu_compatibility(
     )
 }
 
-#[cfg(target_os = "windows")]
-fn setup_state(root: Option<&PathBuf>) -> (bool, bool, bool, bool, bool) {
-    let system_ready = command_succeeds("wsl.exe", &["--status"]);
-    let distribution = find_ubuntu_distribution();
-    let platform_ready = distribution
-        .as_ref()
-        .map(|name| command_succeeds("wsl.exe", &["-d", name, "--", "docker", "info"]))
-        .unwrap_or(false);
-    let image_ready = distribution
-        .as_ref()
-        .map(|name| {
-            command_succeeds(
-                "wsl.exe",
-                &[
-                    "-d",
-                    name,
-                    "--",
-                    "docker",
-                    "image",
-                    "inspect",
-                    "isolated-chrome:latest",
-                ],
-            )
-        })
-        .unwrap_or(false);
-    let bundled_runtime_version = root.and_then(|path| {
-        std::fs::read_to_string(path.join("VERSION"))
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-    });
-    let installed_runtime_version = distribution
-        .as_ref()
-        .and_then(|name| installed_wsl_runtime_version(name));
-    let runtime_version_current = bundled_runtime_version
-        .as_ref()
-        .map(|version| installed_runtime_version.as_ref() == Some(version))
-        .unwrap_or(true);
-    let runtime_ready = runtime_version_current
-        && distribution
-            .as_ref()
-            .map(|name| {
-                command_succeeds(
-                    "wsl.exe",
-                    &[
-                        "-d",
-                        name,
-                        "--",
-                        "bash",
-                        "-lc",
-                        "test -x \"$HOME/automat_fb-beta/automation/venv/bin/python\"",
-                    ],
-                )
-            })
-            .unwrap_or(false);
-    let configuration_ready = distribution
-        .as_ref()
-        .map(|name| command_succeeds("wsl.exe", &["-d", name, "--", "bash", "-lc", "test -f \"$HOME/automat_fb-beta/data/manager_settings.json\" && test -f \"$HOME/automat_fb-beta/proxies/proxy_pool.json\""]))
-        .unwrap_or(false);
-    (
-        system_ready,
-        platform_ready,
-        runtime_ready,
-        image_ready,
-        configuration_ready,
-    )
-}
 
-#[cfg(not(target_os = "windows"))]
 fn runtime_version_current(root: &Path) -> bool {
     let expected = std::fs::read_to_string(root.join("VERSION")).unwrap_or_default();
     let installed = std::fs::read_to_string(root.join("data/runtime-installed-version")).unwrap_or_default();
     !expected.trim().is_empty() && expected.trim() == installed.trim()
 }
 
-#[cfg(not(target_os = "windows"))]
 fn setup_state(root: Option<&PathBuf>) -> (bool, bool, bool, bool, bool) {
     let system_ready = std::fs::read_to_string("/etc/os-release")
         .map(|contents| debian_family(&contents))
@@ -948,7 +663,6 @@ fn setup_state(root: Option<&PathBuf>) -> (bool, bool, bool, bool, bool) {
 }
 
 /// Ubuntu, Debian, or a system based on them (Linux Mint, Pop!_OS, Zorin...).
-#[cfg(not(target_os = "windows"))]
 fn debian_family(os_release: &str) -> bool {
     os_release.lines().any(|line| {
         let Some((key, value)) = line.split_once('=') else { return false };
@@ -964,11 +678,7 @@ fn setup_snapshot(app: &AppHandle) -> SetupSnapshot {
     let root = find_install_root(app);
     let (system_ready, platform_ready, runtime_ready, image_ready, configuration_ready) =
         setup_state(root.as_ref());
-    #[cfg(target_os = "windows")]
-    let distribution = find_ubuntu_distribution();
-    #[cfg(not(target_os = "windows"))]
-    let distribution: Option<String> = None;
-    let gpu = detect_gpu_compatibility(distribution.as_ref(), root.as_ref(), runtime_ready);
+    let gpu = detect_gpu_compatibility(root.as_ref(), runtime_ready);
     let gpu_ready = system_ready && runtime_ready && !gpu.runtime_install_required;
     let gpu_detail = if !runtime_ready {
         "GPU compatibility will be verified after the automation runtime is installed".to_string()
@@ -1023,11 +733,7 @@ fn setup_snapshot(app: &AppHandle) -> SetupSnapshot {
         },
         SetupStep {
             id: "platform".into(),
-            title: if cfg!(target_os = "windows") {
-                "WSL and Docker".into()
-            } else {
-                "Docker Engine".into()
-            },
+            title: "Docker Engine".into(),
             description: "Isolated container platform for browser profiles".into(),
             status: status(platform_ready, !system_ready).into(),
             detail: if platform_ready {
@@ -1054,7 +760,7 @@ fn setup_snapshot(app: &AppHandle) -> SetupSnapshot {
         SetupStep {
             id: "gpu".into(),
             title: "GPU compatibility".into(),
-            description: "Host graphics, WSL device visibility, browser acceleration, and CUDA OCR"
+            description: "Host graphics, browser acceleration, and CUDA OCR"
                 .into(),
             status: status(gpu_ready, !runtime_ready).into(),
             detail: gpu_detail,
@@ -1098,11 +804,7 @@ fn setup_snapshot(app: &AppHandle) -> SetupSnapshot {
     ];
     let ready = steps.iter().all(|step| step.status == "ready");
     SetupSnapshot {
-        platform: if cfg!(target_os = "windows") {
-            "windows".into()
-        } else {
-            "linux".into()
-        },
+        platform: "linux".into(),
         ready,
         restart_required: false,
         gpu,
@@ -1125,22 +827,6 @@ fn emit_setup_line(app: &AppHandle, stream: &str, line: &str) {
 }
 
 fn setup_log(app: &AppHandle) -> Vec<String> {
-    #[cfg(target_os = "windows")]
-    if let Some(distribution) = find_ubuntu_distribution() {
-        if let Some(contents) = command_output(
-            "wsl.exe",
-            &[
-                "-d",
-                &distribution,
-                "--",
-                "bash",
-                "-lc",
-                "test -f ~/automat_fb-beta/data/install.log && tail -n 500 ~/automat_fb-beta/data/install.log",
-            ],
-        ) {
-            return contents.lines().map(str::to_owned).collect();
-        }
-    }
 
     let Some(root) = find_install_root(app) else {
         return Vec::new();
@@ -1159,25 +845,7 @@ fn setup_log(app: &AppHandle) -> Vec<String> {
 }
 
 fn reset_setup_log(app: &AppHandle) {
-    #[cfg(target_os = "windows")]
-    {
-        let _ = app;
-        if let Some(distribution) = find_ubuntu_distribution() {
-            let _ = command_succeeds(
-                "wsl.exe",
-                &[
-                    "-d",
-                    &distribution,
-                    "--",
-                    "bash",
-                    "-lc",
-                    "mkdir -p ~/automat_fb-beta/data && : > ~/automat_fb-beta/data/install.log",
-                ],
-            );
-        }
-    }
 
-    #[cfg(not(target_os = "windows"))]
     if let Some(root) = find_install_root(app) {
         let data_dir = root.join("data");
         let _ = std::fs::create_dir_all(&data_dir);
@@ -1254,8 +922,6 @@ async fn run_setup(
             terminate_backend(&mut child);
         }
         drop(owned);
-        #[cfg(target_os = "windows")]
-        stop_wsl_backend(find_ubuntu_distribution().as_deref());
         if backend_is_running() {
             return Err("Stop the separately running backend before installing its runtime.".into());
         }
@@ -1267,18 +933,6 @@ async fn run_setup(
         Err(error) => Err(format!("Setup worker failed: {error}")),
     };
     if result.as_ref().map(|value| value.success).unwrap_or(false) {
-        #[cfg(target_os = "windows")]
-        let should_spawn_backend = {
-            if let Ok(mut backend) = backend_state.0.lock() {
-                if let Some(mut child) = backend.take() {
-                    let _ = child.kill();
-                }
-            }
-            let distribution = find_ubuntu_distribution();
-            stop_wsl_backend(distribution.as_deref());
-            true
-        };
-        #[cfg(not(target_os = "windows"))]
         let should_spawn_backend = !backend_is_running();
 
         if should_spawn_backend {
@@ -1330,7 +984,6 @@ async fn run_setup(
     result
 }
 
-#[cfg(not(target_os = "windows"))]
 fn start_container_platform(app: &AppHandle) -> Result<(), String> {
     if !container_platform_installed() {
         return Err("Docker is not installed. Run installation and repair instead.".into());
@@ -1350,29 +1003,6 @@ fn start_container_platform(app: &AppHandle) -> Result<(), String> {
     }
 }
 
-#[cfg(target_os = "windows")]
-fn start_container_platform(app: &AppHandle) -> Result<(), String> {
-    let distribution = find_ubuntu_distribution()
-        .ok_or_else(|| "Ubuntu WSL is not installed. Run installation and repair.".to_string())?;
-    emit_setup_line(app, "system", "Starting Linux Docker Engine inside WSL…");
-    if command_succeeds(
-        "wsl.exe",
-        &[
-            "-d",
-            &distribution,
-            "-u",
-            "root",
-            "--",
-            "service",
-            "docker",
-            "start",
-        ],
-    ) {
-        Ok(())
-    } else {
-        Err("Linux Docker Engine did not start. Run installation and repair.".into())
-    }
-}
 
 fn recover_services_process(app: &AppHandle) -> Result<(SetupRunResult, Option<Child>), String> {
     let (_, platform_ready, _, _, _) = setup_state(find_install_root(app).as_ref());
@@ -1449,25 +1079,7 @@ fn run_setup_process(app: &AppHandle, repair: bool) -> Result<SetupRunResult, St
         &format!("Starting {mode} from {}", root.display()),
     );
 
-    #[cfg(target_os = "windows")]
-    let mut command = {
-        let script = root.join("install-windows.ps1");
-        let mut command = Command::new("powershell.exe");
-        suppress_console_window(&mut command);
-        command.args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            script.to_string_lossy().as_ref(),
-            "-Mode",
-            mode,
-            "-NonInteractive",
-        ]);
-        command
-    };
 
-    #[cfg(not(target_os = "windows"))]
     let mut command = {
         let script = root.join("install.sh");
         let mode_arg = format!("--{mode}");
@@ -1554,86 +1166,9 @@ fn run_setup_process(app: &AppHandle, repair: bool) -> Result<SetupRunResult, St
     })
 }
 
-#[cfg(target_os = "windows")]
-fn spawn_wsl_backend() -> Option<Child> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-    let distribution = find_ubuntu_distribution()?;
-    let port = manager_api_port();
-    std::env::var("MANAGER_API_TOKEN").ok()?;
-
-    if backend_is_running() {
-        let installed_version = installed_wsl_runtime_version(&distribution);
-        let running_version = backend_runtime_version();
-        if installed_version.is_some() && installed_version == running_version {
-            println!(
-                "[Tauri] Reusing matching backend {} on the private loopback port",
-                running_version.as_deref().unwrap_or("unknown")
-            );
-            return None;
-        }
-        println!(
-            "[Tauri] Restarting stale backend (running={:?}, installed={:?})",
-            running_version, installed_version
-        );
-        stop_wsl_backend(Some(&distribution));
-    }
-
-    // A manager crash can leave its random-port backend alive. That orphan
-    // continues running the scheduler against the same queue and can race the
-    // new manager. Once this launch has established that its own private port
-    // is not reusable, retire every old manager backend before starting one.
-    stop_orphaned_wsl_backends(&distribution);
-
-    let launch = format!(
-        concat!(
-            "cd \"$HOME/automat_fb-beta\" && ",
-            "mkdir -p data && ",
-            "MANAGER_API_TOKEN=\"$MANAGER_API_TOKEN\" PYTHONPATH=. exec automation/venv/bin/uvicorn backend.main:app ",
-            "--host 127.0.0.1 --port {port} --no-access-log >> data/install.log 2>&1"
-        ),
-        port = port,
-    );
-    let existing_wslenv = std::env::var("WSLENV").unwrap_or_default();
-    let wslenv = if existing_wslenv.is_empty() {
-        "MANAGER_API_TOKEN".to_string()
-    } else if existing_wslenv
-        .split(':')
-        .any(|entry| entry.split('/').next() == Some("MANAGER_API_TOKEN"))
-    {
-        existing_wslenv
-    } else {
-        format!("{existing_wslenv}:MANAGER_API_TOKEN")
-    };
-    let mut command = Command::new("wsl.exe");
-    command
-        .args(["-d", &distribution, "--", "bash", "-lc", &launch])
-        .env("WSLENV", wslenv)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW);
-
-    match command.spawn() {
-        Ok(child) => {
-            println!("[Tauri] Starting backend on a private loopback port in WSL distribution {distribution}");
-            Some(child)
-        }
-        Err(error) => {
-            eprintln!("[Tauri] Failed to start WSL backend: {error}");
-            None
-        }
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
 fn find_backend_binary(app: &AppHandle) -> Option<PathBuf> {
-    let binary_name = if cfg!(target_os = "windows") {
-        "backend_server.exe"
-    } else {
-        "backend_server"
-    };
+    let binary_name = "backend_server";
 
     // 1. Check in same folder as current executable
     if let Ok(exe_path) = std::env::current_exe() {
@@ -1711,7 +1246,6 @@ fn spawn_backend(app: &AppHandle) -> Option<Child> {
     if std::env::var("WORKER_SERVICE_ATTACHED").as_deref() == Ok("1") {
         return None;
     }
-    #[cfg(not(target_os = "windows"))]
     if development_root().is_none() {
         if let Some(root) = find_install_root(app) {
             if !runtime_version_current(&root) {
@@ -1720,20 +1254,7 @@ fn spawn_backend(app: &AppHandle) -> Option<Child> {
             }
         }
     }
-    #[cfg(target_os = "windows")]
-    {
-        let current = find_ubuntu_distribution()
-            .and_then(|name| installed_wsl_runtime_version(&name))
-            .map(|version| version == app.package_info().version.to_string())
-            .unwrap_or(false);
-        if !current {
-            println!("[Tauri] WSL runtime setup is required for this app version; services are deferred.");
-            return None;
-        }
-        return spawn_wsl_backend();
-    }
 
-    #[cfg(not(target_os = "windows"))]
     if let Some(binary_path) = development_root()
         .is_none()
         .then(|| find_backend_binary(app))
@@ -1797,7 +1318,6 @@ fn spawn_backend(app: &AppHandle) -> Option<Child> {
 }
 
 fn terminate_backend(child: &mut Child) {
-    #[cfg(not(target_os = "windows"))]
     {
         let pid = child.id().to_string();
         let _ = Command::new("kill")
@@ -1887,11 +1407,6 @@ fn main() {
                             }
                         }
                     }
-                    #[cfg(target_os = "windows")]
-                    {
-                        let distribution = find_ubuntu_distribution();
-                        stop_wsl_backend(distribution.as_deref());
-                    }
                 }
             }
         })
@@ -1899,7 +1414,7 @@ fn main() {
         .expect("error while running tauri application");
 }
 
-#[cfg(all(test, not(target_os = "windows")))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

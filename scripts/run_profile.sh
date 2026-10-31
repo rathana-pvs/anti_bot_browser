@@ -88,20 +88,13 @@ case "$ACTION" in
             fi
         fi
 
-        # Pass the native Linux DRM device, or WSL2's DirectX GPU bridge.
-        # Keep startup portable: the entrypoint records a software fallback
-        # when neither device is available.
+        # Pass the Linux DRM GPU device. Keep startup portable: the entrypoint
+        # records a software fallback when it is unavailable.
         DEVICE_ARGS=()
         GPU_DEVICE_BACKEND="none"
         if [ "$RENDERING_MODE" = "host_gpu" ] && [ -d /dev/dri ]; then
             DEVICE_ARGS+=(--device /dev/dri:/dev/dri)
             GPU_DEVICE_BACKEND="drm"
-        elif [ "$RENDERING_MODE" = "host_gpu" ] \
-            && [ -c /dev/dxg ] \
-            && [ -d /usr/lib/wsl/lib ]; then
-            DEVICE_ARGS+=(--device /dev/dxg:/dev/dxg)
-            DEVICE_ARGS+=(-v /usr/lib/wsl:/usr/lib/wsl:ro)
-            GPU_DEVICE_BACKEND="wsl_dxg"
         fi
         ENV_ARGS+=(-e "GPU_DEVICE_BACKEND=${GPU_DEVICE_BACKEND}")
         if [ "$RENDERING_MODE" = "host_gpu" ] && [ "$GPU_DEVICE_BACKEND" = "none" ]; then

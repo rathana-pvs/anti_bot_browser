@@ -56,7 +56,7 @@ export interface ObservedEnvironment {
   rendering?: {
     requested_mode: 'host_gpu' | 'software';
     effective_mode: 'host_gpu' | 'software';
-    device_backend: 'drm' | 'wsl_dxg' | 'none';
+    device_backend: 'drm' | 'none';
     accelerated: boolean;
     renderer: string;
     display_renderer?: string | null;
@@ -248,17 +248,7 @@ export interface SystemStats {
   cpu_model?: string;
   gpu_percent?: number;
   gpu_model?: string;
-  windows_host?: {
-    available: boolean;
-    cpu_percent?: number;
-    cpu_threads?: number;
-    cpu_model?: string;
-    used_memory_mb?: number;
-    total_memory_mb?: number;
-    gpu_percent?: number | null;
-    gpu_model?: string | null;
-  };
-  runtime_environment?: 'wsl' | 'linux';
+  runtime_environment?: 'linux';
   runtime?: {
     cpu_percent: number;
     cpu_threads: number;
@@ -268,7 +258,6 @@ export interface SystemStats {
     gpu_percent?: number;
     gpu_model?: string;
   };
-  wsl_runtime?: SystemStats['runtime'];
   health?: {
     status: 'ready' | 'degraded' | 'not_ready';
     ready: boolean;

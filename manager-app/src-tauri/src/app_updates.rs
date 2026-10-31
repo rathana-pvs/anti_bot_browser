@@ -251,8 +251,6 @@ pub async fn install_app_update(
         if let Some(mut child) = child {
             terminate_backend(&mut child);
         }
-        #[cfg(target_os = "windows")]
-        super::stop_wsl_backend(super::find_ubuntu_distribution().as_deref());
         if backend_is_running() {
             return Err("Application services have not stopped; update cancelled.".into());
         }
@@ -270,7 +268,7 @@ pub async fn install_app_update(
     .map_err(|e| e.to_string())
     .and_then(|r| r);
     result?;
-    // Windows updater exits itself. Linux installers return after installation.
+    // Linux installers return after installation.
     app.restart();
 }
 

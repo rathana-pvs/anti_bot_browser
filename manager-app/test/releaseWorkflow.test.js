@@ -31,10 +31,11 @@ test('one command synchronizes every version and rejects accidental downgrades',
   } finally { rmSync(dir,{recursive:true,force:true}); }
 });
 
-const assets=['app.deb','app.AppImage','app.exe','app.msi'].map(name=>({name,signature:'signed-test-fixture'}));
-test('one release manifest includes both Linux formats and both Windows installers',()=>{
+const assets=['app.deb','app.AppImage'].map(name=>({name,signature:'signed-test-fixture'}));
+test('one release manifest includes both Linux formats and nothing else',()=>{
   const manifest=buildManifest('1.1.0',assets,'owner/repo','Notes');
-  assert.equal(Object.keys(manifest.platforms).length,4);
+  assert.equal(Object.keys(manifest.platforms).length,2);
+  assert.deepEqual(Object.keys(buildManifest('1.1.0',[...assets,{name:'app.exe',signature:'x'}],'owner/repo').platforms).sort(),['linux-x86_64-appimage','linux-x86_64-deb']);
   assert.match(manifest.platforms['linux-x86_64-deb'].url,/\/v1\.1\.0\/app.deb$/);
   assert.equal(manifest.notes,'Notes');
   assert.throws(()=>buildManifest('1.1.0',assets.slice(1),'owner/repo'));
