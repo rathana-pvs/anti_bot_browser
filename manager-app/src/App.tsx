@@ -77,7 +77,7 @@ export const App: React.FC = () => {
   const [folderDialog, setFolderDialog] = useState<FolderDialogState>(null);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [campaignAttention, setCampaignAttention] = useState(0);
-  const [queueRequest, setQueueRequest] = useState<{ profileId?: string; key: number } | null>(null);
+  const [queueRequest, setQueueRequest] = useState<{ profileId?: string; executionId?: string; key: number } | null>(null);
   const [profileActionError, setProfileActionError] = useState<ProfileActionError | null>(null);
 
   const [systemStats, setSystemStats] = useState<SystemStats>({
@@ -245,9 +245,9 @@ export const App: React.FC = () => {
     setPage('post');
   }, []);
 
-  const openQueue = (profileId?: string) => {
+  const openQueue = (profileId?: string, executionId?: string) => {
     setPage('queue');
-    setQueueRequest({ profileId, key: Date.now() });
+    setQueueRequest({ profileId, executionId, key: Date.now() });
   };
 
   const clearFailures = async (profile: Profile, before?: number) => {
@@ -425,7 +425,7 @@ export const App: React.FC = () => {
               onBack={() => { const from = openAccount.from; setOpenAccount(null); if (from === 'devices') setPage('devices'); }}
               onOpenPhone={openPhone} handlers={handlers} busy={busyIds.has(currentAccount.id)}
               executions={executions} proxies={proxies} groups={profileGroups} onSave={handleUpdate}
-              onOpenQueue={() => openQueue(currentAccount.id)} />
+              onOpenQueue={(executionId) => openQueue(currentAccount.id, executionId)} />
             : <AccountsPage profiles={profiles} proxies={proxies} groups={profileGroups} executions={executions} handlers={handlers} folderHandlers={folderHandlers}
               busyIds={busyIds} onCreate={() => setIsCreateModalOpen(true)} />}
         </main>

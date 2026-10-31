@@ -48,6 +48,7 @@ from backend.services.queue_safety import (
     can_retry_first_comment,
     has_publication_evidence,
     is_preparation_attempt,
+    repair_interrupted_warming,
 )
 from backend.services.profile_pipeline import (
     ordered_due_executions,
@@ -1556,6 +1557,8 @@ def recover_stale_queue_executions(reason: str = "expired_scheduler_lease"):
         for batch in queue.get("daily_batches", []):
             for post in batch.get("posts", []):
                 for execution in post.get("executions", []):
+                    if post.get("type") == "warming" and repair_interrupted_warming(execution):
+                        modified = True
                     if execution.get("comment_retry_status") == "running" and execution.get("execution_id") not in live_comment_retries:
                         execution["comment_retry_status"] = "interrupted"
                         execution["comment_retry_ended_at"] = datetime.now(timezone.utc).isoformat()

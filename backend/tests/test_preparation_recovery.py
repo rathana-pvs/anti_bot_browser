@@ -233,3 +233,16 @@ def test_failed_preparation_keeps_screenshot_directory_and_logs(attempt, monkeyp
     assert execution['status'] == 'failed_before_publish'
     assert execution['evidence_dir'] == result['evidence_dir']
     assert execution['logs'] == result['logs']
+
+
+def test_an_interrupted_warming_visit_is_stopped_not_uncertain():
+    from backend.services.queue_safety import repair_interrupted_warming
+    visit = {'status': 'running', 'stage': 'warming', 'stage_history': [{'stage': 'warming'}]}
+    assert classify_interrupted_execution(visit)['status'] == 'stopped'
+    old = {'status': 'uncertain', 'stage': 'uncertain', 'error': 'publication outcome requires review',
+           'stage_history': [{'stage': 'warming'}, {'stage': 'uncertain', 'reason': 'manager_restart_recovery',
+                                                    'interrupted_stage': 'warming'}]}
+    assert repair_interrupted_warming(old) and old['status'] == 'stopped'
+    assert not repair_interrupted_warming(old)
+    post = {'status': 'uncertain', 'stage_history': [{'reason': 'manager_restart_recovery', 'interrupted_stage': 'running'}]}
+    assert not repair_interrupted_warming(post)

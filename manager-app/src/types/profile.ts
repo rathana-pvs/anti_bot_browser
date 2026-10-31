@@ -159,6 +159,8 @@ export interface AccountHealth {
   last_post_at: string | null;
   held_since?: string;
   hold_note?: string;
+  /** History items behind an attention or resting stage. */
+  evidence?: { execution_id: string; at: string; kind: string; status: string; error: string }[];
   /** The 24-hour gentle restart after a proxy change. */
   proxy_restart?: { since: string; until: string; visited: boolean };
 }

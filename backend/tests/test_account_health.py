@@ -129,3 +129,20 @@ def test_history_keeps_the_identity(tmp_path, monkeypatch):
     done = {"profile_id": "profile_001", "execution_id": "e1", "status": "skipped_personal_profile",
             "scheduled_at": NOW.isoformat(), "facebook_identity": "personal"}
     assert sync_history(queue(done), NOW)["profile_001"]["e1"]["identity"] == "personal"
+
+
+def test_attention_names_the_items_behind_it():
+    checkpoint = dict(entry(1, "skipped_auth_required"), execution_id="e_check", error="Login required")
+    health = compute(config(), posts(12) + [checkpoint], NOW)
+    assert health["stage"] == "attention"
+    assert health["evidence"] == [{"execution_id": "e_check", "at": checkpoint["at"], "kind": "post",
+                                   "status": "skipped_auth_required", "error": "Login required"}]
+    failures = [dict(entry(hours, "failed_before_publish"), execution_id=f"f{hours}") for hours in (3, 2, 1)]
+    health = compute(config(), posts(12) + failures, NOW)
+    assert [item["execution_id"] for item in health["evidence"]] == ["f1", "f2", "f3"]
+
+
+def test_history_entries_carry_their_execution_id():
+    from backend.services.account_health import entries_for
+    assert entries_for({"p": {"e1": {"at": "x"}}}, "p") == [{"at": "x", "execution_id": "e1"}]
+    assert entries_for({}, "p") == []

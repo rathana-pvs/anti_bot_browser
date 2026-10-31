@@ -7,14 +7,17 @@ import { checkProfileFacebookResponse, checkProfileProxySpeed, FacebookResponseR
 import { Button } from '../ui/Button';
 import { cn } from '../ui/cn';
 import { FAILED_STATUSES, describe, formatTime, kindLabel } from '../queue/queueModel';
-import { AccountActivity, STATUS_LABEL, STATUS_TONE, TONE_CLASS, browserNotes, isAndroid, liveSignal, networkSignal, openItemSignals } from './accountModel';
+import { AccountActivity, AccountTab, STATUS_LABEL, STATUS_TONE, TONE_CLASS, browserNotes, isAndroid, liveSignal, networkSignal, openItemSignals } from './accountModel';
 import { STAGE_META, StageBadge, restartEnds, stageView, todayCount, useAccountHealth } from './accountHealth';
 import { Alert } from '../ui/Alert';
 
 const card = 'rounded-xl border border-zinc-800 bg-zinc-950/40 p-4';
 
-export function AccountOverview({ profile, proxies, activity, onOpenQueue, onToggleHold }: {
-  profile: Profile; proxies: ProxyItem[]; activity: AccountActivity; onOpenQueue: () => void; onToggleHold: () => void;
+export function AccountOverview({ profile, proxies, activity, onOpenQueue, onOpenTab, onToggleHold }: {
+  profile: Profile; proxies: ProxyItem[]; activity: AccountActivity;
+  /** Opens the queue for this account, with one item's details open when given. */
+  onOpenQueue: (executionId?: string) => void;
+  onOpenTab: (tab: AccountTab) => void; onToggleHold: () => void;
 }) {
   const network = networkSignal(profile, proxies);
   const android = isAndroid(profile);
@@ -43,13 +46,22 @@ export function AccountOverview({ profile, proxies, activity, onOpenQueue, onTog
               {profile.account?.on_hold ? 'Release hold' : 'Put on hold…'}</button>}
           </span>
           <p className="text-zinc-400">{stage.reason}{todayCount(stage) && ` ${todayCount(stage)}`}</p>
+          {stage.evidence && stage.evidence.length > 0 && <div className="py-0.5">
+            <p className="text-[11px] font-medium text-zinc-500">Evidence</p>
+            <ul className="space-y-1">{stage.evidence.map((item, index) => <li key={item.executionId || `${item.label}-${index}`} className="min-w-0">
+              <button type="button" onClick={() => item.executionId ? onOpenQueue(item.executionId) : item.tab && onOpenTab(item.tab)}
+                className="text-left text-zinc-200 underline decoration-dotted underline-offset-2 hover:decoration-solid">{item.label}</button>
+              {item.at && <span className="text-zinc-500"> · {formatTime(item.at)}</span>}
+              {item.detail && <span title={item.detail} className="block truncate text-zinc-500">{item.detail}</span>}
+            </li>)}</ul>
+          </div>}
           {stage.stage !== 'on_hold' && stage.health?.proxy_restart && <p className="text-amber-300/90">
             Back to normal {restartEnds(stage.health)}.{stage.health.proxy_restart.visited ? '' : ' Posts wait for the first warming visit from the new IP.'}</p>}
           <p className="text-zinc-500">{STAGE_META[stage.stage].suggestion}{stage.health?.manual ? ' Set by hand in Settings.' : ''}</p>
         </dd>
         <dt>Today</dt><dd className="text-zinc-200">{activity.posted} posted{activity.warmed ? ` · ${activity.warmed} warmed` : ''}</dd>
         {openItemSignals(activity).length > 0 && <><dt>Needs you</dt><dd className="flex flex-wrap gap-x-2">{openItemSignals(activity).map(s =>
-          <button key={s.label} type="button" title={s.hint} onClick={onOpenQueue} className={cn('underline decoration-dotted underline-offset-2 hover:decoration-solid', TONE_CLASS[s.tone])}>{s.label}</button>)}</dd></>}
+          <button key={s.label} type="button" title={s.hint} onClick={() => onOpenQueue()} className={cn('underline decoration-dotted underline-offset-2 hover:decoration-solid', TONE_CLASS[s.tone])}>{s.label}</button>)}</dd></>}
         {profile.account.notes && <><dt>Notes</dt><dd className="whitespace-pre-wrap text-zinc-300">{profile.account.notes}</dd></>}
       </dl>
     </section>
@@ -59,7 +71,7 @@ export function AccountOverview({ profile, proxies, activity, onOpenQueue, onTog
     <section className={cn(card, 'lg:col-span-2')} aria-labelledby="overview-work">
       <div className="mb-3 flex items-center justify-between">
         <h3 id="overview-work" className="text-sm font-semibold text-zinc-100">Work</h3>
-        <Button size="sm" variant="ghost" onClick={onOpenQueue}>Open queue<ArrowRight className="h-3.5 w-3.5" /></Button>
+        <Button size="sm" variant="ghost" onClick={() => onOpenQueue()}>Open queue<ArrowRight className="h-3.5 w-3.5" /></Button>
       </div>
       {!activity.attention.length && !activity.running && !upcoming.length
         ? <p className="text-zinc-500">Nothing queued for this account.</p>
