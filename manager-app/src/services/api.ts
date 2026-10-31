@@ -949,7 +949,15 @@ export interface StorageRun {
   busy?: boolean;
 }
 
-export interface StorageStatus { free_bytes: number; low_disk_bytes: number; critical_disk_bytes: number; last_run: StorageRun | null }
+export interface StorageProgress {
+  running: boolean; dry_run?: boolean; percent?: number; label?: string; freed_bytes?: number;
+  result?: StorageRun; error?: string;
+}
+
+export interface StorageStatus {
+  free_bytes: number; low_disk_bytes: number; critical_disk_bytes: number; last_run: StorageRun | null;
+  progress: StorageProgress;
+}
 
 export async function fetchStorage(): Promise<StorageStatus> {
   const res = await fetch(`${API_BASE}/storage`);
@@ -957,8 +965,8 @@ export async function fetchStorage(): Promise<StorageStatus> {
   return res.json();
 }
 
-/** One housekeeping pass now; `dryRun` previews it without removing anything. */
-export async function cleanStorage(dryRun = false): Promise<StorageRun> {
+/** Starts one housekeeping pass in the background; `dryRun` previews it without removing anything. */
+export async function cleanStorage(dryRun = false): Promise<{ started: boolean; progress: StorageProgress }> {
   const res = await fetch(`${API_BASE}/storage/clean?dry_run=${dryRun}`, { method: 'POST' });
   if (!res.ok) throw await apiError(res, 'Failed to clean storage');
   return res.json();
