@@ -166,3 +166,96 @@ def test_run_now_cannot_prepare_next_iteration_during_profile_delay(monkeypatch)
     assert error.value.status_code == 409
     assert "this profile" in error.value.detail.lower()
     assert execution["status"] == "pending"
+
+
+@pytest.fixture
+def interrupted_retry(monkeypatch):
+    from copy import deepcopy
+    from backend.services import container_lifecycle, live_service
+
+    execution = {
+        "execution_id": "selected", "profile_id": "p1", "status": "cancelled",
+        "stage": "cancelled", "cancel_requested_at": "old", "error": "cancelled",
+        "scheduled_at": "2099-01-01T00:00:00+00:00",
+        "preparation_mode": "brief", "preparation_status": "ready",
+        "network_recovery": {"state": "waiting_network"},
+    }
+    other = {"execution_id": "other", "profile_id": "p2", "status": "cancelled"}
+    queue = {"daily_batches": [{"posts": [{"type": "reel", "executions": [execution, other]}]}]}
+    saved = Mock(return_value=True)
+    dispatched = Mock()
+    async def dispatch():
+        dispatched()
+    monkeypatch.setattr(queue_router, "load_posting_queue", lambda: deepcopy(queue))
+    monkeypatch.setattr(queue_router, "with_queue_claim_lock", lambda callback: callback())
+    monkeypatch.setattr(queue_router, "save_posting_queue", saved)
+    monkeypatch.setattr(queue_router, "dispatch_pending_queue", dispatch)
+    monkeypatch.setattr(container_lifecycle, "snapshot", lambda: {})
+    monkeypatch.setattr(live_service, "get_status", lambda _: {})
+    return execution, queue, saved, dispatched
+
+
+@pytest.mark.parametrize("status", ["cancelled", "stopped"])
+def test_interrupted_retry_queues_only_selected_item(interrupted_retry, status):
+    execution, queue, saved, dispatched = interrupted_retry
+    execution["status"] = status
+    result = asyncio.run(queue_router.run_execution_now("selected"))
+    assert result["queued"] is True
+    posts = saved.call_args.args[0]["daily_batches"][0]["posts"]
+    selected, other = posts[0]["executions"]
+    assert selected["status"] == selected["stage"] == "pending"
+    assert selected["scheduled_at"] != execution["scheduled_at"]
+    assert selected["error"] is None
+    assert "cancel_requested_at" not in selected
+    assert selected["preparation_status"] == "pending"
+    assert selected["network_recovery"]["state"] == "cancelled"
+    assert other == queue["daily_batches"][0]["posts"][0]["executions"][1]
+    dispatched.assert_called_once()
+
+
+@pytest.mark.parametrize("patch", [
+    {"stage_history": [{"stage": "publish_clicked"}]},
+    {"cloud_attempt_id": "remote"},
+    {"container_cleanup_in_progress": True},
+    {"automation_container_owned": True},
+])
+def test_interrupted_retry_rejects_unsafe_items(interrupted_retry, patch):
+    execution, _, saved, dispatched = interrupted_retry
+    execution.update(patch)
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(queue_router.run_execution_now("selected"))
+    assert error.value.status_code == 409
+    saved.assert_not_called()
+    dispatched.assert_not_called()
+
+
+def test_interrupted_retry_waits_for_profile_owner(interrupted_retry, monkeypatch):
+    from backend.services import container_lifecycle
+    _, _, saved, dispatched = interrupted_retry
+    monkeypatch.setattr(container_lifecycle, "snapshot", lambda: {"p1": {"state": "stopping"}})
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(queue_router.run_execution_now("selected"))
+    assert error.value.status_code == 409
+    saved.assert_not_called()
+    dispatched.assert_not_called()
+
+
+@pytest.mark.parametrize("status,confirmed", [("stopped", False), ("cancelled", True)])
+def test_interrupted_retry_preserves_live_review(interrupted_retry, status, confirmed):
+    execution, queue, saved, dispatched = interrupted_retry
+    execution.update(status=status, broadcast_confirmed=confirmed)
+    queue["daily_batches"][0]["posts"][0]["type"] = "live"
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(queue_router.run_execution_now("selected"))
+    assert error.value.status_code == 409
+    saved.assert_not_called()
+    dispatched.assert_not_called()
+
+
+def test_interrupted_retry_does_not_dispatch_after_save_failure(interrupted_retry):
+    _, _, saved, dispatched = interrupted_retry
+    saved.return_value = False
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(queue_router.run_execution_now("selected"))
+    assert error.value.status_code == 500
+    dispatched.assert_not_called()

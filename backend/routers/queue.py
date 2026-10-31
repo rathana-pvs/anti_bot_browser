@@ -638,6 +638,54 @@ async def run_execution_now(execution_id: str):
         raise HTTPException(status_code=409, detail="Remote attempts are managed by the cloud; retries require a new cloud attempt.")
     target_post = match["post"]
     current_status = target_exec.get("status", "")
+    if current_status in {"cancelled", "stopped"}:
+        # Re-read and persist under the dispatcher lock so cancellation cleanup
+        # or another retry cannot race this transition.
+        def enqueue_interrupted():
+            from backend.services import container_lifecycle
+            from backend.services.network_recovery import stop_recovery
+            from backend.services.queue_safety import has_publication_evidence
+
+            queue = load_posting_queue()
+            match = find_queue_execution(queue, execution_id)
+            if not match:
+                raise HTTPException(status_code=404, detail="Execution not found")
+            execution = match["execution"]
+            status = execution.get("status")
+            if execution.get("cloud_attempt_id") or status not in {"cancelled", "stopped"}:
+                raise HTTPException(status_code=409, detail="Execution is no longer available for a local retry")
+            owners = container_lifecycle.snapshot()
+            owned = execution.get("automation_container_owned") and (
+                execution.get("container_owner_schema") != 1 or execution["profile_id"] in owners
+            )
+            if execution.get("container_cleanup_in_progress") or owned or execution["profile_id"] in owners:
+                raise HTTPException(status_code=409, detail="Wait for the profile container to finish stopping before retrying")
+            if has_publication_evidence(execution):
+                raise HTTPException(status_code=409, detail="Publication outcome requires review before retrying")
+            if match["post"].get("type") == "live":
+                from backend.services import live_service
+                prior = live_service.get_status(execution["profile_id"])
+                if (status == "stopped" or execution.get("broadcast_confirmed") or (
+                        prior.get("status") == "needs_review"
+                        and prior.get("queue_execution_id") == execution_id)):
+                    raise HTTPException(status_code=409, detail="Resolve the previous Live outcome before retrying")
+            now = datetime.now(timezone.utc).isoformat()
+            stop_recovery(execution, "cancelled")
+            execution.update(status="pending", stage="pending", error=None, scheduled_at=now,
+                             automation_container_owned=False)
+            execution.pop("cancel_requested_at", None)
+            if execution.get("preparation_mode", "off") != "off":
+                execution["preparation_status"] = "pending"
+            if not isinstance(execution.get("stage_history"), list):
+                execution["stage_history"] = []
+            execution["stage_history"].append({"stage": "pending", "timestamp": now, "reason": "manual_retry"})
+            if not save_posting_queue(queue):
+                raise HTTPException(status_code=500, detail="Could not persist retry")
+
+        with_queue_claim_lock(enqueue_interrupted)
+        asyncio.create_task(dispatch_pending_queue())
+        return {"success": True, "queued": True, "message": "Retry queued for this item."}
+
     if target_post.get("type") == "live" and current_status in ("uncertain", "needs_review"):
         raise HTTPException(status_code=409, detail="Resolve the previous Live outcome and confirm it ended on Facebook before retrying")
 
