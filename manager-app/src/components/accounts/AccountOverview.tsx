@@ -8,13 +8,13 @@ import { Button } from '../ui/Button';
 import { cn } from '../ui/cn';
 import { FAILED_STATUSES, describe, formatTime, kindLabel } from '../queue/queueModel';
 import { AccountActivity, STATUS_LABEL, STATUS_TONE, TONE_CLASS, browserNotes, isAndroid, liveSignal, networkSignal, openItemSignals } from './accountModel';
-import { STAGE_META, StageBadge, stageView, todayCount, useAccountHealth } from './accountHealth';
+import { STAGE_META, StageBadge, restartEnds, stageView, todayCount, useAccountHealth } from './accountHealth';
 import { Alert } from '../ui/Alert';
 
 const card = 'rounded-xl border border-zinc-800 bg-zinc-950/40 p-4';
 
-export function AccountOverview({ profile, proxies, activity, onOpenQueue }: {
-  profile: Profile; proxies: ProxyItem[]; activity: AccountActivity; onOpenQueue: () => void;
+export function AccountOverview({ profile, proxies, activity, onOpenQueue, onToggleHold }: {
+  profile: Profile; proxies: ProxyItem[]; activity: AccountActivity; onOpenQueue: () => void; onToggleHold: () => void;
 }) {
   const network = networkSignal(profile, proxies);
   const android = isAndroid(profile);
@@ -37,8 +37,14 @@ export function AccountOverview({ profile, proxies, activity, onOpenQueue }: {
         <dt>Network</dt><dd title={network.hint} className={TONE_CLASS[network.tone]}>{network.label}{network.detail && <span className="ml-2 text-zinc-400">{network.detail}</span>}</dd>
         <dt>Facebook Live</dt><dd title={liveSignal(profile).hint} className={TONE_CLASS[liveSignal(profile).tone]}>{liveSignal(profile).label}</dd>
         <dt>Stage</dt><dd className="space-y-0.5">
-          <StageBadge view={stage} />
+          <span className="flex items-center gap-2">
+            <StageBadge view={stage} />
+            {!android && <button type="button" onClick={onToggleHold} className="text-[11px] text-zinc-500 underline decoration-dotted underline-offset-2 hover:text-zinc-300 hover:decoration-solid">
+              {profile.account?.on_hold ? 'Release hold' : 'Put on hold…'}</button>}
+          </span>
           <p className="text-zinc-400">{stage.reason}{todayCount(stage) && ` ${todayCount(stage)}`}</p>
+          {stage.stage !== 'on_hold' && stage.health?.proxy_restart && <p className="text-amber-300/90">
+            Back to normal {restartEnds(stage.health)}.{stage.health.proxy_restart.visited ? '' : ' Posts wait for the first warming visit from the new IP.'}</p>}
           <p className="text-zinc-500">{STAGE_META[stage.stage].suggestion}{stage.health?.manual ? ' Set by hand in Settings.' : ''}</p>
         </dd>
         <dt>Today</dt><dd className="text-zinc-200">{activity.posted} posted{activity.warmed ? ` · ${activity.warmed} warmed` : ''}</dd>

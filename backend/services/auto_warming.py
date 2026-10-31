@@ -77,6 +77,11 @@ def _local_day_start_ms(config: dict, now_ms: float) -> float:
     return local.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000
 
 
+def _needs_restart_visit(health: dict, pid: str) -> bool:
+    restart = (health.get(pid) or {}).get("proxy_restart")
+    return bool(restart) and not restart.get("visited")
+
+
 def candidates(queue: dict, configs: dict, health: dict, history: dict, now_ms: float) -> list[dict]:
     """Accounts that may get a visit now, best first."""
     busy, next_post = set(), {}
@@ -111,7 +116,9 @@ def candidates(queue: dict, configs: dict, health: dict, history: dict, now_ms: 
         if posts and now_ms - max(posts) < GAP_AFTER_POST_MS:
             continue
         until_post = next_post.get(pid, float("inf")) - now_ms
-        if until_post < POST_RESERVE_MS:
+        # After a proxy change its posts wait for this visit, so they never block it.
+        restart_visit = _needs_restart_visit(health, pid)
+        if until_post < POST_RESERVE_MS and not restart_visit:
             continue
         last_seen = max([_ms(e["at"]) for e in entries] or [_ms(config.get("created_at")) or now_ms])
         quiet_hours = max(0.0, (now_ms - last_seen) / 3_600_000)
@@ -121,17 +128,25 @@ def candidates(queue: dict, configs: dict, health: dict, history: dict, now_ms: 
         if WARMUP_WINDOW_MS[0] <= until_post <= WARMUP_WINDOW_MS[1]:
             score += 2.0
             reason = f"Warm-up before its post in {until_post / MINUTE_MS:.0f} min"
+        if restart_visit:
+            # Its posts are waiting for this visit, so it goes first.
+            score += 10.0
+            reason = "First visit after a proxy change"
         ranked.append({"profile_id": pid, "stage": stage, "score": round(score, 3), "reason": reason})
     ranked.sort(key=lambda item: -item["score"])
     return ranked
 
 
-def spare_capacity(queue: dict, leases: list, config: dict, now_ms: float) -> bool:
-    """A slot is free after keeping one for each post due in the next 15 minutes."""
+def spare_capacity(queue: dict, leases: list, config: dict, now_ms: float, held: set | frozenset = frozenset()) -> bool:
+    """A slot is free after keeping one for each post due in the next 15 minutes.
+
+    Posts on `held` accounts wait for a visit, so they keep no slot.
+    """
     from backend.services.queue_scheduler import scheduler_snapshot
     snapshot = scheduler_snapshot(queue, leases, config, now_ms)
     due_soon = sum(1 for batch, _post, execution in _executions(queue)
                    if not is_auto_batch(batch) and execution.get("status") in WAITING_STATUSES
+                   and execution.get("profile_id") not in held
                    and _ms(execution.get("scheduled_at")) <= now_ms + POST_RESERVE_MS)
     return (snapshot["available"]["preparers"] > 0
             and snapshot["available"]["total"] - due_soon > 0)
@@ -224,16 +239,21 @@ def plan_once(now: datetime | None = None) -> dict | None:
             save_posting_queue(queue)
         return None
     changed = expire_unstarted(queue, now_ms) > 0
+    # Kept current every tick: posts held after a proxy change wait for a visit to show up here.
+    history = account_health.sync_history(queue, now)
     # One visit starts at a time; running ones may continue side by side.
     waiting = any(is_auto_batch(batch) and execution.get("status") in {"pending", "ready", "preparing"}
                   for batch, _post, execution in _executions(queue))
     choice = None
-    if not waiting and _machine_calm() and spare_capacity(queue, active_in_memory_scheduler_leases(), get_scheduler_config(), now_ms):
+    if not waiting and _machine_calm():
         configs = _profile_configs()
-        history = account_health.sync_history(queue, now)
         health = {pid: account_health.compute(config, list((history.get(pid) or {}).values()), now)
                   for pid, config in configs.items()}
-        ranked = candidates(queue, configs, health, history, now_ms)
+        held = {pid for pid in health if _needs_restart_visit(health, pid)}
+        if spare_capacity(queue, active_in_memory_scheduler_leases(), get_scheduler_config(), now_ms, held):
+            ranked = candidates(queue, configs, health, history, now_ms)
+        else:
+            ranked = []
         if ranked:
             choice = ranked[0]
             add_visit(queue, choice, now, random.Random())

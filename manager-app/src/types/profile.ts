@@ -137,9 +137,11 @@ export interface ProfileAccount {
   last_post_date: string | null;
   /** Stage set by hand; empty or null lets the history decide. */
   stage_override?: AccountStageOverride | '' | null;
+  /** Set by the user: nothing automatic runs until the hold is released. */
+  on_hold?: { since: string; note: string } | null;
 }
 
-export type AccountStage = 'new' | 'warming_up' | 'ready' | 'resting' | 'attention';
+export type AccountStage = 'new' | 'warming_up' | 'ready' | 'resting' | 'attention' | 'on_hold';
 export type AccountStageOverride = 'new' | 'warming_up' | 'ready';
 
 export interface AccountHealth {
@@ -155,6 +157,10 @@ export interface AccountHealth {
   posts_today: number;
   daily_limit: number;
   last_post_at: string | null;
+  held_since?: string;
+  hold_note?: string;
+  /** The 24-hour gentle restart after a proxy change. */
+  proxy_restart?: { since: string; until: string; visited: boolean };
 }
 
 export interface Profile {

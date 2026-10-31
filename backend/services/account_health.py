@@ -1,7 +1,8 @@
 """Account health stages, worked out from each account's own activity history.
 
 The stage is advice for the user, never a block: the post creator warns about
-accounts that are new, resting or need attention, and the user decides.
+accounts that are new, resting or need attention, and the user decides. The one
+exception is On hold, which the user sets on purpose (see account_hold).
 
 History is kept in its own file because the posting queue can be cleared.
 Every finished queue execution is copied into it once, keyed by its id.
@@ -13,12 +14,13 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from backend.config import DATA_DIR, PROFILES_DIR
+from backend.services import account_hold
 from backend.services.profile_service import atomic_write_json
 
 HISTORY_FILE = DATA_DIR / "account_history.json"
 HISTORY_DAYS = 120
 
-STAGES = ("new", "warming_up", "ready", "resting", "attention")
+STAGES = ("new", "warming_up", "ready", "resting", "attention", "on_hold")
 # Stages a user may set by hand; resting and attention always come from history.
 OVERRIDE_STAGES = ("new", "warming_up", "ready")
 
@@ -150,6 +152,13 @@ def compute(config: dict, entries: list[dict], now: datetime | None = None) -> d
         "daily_limit": limit, "last_post_at": posts[-1]["at"] if posts else None,
     }
 
+    hold = account_hold.on_hold(config)
+    if hold:
+        note = hold.get("note") or ""
+        result.update(stage="on_hold", held_since=hold["since"], hold_note=note,
+                      reason=f"On hold{': ' + note if note else ''}. Nothing automatic runs on it.")
+        return result
+
     last_success = successes[-1]["at"] if successes else ""
     checkpoint = next((entry for entry in reversed(entries) if entry["status"] == "skipped_auth_required"), None)
     if checkpoint and checkpoint["at"] > last_success:
@@ -166,6 +175,18 @@ def compute(config: dict, entries: list[dict], now: datetime | None = None) -> d
     if len(recent) == FAILURE_STREAK and all(entry["status"] in FAILURE_STATUSES for entry in recent):
         result.update(stage="attention", reason=f"The last {FAILURE_STREAK} sessions failed before posting.")
         return result
+
+    window = account_hold.restart(config, now)
+    if window:
+        visited = account_hold.visited_since(entries, window["since"])
+        result.update(stage="warming_up" if growth != "new" else "new", until=window["until"].isoformat(),
+                      daily_limit=min(limit, DAILY_POST_LIMITS["warming_up"]),
+                      proxy_restart={"since": window["since"].isoformat(), "until": window["until"].isoformat(),
+                                     "visited": visited},
+                      reason="New proxy: restarting gently. " + (
+                          "The first visit from the new IP went fine." if visited
+                          else "Posts wait for one warming visit from the new IP while Auto warming is on."))
+        limit = result["daily_limit"]
 
     pushback = next((entry for entry in reversed(entries)
                      if any(marker in entry.get("error", "").lower() for marker in PUSHBACK_MARKERS)), None)

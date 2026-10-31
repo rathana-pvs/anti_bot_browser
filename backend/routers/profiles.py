@@ -2,12 +2,14 @@ import json
 import secrets
 import shutil
 from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 from backend.services.profile_groups import list_groups, create_group, rename_group, delete_group
+from backend.services import account_hold
 from backend.services.account_health import DAILY_POST_LIMITS, OVERRIDE_STAGES, all_health
 from backend.services.queue_service import load_posting_queue
 
@@ -309,7 +311,8 @@ def update_profile(profile_id: str, request: ProfileUpdateRequest):
             override = request.account.get("stage_override")
             if override not in (None, "", *OVERRIDE_STAGES):
                 raise ValueError("Account stage must be automatic, new, warming_up or ready")
-            existing["account"] = {**existing.get("account", {}), **request.account}
+            changes = {key: value for key, value in request.account.items() if key not in account_hold.SERVER_KEYS}
+            existing["account"] = {**existing.get("account", {}), **changes}
         if request.resources is not None:
             existing["resources"] = _validated_resources(request.resources.model_dump())
         if request.behavior_mode is not None:
@@ -321,6 +324,8 @@ def update_profile(profile_id: str, request: ProfileUpdateRequest):
             or original.get("requested_environment") != existing.get("requested_environment")
             or original.get("resources") != existing.get("resources")
         )
+        if request.network is not None and account_hold.proxy_changed(original.get("network"), existing["network"]):
+            account_hold.note_proxy_change(existing, datetime.now(timezone.utc))
         existing["configuration_revision"] = int(existing.get("configuration_revision") or 1) + 1
         existing["updated_at"] = utc_now()
         if runtime_changed:
@@ -336,6 +341,42 @@ def update_profile(profile_id: str, request: ProfileUpdateRequest):
             except Exception:
                 pass
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+class HoldRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    note: str = Field(default="", max_length=120)
+
+
+def _set_hold(profile_id: str, note: str | None) -> dict:
+    config_path = _profile_dir(profile_id) / "config.json"
+    if not config_path.exists():
+        raise HTTPException(status_code=404, detail="Profile not found")
+    config, _ = migrate_profile(json.loads(config_path.read_text(encoding="utf-8")), config_path.parent)
+    now = datetime.now(timezone.utc)
+    if note is None:
+        account_hold.release(config, now)
+    else:
+        account_hold.hold(config, note, now)
+    config["updated_at"] = utc_now()
+    atomic_write_json(config_path, config)
+    return config
+
+
+@router.post("/{profile_id}/hold")
+def hold_profile(profile_id: str, request: HoldRequest):
+    """Stop everything automatic on this account until the hold is released."""
+    config = _set_hold(profile_id, request.note)
+    from backend.services import auto_warming
+    # A running warming visit ends at its next safe point; a post already publishing finishes.
+    if any(visit.get("profile_id") == profile_id for visit in auto_warming.running_visits(load_posting_queue())):
+        auto_warming.request_yield(profile_id, "on_hold")
+    return config
+
+
+@router.post("/{profile_id}/release")
+def release_profile(profile_id: str):
+    return _set_hold(profile_id, None)
 
 
 @router.post("/{profile_id}/proxy-latency")

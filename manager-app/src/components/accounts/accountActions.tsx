@@ -1,4 +1,4 @@
-import { Copy, Eye, Eraser, FolderInput, FolderMinus, FolderPlus, ListChecks, Pause, PencilLine, Play, Settings2, Square, Trash2, ExternalLink } from 'lucide-react';
+import { Copy, Eye, Eraser, FolderInput, FolderMinus, FolderPlus, Hand, ListChecks, Pause, PencilLine, Play, Settings2, Square, Trash2, ExternalLink } from 'lucide-react';
 import { Profile } from '../../types/profile';
 import type { ActionMenuItem } from '../ui/ActionMenu';
 import { isAndroid, type AccountTab } from './accountModel';
@@ -15,6 +15,8 @@ export interface AccountHandlers {
   openQueue: (profileId: string) => void;
   /** Removes failed-before-posting items older than `before` (all of them when omitted). */
   clearFailures: (profile: Profile, before?: number) => void;
+  /** Puts the account on hold (asks for an optional note), or releases it. */
+  toggleHold: (profile: Profile) => void;
 }
 
 export interface FolderHandlers {
@@ -56,6 +58,9 @@ export function accountMenu(profile: Profile, handlers: AccountHandlers, { inclu
   }
   items.push(
     { label: 'Show in queue', icon: <ListChecks className={icon} />, onSelect: () => handlers.openQueue(profile.id), divider: true },
+    profile.account?.on_hold
+      ? { label: 'Release hold', icon: <Play className={icon} />, hint: 'Automatic posts and warming start again.', onSelect: () => handlers.toggleHold(profile) }
+      : { label: 'Put on hold…', icon: <Hand className={icon} />, hint: 'Stops posts, warming and cloud jobs, e.g. before changing the proxy.', onSelect: () => handlers.toggleHold(profile) },
     { label: 'Clear old failures…', icon: <Eraser className={icon} />, hint: 'Removes failed-before-posting items. Unconfirmed posts are never removed.', onSelect: () => handlers.clearFailures(profile, failureCutoff) },
     { label: 'Edit settings', icon: <Settings2 className={icon} />, onSelect: () => handlers.open(profile.id, 'settings'), divider: true },
     { label: 'Move to folder…', icon: <FolderInput className={icon} />, onSelect: () => handlers.moveToGroup([profile]) },
