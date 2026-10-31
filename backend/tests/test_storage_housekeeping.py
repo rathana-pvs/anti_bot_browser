@@ -164,3 +164,39 @@ def test_manual_evidence_cleanup_keeps_protected_runs(profiles):
     removed = make_run(profiles, "profile_001", 10, "e_done", "published")
     clean_profile_evidence(profiles / "profile_001", days_threshold=3, protected={"e_uncertain"})
     assert kept.exists() and not removed.exists()
+
+
+def test_a_background_pass_reports_progress_to_the_end(monkeypatch):
+    import threading
+    seen = []
+    release = threading.Event()
+
+    def fake_step(name):
+        def step(*args, **kwargs):
+            seen.append((name, housekeeping.progress()["label"], housekeeping.progress()["percent"]))
+            if name == "evidence":
+                release.wait(2)
+            return {"freed_bytes": 10}
+        return step
+
+    from backend.services import account_health, queue_service
+    monkeypatch.setattr(queue_service, "load_posting_queue", lambda: {"daily_batches": []})
+    monkeypatch.setattr(account_health, "_profile_configs", lambda: {})
+    monkeypatch.setattr(account_health, "sync_history", lambda q, now: {})
+    monkeypatch.setattr(housekeeping, "atomic_write_json", lambda path, value: None)
+    monkeypatch.setattr(housekeeping, "usage", lambda: {})
+    for name, function in (("evidence", "clean_evidence"), ("chrome_cache", "trim_chrome_caches"), ("queue", "archive_queue"),
+                           ("runtime_backups", "remove_old_runtime_backups"), ("logs", "rotate_logs")):
+        monkeypatch.setattr(housekeeping, function, fake_step(name))
+    assert housekeeping.start()
+    assert housekeeping.progress()["running"] and not housekeeping.start()
+    release.set()
+    for _ in range(100):
+        if not housekeeping.progress()["running"]:
+            break
+        time.sleep(0.02)
+    final = housekeeping.progress()
+    assert final["percent"] == 100.0 and final["freed_bytes"] == 50 and final["result"]["freed_bytes"] == 50
+    assert [label for _name, label, _percent in seen] == ["Evidence screenshots", "Browser caches", "Queue archive",
+                                                          "Old runtime backup", "Logs"]
+    assert [percent for *_rest, percent in seen] == sorted(percent for *_rest, percent in seen)

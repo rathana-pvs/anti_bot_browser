@@ -68,6 +68,24 @@ PROOF_MARKERS = ("before_publish", "before_reel_publish", "publication_verificat
 
 _run_lock = threading.Lock()
 
+# Shown as a progress bar while a pass runs.
+STEPS = (("evidence", "Evidence screenshots"), ("chrome_cache", "Browser caches"), ("queue", "Queue archive"),
+         ("runtime_backups", "Old runtime backup"), ("logs", "Logs"), ("usage", "Measuring space"))
+_progress: dict = {"running": False}
+
+
+def progress() -> dict:
+    return dict(_progress)
+
+
+def _advance(fraction: float, freed_in_step: int = 0) -> None:
+    """Report how far the current step is (0 to 1) and what it has freed so far."""
+    if not _progress.get("running"):
+        return
+    index = _progress["step_index"]
+    _progress["percent"] = round(100 * (index + min(1.0, max(0.0, fraction))) / len(STEPS), 1)
+    _progress["freed_bytes"] = _progress["freed_before_step"] + freed_in_step
+
 
 # Small helpers ----------------------------------------------------------------
 
@@ -172,7 +190,9 @@ def _shrink(png: Path) -> int:
 def clean_evidence(queue: dict, protected: set[str], now: float, dry_run: bool = False) -> dict:
     statuses = _statuses(queue)
     report = {"runs_removed": 0, "step_screenshots_removed": 0, "screenshots_shrunk": 0, "freed_bytes": 0, "kept_protected": 0}
-    for profile in sorted(PROFILES_DIR.glob("*/automation_evidence")):
+    folders = sorted(PROFILES_DIR.glob("*/automation_evidence"))
+    for position, profile in enumerate(folders):
+        _advance(position / len(folders), report["freed_bytes"])
         runs = sorted((path for path in profile.iterdir() if path.is_dir() and not path.is_symlink()),
                       key=_run_time, reverse=True)
         for index, run in enumerate(runs):
@@ -226,7 +246,9 @@ def _browser_stopped(profile_id: str) -> bool:
 
 def trim_chrome_caches(dry_run: bool = False) -> dict:
     report = {"profiles_trimmed": 0, "freed_bytes": 0, "skipped_running": 0}
-    for chrome in sorted(PROFILES_DIR.glob("*/chrome_data")):
+    folders = sorted(PROFILES_DIR.glob("*/chrome_data"))
+    for position, chrome in enumerate(folders):
+        _advance(position / len(folders), report["freed_bytes"])
         profile_id = chrome.parent.name
         entries = []
         for relative in CACHE_DIRS:
@@ -390,23 +412,57 @@ def run(dry_run: bool = False, reason: str = "manual") -> dict:
         health = {pid: account_health.compute(config, account_health.entries_for(history, pid), now_dt)
                   for pid, config in account_health._profile_configs().items()}
         protected = protected_execution_ids(queue, health)
-        steps = {
-            "evidence": clean_evidence(queue, protected, now, dry_run),
-            "chrome_cache": trim_chrome_caches(dry_run),
-            "queue": archive_queue(now_dt, dry_run),
-            "runtime_backups": remove_old_runtime_backups(now, dry_run),
-            "logs": rotate_logs(dry_run),
+        work = {
+            "evidence": lambda: clean_evidence(queue, protected, now, dry_run),
+            "chrome_cache": lambda: trim_chrome_caches(dry_run),
+            "queue": lambda: archive_queue(now_dt, dry_run),
+            "runtime_backups": lambda: remove_old_runtime_backups(now, dry_run),
+            "logs": lambda: rotate_logs(dry_run),
         }
+        _progress.clear()
+        _progress.update(running=True, dry_run=dry_run, started_at=now_dt.isoformat(), percent=0.0,
+                         freed_bytes=0, freed_before_step=0, step_index=0, step="evidence", label=STEPS[0][1])
+        steps, freed = {}, 0
+        for index, (key, label) in enumerate(STEPS):
+            _progress.update(step_index=index, step=key, label=label, freed_before_step=freed)
+            _advance(0.0)
+            if key == "usage":
+                measured = usage()
+            else:
+                steps[key] = work[key]()
+                freed += steps[key].get("freed_bytes", 0)
+            _advance(1.0)
         result = {
-            "ran_at": now_dt.isoformat(), "reason": reason, "dry_run": dry_run,
-            "freed_bytes": sum(step.get("freed_bytes", 0) for step in steps.values()),
-            "free_before": free_before, "free_after": disk_free(), "steps": steps, "usage": usage(),
+            "ran_at": now_dt.isoformat(), "reason": reason, "dry_run": dry_run, "freed_bytes": freed,
+            "free_before": free_before, "free_after": disk_free(), "steps": steps, "usage": measured,
         }
         if not dry_run:
             atomic_write_json(STATE_FILE, result)
+        _progress.update(running=False, percent=100.0, freed_bytes=freed, result=result)
         return result
+    except Exception as error:
+        _progress.update(running=False, error=str(error))
+        raise
     finally:
         _run_lock.release()
+
+
+def start(dry_run: bool = False, reason: str = "manual") -> bool:
+    """Run a pass in the background; False when one is already running."""
+    if _progress.get("running") or _run_lock.locked():
+        return False
+    # Shown at once, before the pass has gathered what to protect.
+    _progress.clear()
+    _progress.update(running=True, dry_run=dry_run, percent=0.0, freed_bytes=0, step="prepare", label="Getting ready")
+
+    def target():
+        try:
+            if run(dry_run, reason).get("busy"):
+                _progress.update(running=False, error="Another cleanup is already running.")
+        except Exception as error:
+            print(f"[Storage] Housekeeping failed: {error}")
+    threading.Thread(target=target, name="storage-housekeeping", daemon=True).start()
+    return True
 
 
 def due(now: float | None = None) -> str | None:
