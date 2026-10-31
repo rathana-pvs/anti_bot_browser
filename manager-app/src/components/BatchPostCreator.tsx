@@ -1,7 +1,7 @@
 import { CaptionHookEditor, HookDraft, hookIsApproved } from "./CaptionHookEditor";
 import { LivePlaybackSettings, LivePlaybackMode } from './LivePlaybackSettings';
 import { GroupedProfileSelector } from './GroupedProfileSelector';
-import { StageBadge, stageView, useAccountHealth } from './accounts/accountHealth';
+import { StageBadge, restartEnds, stageView, useAccountHealth } from './accounts/accountHealth';
 import { WarmingSettings, defaultWarmingOptions } from './WarmingSettings';
 import { MediaLightbox, LightboxMedia } from './MediaLightbox';
 import React, { useState, useEffect, useMemo } from 'react';
@@ -172,7 +172,9 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
   }, [incomingReel, liveMode, onIncomingReelConsumed]);
 
   const hasLive = liveMode || posts.some(post => post.type === 'live');
-  const selectedProfileIds = savedProfileIds.filter(id => profiles.some(p => p.id === id && (!hasLive || p.live?.configured)));
+  // Accounts on hold are never targets, even if they were selected before the hold.
+  const selectedProfileIds = savedProfileIds.filter(id => profiles.some(p => p.id === id && !p.account?.on_hold && (!hasLive || p.live?.configured)));
+  const heldLeftOut = savedProfileIds.filter(id => profiles.some(p => p.id === id && p.account?.on_hold)).length;
 
   // UI state
   const [isUploading, setIsUploading] = useState(false);
@@ -474,6 +476,8 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
     if (view.stage === 'attention') return [{ profile: p, view, note: view.reason }];
     if (warmupMode) return [];
     if (view.stage === 'new' || view.stage === 'resting') return [{ profile: p, view, note: view.reason }];
+    if (view.health?.proxy_restart) return [{ profile: p, view, note: `Restarted after a proxy change. Posting before ${restartEnds(view.health)} is riskier${
+      view.health.proxy_restart.visited ? '' : '; its posts wait for the first warming visit from the new IP'}.` }];
     const left = view.health ? view.health.daily_limit - view.health.posts_today : Infinity;
     return itemCount > left ? [{ profile: p, view, note: `${Math.max(0, left)} suggested post${left === 1 ? '' : 's'} left today; this batch has ${itemCount}.` }] : [];
   });
@@ -743,6 +747,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
               </span>
               <ChevronRight className="w-4 h-4 text-zinc-500" />
             </button>
+            {heldLeftOut > 0 && <p className="text-[11px] text-sky-300">{heldLeftOut} selected account{heldLeftOut === 1 ? ' is' : 's are'} on hold and left out. Release the hold in Accounts to post with {heldLeftOut === 1 ? 'it' : 'them'}.</p>}
             {stageWarnings.length > 0 && (
               <details className="text-[11px] text-amber-300">
                 <summary className="cursor-pointer">{stageWarnings.length} selected account{stageWarnings.length === 1 ? ' isn’t' : 's aren’t'} suggested for {warmupMode ? 'this' : 'posting'} right now</summary>

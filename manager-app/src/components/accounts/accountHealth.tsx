@@ -1,15 +1,16 @@
 import { useEffect, useState } from 'react';
-import { CircleCheck, Flame, LucideIcon, Moon, Pin, Sprout, TriangleAlert } from 'lucide-react';
+import { CircleCheck, Flame, Hand, LucideIcon, Moon, Pin, Sprout, TriangleAlert } from 'lucide-react';
 import { AccountHealth, AccountStage, Profile } from '../../types/profile';
 import { fetchAccountHealth } from '../../services/api';
 import { cn } from '../ui/cn';
 import { AccountActivity, attentionBreakdown } from './accountModel';
 
-/** System folders: one per stage. They cannot be renamed, deleted or dropped onto. */
+/** System folders: one per stage. They cannot be renamed, deleted or dropped onto.
+ * All fill themselves from history except On hold, which the user sets from the account menu. */
 export const STAGE_FOLDER_PREFIX = '__stage__';
 export const stageFolder = (stage: AccountStage) => `${STAGE_FOLDER_PREFIX}${stage}`;
 
-export const STAGE_ORDER: AccountStage[] = ['new', 'warming_up', 'ready', 'resting', 'attention'];
+export const STAGE_ORDER: AccountStage[] = ['new', 'warming_up', 'ready', 'resting', 'attention', 'on_hold'];
 
 export const STAGE_META: Record<AccountStage, { label: string; icon: LucideIcon; tone: string; suggestion: string }> = {
   new: { label: 'New', icon: Sprout, tone: 'text-blue-300', suggestion: 'Warm-up only for now; posting is not suggested yet.' },
@@ -17,6 +18,7 @@ export const STAGE_META: Record<AccountStage, { label: string; icon: LucideIcon;
   ready: { label: 'Ready', icon: CircleCheck, tone: 'text-zinc-400', suggestion: 'Normal posting.' },
   resting: { label: 'Resting', icon: Moon, tone: 'text-violet-300', suggestion: 'Better to wait before posting again.' },
   attention: { label: 'Needs attention', icon: TriangleAlert, tone: 'text-red-300', suggestion: 'Check this account before posting.' },
+  on_hold: { label: 'On hold', icon: Hand, tone: 'text-sky-300', suggestion: 'Nothing automatic runs: no posts, no warming, no cloud jobs. Release the hold when you are done, e.g. after changing the proxy.' },
 };
 
 export interface StageView { stage: AccountStage; reason: string; health?: AccountHealth }
@@ -37,6 +39,12 @@ function localAttention(profile: Profile, activity?: AccountActivity): string | 
 
 /** The stage shown for an account: local problems first, then the history-based stage. */
 export function stageView(profile: Profile, health?: AccountHealth, activity?: AccountActivity): StageView {
+  // The user's own hold comes first, even before local problems.
+  const hold = profile.account?.on_hold;
+  if (hold || health?.stage === 'on_hold') {
+    const note = hold?.note || health?.hold_note;
+    return { stage: 'on_hold', reason: `On hold${note ? `: ${note}` : ''}.`, health };
+  }
   const local = localAttention(profile, activity);
   if (local) return { stage: 'attention', reason: local, health };
   if (!health) return { stage: 'ready', reason: 'Stage not worked out yet.' };
@@ -51,14 +59,28 @@ export function restingLeft(until: string | null | undefined) {
 }
 
 export function stageLabel(view: StageView) {
+  if (view.stage === 'warming_up' && view.health?.proxy_restart) return `${STAGE_META.warming_up.label} · new proxy`;
   const left = view.stage === 'resting' ? restingLeft(view.health?.until) : '';
   return left ? `${STAGE_META[view.stage].label} · ${left}` : STAGE_META[view.stage].label;
 }
 
+/** "tomorrow 14:00" style end of a proxy restart. */
+export function restartEnds(health?: AccountHealth) {
+  const until = health?.proxy_restart?.until;
+  if (!until) return '';
+  const date = new Date(until);
+  const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return date.toDateString() === new Date().toDateString() ? `today ${time}` : `tomorrow ${time}`;
+}
+
+const HEALTH_CHANGED = 'account-health-changed';
+/** Asks every open stage view to reload now, e.g. after a hold changes. */
+export const refreshAccountHealth = () => window.dispatchEvent(new Event(HEALTH_CHANGED));
+
 /** "1 of 2 suggested posts today", or '' when a daily count would not help. */
 export function todayCount(view: StageView) {
   const health = view.health;
-  return health && health.daily_limit > 0 && view.stage !== 'attention'
+  return health && health.daily_limit > 0 && view.stage !== 'attention' && view.stage !== 'on_hold'
     ? `${health.posts_today} of ${health.daily_limit} suggested posts today.` : '';
 }
 
@@ -95,7 +117,8 @@ export function useAccountHealth(active = true, intervalMs = 30000) {
     const load = () => fetchAccountHealth().then(data => { if (!cancelled) setHealth(data.profiles); }).catch(() => undefined);
     load();
     const timer = setInterval(load, intervalMs);
-    return () => { cancelled = true; clearInterval(timer); };
+    window.addEventListener(HEALTH_CHANGED, load);
+    return () => { cancelled = true; clearInterval(timer); window.removeEventListener(HEALTH_CHANGED, load); };
   }, [active, intervalMs, reloadKey]);
   return { health, reload: () => setReloadKey(key => key + 1) };
 }

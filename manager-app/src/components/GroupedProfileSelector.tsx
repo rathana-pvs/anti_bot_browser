@@ -13,10 +13,13 @@ export function GroupedProfileSelector({ profiles, selectedIds, onChange, busyPr
 }) {
   const selectorId = useId();
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
-  const eligible = profiles.filter(p => !disabledProfileIds.includes(p.id));
+  // Accounts on hold can't be selected: the user stopped all automatic work on them.
+  const held = new Set(profiles.filter(p => p.account?.on_hold || stages?.[p.id]?.stage === 'on_hold').map(p => p.id));
+  const blocked = (id: string) => held.has(id) || disabledProfileIds.includes(id);
+  const eligible = profiles.filter(p => !blocked(p.id));
   const groups = groupProfiles(profiles);
   const toggle = (ids: string[]) => {
-    ids = ids.filter(id => !disabledProfileIds.includes(id));
+    ids = ids.filter(id => !blocked(id));
     if (!ids.length) return;
     const allSelected = ids.every((id) => selectedIds.includes(id));
     onChange(allSelected ? selectedIds.filter((id) => !ids.includes(id)) : [...new Set([...selectedIds, ...ids])]);
@@ -31,9 +34,15 @@ export function GroupedProfileSelector({ profiles, selectedIds, onChange, busyPr
     {stages && <div className="flex flex-wrap items-center gap-1.5 text-[11px]" aria-label="Select by account stage">
       <span className="text-zinc-500">By stage:</span>
       {STAGE_ORDER.map(stage => {
+        const Icon = STAGE_META[stage].icon;
+        if (stage === 'on_hold') {
+          return held.size > 0 && <span key={stage} title="Accounts on hold can't be selected. Release the hold in Accounts first."
+            className="inline-flex items-center gap-1 rounded-full border border-dashed border-zinc-800 px-2 py-0.5 text-zinc-500">
+            <Icon className={`h-3 w-3 ${STAGE_META[stage].tone}`} aria-hidden="true" />{STAGE_META[stage].label} <span>{held.size}</span>
+          </span>;
+        }
         const ids = eligible.filter(p => stages[p.id]?.stage === stage).map(p => p.id);
         if (!ids.length) return null;
-        const Icon = STAGE_META[stage].icon;
         return <button key={stage} type="button" onClick={() => onChange(ids)} title={`Select only the ${STAGE_META[stage].label} accounts. ${STAGE_META[stage].suggestion}`}
           className="inline-flex items-center gap-1 rounded-full border border-zinc-800 px-2 py-0.5 text-zinc-300 hover:border-zinc-600">
           <Icon className={`h-3 w-3 ${STAGE_META[stage].tone}`} aria-hidden="true" />{STAGE_META[stage].label} <span className="text-zinc-500">{ids.length}</span>
@@ -42,7 +51,7 @@ export function GroupedProfileSelector({ profiles, selectedIds, onChange, busyPr
     </div>}
     <div className={`${maxHeightClass} space-y-1 overflow-y-auto pr-1`}>
       {groups.map((group) => {
-        const ids = group.members.filter(p => !disabledProfileIds.includes(p.id)).map((p) => p.id);
+        const ids = group.members.filter(p => !blocked(p.id)).map((p) => p.id);
         const count = ids.filter((id) => selectedIds.includes(id)).length;
         const collapsed = !expandedGroups.has(group.name);
         const groupId = `${selectorId}-group-${encodeURIComponent(group.name)}`;
@@ -64,11 +73,11 @@ export function GroupedProfileSelector({ profiles, selectedIds, onChange, busyPr
           </div>
           <div id={groupId} hidden={collapsed} className="border-t border-zinc-800">
             {group.members.map((p) => <label htmlFor={`${selectorId}-profile-${p.id}`} key={p.id}
-              className={`flex cursor-pointer items-center gap-3 px-3 py-2.5 transition-colors ${selectedIds.includes(p.id) ? 'bg-blue-500/10' : 'hover:bg-zinc-800/40'}`}>
-              <Checkbox id={`${selectorId}-profile-${p.id}`} disabled={disabledProfileIds.includes(p.id)} checked={selectedIds.includes(p.id)} onCheckedChange={() => toggle([p.id])} ariaLabel={`Select ${p.name}`} />
+              className={`flex items-center gap-3 px-3 py-2.5 transition-colors ${blocked(p.id) ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'} ${selectedIds.includes(p.id) ? 'bg-blue-500/10' : 'hover:bg-zinc-800/40'}`}>
+              <Checkbox id={`${selectorId}-profile-${p.id}`} disabled={blocked(p.id)} checked={selectedIds.includes(p.id)} onCheckedChange={() => toggle([p.id])} ariaLabel={`Select ${p.name}`} />
               <div className="min-w-0 flex-1"><div className="flex items-center gap-1.5 text-xs font-medium text-zinc-200">
                 <span className="truncate">{p.name}</span>{stages?.[p.id] && <StageBadge view={stages[p.id]} compact />}</div>
-                <div className="truncate text-[10px] text-zinc-500">{p.id} · {disabledProfileIds.includes(p.id) ? 'Live setup required in Edit profile' : p.network?.proxy_host || 'Direct network'}</div></div>
+                <div className="truncate text-[10px] text-zinc-500">{p.id} · {held.has(p.id) ? `On hold${p.account?.on_hold?.note ? `: ${p.account.on_hold.note}` : ''}` : disabledProfileIds.includes(p.id) ? 'Live setup required in Edit profile' : p.network?.proxy_host || 'Direct network'}</div></div>
               {busyProfileIds.includes(p.id) && <span className="flex shrink-0 items-center gap-1 text-[10px] text-amber-400"><Loader2 className="h-3 w-3 animate-spin" />Busy</span>}
               <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] uppercase ${p.status === 'running' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-zinc-900 text-zinc-500'}`}>{p.status}</span>
             </label>)}

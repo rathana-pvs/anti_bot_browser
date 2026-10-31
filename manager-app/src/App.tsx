@@ -13,6 +13,8 @@ import {
   executeProfileAction,
   deleteProfile,
   deleteExecution,
+  holdProfile,
+  releaseProfileHold,
   fetchSystemStats,
   fetchProxies,
 } from './services/api';
@@ -35,6 +37,7 @@ import { DevicesPage } from './components/devices/DevicesPage';
 import { AccountPage } from './components/accounts/AccountPage';
 import { MoveToGroupDialog } from './components/accounts/MoveToGroupDialog';
 import { AccountHandlers, FolderHandlers, ProfileAction } from './components/accounts/accountActions';
+import { refreshAccountHealth } from './components/accounts/accountHealth';
 import { FolderNameDialog, FolderDialogState } from './components/accounts/FolderNameDialog';
 import { AccountTab, clearableFailures, useQueueExecutions } from './components/accounts/accountModel';
 import { fetchSetupStatus, isDesktopApp, SetupSnapshot } from './services/setup';
@@ -54,7 +57,7 @@ const allowsNativeMenu = (target: EventTarget | null) =>
   target instanceof HTMLElement && Boolean(target.closest('input, textarea, [contenteditable="true"]'));
 
 export const App: React.FC = () => {
-  const { showAlert, showConfirm, showToast } = useAppDialog();
+  const { showAlert, showConfirm, showPrompt, showToast } = useAppDialog();
   const [setupStatus, setSetupStatus] = useState<SetupSnapshot | null | undefined>(
     () => isDesktopApp() ? undefined : null,
   );
@@ -269,7 +272,30 @@ export const App: React.FC = () => {
       removed === items.length ? 'success' : 'error');
   };
 
+  const toggleHold = async (profile: Profile) => {
+    try {
+      if (profile.account?.on_hold) {
+        await releaseProfileHold(profile.id);
+        showToast(`${profile.name} is no longer on hold.`, 'success');
+      } else {
+        const note = await showPrompt(
+          `Nothing automatic will run on ${profile.name}: no posts, no warming, no cloud jobs. A post that is already publishing finishes. You can still open its browser yourself. Release the hold when you are done.`,
+          { title: 'Put on hold', confirmLabel: 'Put on hold', placeholder: 'Why? e.g. changing proxy (optional)' },
+        );
+        if (note === null) return;
+        await holdProfile(profile.id, note);
+        showToast(`${profile.name} is on hold.`, 'success');
+      }
+    } catch (err: any) {
+      showToast(err?.message || 'Couldn’t change the hold.', 'error');
+    } finally {
+      refreshAccountHealth();
+      await loadData();
+    }
+  };
+
   const handlers: AccountHandlers = {
+    toggleHold: (profile) => { void toggleHold(profile); },
     openQueue,
     clearFailures: (profile, before) => { void clearFailures(profile, before); },
     open: openAccountPage,

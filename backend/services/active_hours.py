@@ -1,4 +1,4 @@
-"""Active hours for accounts with the natural session switch on.
+"""Active hours: each account's desktop items wait for its usual waking hours.
 
 A desktop batch item waits until its account's usual hours, taken from the
 same persona the automation uses. Cloud attempts are scheduled by the cloud

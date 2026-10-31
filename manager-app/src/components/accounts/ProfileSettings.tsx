@@ -206,6 +206,9 @@ export function ProfileSettings({ profile, onSave, proxies = [], groups = [] }: 
             { value: 'custom', label: 'Custom proxy' },
           ]} />
         {selectedPoolProxy && <p className="text-[11px] text-zinc-400">{formatProxyGeography(selectedPoolProxy)}</p>}
+        {networkChanged && <p className="text-[11px] text-amber-300/90">
+          A new proxy restarts this account gently for 24 hours: warming visits first, posts after.
+          {!profile.account?.on_hold && ' Tip: put the account on hold before changing its proxy, and release it once the browser looks right.'}</p>}
         {networkChoice === 'custom' && <div className="grid grid-cols-3 gap-2">
           <input required value={customHost} onChange={(e) => setCustomHost(e.target.value)} placeholder="Proxy host" aria-label="Proxy host" className={`${input} col-span-2 mt-0`} />
           <input required type="number" min={1} max={65535} value={customPort} onChange={(e) => setCustomPort(e.target.value)} aria-label="Proxy port" className={`${input} mt-0`} />
