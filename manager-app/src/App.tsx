@@ -480,7 +480,13 @@ export const App: React.FC = () => {
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
-        onOpenSetup={isDesktopApp() ? () => {
+        onOpenSetup={isDesktopApp() ? async () => {
+          // Setup is for repairing a broken install; its steps can interrupt work in progress.
+          const confirmed = await showConfirm(
+            'Setup and repair is for fixing the app when something is broken. Its steps can reinstall the app runtime and restart services, which stops running browsers and posts in progress.',
+            { title: 'Open Setup and repair?', confirmLabel: 'Open Setup and repair', variant: 'warning' },
+          );
+          if (!confirmed) return;
           void fetchSetupStatus().then(status => {
             setIsSettingsOpen(false);
             setSetupStatus(status);
