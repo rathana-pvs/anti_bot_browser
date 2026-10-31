@@ -1,8 +1,3 @@
-# Version 1.2.1
-
-Includes all version 1.2.0 changes below. Fixes the Linux release build by
-installing FFmpeg and FFprobe before running media rendering tests.
-
 # Version 1.2.0
 
 **Linux only.** Windows and WSL are no longer supported: there is no Windows
