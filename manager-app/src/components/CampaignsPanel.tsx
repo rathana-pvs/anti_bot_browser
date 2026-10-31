@@ -23,10 +23,10 @@ interface CampaignsPanelProps {
   reelRequest?: { media: CreatedReelMedia; key: number } | null;
 }
 
+// Warm-up is not a kind of post, and Auto warming usually covers it, so it sits below these.
 const KINDS: { value: CampaignKind; label: string; description: string; icon: React.ReactNode }[] = [
   { value: 'posts', label: 'Posts and reels', description: 'Photos, videos, Reels, and text', icon: <Send className="h-4 w-4" /> },
   { value: 'live', label: 'Live', description: 'Broadcast a video', icon: <Radio className="h-4 w-4" /> },
-  { value: 'warmup', label: 'Warm-up only', description: 'Browse without posting', icon: <Flame className="h-4 w-4" /> },
 ];
 
 export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
@@ -68,7 +68,7 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
 
       <div className={`flex-1 overflow-y-auto p-6 ${section === 'post' ? '' : 'hidden'}`}>
         <div className="mx-auto mb-4 max-w-7xl">
-          <div role="radiogroup" aria-label="What to run" className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <div role="radiogroup" aria-label="What to run" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             {KINDS.map(option => <button key={option.value} type="button" role="radio" aria-checked={kind === option.value}
               onClick={() => chooseKind(option.value)}
               className={cn('flex items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors',
@@ -77,6 +77,12 @@ export const CampaignsPanel: React.FC<CampaignsPanelProps> = ({
               <span><span className="block text-xs font-semibold">{option.label}</span><span className="block text-[11px] text-zinc-500">{option.description}</span></span>
             </button>)}
           </div>
+          <button type="button" onClick={() => chooseKind(kind === 'warmup' ? 'posts' : 'warmup')} aria-pressed={kind === 'warmup'}
+            className={cn('mt-2 inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] transition-colors',
+              kind === 'warmup' ? 'bg-amber-950/40 text-amber-200 hover:text-amber-100' : 'text-zinc-500 hover:text-zinc-300')}>
+            <Flame className="h-3.5 w-3.5" />
+            {kind === 'warmup' ? 'Warming up without posting · back to posts' : 'Warm up accounts without posting'}
+          </button>
         </div>
         {/* Each kind keeps its own saved draft and settings, so remount on change. */}
         <BatchPostCreator key={kind} mode={kind} profiles={profiles} onEditProfile={onEditProfile}

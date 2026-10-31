@@ -157,6 +157,8 @@ export interface AccountHealth {
   posts_today: number;
   daily_limit: number;
   last_post_at: string | null;
+  /** When the last warming visit finished (ISO time). */
+  last_visit_at?: string | null;
   held_since?: string;
   hold_note?: string;
   /** History items behind an attention or resting stage. */
