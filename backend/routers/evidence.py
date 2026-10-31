@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Body
+from fastapi import APIRouter, Body, HTTPException
 from backend.config import PROFILES_DIR
 from backend.services.evidence_cleanup import clean_all_profiles_evidence
 
@@ -6,6 +6,9 @@ router = APIRouter(prefix="/api/evidence", tags=["evidence"])
 
 @router.post("/clean")
 def clean_all_evidence(payload: dict = Body(...)):
+    from backend.services import storage_housekeeping
+    if storage_housekeeping.cleaning():
+        raise HTTPException(status_code=409, detail="Storage cleanup is running. Try again when it finishes.")
     days = int(payload.get("days", 3))
     from backend.services.queue_service import load_posting_queue
     from backend.services.storage_housekeeping import protected_execution_ids

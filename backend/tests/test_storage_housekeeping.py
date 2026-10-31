@@ -200,3 +200,43 @@ def test_a_background_pass_reports_progress_to_the_end(monkeypatch):
     assert [label for _name, label, _percent in seen] == ["Evidence screenshots", "Browser caches", "Queue archive",
                                                           "Old runtime backup", "Logs"]
     assert [percent for *_rest, percent in seen] == sorted(percent for *_rest, percent in seen)
+
+
+def test_a_browser_start_waits_while_its_cache_is_trimmed(profiles, monkeypatch):
+    import asyncio
+    import threading
+    monkeypatch.setattr(housekeeping, "CACHE_TRIM_ABOVE", 1000)
+    monkeypatch.setattr(housekeeping, "CACHE_TRIM_TO", 500)
+    cache(profiles, "profile_001", 20, 100)
+    inside, release = threading.Event(), threading.Event()
+
+    def stopped(pid):
+        inside.set()
+        release.wait(2)
+        return True
+    monkeypatch.setattr(housekeeping, "_browser_stopped", stopped)
+    worker = threading.Thread(target=housekeeping.trim_chrome_caches)
+    worker.start()
+    inside.wait(2)
+    assert housekeeping.cache_locked("profile_001") and not housekeeping.cache_locked("profile_002")
+
+    async def start_browser():
+        threading.Timer(0.3, release.set).start()
+        await housekeeping.wait_for_cache_trim("profile_001", timeout=5)
+        return housekeeping.cache_locked("profile_001")
+    assert asyncio.run(start_browser()) is False
+    worker.join(2)
+
+
+def test_manual_evidence_cleanup_waits_for_a_running_cleanup(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+    from backend.routers import evidence, profiles as profile_routes
+    monkeypatch.setattr(housekeeping, "cleaning", lambda: True)
+    with pytest.raises(HTTPException) as error:
+        evidence.clean_all_evidence({"days": 3})
+    assert error.value.status_code == 409
+    (tmp_path / "profile_001").mkdir()
+    monkeypatch.setattr(profile_routes, "PROFILES_DIR", tmp_path)
+    with pytest.raises(HTTPException) as error:
+        profile_routes.clean_evidence_for_profile("profile_001", {"days": 3})
+    assert error.value.status_code == 409

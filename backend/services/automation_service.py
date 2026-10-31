@@ -295,6 +295,9 @@ def latest_queue_task_state(profile_id: str) -> dict | None:
 # Container readiness and lifecycle helpers
 async def run_profile_lifecycle_action(profile_id: str, action: str, timeout_sec: float = 90.0) -> str:
     ensure_not_android(profile_id, "Browser automation")
+    if action == "start":
+        from backend.services.storage_housekeeping import wait_for_cache_trim
+        await wait_for_cache_trim(profile_id)
     script_path = SCRIPTS_DIR / "run_profile.sh"
     proc = await asyncio.create_subprocess_exec(
         "bash", str(script_path), profile_id, action,

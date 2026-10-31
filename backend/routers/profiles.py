@@ -506,6 +506,8 @@ def clean_evidence_for_profile(profile_id: str, payload: dict = Body(...)):
     if not profile_dir.exists():
         raise HTTPException(status_code=404, detail="Profile not found")
     days = int(payload.get("days", 3))
-    from backend.services.storage_housekeeping import protected_execution_ids
+    from backend.services.storage_housekeeping import cleaning, protected_execution_ids
+    if cleaning():
+        raise HTTPException(status_code=409, detail="Storage cleanup is running. Try again when it finishes.")
     metrics = clean_profile_evidence(profile_dir, days_threshold=days, protected=protected_execution_ids(load_posting_queue()))
     return {"success": True, "profile_id": profile_id, "days_kept": days, "metrics": metrics}

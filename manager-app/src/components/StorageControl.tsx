@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { HardDrive, Loader2 } from 'lucide-react';
+import { HardDrive, Loader2, Lock } from 'lucide-react';
 import { Button } from './ui/Button';
 import { cleanStorage, fetchStorage, StorageRun, StorageStatus } from '../services/api';
 
@@ -14,6 +14,19 @@ const CATEGORIES: { key: keyof StorageRun['usage']; label: string; hint: string 
   { key: 'media', label: 'Media and Reel Studio', hint: 'Your files. Never touched.' },
   { key: 'queue', label: 'Queue and archive', hint: 'Finished batches older than 30 days move to a monthly archive.' },
 ];
+
+/** Whether a storage cleanup is running, for controls that must wait for it. */
+export function useStorageCleaning(intervalMs = 5000) {
+  const [cleaning, setCleaning] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => fetchStorage().then(value => { if (!cancelled) setCleaning(Boolean(value.progress?.running && !value.progress.dry_run)); }).catch(() => undefined);
+    load();
+    const timer = setInterval(load, intervalMs);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [intervalMs]);
+  return cleaning;
+}
 
 /** Settings → Storage: what uses space, and housekeeping that keeps it from growing. */
 export function StorageControl() {
@@ -75,7 +88,8 @@ export function StorageControl() {
     {!last && !preview && !running && <p className="text-zinc-500">Not cleaned yet. Preview shows what would be freed.</p>}
     {running && progress && <div className="space-y-1.5" role="status" aria-live="polite">
       <div className="flex items-baseline justify-between gap-3">
-        <span className="text-zinc-300">{progress.dry_run ? 'Previewing' : 'Cleaning'} · {progress.label}</span>
+        <span className="flex items-center gap-1.5 text-zinc-300"><Loader2 className="h-3.5 w-3.5 animate-spin text-blue-400" />
+          {progress.dry_run ? 'Previewing' : 'Cleaning'} · {progress.label}</span>
         <span className="tabular-nums text-zinc-400">{Math.round(progress.percent || 0)}%</span>
       </div>
       <div className="h-1.5 overflow-hidden rounded-full bg-zinc-800" role="progressbar" aria-valuemin={0} aria-valuemax={100}
@@ -83,15 +97,14 @@ export function StorageControl() {
         <div className="h-full rounded-full bg-blue-500 transition-[width] duration-500" style={{ width: `${progress.percent || 0}%` }} />
       </div>
       <p className="text-[11px] text-zinc-500">{progress.dry_run ? 'Would free' : 'Freed'} {formatBytes(progress.freed_bytes || 0)} so far.</p>
+      {!progress.dry_run && <p className="flex items-start gap-1.5 text-[11px] text-zinc-400"><Lock className="mt-0.5 h-3 w-3 shrink-0" />
+        Locked until it finishes: no second cleanup, the account Clean evidence buttons wait, and a browser whose cache is being trimmed starts a few seconds later. Posts keep running.</p>}
     </div>}
-    <div className="flex flex-wrap gap-2">
-      <Button size="sm" variant="outline" onClick={() => act(true)} disabled={running}>
-        {running && progress?.dry_run && <Loader2 className="h-3.5 w-3.5 animate-spin" />}Preview
-      </Button>
-      <Button size="sm" onClick={() => act(false)} disabled={running}>
-        {running && !progress?.dry_run && <Loader2 className="h-3.5 w-3.5 animate-spin" />}Clean now
-      </Button>
-    </div>
+    {/* While a pass runs, even one the app started itself, its progress replaces the buttons. */}
+    {!running && <div className="flex flex-wrap gap-2">
+      <Button size="sm" variant="outline" onClick={() => act(true)} disabled={!status}>Preview</Button>
+      <Button size="sm" onClick={() => act(false)} disabled={!status}>Clean now</Button>
+    </div>}
     {error && <p role="alert" className="text-red-400">{error}</p>}
   </div>;
 }
