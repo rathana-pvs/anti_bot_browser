@@ -35,7 +35,7 @@ NAVIGATION_HABITS = ("sidebar", "avatar", "typed")
 class Persona:
     """Stable habits of one account, derived from its seed alone.
 
-    Used only when the account's natural session switch is on. Milestone 5
+    Used by every account's natural session. Milestone 5
     traits (pointer speed, overshoot, typos) are stored here for later use.
     """
 
@@ -160,7 +160,6 @@ def load_behavior_session(
     root = profiles_root if profiles_root is not None else profiles_dir()
     config_path = root / profile_id / "config.json"
     mode = "medium"
-    natural = False
     seed = int.from_bytes(sha256(profile_id.encode("utf-8")).digest()[:8], "big")
     try:
         value = json.loads(config_path.read_text(encoding="utf-8"))
@@ -169,9 +168,8 @@ def load_behavior_session(
         configured_seed = value.get("behavior_seed")
         if isinstance(configured_seed, int) and not isinstance(configured_seed, bool) and configured_seed > 0:
             seed = configured_seed
-        automation = value.get("automation")
-        natural = isinstance(automation, dict) and automation.get("natural_session") is True
     except (OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError):
         pass
-    return BehaviorSession(mode, seed, run_id, natural=natural)
+    # Natural session is on for every account.
+    return BehaviorSession(mode, seed, run_id, natural=True)
 

@@ -49,10 +49,7 @@ def persona_hours_admit(config: dict, now_ms: float) -> bool:
 
 
 def within_active_hours(config: dict, now_ms: float) -> bool:
-    automation = config.get("automation")
     seed = config.get("behavior_seed")
-    if not (isinstance(automation, dict) and automation.get("natural_session") is True):
-        return True
     if not isinstance(seed, int) or isinstance(seed, bool) or seed < 1:
         return True
     return persona_hours_admit(config, now_ms)

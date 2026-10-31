@@ -193,16 +193,14 @@ def test_direct_creation_never_auto_assigns_proxy(tmp_path, monkeypatch):
     assert profile["network"]["proxy_host"] == ""
     assert profile["network"]["proxy_port"] is None
     assert profile["behavior_mode"] == "medium"
-    assert profile["automation"] == {"reel_template": "auto", "natural_session": False}
+    assert profile["automation"] == {"reel_template": "auto"}
 
 
-def test_natural_session_switch_is_kept_only_as_a_boolean(tmp_path):
-    profile = {"behavior_mode": "medium", "behavior_seed": 7, "automation": {"natural_session": "yes"}}
-    profile_service._apply_execution_preferences(profile)
-    assert profile["automation"]["natural_session"] is False
-    profile["automation"]["natural_session"] = True
-    profile_service._apply_execution_preferences(profile)
-    assert profile["automation"]["natural_session"] is True
+def test_the_old_natural_session_switch_is_dropped(tmp_path):
+    for value in (True, False, "yes"):
+        profile = {"behavior_mode": "medium", "behavior_seed": 7, "automation": {"natural_session": value}}
+        profile_service._apply_execution_preferences(profile)
+        assert "natural_session" not in profile["automation"]
 
 
 def test_proxy_entrypoint_is_fail_closed_for_both_ip_families():

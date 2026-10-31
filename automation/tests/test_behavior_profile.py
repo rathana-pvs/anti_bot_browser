@@ -77,7 +77,7 @@ class BehaviorSessionTests(unittest.TestCase):
         self.assertNotIn("persona", plain.summary())
         self.assertIn("persona", natural.summary())
 
-    def test_switch_is_read_from_the_automation_preferences(self):
+    def test_every_account_runs_its_natural_session(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "profile_001").mkdir()
@@ -85,9 +85,10 @@ class BehaviorSessionTests(unittest.TestCase):
                 json.dumps({"behavior_seed": 9, "automation": {"natural_session": True}}), encoding="utf-8")
             (root / "profile_002").mkdir()
             (root / "profile_002" / "config.json").write_text(
-                json.dumps({"behavior_seed": 9, "automation": {"natural_session": "true"}}), encoding="utf-8")
+                json.dumps({"behavior_seed": 9, "automation": {"natural_session": False}}), encoding="utf-8")
             self.assertTrue(load_behavior_session("profile_001", "r", profiles_root=root).natural)
-            self.assertFalse(load_behavior_session("profile_002", "r", profiles_root=root).natural)
+            self.assertTrue(load_behavior_session("profile_002", "r", profiles_root=root).natural)
+            self.assertTrue(load_behavior_session("profile_missing", "r", profiles_root=root).natural)
 
     def test_paste_preference_applies_only_with_the_switch_on(self):
         plain = [choose_entry_plan("short caption", "caption", BehaviorSession("medium", seed, "r")).method

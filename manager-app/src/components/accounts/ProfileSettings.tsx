@@ -9,7 +9,6 @@ import { ProfileGroupField } from '../ProfileGroupField';
 import { ProxySpeedTest } from '../ProxySpeedTest';
 import { useTimezoneConfirmation } from '../TimezoneConfirmationDialog';
 import { Button } from '../ui/Button';
-import { Checkbox } from '../ui/Checkbox';
 import { Select } from '../ui/Select';
 
 const DEFAULT_LIVE: LiveSettings = { server_url: 'rtmps://live-api-s.facebook.com:443/rtmp/', producer_url: 'https://www.facebook.com/live/producer/', key_saved: false };
@@ -55,7 +54,6 @@ export function ProfileSettings({ profile, onSave, proxies = [], groups = [] }: 
   const [resources, setResources] = useState<ResourceLimits>({ cpu_limit: 4, memory_mb: 4096 });
   const [behaviorMode, setBehaviorMode] = useState<BehaviorMode>('medium');
   const [reelTemplate, setReelTemplate] = useState<ReelTemplateSelection>('auto');
-  const [naturalSession, setNaturalSession] = useState(false);
   const [behaviorOptions, setBehaviorOptions] = useState<BehaviorMode[]>(['fast', 'medium', 'slow']);
   const [reelTemplateOptions, setReelTemplateOptions] = useState<ReelTemplateSelection[]>(['auto', 't1', 't2', 't3']);
   const [cpuOptions, setCpuOptions] = useState([1, 2, 4, 6, 8]);
@@ -86,7 +84,6 @@ export function ProfileSettings({ profile, onSave, proxies = [], groups = [] }: 
     setResources(profile.resources || { cpu_limit: 4, memory_mb: 4096 });
     setBehaviorMode(profile.behavior_mode || 'medium');
     setReelTemplate(profile.automation?.reel_template || 'auto');
-    setNaturalSession(profile.automation?.natural_session === true);
     // "Warm-up complete" from before stages existed reads as Ready.
     setStageOverride(profile.account.stage_override || (profile.account.warming_complete ? 'ready' : 'auto'));
     setNotes(profile.account.notes || '');
@@ -165,7 +162,7 @@ export function ProfileSettings({ profile, onSave, proxies = [], groups = [] }: 
       await onSave(profile.id, {
         name: name.trim(), group: group.trim(), network, requested_environment: confirmedEnvironment, resources,
         behavior_mode: behaviorMode,
-        automation: { reel_template: reelTemplate, natural_session: naturalSession },
+        automation: { reel_template: reelTemplate },
         account: { stage_override: stageOverride === 'auto' ? null : stageOverride, warming_complete: false, notes: notes.trim() },
       });
       setSaved(true);
@@ -251,12 +248,6 @@ export function ProfileSettings({ profile, onSave, proxies = [], groups = [] }: 
           </label>
         </div>
         <p className="text-[11px] text-zinc-500">Auto detects which Reel upload screen Facebook shows. Pick one only if detection keeps choosing wrong.</p>
-        <label htmlFor="natural-session" className="flex cursor-pointer items-start gap-2 text-zinc-400">
-          <Checkbox id="natural-session" checked={naturalSession} onCheckedChange={(value) => { setNaturalSession(value); setSaved(false); }} />
-          <span>Natural session
-            <span className="block text-[11px] text-zinc-500">Uses this account’s own habits: varied browsing before posting, sometimes staying after, clicking to its profile instead of typing the address.</span>
-          </span>
-        </label>
       </Section>
 
       <section className="overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950/40">

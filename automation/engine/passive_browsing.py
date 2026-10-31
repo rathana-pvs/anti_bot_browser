@@ -41,7 +41,7 @@ class PassiveBrowsing:
         return (round(min(right, max(left, x + dx))), round(min(bottom, max(top, y + dy))))
 
     def next_step(self):
-        # With the natural session switch on, the account's persona sets scroll
+        # In a natural session the account's persona sets scroll
         # size, how often it rereads, and reading speed.
         persona = self.behavior.persona if getattr(self.behavior, 'natural', False) else None
         direction, reason = 'down', 'browse'
