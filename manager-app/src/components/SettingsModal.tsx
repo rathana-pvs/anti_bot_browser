@@ -3,7 +3,8 @@ import { Select } from './ui/Select';
 import { AppUpdates } from './AppUpdates';
 import { ResourceModeControl } from './ResourceModeControl';
 import { AutoWarmingControl } from './AutoWarmingControl';
-import { Check, Cpu, Eye, EyeOff, KeyRound, Settings, X } from 'lucide-react';
+import { StorageControl } from './StorageControl';
+import { Check, Cpu, Eye, EyeOff, HardDrive, KeyRound, Settings, X } from 'lucide-react';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -11,7 +12,7 @@ interface SettingsModalProps {
   onOpenSetup?: () => void;
 }
 
-type Section = 'api-keys' | 'updates' | 'resources';
+type Section = 'api-keys' | 'updates' | 'resources' | 'storage';
 
 const API_KEY_FIELDS = [
   { id: 'gemini', label: 'Google Gemini', placeholder: 'API key' },
@@ -38,6 +39,7 @@ const SECTION_COPY: Record<Section, { title: string; description: string }> = {
   'api-keys': { title: 'API keys', description: 'Manage your Gemini API key and model.' },
   updates: { title: 'App updates', description: 'Check published versions and update the whole app.' },
   resources: { title: 'Resources', description: 'Control how much automation runs at once and which OCR engine it uses.' },
+  storage: { title: 'Storage', description: 'What uses disk space, and housekeeping that keeps it from growing.' },
 };
 
 const STORAGE_KEY = 'app_api_keys';
@@ -128,6 +130,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
             <button type="button" onClick={() => setSection('resources')} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition-colors ${section === 'resources' ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'}`}>
               <Cpu className="h-4 w-4" /> Resources
             </button>
+            <button type="button" onClick={() => setSection('storage')} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition-colors ${section === 'storage' ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'}`}>
+              <HardDrive className="h-4 w-4" /> Storage
+            </button>
             {onOpenSetup && <button type="button" onClick={onOpenSetup} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200">
               <Settings className="h-4 w-4" /> Setup and repair
             </button>}
@@ -191,6 +196,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                 <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4"><ResourceModeControl /></div>
                 <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4"><AutoWarmingControl /></div>
               </div>
+            ) : section === 'storage' ? (
+              <div className="max-w-xl"><StorageControl /></div>
             ) : <AppUpdates />}
           </div>
         </section>

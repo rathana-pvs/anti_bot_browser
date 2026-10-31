@@ -16,6 +16,7 @@ from backend.services.host_metrics_service import sample_windows_host
 from backend.services.adaptive_runtime import tick as adaptive_resource_tick
 from backend.services.queue_network_recovery import check_network_recovery
 from backend.services.auto_warming import tick as auto_warming_tick
+from backend.services.storage_housekeeping import tick as storage_housekeeping_tick
 
 scheduler = AsyncIOScheduler()
 
@@ -40,6 +41,8 @@ def setup_background_tasks():
     scheduler.add_job(heartbeat_scheduler_leases, "interval", seconds=15, id="heartbeat_scheduler_leases", replace_existing=True)
     scheduler.add_job(dispatch_pending_queue, "interval", seconds=25, id="dispatch_pending_queue", replace_existing=True)
     scheduler.add_job(auto_warming_tick, "interval", seconds=60, id="auto_warming_tick", replace_existing=True,
+                      max_instances=1, coalesce=True)
+    scheduler.add_job(storage_housekeeping_tick, "interval", minutes=30, id="storage_housekeeping_tick", replace_existing=True,
                       max_instances=1, coalesce=True)
     scheduler.add_job(check_network_recovery, "interval", seconds=15, id="check_network_recovery", replace_existing=True, max_instances=1, coalesce=True)
     scheduler.add_job(cleanup_orphaned_automation_containers, "interval", seconds=15, id="cleanup_orphaned_automation_containers", replace_existing=True)

@@ -941,3 +941,25 @@ export async function updateAutoWarming(enabled: boolean): Promise<import('../ty
   if (!res.ok) throw await apiError(res, 'Failed to update auto warming');
   return res.json();
 }
+
+export interface StorageRun {
+  ran_at: string; reason: string; dry_run: boolean; freed_bytes: number; free_before: number; free_after: number;
+  steps: Record<string, Record<string, number | string>>;
+  usage: Record<'evidence' | 'chrome_cache' | 'browser_data' | 'runtime' | 'runtime_backups' | 'queue' | 'media', number>;
+  busy?: boolean;
+}
+
+export interface StorageStatus { free_bytes: number; low_disk_bytes: number; critical_disk_bytes: number; last_run: StorageRun | null }
+
+export async function fetchStorage(): Promise<StorageStatus> {
+  const res = await fetch(`${API_BASE}/storage`);
+  if (!res.ok) throw await apiError(res, 'Failed to load storage');
+  return res.json();
+}
+
+/** One housekeeping pass now; `dryRun` previews it without removing anything. */
+export async function cleanStorage(dryRun = false): Promise<StorageRun> {
+  const res = await fetch(`${API_BASE}/storage/clean?dry_run=${dryRun}`, { method: 'POST' });
+  if (!res.ok) throw await apiError(res, 'Failed to clean storage');
+  return res.json();
+}

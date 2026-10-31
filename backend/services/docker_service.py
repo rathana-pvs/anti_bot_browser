@@ -326,6 +326,10 @@ def resource_mode_snapshot() -> dict:
 
 def claim_container_start_admission() -> dict:
     global last_queue_container_start_at
+    from backend.services.storage_housekeeping import disk_too_low
+    # A publish that runs out of disk midway can leave its outcome unknown.
+    if disk_too_low():
+        return {"allowed": False, "reason": "low_disk_space"}
     snapshot = resource_mode_snapshot()
     if snapshot["runtime"]["admission_allowed"]:
         last_queue_container_start_at = time.time() * 1000
