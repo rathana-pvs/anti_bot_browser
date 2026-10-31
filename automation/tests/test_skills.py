@@ -17,6 +17,9 @@ from skills.media import MediaAttachment
 from skills.navigation import Navigation
 from skills.permalink import permalink_not_requested, validate_facebook_permalink
 from skills.session import SessionCheck, has_strong_facebook_visual, is_facebook_url
+from skills.session_habits import MAX_LINGER_SECONDS, SessionHabits
+from engine.behavior_profile import BehaviorSession
+from modules.publishing_pipeline import LingerModule
 from skills.text_entry import TextEntry
 from modules.composer_entry import CaptionReviewFailure, ClipboardFailure
 
@@ -219,6 +222,58 @@ class PermalinkTests(unittest.TestCase):
 
     def test_not_requested_is_explicit(self):
         self.assertEqual(permalink_not_requested()["permalink_status"], "not_requested")
+
+
+class SessionHabitsTests(unittest.TestCase):
+    def linger_host(self, *, natural=True, status="published"):
+        host = fake_host(result_status=status, telemetry=Mock())
+        host.behavior_session = BehaviorSession("medium", 77, "linger", natural=natural)
+        host.client.get_screen_dimensions.return_value = (1920, 1080)
+        host.client.get_mouse_position.return_value = (900, 500)
+        return host
+
+    def test_lingers_only_after_a_confirmed_publish_with_the_switch_on(self):
+        self.assertTrue(SessionHabits(self.linger_host()).wants_to_linger())
+        self.assertFalse(SessionHabits(self.linger_host(natural=False)).wants_to_linger())
+        for status in ("uncertain", "failed_after_publish", "needs_review", "pending_profile_verification"):
+            self.assertFalse(SessionHabits(self.linger_host(status=status)).wants_to_linger())
+
+    def test_linger_is_passive_and_bounded(self):
+        host = self.linger_host()
+        clock = iter(x * 0.5 for x in range(100000))
+        with patch.object(host.behavior_session, "chance", return_value=True), \
+             patch("skills.session_habits.time.monotonic", side_effect=lambda: next(clock)), \
+             patch("skills.session_habits.time.sleep"):
+            summary = SessionHabits(host).linger()
+        self.assertTrue(summary["lingered"])
+        self.assertLessEqual(summary["linger_seconds"], MAX_LINGER_SECONDS + 7.0)
+        self.assertGreater(host.human.scroll.call_count, 0)
+        host.human.click.assert_not_called()
+        host.human.key_press.assert_not_called()
+
+    def test_busy_machine_shortens_and_pressure_skips_the_stay(self):
+        busy = self.linger_host()
+        busy.resource_signal = lambda: {"hold": False, "elastic_scale": 0.75, "publish_slots_full": False, "reason": ""}
+        self.assertTrue(SessionHabits(busy).wants_to_linger())
+        clock = iter(x * 0.5 for x in range(100000))
+        with patch.object(busy.behavior_session, "chance", return_value=True), \
+             patch.object(busy.behavior_session, "session_seconds", return_value=40.0), \
+             patch("skills.session_habits.time.monotonic", side_effect=lambda: next(clock)), \
+             patch("skills.session_habits.time.sleep"):
+            summary = SessionHabits(busy).linger()
+        self.assertTrue(summary["lingered"])
+        self.assertIn("up to 30s", " ".join(str(call.args[1]) for call in busy.log.call_args_list))
+        pressure = self.linger_host()
+        pressure.resource_signal = lambda: {"hold": True, "elastic_scale": 0.5, "publish_slots_full": False, "reason": ""}
+        self.assertFalse(SessionHabits(pressure).wants_to_linger())
+
+    def test_linger_error_never_changes_the_outcome(self):
+        host = self.linger_host()
+        host.client.get_screen_dimensions.side_effect = RuntimeError("display gone")
+        with patch.object(host.behavior_session, "chance", return_value=True):
+            result = LingerModule(host).run(None)
+        self.assertEqual(result.outcome, "skipped")
+        self.assertEqual(host.result_status, "published")
 
 
 if __name__ == "__main__":

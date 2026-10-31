@@ -9,6 +9,9 @@ export const ACTIVE_STATUSES = new Set(['running', 'preparing']);
 export const WAITING_STATUSES = new Set(['pending', 'ready']);
 const OPEN_RECOVERY_STATES = new Set(['waiting_network', 'confirming_network', 'waiting_review', 'ready', 'retrying']);
 
+export const isInterruptedRetry = (item: QueueExecutionItem) => item.status === 'cancelled'
+  || (item.status === 'stopped' && item.post_type !== 'live');
+
 export const isVideoFile = (file?: string) => /\.(mp4|mov|webm)$/i.test(file || '');
 export const hasOpenRecovery = (item: QueueExecutionItem) => OPEN_RECOVERY_STATES.has(item.network_recovery?.state || '');
 export const recoveryCancellable = (item: QueueExecutionItem) => Boolean(item.network_recovery)

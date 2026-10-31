@@ -3,6 +3,7 @@
 import json
 import math
 import os
+import random
 import time
 import uuid
 import numpy as np
@@ -24,6 +25,7 @@ from engine.semantic_fallback import (
 )
 from engine.telemetry import TelemetryRecorder
 from engine.outcome import SUCCESS_STATUSES, PublicationStatus, resolve_status
+from engine.resource_signal import read_signal
 from skills.comment import (
     FirstComment,
     comment_match_confidence,
@@ -33,6 +35,7 @@ from skills.comment import (
 from skills.dialogs import KnownDialogs
 from skills.media import MediaAttachment
 from skills.navigation import Navigation
+from skills.natural_navigation import NaturalNavigation
 from skills.permalink import (
     Permalink,
     is_recent_timestamp_text,
@@ -117,6 +120,16 @@ class BaseTask:
         except Exception:
             self.profile_config = {}
             pass
+
+    def current_url(self) -> str | None:
+        """The browser's URL; natural sessions read the address bar first."""
+        natural = NaturalNavigation(self)
+        return natural.current_url() if natural.enabled() else self.client.get_current_url()
+
+    def rng(self, channel: str):
+        """The account's seeded random stream, or ``random`` for task doubles."""
+        session = getattr(self, "behavior_session", None)
+        return session.stream(channel) if session is not None else random
 
     def detect_visual_theme(self, screen=None) -> tuple[str, float]:
         """Run visual theme preflight before any Facebook workflow locators."""
@@ -388,22 +401,54 @@ class BaseTask:
         """
         self.step_results = []
         for name in steps:
+            held = self._hold_before_step(name)
             started = time.perf_counter()
             try:
                 result = getattr(self, f"_step_{name}")()
             except Exception:
-                self._record_step(name, started, "exception")
+                self._record_step(name, started, "exception", held)
                 raise
             if result is None:
-                self._record_step(name, started, "completed")
+                self._record_step(name, started, "completed", held)
                 continue
-            self._record_step(name, started, self.result_status)
+            self._record_step(name, started, self.result_status, held)
             return result
         raise RuntimeError("Workflow steps ended without an outcome")
 
-    def _record_step(self, name: str, started: float, outcome: str) -> None:
+    # Longest wait before each step while the machine is under memory
+    # pressure. Steps not listed never wait; nothing waits after the publish
+    # click. Subclasses list only steps where pausing is safe.
+    HOLD_LIMITS: dict = {}
+    MAX_TOTAL_HOLD_SECONDS = 180.0
+
+    def resource_signal(self) -> dict:
+        return read_signal()
+
+    def _hold_before_step(self, name: str) -> float:
+        limit = self.HOLD_LIMITS.get(name)
+        if not limit or self.publish_attempted():
+            return 0.0
+        held_so_far = sum(item.get("held_seconds", 0.0) for item in getattr(self, "step_results", []))
+        limit = min(limit, self.MAX_TOTAL_HOLD_SECONDS - held_so_far)
+        started = time.monotonic()
+        signal = self.resource_signal()
+        if not signal["hold"] or limit <= 0:
+            return 0.0
+        self.log("INFO", f"Pausing before {name}: {signal['reason'] or 'the machine is under pressure'}.")
+        while signal["hold"] and time.monotonic() - started < limit:
+            # Uneven waits, so held accounts do not all resume together.
+            time.sleep(min(limit - (time.monotonic() - started), self.rng("pause").uniform(3.0, 6.0)))
+            signal = self.resource_signal()
+        held = round(time.monotonic() - started, 1)
+        self.log("INFO", f"Resuming {name} after {held:.0f}s.")
+        return held
+
+    def _record_step(self, name: str, started: float, outcome: str, held: float = 0.0) -> None:
         duration_ms = round((time.perf_counter() - started) * 1000.0, 1)
-        self.step_results.append({"step": name, "outcome": outcome, "duration_ms": duration_ms})
+        entry = {"step": name, "outcome": outcome, "duration_ms": duration_ms}
+        if held:
+            entry["held_seconds"] = held
+        self.step_results.append(entry)
         telemetry = getattr(self, "telemetry", None)
         if telemetry is not None:
             telemetry.record_step("workflow_step", duration_ms, outcome=outcome, step=name)
@@ -416,6 +461,12 @@ class BaseTask:
         merged_extra = {**self.result_extra, **extra}
         if getattr(self, "step_results", None):
             merged_extra.setdefault("workflow_steps", list(self.step_results))
+        if getattr(self, "_natural_navigation_counts", None):
+            merged_extra.setdefault("navigation_counts", dict(self._natural_navigation_counts))
+        if getattr(self, "reel_upload_extension", None):
+            merged_extra.setdefault("upload_extension", dict(self.reel_upload_extension))
+        if getattr(self, "facebook_identity", None):
+            merged_extra.setdefault("facebook_identity", self.facebook_identity)
         telemetry = getattr(self, "telemetry", None)
         if telemetry is not None:
             try:
@@ -558,6 +609,9 @@ class BaseTask:
 
     def handle_leave_site_dialog(self, screen=None) -> bool:
         return KnownDialogs(self).leave_site(screen)
+
+    def dismiss_meta_account_notice(self, screen=None) -> str:
+        return KnownDialogs(self).dismiss_meta_account_notice(screen)
 
     def find_post_publish_prompt(self, screen=None):
         return KnownDialogs(self).find_post_publish_prompt(screen)

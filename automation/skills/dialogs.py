@@ -1,4 +1,5 @@
-"""Known dialogs: Chrome's Leave site prompt and Facebook's post-publish prompt."""
+"""Known dialogs: Chrome's Leave site prompt, Facebook's post-publish prompt,
+and Meta's "Your Meta Account is here" announcement."""
 
 import re
 import time
@@ -33,6 +34,46 @@ class KnownDialogs:
         except Exception as exc:
             task.log("DEBUG", f"Error during leave site dialog check: {exc}")
         return False
+
+    def find_meta_account_notice(self, screen):
+        """The announcement's title, when Meta's account notice covers the page."""
+        height, width = screen.shape[:2]
+        region = (int(width * .25), int(height * .25), int(width * .5), int(height * .5))
+        for item in self.task.vision.read_text(screen, region=region, min_confidence=0.5):
+            if "meta account is here" in re.sub(r"\s+", " ", item["text"].casefold()):
+                return item
+        return None
+
+    def dismiss_meta_account_notice(self, screen=None) -> str:
+        """Close Meta's account announcement; never press "See what's new".
+
+        Escape closes it first. If it stays, the dialog's own X is clicked,
+        found from the title's position. Returns dismissed, absent or failed.
+        """
+        task = self.task
+        screen = task.client.screenshot() if screen is None else screen
+        title = self.find_meta_account_notice(screen)
+        if title is None:
+            return "absent"
+        task.log("INFO", "Meta's \"Your Meta Account is here\" notice is covering the page; closing it.")
+        task.capture_evidence("meta_account_notice", screen)
+        width = screen.shape[1]
+        left, top, right, _ = title["bounds"]
+        # The X sits at the dialog's top-right corner, about 35 px above the
+        # title and 270 px right of its centre on a 1920 px wide screen.
+        scale = width / 1920
+        close_x, close_y = int((left + right) / 2 + 272 * scale), int(top - 35 * scale)
+        for attempt in ("escape", "close_button"):
+            if attempt == "escape":
+                task.human.key_press("Escape")
+            else:
+                task.human.click(close_x, close_y)
+            time.sleep(1.2)
+            if self.find_meta_account_notice(task.client.screenshot()) is None:
+                task.log("INFO", f"Closed Meta's account notice ({attempt.replace('_', ' ')}).")
+                return "dismissed"
+        task.log("WARN", "Meta's account notice stayed open after Escape and its close button.")
+        return "failed"
 
     def find_post_publish_prompt(self, screen=None):
         """Return a modal-scoped Not now match when the known prompt is visible."""

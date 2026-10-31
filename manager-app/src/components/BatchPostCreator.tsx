@@ -1,13 +1,14 @@
 import { CaptionHookEditor, HookDraft, hookIsApproved } from "./CaptionHookEditor";
 import { LivePlaybackSettings, LivePlaybackMode } from './LivePlaybackSettings';
 import { GroupedProfileSelector } from './GroupedProfileSelector';
-import { WarmingSettings, defaultWarmingOptions } from './WarmingSettings';
+import { StageBadge, restartEnds, stageView, useAccountHealth } from './accounts/accountHealth';
+import { WarmingSettings, defaultWarmingOptions, warmupChoice, warmupOptions } from './WarmingSettings';
 import { MediaLightbox, LightboxMedia } from './MediaLightbox';
 import React, { useState, useEffect, useMemo } from 'react';
 import { Profile } from '../types/profile';
 import { CreateBatchParams, WarmingOptions } from '../types/automation';
 import type { CreatedReelMedia } from '../types/reelCreator';
-import { createBatch, uploadMediaFiles, getSharedMediaUrl, fetchQueue } from '../services/api';
+import { createBatch, uploadMediaFiles, getSharedMediaUrl, fetchQueue, fetchAutoWarming } from '../services/api';
 import {
   UploadCloud,
   Trash2,
@@ -34,6 +35,9 @@ import { useAppDialog } from './ui/AppDialogProvider';
 import { useFileDrop } from '../hooks/useFileDrop';
 
 export type CampaignKind = 'posts' | 'live' | 'warmup';
+
+/** A manual warm-up this soon after the last visit gets a warning. */
+const RECENT_VISIT_MINUTES = 90;
 
 interface BatchPostCreatorProps {
   profiles: Profile[];
@@ -71,10 +75,18 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
   const { showToast } = useAppDialog();
   const liveMode = mode === 'live';
   const warmupMode = mode === 'warmup';
+  const [autoWarmingOn, setAutoWarmingOn] = useState(false);
+  useEffect(() => {
+    if (!warmupMode) return;
+    fetchAutoWarming().then(summary => setAutoWarmingOn(summary.enabled)).catch(() => undefined);
+  }, [warmupMode]);
   const storageKey = (name: string) => `${STORAGE_PREFIX[mode]}_${name}`;
-  const [scrolls, setScrolls] = useState(() => Math.max(1, Number(localStorage.getItem(storageKey('scrolls'))) || 4));
   const [warmingOptions, setWarmingOptions] = useState<WarmingOptions>(() => {
-    try { return { ...defaultWarmingOptions, ...JSON.parse(localStorage.getItem(storageKey('warming_options')) || '{}') }; }
+    // Older versions saved many low-level options; keep only the two choices they map to.
+    try {
+      const { activity, length } = warmupChoice({ ...defaultWarmingOptions, ...JSON.parse(localStorage.getItem(storageKey('warming_options')) || '{}') });
+      return warmupOptions(activity, length);
+    }
     catch (_) { return defaultWarmingOptions; }
   });
   const [playbackMode, setPlaybackMode] = useState<LivePlaybackMode>(() => localStorage.getItem(storageKey('playback_mode')) === 'manual' ? 'manual' : 'auto');
@@ -99,6 +111,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
     return profiles.filter((p) => p.status === 'running').map((p) => p.id);
   });
   const [showProfileModal, setShowProfileModal] = useState(false);
+  const { health: accountHealth } = useAccountHealth();
 
   // Execution & Timing Settings
   const [executionMode, setExecutionMode] = useState<'now' | 'scheduled'>(() => {
@@ -170,7 +183,9 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
   }, [incomingReel, liveMode, onIncomingReelConsumed]);
 
   const hasLive = liveMode || posts.some(post => post.type === 'live');
-  const selectedProfileIds = savedProfileIds.filter(id => profiles.some(p => p.id === id && (!hasLive || p.live?.configured)));
+  // Accounts on hold are never targets, even if they were selected before the hold.
+  const selectedProfileIds = savedProfileIds.filter(id => profiles.some(p => p.id === id && !p.account?.on_hold && (!hasLive || p.live?.configured)));
+  const heldLeftOut = savedProfileIds.filter(id => profiles.some(p => p.id === id && p.account?.on_hold)).length;
 
   // UI state
   const [isUploading, setIsUploading] = useState(false);
@@ -196,9 +211,8 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(storageKey('scrolls'), String(scrolls));
     localStorage.setItem(storageKey('warming_options'), JSON.stringify(warmingOptions));
-  }, [scrolls, warmingOptions]);
+  }, [warmingOptions]);
 
   useEffect(() => {
     localStorage.setItem(storageKey('playback_mode'), playbackMode);
@@ -433,7 +447,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
           start_now: startNow,
         },
         posts: warmupMode
-          ? [{ type: 'warming', media_file: '', base_caption: '', scrolls: Math.max(1, scrolls), warming_options: warmingOptions, ai_spin: false }]
+          ? [{ type: 'warming', media_file: '', base_caption: '', scrolls: 4, warming_options: warmingOptions, ai_spin: false }]
           : posts.map((p) => ({
             type: p.type,
             ...(p.type === 'live' ? {title: (p.title || '').trim(), pinned_comment: (p.pinned_comment || '').trim(), playback_mode: playbackMode, loop: playbackMode === 'manual' && loopVideo, muted, max_duration_seconds: playbackMode === 'manual' && durationMinutes ? Number(durationMinutes) * 60 : undefined} : {}),
@@ -465,6 +479,23 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
   const busySelected = selectedProfiles.filter(p => busyProfileIds.includes(p.id));
   const erroredSelected = selectedProfiles.filter(p => p.status === 'error');
   const liveSetupMissing = hasLive ? profiles.filter(p => !p.live?.configured) : [];
+  const stages = Object.fromEntries(profiles.map(p => [p.id, stageView(p, accountHealth[p.id])]));
+  // Advice only: the user can keep any of these accounts.
+  const stageWarnings = selectedProfiles.flatMap(p => {
+    const view = stages[p.id];
+    if (view.stage === 'attention') return [{ profile: p, view, note: view.reason }];
+    if (warmupMode) {
+      // Two visits close together look busier than a person would be.
+      const minutes = view.health?.last_visit_at ? (Date.now() - new Date(view.health.last_visit_at).getTime()) / 60000 : Infinity;
+      return minutes < RECENT_VISIT_MINUTES
+        ? [{ profile: p, view, note: `Visited ${Math.max(1, Math.round(minutes))} min ago; another visit this soon looks busy.` }] : [];
+    }
+    if (view.stage === 'new' || view.stage === 'resting') return [{ profile: p, view, note: view.reason }];
+    if (view.health?.proxy_restart) return [{ profile: p, view, note: `Restarted after a proxy change. Posting before ${restartEnds(view.health)} is riskier${
+      view.health.proxy_restart.visited ? '' : '; its posts wait for the first warming visit from the new IP'}.` }];
+    const left = view.health ? view.health.daily_limit - view.health.posts_today : Infinity;
+    return itemCount > left ? [{ profile: p, view, note: `${Math.max(0, left)} suggested post${left === 1 ? '' : 's'} left today; this batch has ${itemCount}.` }] : [];
+  });
 
 
   const startLabel = executionMode === 'now' ? 'Starts now' : `Starts at ${startTime}`;
@@ -484,12 +515,15 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
               <div className="flex items-start gap-3">
                 <div className="p-2 rounded-lg bg-orange-950/40 border border-orange-900/60 text-orange-400"><Flame className="w-4 h-4" /></div>
                 <div>
-                  <h3 className="text-sm font-semibold text-zinc-100">Warm-up only</h3>
-                  <p className="text-xs text-zinc-400 mt-0.5">Each account browses its feed or profile like a person would, with varied scrolling, reading pace, and breaks. Nothing is posted.</p>
+                  <h3 className="text-sm font-semibold text-zinc-100">Warm up accounts</h3>
+                  <p className="text-xs text-zinc-400 mt-0.5">A short read-only visit for the accounts you choose, now or at a set time. Nothing is posted.</p>
                 </div>
               </div>
+              {autoWarmingOn && <p className="rounded-lg border border-amber-900/50 bg-amber-950/20 px-3 py-2 text-[11px] leading-relaxed text-amber-200">
+                Auto warming is on and already keeps accounts active. Use this only for a specific account or time, for example right before a campaign.
+              </p>}
               <div className="p-3 rounded-xl bg-zinc-950 border border-zinc-800">
-                <WarmingSettings scrolls={scrolls} onScrollsChange={setScrolls} value={warmingOptions} onChange={setWarmingOptions} />
+                <WarmingSettings value={warmingOptions} onChange={setWarmingOptions} />
               </div>
             </div>
           ) : <>
@@ -731,6 +765,23 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
               </span>
               <ChevronRight className="w-4 h-4 text-zinc-500" />
             </button>
+            {heldLeftOut > 0 && <p className="text-[11px] text-sky-300">{heldLeftOut} selected account{heldLeftOut === 1 ? ' is' : 's are'} on hold and left out. Release the hold in Accounts to post with {heldLeftOut === 1 ? 'it' : 'them'}.</p>}
+            {stageWarnings.length > 0 && (
+              <details className="text-[11px] text-amber-300">
+                <summary className="cursor-pointer">{stageWarnings.length} selected account{stageWarnings.length === 1 ? ' isn’t' : 's aren’t'} suggested for {warmupMode ? 'this' : 'posting'} right now</summary>
+                <ul className="mt-2 space-y-1.5">
+                  {stageWarnings.slice(0, 8).map(({ profile, view, note }) => <li key={profile.id} className="flex items-start gap-2 text-zinc-300">
+                    <StageBadge view={view} compact className="mt-0.5" />
+                    <span className="min-w-0 flex-1"><span className="block truncate">{profile.name}</span><span className="block text-zinc-500">{note}</span></span>
+                  </li>)}
+                </ul>
+                <div className="mt-2 flex flex-wrap gap-3">
+                  <button type="button" className="text-blue-400 hover:text-blue-300"
+                    onClick={() => setSelectedProfileIds(selectedProfileIds.filter(id => !stageWarnings.some(w => w.profile.id === id)))}>Remove them</button>
+                  <span className="text-zinc-500">Or keep them: this is only a suggestion.</span>
+                </div>
+              </details>
+            )}
             {liveSetupMissing.length > 0 && (
               <details className="text-[11px] text-amber-300">
                 <summary className="cursor-pointer">{liveSetupMissing.length} account{liveSetupMissing.length === 1 ? ' needs' : 's need'} Live setup first</summary>
@@ -869,7 +920,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
             </div>
 
             <div className="overflow-y-auto p-4">
-              <GroupedProfileSelector busyProfileIds={busyProfileIds} disabledProfileIds={hasLive ? profiles.filter(p => !p.live?.configured).map(p => p.id) : []} profiles={profiles} selectedIds={selectedProfileIds} onChange={setSelectedProfileIds} />
+              <GroupedProfileSelector stages={stages} busyProfileIds={busyProfileIds} disabledProfileIds={hasLive ? profiles.filter(p => !p.live?.configured).map(p => p.id) : []} profiles={profiles} selectedIds={selectedProfileIds} onChange={setSelectedProfileIds} />
             </div>
 
             {/* Modal Footer */}

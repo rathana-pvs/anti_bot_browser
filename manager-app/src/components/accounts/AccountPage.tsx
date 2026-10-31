@@ -30,7 +30,7 @@ export function AccountPage({ profile, tab: requestedTab, onTabChange, onBack, b
   handlers: AccountHandlers; busy: boolean; executions: QueueExecutionItem[];
   proxies: ProxyItem[]; groups: string[];
   onSave: (profileId: string, updates: ProfileUpdateRequest) => Promise<void>;
-  onOpenQueue: () => void;
+  onOpenQueue: (executionId?: string) => void;
 }) {
   const { showToast } = useAppDialog();
   const [lightbox, setLightbox] = useState<LightboxMedia | null>(null);
@@ -97,7 +97,7 @@ export function AccountPage({ profile, tab: requestedTab, onTabChange, onBack, b
       : tab === 'browser'
       ? <div className="flex min-h-0 flex-1"><VncViewer profile={profile} onAction={(_id, action) => run(action)} embedded /></div>
       : <div className="min-h-0 flex-1 overflow-y-auto p-6">
-        {tab === 'overview' && <AccountOverview profile={profile} proxies={proxies} activity={activity} onOpenQueue={onOpenQueue} />}
+        {tab === 'overview' && <AccountOverview profile={profile} proxies={proxies} activity={activity} onOpenQueue={onOpenQueue} onOpenTab={onTabChange} onToggleHold={() => handlers.toggleHold(profile)} />}
         {tab === 'settings' && <ProfileSettings profile={profile} onSave={onSave} proxies={proxies} groups={groups} />}
         {tab === 'activity' && <AccountActivityTab profile={profile} recent={activity.recent}
           onOpenImage={(url, label) => setLightbox({ url, type: 'photo', name: label })} onToast={showToast} />}

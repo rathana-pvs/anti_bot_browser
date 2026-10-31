@@ -68,3 +68,6 @@ data/python-runtime/
 .build-cargo/
 data/container_owners.json
 data/container_owners.lock
+
+# Adaptive resource signal read by running automation
+data/resources/

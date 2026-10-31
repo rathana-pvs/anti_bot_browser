@@ -37,7 +37,6 @@ writeFileSync(join(payloadRoot, '.gitkeep'), '');
 
 const entries = [
   'install.sh',
-  'install-windows.ps1',
   'VERSION',
   'automation',
   'backend',

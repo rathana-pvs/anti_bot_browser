@@ -50,9 +50,7 @@ restart the service and reopen the desktop to discover the new port/token.
 unit. Replace its paths and create a protected environment file containing
 `WORKER_CREDENTIAL=...` before installing it. The example is not installed or
 activated automatically. Continuing across logout requires the user's systemd
-session policy. Windows/WSL startup packaging is not provided in this first
-version; run the Python service inside WSL, and explicitly expose its protected
-session descriptor to the Windows desktop if attaching from Windows.
+session policy. The worker runs on Linux only.
 
 ## Local state and recovery
 

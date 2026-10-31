@@ -52,9 +52,16 @@ def latest_persisted_stage(execution: dict | None) -> str | None:
                 return stage.strip()
     return None
 
+WARMING_INTERRUPTED = ("Warming visit was interrupted before it finished. "
+                       "Visits never post, so nothing needs review.")
+
+
 def classify_interrupted_execution(execution: dict | None) -> dict:
     interrupted_stage = latest_persisted_stage(execution)
     execution = execution or {}
+    # Only standalone warming items use the "warming" stage, and they have no publish step.
+    if interrupted_stage == "warming" and not has_publication_evidence(execution):
+        return {"status": "stopped", "stage": "stopped", "interruptedStage": "warming", "error": WARMING_INTERRUPTED}
     if not has_publication_evidence(execution) and (
         interrupted_stage in PRE_PUBLISH_STAGES or is_preparation_attempt(execution)
     ):
@@ -74,6 +81,18 @@ def classify_interrupted_execution(execution: dict | None) -> dict:
             else "Execution interrupted without reliable evidence that the publish action was not sent; publication outcome requires review"
         ),
     }
+
+def repair_interrupted_warming(execution: dict) -> bool:
+    """Older recoveries marked interrupted warming visits as uncertain; they never post."""
+    history = execution.get("stage_history") or []
+    last = history[-1] if history and isinstance(history[-1], dict) else {}
+    if not (execution.get("status") == "uncertain" and last.get("reason") == "manager_restart_recovery"
+            and last.get("interrupted_stage") == "warming" and not has_publication_evidence(execution)):
+        return False
+    execution.update(status="stopped", stage="stopped", error=WARMING_INTERRUPTED)
+    history.append({"stage": "stopped", "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "reason": "warming_never_publishes"})
+    return True
 
 def validate_facebook_permalink(raw_url: str | None, post_type: str = "post") -> str | None:
     if not isinstance(raw_url, str) or not raw_url.strip():

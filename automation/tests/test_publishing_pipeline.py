@@ -168,6 +168,7 @@ class PublishingPipelineTests(unittest.TestCase):
                 "post_publish_prompt",
                 "publication_result_verifier",
                 "comment",
+                "linger",
                 "finalize",
             ),
         )

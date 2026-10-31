@@ -28,13 +28,66 @@ PRESETS = {
     "slow": BehaviorPreset("slow", (1.25, 1.60), (32, 48), (4, 8)),
 }
 
+NAVIGATION_HABITS = ("sidebar", "avatar", "typed")
+
+
+@dataclass(frozen=True)
+class Persona:
+    """Stable habits of one account, derived from its seed alone.
+
+    Used by every account's natural session. Milestone 5
+    traits (pointer speed, overshoot, typos) are stored here for later use.
+    """
+
+    reading_speed: float          # multiplies reading pauses; >1 reads slower
+    scroll_notches: tuple[int, int]
+    reread_rate: float
+    preparation_scale: float      # multiplies the batch's preparation time
+    preparation_skip_rate: float
+    linger_rate: float
+    linger_seconds: tuple[float, float]
+    navigation_weights: tuple[float, float, float]  # sidebar, avatar, typed
+    paste_preference: float
+    active_hours: tuple[int, int]  # local start hour, length in hours
+    pointer_speed: float
+    overshoot_rate: float
+    typo_rate: float
+
+    @classmethod
+    def from_seed(cls, profile_seed: int) -> "Persona":
+        rng = random.Random(int.from_bytes(sha256(f"persona|{int(profile_seed)}".encode()).digest()[:8], "big"))
+        low = rng.randint(1, 3)
+        linger_low = round(rng.uniform(8.0, 25.0), 1)
+        sidebar, avatar = rng.uniform(0.3, 0.7), rng.uniform(0.15, 0.5)
+        return cls(
+            reading_speed=round(rng.uniform(0.75, 1.35), 3),
+            scroll_notches=(low, low + rng.randint(1, 3)),
+            reread_rate=round(rng.uniform(0.05, 0.30), 3),
+            preparation_scale=round(rng.uniform(0.6, 1.0), 3),
+            preparation_skip_rate=round(rng.uniform(0.0, 0.25), 3),
+            linger_rate=round(rng.uniform(0.25, 0.75), 3),
+            linger_seconds=(linger_low, round(min(60.0, linger_low + rng.uniform(10.0, 35.0)), 1)),
+            navigation_weights=(round(sidebar, 3), round(avatar, 3), round(rng.uniform(0.05, 0.2), 3)),
+            paste_preference=round(rng.uniform(0.2, 0.8), 3),
+            active_hours=(rng.randint(6, 11), rng.randint(10, 15)),
+            pointer_speed=round(rng.uniform(0.8, 1.25), 3),
+            overshoot_rate=round(rng.uniform(0.05, 0.35), 3),
+            typo_rate=round(rng.uniform(0.0, 0.03), 4),
+        )
+
+    def summary(self) -> dict[str, Any]:
+        return {name: list(value) if isinstance(value, tuple) else value for name, value in self.__dict__.items()}
+
 
 class BehaviorSession:
     """Independent deterministic random streams derived for a single run."""
 
-    CHANNELS = ("mouse", "click", "typing", "scroll", "pause", "warming", "entry_strategy", "review", "baseline")
+    CHANNELS = (
+        "mouse", "click", "typing", "scroll", "pause", "warming", "entry_strategy", "review", "baseline",
+        "session",
+    )
 
-    def __init__(self, mode: str, profile_seed: int, run_id: str):
+    def __init__(self, mode: str, profile_seed: int, run_id: str, *, natural: bool = False):
         self.preset = PRESETS.get(mode, PRESETS["medium"])
         self.mode = self.preset.mode
         self.version = BEHAVIOR_VERSION
@@ -50,6 +103,11 @@ class BehaviorSession:
         baseline = self.stream("baseline")
         self.pace = baseline.uniform(*self.preset.duration_scale)
         self.wpm = baseline.randint(*self.preset.typing_wpm)
+        # Natural session: stable per-account habits, plus small per-run drift
+        # from the run-seeded "session" stream. Existing streams are unchanged.
+        self.natural = bool(natural)
+        self.persona = Persona.from_seed(profile_seed)
+        self.drift = self.stream("session").uniform(0.9, 1.1)
 
     @property
     def seed_hash(self) -> str:
@@ -67,6 +125,15 @@ class BehaviorSession:
     def typing_speed(self) -> int:
         return self.wpm
 
+    def chance(self, rate: float) -> bool:
+        """A per-run decision with this probability, from the session stream."""
+        return self.stream("session").random() < min(1.0, max(0.0, rate * self.drift))
+
+    def session_seconds(self, low: float, high: float) -> float:
+        """A per-run duration in [low, high], drifted and paced for this account."""
+        value = self.stream("session").uniform(low, high) * self.drift * self.pace
+        return min(high, max(low, value))
+
     def warming_scroll_count(self) -> int:
         return self.stream("warming").randint(*self.preset.warming_scrolls)
 
@@ -79,6 +146,8 @@ class BehaviorSession:
             "seed_hash": self.seed_hash,
             "typing_wpm_range": list(self.preset.typing_wpm),
             "warming_scroll_range": list(self.preset.warming_scrolls),
+            "natural_session": self.natural,
+            **({"persona": self.persona.summary(), "session_drift": round(self.drift, 3)} if self.natural else {}),
         }
 
 
@@ -99,7 +168,8 @@ def load_behavior_session(
         configured_seed = value.get("behavior_seed")
         if isinstance(configured_seed, int) and not isinstance(configured_seed, bool) and configured_seed > 0:
             seed = configured_seed
-    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+    except (OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError):
         pass
-    return BehaviorSession(mode, seed, run_id)
+    # Natural session is on for every account.
+    return BehaviorSession(mode, seed, run_id, natural=True)
 

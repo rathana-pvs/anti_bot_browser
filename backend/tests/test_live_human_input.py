@@ -41,6 +41,9 @@ class EditableClient:
         elif command == 'key ctrl+c':
             if self.value: self.clipboard = self.value
         elif command == 'key Right': self.selected = False
+        elif command == 'key BackSpace':
+            self.value = '' if self.selected else self.value[:-1]
+            self.selected = False
         elif command == 'key ctrl+v':
             self.value = self.clipboard if self.selected else self.value + self.clipboard
             self.selected = False

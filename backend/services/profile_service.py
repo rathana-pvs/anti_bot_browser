@@ -289,6 +289,8 @@ def _apply_execution_preferences(profile: dict[str, Any]) -> None:
     automation["reel_template"] = (
         reel_template if reel_template in REEL_TEMPLATE_OPTIONS else "auto"
     )
+    # Natural session is always on now; the old per-account switch is dropped.
+    automation.pop("natural_session", None)
     profile["automation"] = automation
 
 

@@ -11,7 +11,7 @@ import { QueueThumb } from './QueueRow';
 import { EvidenceViewer } from './EvidenceViewer';
 import {
   ACTIVE_STATUSES, FAILED_STATUSES, UNCERTAIN_STATUSES, commentNeedsRetry, describe, formatTime,
-  humanStage, kindLabel, recoveryCancellable, statusLabel,
+  humanStage, isInterruptedRetry, kindLabel, recoveryCancellable, statusLabel,
 } from './queueModel';
 
 export interface DrawerActions {
@@ -44,7 +44,7 @@ export function QueueDetailDrawer({ item, profile, profileName, actions, onClose
   const failed = FAILED_STATUSES.has(item.status);
   const canResolve = uncertain || (recoveryCancellable(item) && (failed || uncertain));
   const canRerun = !(item.post_type === 'live' && uncertain)
-    && (item.status === 'failed' || item.status === 'failed_before_publish' || uncertain || item.status.startsWith('skipped'));
+    && (item.status === 'failed' || item.status === 'failed_before_publish' || isInterruptedRetry(item) || uncertain || item.status.startsWith('skipped'));
   const canRemove = !['running', 'uncertain', 'needs_review'].includes(item.status);
   const viewer = browserViewerUrl(profile);
   const resolve = async (outcome: 'published' | 'not_published') => {
@@ -88,7 +88,7 @@ export function QueueDetailDrawer({ item, profile, profileName, actions, onClose
 
       <div className="flex flex-wrap gap-2">
         {item.status === 'pending' && <Button size="sm" onClick={() => actions.runNow(item)}><Play className="h-3 w-3" />Run now</Button>}
-        {canRerun && <Button size="sm" variant="outline" onClick={() => actions.runNow(item)}><RotateCcw className="h-3.5 w-3.5" />{failed ? 'Retry' : uncertain ? 'Re-run anyway' : 'Re-run now'}</Button>}
+        {canRerun && <Button size="sm" variant="outline" onClick={() => actions.runNow(item)}><RotateCcw className="h-3.5 w-3.5" />{failed || isInterruptedRetry(item) ? 'Retry' : uncertain ? 'Re-run anyway' : 'Re-run now'}</Button>}
         {commentNeedsRetry(item) && <Button size="sm" variant="outline" onClick={() => actions.retryComment(item)} loading={item.comment_retry_status === 'running'}><MessageCircle className="h-3.5 w-3.5" />Retry comment only</Button>}
         {item.post_type === 'live' && item.status === 'running' && <Button size="sm" variant="outline" onClick={() => actions.stopLive(item)}><Square className="h-3 w-3" />Stop Live</Button>}
         {item.post_url && <a href={item.post_url} target="_blank" rel="noreferrer" className="inline-flex min-h-8 items-center gap-1.5 rounded-control border border-border px-3 text-blue-300 hover:bg-elevated"><ExternalLink className="h-3.5 w-3.5" />View on Facebook</a>}

@@ -4,7 +4,5 @@
 # Explicitly declare shell scripts to always have LF line endings
 *.sh text eol=lf
 
-# Windows scripts always have CRLF
-*.bat text eol=crlf
-*.cmd text eol=crlf
-*.ps1 text eol=crlf
+# The Android Gradle wrapper's batch file keeps CRLF
+android-agent/gradlew.bat text eol=crlf

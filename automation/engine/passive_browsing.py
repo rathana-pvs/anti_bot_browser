@@ -41,6 +41,9 @@ class PassiveBrowsing:
         return (round(min(right, max(left, x + dx))), round(min(bottom, max(top, y + dy))))
 
     def next_step(self):
+        # In a natural session the account's persona sets scroll
+        # size, how often it rereads, and reading speed.
+        persona = self.behavior.persona if getattr(self.behavior, 'natural', False) else None
         direction, reason = 'down', 'browse'
         if self.unchanged >= 2:
             if self.recovery_used or self.net_down <= 0:
@@ -49,10 +52,14 @@ class PassiveBrowsing:
             direction, reason = 'up', 'check_scroll_boundary'
             self.recovery_used = True
             self.unchanged = 0
-        elif self.net_down > 0 and self.last_direction == 'down' and self.rng.random() < .15:
+        elif self.net_down > 0 and self.last_direction == 'down' and self.rng.random() < (persona.reread_rate if persona else .15):
             direction, reason = 'up', 'reread'
-        notches = self.rng.choice((1, 2, 2, 3, 3, 4)) if direction == 'down' else min(self.net_down, self.rng.randint(1, 2))
-        pause = min(8.0, max(1.0, self.rng.triangular(1.5, 6.0, 3.2) * self.behavior.pace))
+        if direction == 'down':
+            notches = self.rng.randint(*persona.scroll_notches) if persona else self.rng.choice((1, 2, 2, 3, 3, 4))
+        else:
+            notches = min(self.net_down, self.rng.randint(1, 2))
+        reading = persona.reading_speed if persona else 1.0
+        pause = min(8.0, max(1.0, self.rng.triangular(1.5, 6.0, 3.2) * self.behavior.pace * reading))
         return BrowseStep(direction, notches, pause, reason)
 
     def record(self, step, changed):

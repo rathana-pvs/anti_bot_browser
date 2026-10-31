@@ -171,6 +171,21 @@ class ContainerClient:
         """Place the pointer at one point; HumanInput supplies the path."""
         self.xdo(f"mousemove {int(x)} {int(y)}")
 
+    def pointer_path(self, steps: list[tuple[int, int, float]]) -> None:
+        """Move through points with a wait after each, in one xdotool call.
+
+        One ``docker exec`` per point costs tens of milliseconds, which would
+        stretch a short human movement into seconds.
+        """
+        if not steps:
+            return
+        args = ["xdotool"]
+        for x, y, delay in steps:
+            args += ["mousemove", str(int(x)), str(int(y))]
+            if delay > 0:
+                args += ["sleep", f"{delay:.3f}"]
+        self.exec_cmd(args, check=True, timeout=10 + sum(delay for _, _, delay in steps))
+
     def button(self, action: str, button: int = 1) -> None:
         if action not in {"down", "up"}:
             raise ValueError("Button action must be 'down' or 'up'")

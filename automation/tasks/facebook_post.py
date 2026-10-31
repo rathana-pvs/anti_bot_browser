@@ -667,7 +667,10 @@ class FacebookPostTask(BaseTask):
             else:
                 feed_streak = 0
 
-            time.sleep(1.5)
+            if getattr(getattr(self, "behavior_session", None), "natural", False) is True:
+                self.human.idle(1.5)
+            else:
+                time.sleep(1.5)
 
         # Never navigate away or begin commenting while a publishing/review modal
         # may still be open. This avoids confusing slow network processing with
@@ -689,6 +692,11 @@ class FacebookPostTask(BaseTask):
         "verify",
         "finish",
     )
+
+    # Safe pauses: before the composer exists, and short ones inside it
+    # before media, caption and review. Never from publish onward.
+    HOLD_LIMITS = {"preflight": 120.0, "open_composer": 120.0, "attach_media": 90.0,
+                   "enter_caption": 60.0, "review": 60.0}
 
     def run(self) -> bool:
         steps = self.workflow_steps(self.STEPS)

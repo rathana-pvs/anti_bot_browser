@@ -136,10 +136,20 @@ def batch_has_review_hold(batch: dict | None) -> bool:
     )
 
 def ordered_due_executions(queue: dict | None, now_ms: float | None = None) -> list:
+    from backend.services import account_hold, active_hours
+
     if now_ms is None:
         now_ms = time.time() * 1000
 
     due = []
+    profile_configs = {}
+    loaded_history = []
+
+    def history():
+        if not loaded_history:
+            from backend.services.account_health import _load_history
+            loaded_history.append(_load_history())
+        return loaded_history[0]
     for batch_idx, batch in enumerate((queue or {}).get("daily_batches", [])):
         profile_order = batch.get("profile_execution_order") or batch.get("target_profiles") or []
         profile_ranks = {pid: idx for idx, pid in enumerate(profile_order)}
@@ -167,6 +177,11 @@ def ordered_due_executions(queue: dict | None, now_ms: float | None = None) -> l
                 profile_rank = profile_ranks.get(execution.get("profile_id"), 0)
                 sched_time = batch_start_ms + profile_rank * profile_stagger_ms
                 if sched_time > now_ms:
+                    continue
+                config = active_hours._profile_config(execution.get("profile_id", ""), profile_configs)
+                if not account_hold.admits(execution, post, config, now_ms, history):
+                    continue
+                if not active_hours.admits(execution, batch, sched_time, now_ms, profile_configs):
                     continue
 
                 due.append({

@@ -329,7 +329,6 @@ class ReelCreator:
         if self.admission:
             return self.admission()
         from backend.services import automation_service, container_lifecycle, docker_service, live_service
-        from backend.services.host_metrics_service import get_windows_host_stats
         from backend.services.resource_service import resource_admission_decision
         if container_lifecycle.UPDATE_MAINTENANCE or container_lifecycle.SHUTTING_DOWN:
             return 'App maintenance or shutdown'
@@ -337,10 +336,7 @@ class ReelCreator:
                                        for task in list(automation_service.active_automation_tasks.values())):
             return 'Waiting for automation or Live to finish'
         memory = psutil.virtual_memory().percent
-        windows = get_windows_host_stats()
-        if windows.get('available') and windows.get('total_memory_mb'):
-            memory = max(memory, 100 * windows['used_memory_mb'] / windows['total_memory_mb'])
-        cpu = max(docker_service.sustained_cpu_percent(), windows.get('cpu_percent', 0) or 0)
+        cpu = docker_service.sustained_cpu_percent()
         decision = resource_admission_decision(memory, cpu, self.memory_paused)
         self.memory_paused = decision['memoryPaused']
         if not decision['allowed']:
