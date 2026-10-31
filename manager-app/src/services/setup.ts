@@ -13,7 +13,7 @@ export interface SetupStep {
 
 export interface GpuCompatibility {
   hostGpu: string | null;
-  wslGpuVisible: boolean;
+  runtimeGpuVisible: boolean;
   browserAccelerationAvailable: boolean;
   cudaRuntimeAvailable: boolean;
   runtimeInstallRequired: boolean;
@@ -24,7 +24,7 @@ export interface GpuCompatibility {
 }
 
 export interface SetupSnapshot {
-  platform: 'windows' | 'linux';
+  platform: 'linux';
   ready: boolean;
   restartRequired: boolean;
   gpu: GpuCompatibility;

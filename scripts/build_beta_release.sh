@@ -48,7 +48,6 @@ rsync -a \
   "${ROOT_DIR}/BETA_README.md" \
   "${ROOT_DIR}/VERSION" \
   "${ROOT_DIR}/install.sh" \
-  "${ROOT_DIR}/install-windows.ps1" \
   "${ROOT_DIR}/.gitignore" \
   "${PACKAGE_DIR}/"
 

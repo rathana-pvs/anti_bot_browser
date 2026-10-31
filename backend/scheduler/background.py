@@ -1,5 +1,4 @@
 import asyncio
-from threading import Thread
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from backend.services.docker_service import (
     sample_cpu,
@@ -12,7 +11,6 @@ from backend.services.automation_service import (
     dispatch_pending_queue,
     cleanup_orphaned_automation_containers,
 )
-from backend.services.host_metrics_service import sample_windows_host
 from backend.services.adaptive_runtime import tick as adaptive_resource_tick
 from backend.services.queue_network_recovery import check_network_recovery
 from backend.services.auto_warming import tick as auto_warming_tick
@@ -26,9 +24,6 @@ def setup_background_tasks():
     sample_gpu()
     sample_container_stats()
     sample_profile_disk_usage()
-    # Windows performance counters can take several seconds on a cold start.
-    # Populate them without delaying API and UI availability.
-    Thread(target=sample_windows_host, name="windows-host-telemetry", daemon=True).start()
 
     # Periodic jobs
     scheduler.add_job(sample_cpu, "interval", seconds=2, id="sample_cpu", replace_existing=True)
@@ -37,7 +32,6 @@ def setup_background_tasks():
     scheduler.add_job(adaptive_resource_tick, "interval", seconds=5, id="adaptive_resource_tick", replace_existing=True,
                       max_instances=1, coalesce=True)
     scheduler.add_job(sample_profile_disk_usage, "interval", seconds=10, id="sample_profile_disk_usage", replace_existing=True)
-    scheduler.add_job(sample_windows_host, "interval", seconds=5, id="sample_windows_host", replace_existing=True)
     scheduler.add_job(heartbeat_scheduler_leases, "interval", seconds=15, id="heartbeat_scheduler_leases", replace_existing=True)
     scheduler.add_job(dispatch_pending_queue, "interval", seconds=25, id="dispatch_pending_queue", replace_existing=True)
     scheduler.add_job(auto_warming_tick, "interval", seconds=60, id="auto_warming_tick", replace_existing=True,

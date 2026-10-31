@@ -7,7 +7,6 @@ import shutil
 import subprocess
 import sys
 import json
-from pathlib import Path
 from engine.runtime_paths import runtime_root
 
 
@@ -48,11 +47,7 @@ except Exception as exc:
 
 
 def nvidia_smi() -> str | None:
-    found = shutil.which("nvidia-smi")
-    if found:
-        return found
-    wsl_binary = Path("/usr/lib/wsl/lib/nvidia-smi")
-    return str(wsl_binary) if wsl_binary.is_file() else None
+    return shutil.which("nvidia-smi")
 
 
 def runtime_is_ready(tag: str) -> bool:

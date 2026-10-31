@@ -22,7 +22,7 @@ class TorchBootstrapTests(unittest.TestCase):
     @patch.object(bootstrap, "write_status")
     @patch.object(bootstrap, "install")
     @patch.object(bootstrap, "runtime_is_ready")
-    @patch.object(bootstrap, "nvidia_smi", return_value="/usr/lib/wsl/lib/nvidia-smi")
+    @patch.object(bootstrap, "nvidia_smi", return_value="/usr/bin/nvidia-smi")
     def test_installs_cuda_when_nvidia_is_visible(self, _smi, runtime_ready, install, write_status):
         runtime_ready.side_effect = [False, True]
 
@@ -35,7 +35,7 @@ class TorchBootstrapTests(unittest.TestCase):
     @patch.object(bootstrap, "write_status")
     @patch.object(bootstrap, "install")
     @patch.object(bootstrap, "runtime_is_ready")
-    @patch.object(bootstrap, "nvidia_smi", return_value="/usr/lib/wsl/lib/nvidia-smi")
+    @patch.object(bootstrap, "nvidia_smi", return_value="/usr/bin/nvidia-smi")
     def test_falls_back_to_cpu_when_cuda_cannot_initialize(self, _smi, runtime_ready, install, write_status):
         runtime_ready.side_effect = [False, False, True]
 
@@ -51,7 +51,7 @@ class TorchBootstrapTests(unittest.TestCase):
     @patch.object(bootstrap, "write_status")
     @patch.object(bootstrap, "install")
     @patch.object(bootstrap, "runtime_is_ready", side_effect=[False, True])
-    @patch.object(bootstrap, "nvidia_smi", return_value="/usr/lib/wsl/lib/nvidia-smi")
+    @patch.object(bootstrap, "nvidia_smi", return_value="/usr/bin/nvidia-smi")
     def test_falls_back_when_cuda_package_install_fails(self, _smi, _runtime_ready, install, write_status):
         install.side_effect = [subprocess.CalledProcessError(1, "pip"), None]
 

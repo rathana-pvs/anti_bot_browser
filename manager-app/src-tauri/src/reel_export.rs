@@ -1,4 +1,4 @@
-//! Stream a verified local render (a video, or a photo made from one scene) directly to native Downloads (including WSL).
+//! Stream a verified local render (a video, or a photo made from one scene) directly to native Downloads.
 use std::fs::{self, OpenOptions};
 use std::io::{BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};

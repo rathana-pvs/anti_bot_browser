@@ -39,9 +39,9 @@ git push origin v1.1.1
 ```
 
 The workflow validates tag/version consistency and increasing versions, builds
-Windows NSIS/MSI and Linux Debian/AppImage packages, signs them with their version,
+the Linux Debian/AppImage packages, signs them with their version,
 verifies all signatures, and assembles **one** complete `latest.json`. Both
-platforms must succeed before draft creation. Assets include installers, `.sig`
+packages must succeed before draft creation. Assets include installers, `.sig`
 files, update metadata, and `SHA256SUMS`. A retry may refresh a draft; a published
 release cannot be overwritten by this workflow. Manual workflow dispatch creates
 downloadable CI artifacts only, not a GitHub Release.
@@ -51,7 +51,7 @@ downloadable CI artifacts only, not a GitHub Release.
 Open the draft in GitHub Releases. Download and test the actual installers,
 including a previous-version upgrade, idle/busy installation, authentication
 cancellation, dependency setup, backend startup, and preservation of profiles and
-Brain selections. Test Windows/WSL on Windows; a Linux unit test is not a substitute.
+Brain selections. Windows is not supported.
 
 For stable publication, uncheck **Set as a pre-release**, choose **Set as the latest
 release**, and click **Publish release**. This is the step that makes the app
@@ -74,8 +74,8 @@ in-memory pause; backend restart also clears it. Independently managed workers
 are never stopped by the updater.
 An installation failure keeps the verified download available for retry and tries
 to restart the desktop-owned backend. Native Linux `.deb` support uses the Tauri
-updater 2.14 package installer (administrator approval); AppImage and Windows use
-their matching native installer. No arbitrary download URL or installer path can
+updater 2.14 package installer (administrator approval); AppImage uses
+its own replacement. No arbitrary download URL or installer path can
 be supplied through the frontend commands.
 
 After restart, completed dependency setup is tracked in

@@ -6,7 +6,7 @@ run on a new machine.
 
 ## Supported beta environment
 
-- Ubuntu Linux, or Windows with WSL2
+- Linux only: Ubuntu, Debian, or a system based on them (Windows is not supported)
 - Docker Engine
 - Node.js 18 or newer and npm
 - Python 3.10 or newer
@@ -34,8 +34,6 @@ Desktop package: prefer the `.deb`. The AppImage needs FUSE 2, which Ubuntu
 
 ## Smart installation
 
-Linux or WSL2:
-
 ```bash
 bash install.sh --check
 bash install.sh --install
@@ -47,18 +45,6 @@ If installation was interrupted or a dependency changed:
 bash install.sh --repair
 ```
 
-Windows PowerShell:
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\install-windows.ps1 -Mode check
-.\install-windows.ps1 -Mode install
-```
-
-The Windows bootstrap detects WSL2, Ubuntu, and Docker Desktop. It can install
-WSL/Ubuntu and can offer Docker Desktop through `winget`; Windows may require a
-restart, Docker license acceptance, and enabling Docker Desktop's WSL
-integration. Everything inside Ubuntu is then installed automatically.
 
 ## Manual installation
 
