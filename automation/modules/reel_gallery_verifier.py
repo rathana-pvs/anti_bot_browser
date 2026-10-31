@@ -72,7 +72,7 @@ class ReelGalleryVerifier:
             return self.record(task.client.screenshot(), 'reel_owner_unavailable')
         if not task._allow_reel_profile_navigation():
             return False
-        task.client.exec_cmd(['xdotool', 'key', 'ctrl+home'], check=False)
+        task.human.key_press('ctrl+home', check=False)
         time.sleep(.8)
         tab = None
         for scan in range(3):

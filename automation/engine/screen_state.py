@@ -38,6 +38,9 @@ class FacebookStateRecognizer:
     """Classify important posting screens using several visual signals."""
 
     LOGIN_TEXT = ("log in", "forgot password", "create new account")
+    # Meta's account announcement says "easier to log in" while the account is
+    # logged in, so it is recognised before the login words.
+    META_ACCOUNT_NOTICE_TEXT = ("meta account is here",)
     ERROR_TEXT = (
         "something went wrong",
         "couldn't post",
@@ -94,6 +97,9 @@ class FacebookStateRecognizer:
                 ["leave_site_dialog", *leave_matches],
                 texts,
             )
+        notice = self._meta_account_notice(blob, texts)
+        if notice:
+            return notice
         matches = self._contains(blob, self.BLOCKING_TEXT)
         if matches:
             return StateObservation(ScreenState.ERROR_DIALOG, 0.99, matches, texts)
@@ -163,6 +169,10 @@ class FacebookStateRecognizer:
     def _contains(text_blob: str, phrases: tuple[str, ...]) -> list[str]:
         return [phrase for phrase in phrases if phrase in text_blob]
 
+    def _meta_account_notice(self, blob: str, texts: list[str]) -> StateObservation | None:
+        matches = self._contains(blob, self.META_ACCOUNT_NOTICE_TEXT)
+        return StateObservation(ScreenState.UNKNOWN, 0.95, ["meta_account_notice", *matches], texts) if matches else None
+
     def observe(self, screen: np.ndarray | None = None) -> StateObservation:
         screen = self.vision.capture_screen() if screen is None else screen
         ocr = self.vision.read_text(screen, min_confidence=0.35)
@@ -172,6 +182,9 @@ class FacebookStateRecognizer:
         leave_matches = self._contains(blob, ("leave site", "changes you made", "may not be saved"))
         if leave_matches:
             return StateObservation(ScreenState.UNKNOWN, 0.95, ["leave_site_dialog", *leave_matches], texts)
+        notice = self._meta_account_notice(blob, texts)
+        if notice:
+            return notice
 
         matches = self._contains(blob, self.BLOCKING_TEXT)
         if matches:
@@ -439,6 +452,9 @@ class FacebookStateRecognizer:
         leave_matches = self._contains(blob, ("leave site", "changes you made", "may not be saved"))
         if leave_matches:
             return StateObservation(ScreenState.UNKNOWN, 0.95, ["leave_site_dialog", *leave_matches], texts)
+        notice = self._meta_account_notice(blob, texts)
+        if notice:
+            return notice
 
         matches = self._contains(blob, self.BLOCKING_TEXT)
         if matches:

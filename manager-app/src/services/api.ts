@@ -1,5 +1,5 @@
 import {
-  NetworkIntent, Profile, ProfileCreateRequest, ProfileDefaults, ProfileUpdateRequest, SystemStats,
+  AccountHealth, NetworkIntent, Profile, ProfileCreateRequest, ProfileDefaults, ProfileUpdateRequest, SystemStats,
 } from '../types/profile';
 import { ProxyItem } from '../types/proxy';
 import { BrainActionResponse, BrainCatalogResponse, BrainUploadResponse } from '../types/brain';
@@ -102,6 +102,12 @@ export async function fetchProfileGroups(): Promise<string[]> {
   return res.json();
 }
 
+export async function fetchAccountHealth(): Promise<{ profiles: Record<string, AccountHealth>; daily_limits: Record<string, number> }> {
+  const res = await fetch(`${API_BASE}/profiles/health`);
+  if (!res.ok) throw await apiError(res, 'Failed to fetch account health');
+  return res.json();
+}
+
 export async function renameProfileGroup(name: string, newName: string): Promise<{ name: string; moved: number }> {
   const res = await fetch(`${API_BASE}/profiles/groups/${encodeURIComponent(name)}`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: newName }),
@@ -201,6 +207,28 @@ export async function updateProfile(
   if (!res.ok) {
     throw await apiError(res, 'Failed to update profile');
   }
+  return res.json();
+}
+
+/** Puts an account on hold: nothing automatic runs on it until released. */
+export async function holdProfile(profileId: string, note: string): Promise<Profile> {
+  const res = await fetch(`${API_BASE}/profiles/${profileId}/hold`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ note }),
+  });
+  if (!res.ok) throw await apiError(res, 'Failed to put the account on hold');
+  return res.json();
+}
+
+/** Check now: one short read-only visit that confirms a fixed account. */
+export async function checkProfile(profileId: string): Promise<{ execution_id: string; status: string; created: boolean }> {
+  const res = await fetch(`${API_BASE}/profiles/${profileId}/check`, { method: 'POST' });
+  if (!res.ok) throw await apiError(res, 'Failed to start the check');
+  return res.json();
+}
+
+export async function releaseProfileHold(profileId: string): Promise<Profile> {
+  const res = await fetch(`${API_BASE}/profiles/${profileId}/release`, { method: 'POST' });
+  if (!res.ok) throw await apiError(res, 'Failed to release the hold');
   return res.json();
 }
 
@@ -637,6 +665,21 @@ export async function updateResourceMode(
   return res.json();
 }
 
+export async function updateAdaptiveLimits(
+  limits: import('../types/automation').AdaptiveLimitsUpdate
+): Promise<import('../types/automation').ResourceModeSettings> {
+  const res = await fetch(`${API_BASE}/settings/resource-mode`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(limits),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.detail || error.error || 'Failed to update automatic resource limits');
+  }
+  return res.json();
+}
+
 export async function createBatch(
   params: import('../types/automation').CreateBatchParams
 ): Promise<{ success: boolean; batch_id: string; total_executions: number; batch: import('../types/automation').DailyBatch }> {
@@ -882,5 +925,49 @@ export async function cleanAllEvidence(days = 3): Promise<CleanAllEvidenceResult
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error || 'Failed to clean evidence across profiles');
   }
+  return res.json();
+}
+
+export async function fetchAutoWarming(): Promise<import('../types/automation').AutoWarmingSummary> {
+  const res = await fetch(`${API_BASE}/settings/auto-warming`);
+  if (!res.ok) throw await apiError(res, 'Failed to load auto warming');
+  return res.json();
+}
+
+export async function updateAutoWarming(enabled: boolean): Promise<import('../types/automation').AutoWarmingSummary> {
+  const res = await fetch(`${API_BASE}/settings/auto-warming`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }),
+  });
+  if (!res.ok) throw await apiError(res, 'Failed to update auto warming');
+  return res.json();
+}
+
+export interface StorageRun {
+  ran_at: string; reason: string; dry_run: boolean; freed_bytes: number; free_before: number; free_after: number;
+  steps: Record<string, Record<string, number | string>>;
+  usage: Record<'evidence' | 'chrome_cache' | 'browser_data' | 'runtime' | 'runtime_backups' | 'queue' | 'media', number>;
+  busy?: boolean;
+}
+
+export interface StorageProgress {
+  running: boolean; dry_run?: boolean; percent?: number; label?: string; freed_bytes?: number;
+  result?: StorageRun; error?: string;
+}
+
+export interface StorageStatus {
+  free_bytes: number; low_disk_bytes: number; critical_disk_bytes: number; last_run: StorageRun | null;
+  progress: StorageProgress;
+}
+
+export async function fetchStorage(): Promise<StorageStatus> {
+  const res = await fetch(`${API_BASE}/storage`);
+  if (!res.ok) throw await apiError(res, 'Failed to load storage');
+  return res.json();
+}
+
+/** Starts one housekeeping pass in the background; `dryRun` previews it without removing anything. */
+export async function cleanStorage(dryRun = false): Promise<{ started: boolean; progress: StorageProgress }> {
+  const res = await fetch(`${API_BASE}/storage/clean?dry_run=${dryRun}`, { method: 'POST' });
+  if (!res.ok) throw await apiError(res, 'Failed to clean storage');
   return res.json();
 }

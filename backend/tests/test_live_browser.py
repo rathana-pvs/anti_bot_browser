@@ -92,6 +92,22 @@ def test_disabled_or_ambiguous_button_never_clicks(task):
     task.click.assert_not_called()
 
 
+def test_live_clicks_use_human_pointer_movement():
+    task = FacebookLiveTask.__new__(FacebookLiveTask)
+    task.client = Mock()
+    task.live_input = Mock()
+    FacebookLiveTask.click(task, item('Go live', x=120, y=935))
+    task.live_input.human.click.assert_called_once_with(120, 935)
+    task.client.exec_cmd.assert_not_called()
+
+
+def test_prepare_opens_producer_through_human_navigation(task):
+    task.client.get_current_url.return_value = 'https://www.facebook.com/'
+    task.capture = lambda _: ready(task)
+    task.prepare(URL)
+    task.live_input.human.navigate.assert_called_once_with(URL)
+
+
 def test_start_never_repeats_unconfirmed_publish(task):
     task.capture = lambda _: ready(task)
     with pytest.raises(RuntimeError, match='did not confirm'):
@@ -328,8 +344,7 @@ def test_prepare_restores_scrolled_setup_before_reopening_saved_details(task, mo
     monkeypatch.setattr('tasks.facebook_live.LivePostDetails', lambda _: Mock(fill=fill))
     task.prepare(URL)
     fill.assert_not_called()
-    assert ['xdotool', 'key', '--clearmodifiers', 'ctrl+Home'] in [
-        call.args[0] for call in task.client.exec_cmd.call_args_list]
+    assert call('ctrl+Home', clear_modifiers=True) in task.live_input.human.key_press.call_args_list
     assert task.state == 'prepared'
 
 
@@ -576,7 +591,7 @@ def test_blank_preset_disables_without_opening_or_typing(task):
     module.set(ready(task),'')
     module.set_enabled.assert_called_once_with(False)
     module.open_editor.assert_not_called()
-    task.client.exec_cmd.assert_not_called()
+    task.live_input.human.key_press.assert_not_called()
 
 
 def test_preset_below_long_caption_scrolls_from_verified_panel_heading(task):
@@ -588,7 +603,7 @@ def test_preset_below_long_caption_scrolls_from_verified_panel_heading(task):
     module.toggle = Mock(side_effect=[None, switch])
     assert module.settings()[2] == switch
     task.click.assert_called_once_with(heading)
-    task.client.exec_cmd.assert_called_once_with(['xdotool', 'key', '--clearmodifiers', 'Page_Down'])
+    task.live_input.human.key_press.assert_called_once_with('Page_Down', clear_modifiers=True)
 
 
 def test_preset_settings_scroll_is_bounded_and_never_uses_unrecognized_surface(task, monkeypatch):
@@ -602,12 +617,12 @@ def test_preset_settings_scroll_is_bounded_and_never_uses_unrecognized_surface(t
     module.toggle = Mock(return_value=None)
     with pytest.raises(RuntimeError, match='preset pinned-comment setting'):
         module.settings()
-    assert task.client.exec_cmd.call_count == 3
-    task.client.exec_cmd.reset_mock()
+    assert task.live_input.human.key_press.call_count == 3
+    task.live_input.human.key_press.reset_mock()
     module.read_right.return_value = (image(), [])
     with pytest.raises(RuntimeError, match='preset pinned-comment setting'):
         module.settings()
-    task.client.exec_cmd.assert_not_called()
+    task.live_input.human.key_press.assert_not_called()
 
 
 def test_changed_preset_switch_never_clicks(task):
@@ -682,8 +697,7 @@ def test_preset_editor_scrolls_when_edit_is_below_fold(task, monkeypatch):
     assert task.click.call_args_list == [
         call(heading), call(edit),
     ]
-    task.client.exec_cmd.assert_called_once_with(
-        ['xdotool','key','--clearmodifiers','Page_Down'])
+    task.live_input.human.key_press.assert_called_once_with('Page_Down', clear_modifiers=True)
 
 
 @pytest.mark.parametrize('state', ['live', 'ended', 'unconfirmed'])
@@ -693,7 +707,7 @@ def test_final_inspection_never_navigates_or_clicks(task, state):
     task.inspect()
     assert task.state == state
     task.click.assert_not_called()
-    task.client.navigate_to.assert_not_called()
+    task.live_input.human.navigate.assert_not_called()
 
 
 def test_capture_recovers_small_live_notice_from_focused_sidebar(task):

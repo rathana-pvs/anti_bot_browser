@@ -2,12 +2,16 @@ import json
 import secrets
 import shutil
 from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 from backend.services.profile_groups import list_groups, create_group, rename_group, delete_group
+from backend.services import account_hold
+from backend.services.account_health import DAILY_POST_LIMITS, OVERRIDE_STAGES, all_health
+from backend.services.queue_service import load_posting_queue
 
 from backend.config import CPU_THREADS, PROFILES_DIR, TOTAL_MEMORY_GB, FALLBACK_TIMEZONE
 from backend.models.profile import NetworkIntent, ProfileCreateRequest, ProfileUpdateRequest
@@ -39,6 +43,7 @@ def _default_account(account: dict | None = None) -> dict:
         "platform": "facebook", "email": "", "notes": "",
         "warming_start_date": None, "warming_complete": False,
         "warming_week": 1, "posts_today": 0, "last_post_date": None,
+        "stage_override": None,
     }
     value.update(account or {})
     return value
@@ -128,6 +133,12 @@ class GroupCreateRequest(BaseModel):
 @router.get("/groups")
 def get_profile_groups():
     return list_groups()
+
+
+@router.get("/health")
+def get_profile_health():
+    """Each account's health stage, worked out from its activity history."""
+    return {"profiles": all_health(load_posting_queue()), "daily_limits": DAILY_POST_LIMITS}
 
 
 @router.post("/groups", status_code=201)
@@ -315,7 +326,11 @@ def update_profile(profile_id: str, request: ProfileUpdateRequest):
                 existing["requested_environment"], existing.get("fingerprint")
             )
         if request.account is not None:
-            existing["account"] = {**existing.get("account", {}), **request.account}
+            override = request.account.get("stage_override")
+            if override not in (None, "", *OVERRIDE_STAGES):
+                raise ValueError("Account stage must be automatic, new, warming_up or ready")
+            changes = {key: value for key, value in request.account.items() if key not in account_hold.SERVER_KEYS}
+            existing["account"] = {**existing.get("account", {}), **changes}
         if request.resources is not None:
             existing["resources"] = _validated_resources(request.resources.model_dump())
         if request.behavior_mode is not None:
@@ -327,6 +342,8 @@ def update_profile(profile_id: str, request: ProfileUpdateRequest):
             or original.get("requested_environment") != existing.get("requested_environment")
             or original.get("resources") != existing.get("resources")
         )
+        if request.network is not None and account_hold.proxy_changed(original.get("network"), existing["network"]):
+            account_hold.note_proxy_change(existing, datetime.now(timezone.utc))
         existing["configuration_revision"] = int(existing.get("configuration_revision") or 1) + 1
         existing["updated_at"] = utc_now()
         if runtime_changed:
@@ -342,6 +359,82 @@ def update_profile(profile_id: str, request: ProfileUpdateRequest):
             except Exception:
                 pass
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+class HoldRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    note: str = Field(default="", max_length=120)
+
+
+def _set_hold(profile_id: str, note: str | None) -> dict:
+    config_path = _profile_dir(profile_id) / "config.json"
+    if not config_path.exists():
+        raise HTTPException(status_code=404, detail="Profile not found")
+    config, _ = migrate_profile(json.loads(config_path.read_text(encoding="utf-8")), config_path.parent)
+    now = datetime.now(timezone.utc)
+    if note is None:
+        account_hold.release(config, now)
+    else:
+        account_hold.hold(config, note, now)
+    config["updated_at"] = utc_now()
+    atomic_write_json(config_path, config)
+    return config
+
+
+@router.post("/{profile_id}/hold")
+def hold_profile(profile_id: str, request: HoldRequest):
+    """Stop everything automatic on this account until the hold is released."""
+    config = _set_hold(profile_id, request.note)
+    from backend.services import auto_warming
+    # A running warming visit ends at its next safe point; a post already publishing finishes.
+    if any(visit.get("profile_id") == profile_id for visit in auto_warming.running_visits(load_posting_queue())):
+        auto_warming.request_yield(profile_id, "on_hold")
+    return config
+
+
+@router.post("/{profile_id}/release")
+def release_profile(profile_id: str):
+    return _set_hold(profile_id, None)
+
+
+@router.post("/{profile_id}/check")
+async def check_profile(profile_id: str):
+    """Check now: one short read-only visit that confirms a fixed account."""
+    from backend.services import account_check
+    from backend.services.automation_service import dispatch_pending_queue
+    from backend.services.queue_service import save_posting_queue, with_queue_claim_lock
+    config_path = _profile_dir(profile_id) / "config.json"
+    if not config_path.exists():
+        raise HTTPException(status_code=404, detail="Profile not found")
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    if (config.get("runtime") or {}).get("kind") == ANDROID_RUNTIME:
+        raise HTTPException(status_code=400, detail="Phone accounts can't be checked yet.")
+    if account_hold.on_hold(config):
+        raise HTTPException(status_code=409, detail="Release the hold first; nothing automatic runs on an account on hold.")
+
+    def enqueue():
+        queue = load_posting_queue()
+        existing = account_check.open_check(queue, profile_id)
+        if existing:
+            return existing, False
+        execution = account_check.add_check(queue, profile_id, datetime.now(timezone.utc))
+        if not save_posting_queue(queue):
+            raise HTTPException(status_code=500, detail="Could not save the check")
+        return execution, True
+
+    import asyncio
+    for attempt in range(10):
+        try:
+            execution, created = with_queue_claim_lock(enqueue)
+            break
+        except RuntimeError as error:
+            # The dispatcher holds the queue lock only briefly.
+            if str(error) != "queue_claim_in_progress" or attempt == 9:
+                raise HTTPException(status_code=503, detail="The queue is busy; try again in a moment.") from error
+            await asyncio.sleep(0.3)
+    if created:
+        asyncio.create_task(dispatch_pending_queue())
+    return {"execution_id": execution["execution_id"], "status": execution["status"], "created": created}
 
 
 @router.post("/{profile_id}/proxy-latency")
@@ -431,5 +524,8 @@ def clean_evidence_for_profile(profile_id: str, payload: dict = Body(...)):
     if not profile_dir.exists():
         raise HTTPException(status_code=404, detail="Profile not found")
     days = int(payload.get("days", 3))
-    metrics = clean_profile_evidence(profile_dir, days_threshold=days)
+    from backend.services.storage_housekeeping import cleaning, protected_execution_ids
+    if cleaning():
+        raise HTTPException(status_code=409, detail="Storage cleanup is running. Try again when it finishes.")
+    metrics = clean_profile_evidence(profile_dir, days_threshold=days, protected=protected_execution_ids(load_posting_queue()))
     return {"success": True, "profile_id": profile_id, "days_kept": days, "metrics": metrics}

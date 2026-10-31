@@ -1,4 +1,4 @@
-"""The WSL payload refresh must preserve user state during upgrades."""
+"""The runtime payload refresh must preserve user state during upgrades."""
 from pathlib import Path
 import subprocess
 

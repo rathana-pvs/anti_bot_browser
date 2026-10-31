@@ -1,5 +1,5 @@
 import { ReactNode, useState } from 'react';
-import { AlertTriangle, Folder, FolderPlus, Inbox, Users } from 'lucide-react';
+import { AlertTriangle, Folder, FolderPlus, Inbox, Lock, Users } from 'lucide-react';
 import { cn } from '../ui/cn';
 
 export const ALL_FOLDERS = '__all__';
@@ -9,12 +9,14 @@ export const NO_FOLDER = '__none__';
 export const ACCOUNT_DRAG_TYPE = 'application/x-account-ids';
 
 export interface FolderEntry { name: string; count: number }
+/** A folder the app fills by itself; it has no menu and accepts no drops. */
+export interface SystemFolder { key: string; label: string; icon: ReactNode; count: number; tone?: string; hint?: string }
 
 /**
  * Left column of the Accounts page. Folders filter the list, accept dropped accounts,
  * and open a right-click menu. Smart views (All, Needs attention) only filter.
  */
-export function FolderList({ value, onChange, folders, total, attention, unfiled, onCreate, onDropAccounts, onFolderMenu, onBlankMenu, menuKey, allLabel = 'All accounts', emptyHint = 'Create a folder, then drag accounts onto it.', dragType = ACCOUNT_DRAG_TYPE, automatic = false }: {
+export function FolderList({ value, onChange, folders, total, attention, unfiled, onCreate, onDropAccounts, onFolderMenu, onBlankMenu, menuKey, allLabel = 'All accounts', emptyHint = 'Create a folder, then drag accounts onto it.', dragType = ACCOUNT_DRAG_TYPE, automatic = false, system }: {
   value: string; onChange: (value: string) => void; folders: FolderEntry[];
   total: number; attention: number; unfiled: number;
   onCreate: () => void;
@@ -25,6 +27,8 @@ export function FolderList({ value, onChange, folders, total, attention, unfiled
   menuKey: (folder: string) => (event: React.KeyboardEvent) => void;
   allLabel?: string; emptyHint?: string; dragType?: string;
   automatic?: boolean;
+  /** System folders shown above the user's folders, in place of Needs attention. */
+  system?: SystemFolder[];
 }) {
   const [dropTarget, setDropTarget] = useState<string | null>(null);
 
@@ -61,8 +65,16 @@ export function FolderList({ value, onChange, folders, total, attention, unfiled
     </div>
     <nav className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-3">
       {item(ALL_FOLDERS, allLabel, <Users className="h-3.5 w-3.5" />, total)}
-      {attention > 0 && item(ATTENTION, 'Needs attention', <AlertTriangle className="h-3.5 w-3.5" />, attention, {}, value === ATTENTION ? '' : 'text-amber-300')}
-      <div className="my-2 border-t border-zinc-800" />
+      {!system && attention > 0 && item(ATTENTION, 'Needs attention', <AlertTriangle className="h-3.5 w-3.5" />, attention, {}, value === ATTENTION ? '' : 'text-amber-300')}
+      {system && <>
+        <p className="flex items-center gap-1.5 px-2.5 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-zinc-500"
+          title="Filled automatically from each account's history. These folders can't be renamed or deleted.">
+          <Lock className="h-3 w-3" aria-hidden="true" />Account health</p>
+        {system.map(folder => item(folder.key, folder.label, folder.icon, folder.count,
+          { title: folder.hint }, value === folder.key || !folder.count ? '' : folder.tone))}
+        <p className="px-2.5 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">My folders</p>
+      </>}
+      {!system && <div className="my-2 border-t border-zinc-800" />}
       {folders.map(folder => item(folder.name, folder.name, <Folder className="h-3.5 w-3.5" />, folder.count, {
         ...(automatic ? {} : dropProps(folder.name, folder.name)),
         onContextMenu: automatic ? undefined : (event: React.MouseEvent) => onFolderMenu(event, folder.name),

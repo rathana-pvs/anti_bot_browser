@@ -13,8 +13,17 @@ def get_resource_mode():
 
 @router.put("/resource-mode")
 def update_resource_mode(payload: dict = Body(...)):
-    mode = payload.get("mode", "auto")
-    settings_manager.update_resource_mode(mode)
+    if "mode" in payload:
+        settings_manager.update_resource_mode(payload.get("mode", "auto"))
+    if "max_parallel" in payload or "reserve_percent" in payload:
+        try:
+            settings_manager.update_adaptive_limits(
+                max_parallel=payload.get("max_parallel"),
+                reserve_percent=payload.get("reserve_percent"),
+                clear_max="max_parallel" in payload and payload["max_parallel"] is None,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     snapshot = resource_mode_snapshot()
     snapshot["runtime"]["ocr_worker"] = shared_ocr_worker_snapshot()
     return snapshot
@@ -28,3 +37,19 @@ def update_ocr_engine(payload: dict = Body(...)):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     # Selection is persisted, while active processes keep their startup engine.
     return get_resource_mode()
+
+
+@router.get("/auto-warming")
+def get_auto_warming():
+    from backend.services import auto_warming
+    return auto_warming.summary()
+
+
+@router.put("/auto-warming")
+def update_auto_warming(payload: dict = Body(...)):
+    from backend.services import auto_warming
+    try:
+        settings_manager.update_auto_warming(payload.get("enabled"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return auto_warming.summary()

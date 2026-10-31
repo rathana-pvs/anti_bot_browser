@@ -121,9 +121,6 @@ OCR_PYTHON = shared_ocr_python(ROOT_DIR, OCR_ENGINE, AUTOMATION_PYTHON)
 def detect_nvidia_gpu() -> tuple[bool, str | None]:
     executable = shutil.which("nvidia-smi")
     if not executable:
-        wsl_executable = Path("/usr/lib/wsl/lib/nvidia-smi")
-        executable = str(wsl_executable) if wsl_executable.is_file() else None
-    if not executable:
         return False, None
     try:
         output = subprocess.check_output(

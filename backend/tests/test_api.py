@@ -98,11 +98,8 @@ def test_system_stats(client):
     assert "docker_running" in data
     assert "cpu_cores" in data
     assert "total_memory_mb" in data
-    assert "windows_host" in data
-    assert data["runtime_environment"] in {"wsl", "linux"}
-    assert "runtime" in data
-    assert "wsl_runtime" in data
-    assert data["wsl_runtime"]["cpu_threads"] == data["cpu_cores"]
+    assert data["runtime_environment"] == "linux"
+    assert data["runtime"]["cpu_threads"] == data["cpu_cores"]
 
 def test_profiles_list(client):
     res = client.get("/api/profiles")

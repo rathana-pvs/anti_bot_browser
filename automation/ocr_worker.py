@@ -172,7 +172,7 @@ def _parent_is_alive(parent_pid: int) -> bool:
     if parent_pid <= 0:
         return True
     if os.name == "posix":
-        # Linux and WSL re-parent an orphan immediately, so this also avoids a
+        # Linux re-parents an orphan immediately, so this also avoids a
         # false positive if the original PID is quickly reused.
         return os.getppid() == parent_pid
     try:

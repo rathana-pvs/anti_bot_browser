@@ -91,6 +91,11 @@ class FakePublishTask:
         self.result_extra = {**self.result_extra, **extra}
         self.finalize_calls.append(extra)
 
+    def update_outcome(self, status, error=None, **extra):
+        self.result_status = status
+        self.result_error = error
+        self.result_extra = {**self.result_extra, **extra}
+
     def _fail(self, code, message):
         self.result_status = "failed_before_publish"
         self.result_error = code
@@ -163,6 +168,7 @@ class PublishingPipelineTests(unittest.TestCase):
                 "post_publish_prompt",
                 "publication_result_verifier",
                 "comment",
+                "linger",
                 "finalize",
             ),
         )

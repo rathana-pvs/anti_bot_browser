@@ -196,6 +196,13 @@ def test_direct_creation_never_auto_assigns_proxy(tmp_path, monkeypatch):
     assert profile["automation"] == {"reel_template": "auto"}
 
 
+def test_the_old_natural_session_switch_is_dropped(tmp_path):
+    for value in (True, False, "yes"):
+        profile = {"behavior_mode": "medium", "behavior_seed": 7, "automation": {"natural_session": value}}
+        profile_service._apply_execution_preferences(profile)
+        assert "natural_session" not in profile["automation"]
+
+
 def test_proxy_entrypoint_is_fail_closed_for_both_ip_families():
     root = Path(__file__).resolve().parents[2]
     entrypoint = (root / "container" / "entrypoint.sh").read_text(encoding="utf-8")
@@ -271,18 +278,15 @@ def test_browser_observation_normalizes_browser_visible_values():
     assert docker_service._renderer_is_software(observed["webgl_renderer"]) is True
 
 
-def test_browser_launcher_supports_linux_and_wsl_gpu_devices():
+def test_browser_launcher_supports_linux_gpu_devices():
     root = Path(__file__).resolve().parents[2]
     launcher = (root / "scripts" / "run_profile.sh").read_text(encoding="utf-8")
     entrypoint = (root / "container" / "entrypoint.sh").read_text(encoding="utf-8")
 
     assert "--device /dev/dri:/dev/dri" in launcher
-    assert "--device /dev/dxg:/dev/dxg" in launcher
-    assert "/usr/lib/wsl:/usr/lib/wsl:ro" in launcher
+    assert "/dev/dxg" not in launcher
     assert "GPU_DEVICE_BACKEND" in launcher
     assert "/run/rendering-status.json" in entrypoint
-    assert "GALLIUM_DRIVER=d3d12" in entrypoint
-    assert "--use-gl=angle --use-angle=gl-egl" in entrypoint
     assert "--use-gl=angle --use-angle=vulkan" in entrypoint
 
 

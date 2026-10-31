@@ -3,7 +3,7 @@
   "manifest_version": 1,
   "brain_api_version": 1,
   "id": "facebook_reel",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "name": "Facebook Reel Workflow",
   "description": "Factory workflow and composer templates for Facebook Reels.",
   "platform": "facebook",
@@ -14,5 +14,5 @@
   "supported_locales": ["en"],
   "supported_themes": ["light", "dark"],
   "supported_viewports": ["desktop_standard", "desktop_wide"],
-  "change_log": "Two-stage Reel routing with T1 Studio, T2A Direct, and T2B Next/Share layouts."
+  "change_log": "Workflow states are the engine steps, run in the listed order; T1, T2A and T2B routing unchanged."
 }

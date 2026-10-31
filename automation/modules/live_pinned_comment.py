@@ -80,7 +80,7 @@ class LivePinnedComment:
                 if len(matches) == 1 and self.task.same(headings[0], matches[0]):
                     # Focus a noninteractive heading, then scroll the settings.
                     self.task.click(matches[0])
-                    self.task.client.exec_cmd(['xdotool','key','--clearmodifiers','Page_Down'])
+                    self.task.live_input.human.key_press('Page_Down', clear_modifiers=True)
                     scrolls += 1
             time.sleep(.5)
         raise RuntimeError('Could not identify Facebook’s preset pinned-comment setting.')
@@ -143,7 +143,7 @@ class LivePinnedComment:
                     # enabled switch is visible. Focus this verified card and
                     # scroll once before looking for the editor control again.
                     self.task.click(matches[0])
-                    self.task.client.exec_cmd(['xdotool','key','--clearmodifiers','Page_Down'])
+                    self.task.live_input.human.key_press('Page_Down', clear_modifiers=True)
                     scrolled = True
             time.sleep(.5)
         else:
@@ -194,7 +194,7 @@ class LivePinnedComment:
         if len(headings) != 1 or len(matches) != 1 or not self.task.same(headings[0],matches[0]):
             raise RuntimeError('Could not restore Live setup after configuring the comment.')
         self.task.click(matches[0])
-        self.task.client.exec_cmd(['xdotool','key','--clearmodifiers','ctrl+Home'])
+        self.task.live_input.human.key_press('ctrl+Home', clear_modifiers=True)
         deadline = time.monotonic()+20
         while time.monotonic() < deadline:
             frame = self.task.capture('prepare')
@@ -240,5 +240,5 @@ class LivePinnedComment:
             if self.task.live_input.composer_entry.read_field(
                     self.task.live_input.composer_entry.waiter(owner)) != comment:
                 raise RuntimeError('Facebook did not retain the saved pinned comment.')
-            self.task.client.exec_cmd(['xdotool','key','--clearmodifiers','Escape'])
+            self.task.live_input.human.key_press('Escape', clear_modifiers=True)
         return self.restore_setup()

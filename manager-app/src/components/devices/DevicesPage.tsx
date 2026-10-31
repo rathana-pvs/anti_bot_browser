@@ -258,7 +258,7 @@ function ConnectPhone({ loading, onCheck }: { loading: boolean; onCheck: () => v
 
 function pcFacts(profiles: Profile[], stats: SystemStats) {
   const accounts = profiles.filter(p => !isAndroid(p));
-  const runtime = stats.runtime || stats.wsl_runtime;
+  const runtime = stats.runtime;
   return {
     accounts,
     running: accounts.filter(p => p.status === 'running').length,

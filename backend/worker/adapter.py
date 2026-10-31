@@ -49,6 +49,8 @@ class QueueAdapter:
         config = json.loads(path.read_text(encoding='utf-8'))
         if config.get('automation', {}).get('enabled') is False:
             raise ValueError('Local automation is disabled for this account')
+        if (config.get('account') or {}).get('on_hold'):
+            raise ValueError('Account is on hold on this worker')
         return profile
 
     def submit(self, attempt, media_filename):

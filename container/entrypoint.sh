@@ -41,14 +41,6 @@ if [ "$RENDERING_MODE" = "software" ]; then
     EFFECTIVE_RENDERING_MODE="software"
     RENDERING_FALLBACK_REASON="software rendering was requested"
     RENDER_ARGS=(--disable-gpu --use-gl=swiftshader)
-elif [ "$GPU_DEVICE_BACKEND" = "wsl_dxg" ] && [ -c /dev/dxg ] \
-    && [ -f /usr/lib/wsl/lib/libd3d12.so ] && [ -f /usr/lib/wsl/lib/libdxcore.so ]; then
-    export LD_LIBRARY_PATH="/usr/lib/wsl/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-    export GALLIUM_DRIVER=d3d12
-    export LIBGL_ALWAYS_SOFTWARE=0
-    # Current Chrome accepts ANGLE here; plain --use-gl=egl is rejected and
-    # causes the GPU process to restart with GL disabled.
-    RENDER_ARGS=(--ignore-gpu-blocklist --enable-gpu-rasterization --enable-zero-copy --use-gl=angle --use-angle=gl-egl)
 elif [ "$GPU_DEVICE_BACKEND" = "drm" ] && [ -d /dev/dri ]; then
     export LIBGL_ALWAYS_SOFTWARE=0
     # ANGLE's Vulkan backend can use the passed DRM render node directly even

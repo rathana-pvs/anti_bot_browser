@@ -128,13 +128,14 @@ class TelemetryRecorder:
             **metadata,
         })
 
-    def record_navigation(self, url: str, duration_ms: float, outcome: str) -> None:
+    def record_navigation(self, url: str, duration_ms: float, outcome: str, method: str | None = None) -> None:
         try:
             parsed = urlparse(url)
             destination = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
         except Exception:
             destination = "unparseable"
-        self.record_step("navigation", duration_ms, outcome=outcome, destination=destination)
+        extra = {"method": method} if method else {}
+        self.record_step("navigation", duration_ms, outcome=outcome, destination=destination, **extra)
 
     def record_ocr(
         self,

@@ -46,7 +46,8 @@ def format_bytes(bytes_num: int | float) -> str:
         unit_idx += 1
     return f"{val:.1f} {units[unit_idx]}"
 
-def clean_profile_evidence(profile_dir: Path, days_threshold: int = 3, now_ms: float | None = None) -> dict:
+def clean_profile_evidence(profile_dir: Path, days_threshold: int = 3, now_ms: float | None = None,
+                           protected: set[str] | None = None) -> dict:
     evidence_dir = profile_dir / "automation_evidence"
     if not evidence_dir.exists():
         return {
@@ -70,7 +71,7 @@ def clean_profile_evidence(profile_dir: Path, days_threshold: int = 3, now_ms: f
             if not entry.is_dir():
                 continue
             ts = parse_run_timestamp(entry.name, entry)
-            if ts is None:
+            if ts is None or _is_protected(entry, protected):
                 kept_runs += 1
                 continue
 
@@ -97,7 +98,18 @@ def clean_profile_evidence(profile_dir: Path, days_threshold: int = 3, now_ms: f
         "kept_runs": kept_runs,
     }
 
-def clean_all_profiles_evidence(profiles_dir: Path, days_threshold: int = 3, now_ms: float | None = None) -> dict:
+def _is_protected(run: Path, protected: set[str] | None) -> bool:
+    """Evidence behind an unconfirmed post or an open problem is kept whatever its age."""
+    if not protected:
+        return False
+    try:
+        import json
+        return json.loads((run / "attempt.json").read_text(encoding="utf-8")).get("execution_id") in protected
+    except (OSError, ValueError, AttributeError):
+        return False
+
+def clean_all_profiles_evidence(profiles_dir: Path, days_threshold: int = 3, now_ms: float | None = None,
+                                protected: set[str] | None = None) -> dict:
     if not profiles_dir.exists():
         return {
             "total_deleted_runs": 0,
@@ -117,7 +129,7 @@ def clean_all_profiles_evidence(profiles_dir: Path, days_threshold: int = 3, now
         for entry in profiles_dir.iterdir():
             if not entry.is_dir() or entry.name == "shared_media":
                 continue
-            res = clean_profile_evidence(entry, days_threshold, now_ms)
+            res = clean_profile_evidence(entry, days_threshold, now_ms, protected)
             total_deleted += res["deleted_runs"]
             total_freed += res["freed_bytes"]
             total_kept += res["kept_runs"]

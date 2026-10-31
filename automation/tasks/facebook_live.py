@@ -81,8 +81,7 @@ class FacebookLiveTask:
         return frame
 
     def click(self, item):
-        x, y = item['center']
-        self.client.exec_cmd(['xdotool', 'mousemove', str(x), str(y), 'click', '1'])
+        self.live_input.human.click(*item['center'])
 
     @staticmethod
     def same(a, b):
@@ -100,7 +99,7 @@ class FacebookLiveTask:
     def prepare(self, producer_url):
         p, expected = urlsplit(self.client.get_current_url() or ''), urlsplit(producer_url)
         if p.hostname not in {'facebook.com', 'www.facebook.com'} or not p.path.startswith('/live/producer') or (expected.query and p.query != expected.query):
-            self.client.navigate_to(producer_url)
+            self.live_input.human.navigate(producer_url)
         deadline = time.monotonic() + self.layouts.config['timeouts']['prepare']
         self.preparation_deadline = deadline
         clicked = set()
@@ -122,7 +121,7 @@ class FacebookLiveTask:
                 # A prior reversible setup attempt can leave the right panel
                 # scrolled below the saved-details marker. Restore the top and
                 # reobserve before reopening or overwriting those fields.
-                self.client.exec_cmd(['xdotool', 'key', '--clearmodifiers', 'ctrl+Home'])
+                self.live_input.human.key_press('ctrl+Home', clear_modifiers=True)
                 time.sleep(.5)
                 restored = self.capture('prepare')
                 if (not restored.signals['setup_panel'] or restored.signals['active_surface']

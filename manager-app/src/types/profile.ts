@@ -56,7 +56,7 @@ export interface ObservedEnvironment {
   rendering?: {
     requested_mode: 'host_gpu' | 'software';
     effective_mode: 'host_gpu' | 'software';
-    device_backend: 'drm' | 'wsl_dxg' | 'none';
+    device_backend: 'drm' | 'none';
     accelerated: boolean;
     renderer: string;
     display_renderer?: string | null;
@@ -135,6 +135,36 @@ export interface ProfileAccount {
   warming_week: number;
   posts_today: number;
   last_post_date: string | null;
+  /** Stage set by hand; empty or null lets the history decide. */
+  stage_override?: AccountStageOverride | '' | null;
+  /** Set by the user: nothing automatic runs until the hold is released. */
+  on_hold?: { since: string; note: string } | null;
+}
+
+export type AccountStage = 'new' | 'warming_up' | 'ready' | 'resting' | 'attention' | 'on_hold';
+export type AccountStageOverride = 'new' | 'warming_up' | 'ready';
+
+export interface AccountHealth {
+  stage: AccountStage;
+  /** Stage from age and posting history alone, before problems or limits. */
+  growth_stage: AccountStageOverride;
+  reason: string;
+  manual: boolean;
+  /** When a resting stage ends (ISO time). */
+  until: string | null;
+  age_days: number;
+  posts: number;
+  posts_today: number;
+  daily_limit: number;
+  last_post_at: string | null;
+  /** When the last warming visit finished (ISO time). */
+  last_visit_at?: string | null;
+  held_since?: string;
+  hold_note?: string;
+  /** History items behind an attention or resting stage. */
+  evidence?: { execution_id: string; at: string; kind: string; status: string; error: string }[];
+  /** The 24-hour gentle restart after a proxy change. */
+  proxy_restart?: { since: string; until: string; visited: boolean };
 }
 
 /** A phone account's network, from the last check run inside its Android user. */
@@ -231,17 +261,7 @@ export interface SystemStats {
   cpu_model?: string;
   gpu_percent?: number;
   gpu_model?: string;
-  windows_host?: {
-    available: boolean;
-    cpu_percent?: number;
-    cpu_threads?: number;
-    cpu_model?: string;
-    used_memory_mb?: number;
-    total_memory_mb?: number;
-    gpu_percent?: number | null;
-    gpu_model?: string | null;
-  };
-  runtime_environment?: 'wsl' | 'linux';
+  runtime_environment?: 'linux';
   runtime?: {
     cpu_percent: number;
     cpu_threads: number;
@@ -251,7 +271,6 @@ export interface SystemStats {
     gpu_percent?: number;
     gpu_model?: string;
   };
-  wsl_runtime?: SystemStats['runtime'];
   health?: {
     status: 'ready' | 'degraded' | 'not_ready';
     ready: boolean;

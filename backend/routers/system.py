@@ -17,7 +17,6 @@ from backend.services.docker_service import (
     get_current_gpu_percent,
     get_gpu_model,
 )
-from backend.services.host_metrics_service import get_windows_host_stats
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 
@@ -114,16 +113,6 @@ def get_runtime_version():
     return {"version": read_build_version()}
 
 
-def runtime_environment() -> str:
-    if os.environ.get("WSL_INTEROP") or os.environ.get("WSL_DISTRO_NAME"):
-        return "wsl"
-    try:
-        if "microsoft" in open("/proc/version", encoding="utf-8").read().lower():
-            return "wsl"
-    except Exception:
-        pass
-    return "linux"
-
 @router.get("/stats")
 def get_system_stats():
     docker_running = _docker_available()
@@ -154,7 +143,7 @@ def get_system_stats():
     except Exception:
         pass
 
-    wsl_runtime = {
+    runtime = {
         "cpu_percent": get_current_cpu_percent(),
         "cpu_threads": CPU_THREADS,
         "cpu_model": cpu_model_str,
@@ -172,15 +161,12 @@ def get_system_stats():
         "used_memory_mb": used_mem_mb,
         "total_memory_mb": total_mem_mb,
         "available_proxies": available_proxies,
-        # Legacy fields remain WSL values for compatibility with older clients.
-        "cpu_percent": wsl_runtime["cpu_percent"],
+        "cpu_percent": runtime["cpu_percent"],
         "cpu_cores": CPU_THREADS,
         "cpu_model": cpu_model_str,
-        "gpu_percent": wsl_runtime["gpu_percent"],
-        "gpu_model": wsl_runtime["gpu_model"],
-        "windows_host": get_windows_host_stats(),
-        "runtime_environment": runtime_environment(),
-        "runtime": wsl_runtime,
-        "wsl_runtime": wsl_runtime,
+        "gpu_percent": runtime["gpu_percent"],
+        "gpu_model": runtime["gpu_model"],
+        "runtime_environment": "linux",
+        "runtime": runtime,
         "health": health_snapshot(docker_running),
     }

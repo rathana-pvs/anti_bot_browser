@@ -343,8 +343,8 @@ class LoginGateTests(unittest.TestCase):
         task.client = Mock()
         task.vision = Mock()
         task.vision.detect_theme.return_value = ("dark", 0.91)
-        task.client.navigate_to = Mock()
-        task.client.exec_cmd.return_value = Mock(returncode=0, stdout="Facebook")
+        task.human = Mock()
+        task.client.active_window_name.return_value = "Facebook"
         task.client.get_current_url.return_value = "https://www.facebook.com/"
         task.client.screenshot.return_value = np.zeros((100, 100, 3), dtype=np.uint8)
         task.recognizer = Mock()
@@ -379,7 +379,7 @@ class LoginGateTests(unittest.TestCase):
                 task.verify_logged_in(target_url="https://www.facebook.com/me")
             )
 
-        task.client.navigate_to.assert_called_once_with("https://www.facebook.com/me")
+        task.human.navigate.assert_called_once_with("https://www.facebook.com/me")
 
     def test_actual_login_screen_is_rejected(self):
         task = self.make_task([StateObservation(ScreenState.LOGIN_REQUIRED, 0.98, ["log in"])])
@@ -398,7 +398,7 @@ class LoginGateTests(unittest.TestCase):
             StateObservation(ScreenState.FEED_READY, 0.8, ["false positive"]),
             StateObservation(ScreenState.FEED_READY, 0.9, ["what's on your mind"]),
         ])
-        task.client.exec_cmd.return_value = Mock(returncode=0, stdout="")
+        task.client.active_window_name.return_value = ""
         with unittest.mock.patch("tasks.base_task.time.sleep", return_value=None):
             self.assertTrue(task.verify_logged_in())
         self.assertEqual(task.recognizer.observe_session_gate.call_count, 2)
@@ -416,7 +416,7 @@ class LoginGateTests(unittest.TestCase):
         with unittest.mock.patch("tasks.base_task.time.sleep", return_value=None):
             self.assertTrue(task.verify_logged_in())
         self.assertEqual(task.recognizer.observe_session_gate.call_count, 2)
-        self.assertEqual(task.client.navigate_to.call_count, 2)
+        self.assertEqual(task.human.navigate.call_count, 2)
 
     def test_login_gate_retries_navigation_when_browser_remains_off_facebook(self):
         task = self.make_task([
@@ -432,7 +432,7 @@ class LoginGateTests(unittest.TestCase):
         with unittest.mock.patch("tasks.base_task.time.sleep", return_value=None):
             self.assertTrue(task.verify_logged_in())
 
-        self.assertEqual(task.client.navigate_to.call_count, 2)
+        self.assertEqual(task.human.navigate.call_count, 2)
 
 
 class PostPublishPromptTests(unittest.TestCase):
@@ -474,13 +474,9 @@ class FileChooserTests(unittest.TestCase):
         stub_verified_entry(task)
         task.client = Mock()
 
-        def exec_cmd(args, check=False):
-            title = args[-1]
-            if title == "File Upload":
-                return Mock(returncode=0, stdout="17\n42\n")
-            return Mock(returncode=1, stdout="")
-
-        task.client.exec_cmd.side_effect = exec_cmd
+        task.client.find_windows.side_effect = (
+            lambda title: ["17", "42"] if title == "File Upload" else []
+        )
 
         self.assertEqual(task.find_visible_file_chooser(), ("42", "File Upload"))
 
@@ -494,18 +490,11 @@ class FileChooserTests(unittest.TestCase):
         task.capture_evidence = Mock()
         dialog_visible = {"value": True}
 
-        def exec_cmd(args, check=False):
-            if args[:4] == ["xdotool", "search", "--onlyvisible", "--name"]:
-                return Mock(returncode=0 if dialog_visible["value"] else 1, stdout="42\n" if dialog_visible["value"] else "")
-            if args[:3] == ["xdotool", "getwindowgeometry", "--shell"]:
-                return Mock(returncode=0, stdout="X=100\nY=100\nWIDTH=1000\nHEIGHT=700\n")
-            if args[:2] == ["test", "-f"]:
-                return Mock(returncode=0, stdout="")
-            if args[:3] == ["xdotool", "search", "--class"]:
-                return Mock(returncode=0, stdout="99\n")
-            return Mock(returncode=0, stdout="")
-
-        task.client.exec_cmd.side_effect = exec_cmd
+        task.client.find_windows.side_effect = (
+            lambda _title: ["42"] if dialog_visible["value"] else []
+        )
+        task.client.window_geometry.return_value = {"X": 100, "Y": 100, "WIDTH": 1000, "HEIGHT": 700}
+        task.client.file_exists.return_value = True
         task.client.ensure_focus.return_value = 99
         task.client.screenshot.return_value = np.zeros((1080, 1920, 3), dtype=np.uint8)
         task.vision.find_text.return_value = {"center": (1020, 760), "text": "Open", "confidence": 0.99}
@@ -516,8 +505,8 @@ class FileChooserTests(unittest.TestCase):
 
         task.human.click.assert_called_once_with(1020, 760)
         task.client.ensure_focus.assert_called_once_with()
-        self.assertFalse(any(call.args[0][:3] == ["xdotool", "search", "--class"]
-                             for call in task.client.exec_cmd.call_args_list))
+        task.client.get_chrome_window.assert_not_called()
+        task.human.type_native.assert_called_once_with("/data/shared_media/photo.png")
         task.human.key_press.assert_has_calls([
             unittest.mock.call("ctrl+l"),
             unittest.mock.call("ctrl+a"),
@@ -1991,22 +1980,97 @@ class ReelPublicationVerificationTests(unittest.TestCase):
     def test_logo_feed_detection_with_visible_composer_never_falls_back(self):
         task = self.make_task([
             StateObservation(ScreenState.FEED_READY, 0.68, ["facebook logo"]),
-        ], [0.7])
+        ] * 2, [0.7] * 2)
         task.vision.read_text.return_value = [
             {"text": "Create reel"}, {"text": "Uploading 95%"},
             {"text": "Make it easier to contact you"},
         ]
-        with unittest.mock.patch("modules.reel_post_click_verifier.time.time", side_effect=[0, 0, 91]), \
+        # The upload stays at 95%, so the extra wait ends after 30 seconds.
+        with unittest.mock.patch("modules.reel_post_click_verifier.time.time", side_effect=[0, 0, 91, 122]), \
              unittest.mock.patch("modules.reel_post_click_verifier.time.sleep"):
             status, _ = task._verify_reel_publication(task.client.screenshot())
         self.assertEqual(status, "timed_out")
+        self.assertEqual(task.reel_upload_extension["stop_reason"], "stalled")
         task.client.navigate_to.assert_not_called()
+
+    def upload_task(self, percents, closes=False):
+        steps = len(percents) + 2
+        observations = [StateObservation(ScreenState.PUBLISHING, 0.9)] * steps
+        if closes:
+            observations[-1] = StateObservation(ScreenState.POST_CONFIRMED, 0.98)
+        task = self.make_task(observations, [0.7] * (steps + 1))
+        remaining = list(percents)
+        task.vision.read_text.side_effect = lambda screen, region=None, min_confidence=0.0: (
+            [{"text": f"Uploading {remaining.pop(0)}%"}] if region and remaining else
+            [] if region else [{"text": "Manage Page"}])
+        return task
+
+    def test_slow_upload_keeps_waiting_while_progress_rises(self):
+        task = self.upload_task([70, 85], closes=True)
+        with unittest.mock.patch("modules.reel_post_click_verifier.time.time", side_effect=[0, 0, 91, 110, 130]), \
+             unittest.mock.patch("modules.reel_post_click_verifier.time.sleep"):
+            status, _ = task._verify_reel_publication(task.client.screenshot(), timeout=90)
+        self.assertEqual(status, "published")
+        self.assertEqual(task.reel_upload_extension["first_percent"], 70)
+        self.assertEqual(task.reel_upload_extension["last_percent"], 85)
+        task.client.navigate_to.assert_not_called()
+
+    def test_stuck_upload_stops_thirty_seconds_after_the_last_progress(self):
+        task = self.upload_task([70, 70, 70])
+        with unittest.mock.patch("modules.reel_post_click_verifier.time.time", side_effect=[0, 0, 91, 105, 122]), \
+             unittest.mock.patch("modules.reel_post_click_verifier.time.sleep"):
+            status, _ = task._verify_reel_publication(task.client.screenshot(), timeout=90)
+        self.assertEqual(status, "timed_out")
+        self.assertEqual(task.reel_upload_extension["stop_reason"], "stalled")
+        self.assertEqual(task.reel_upload_extension["extended_seconds"], 31)
+
+    def test_upload_wait_never_passes_four_minutes(self):
+        task = self.upload_task([10, 20, 30, 40, 50, 60, 70, 80])
+        times = [0, 0, 91, 115, 140, 165, 190, 215, 241]
+        with unittest.mock.patch("modules.reel_post_click_verifier.time.time", side_effect=times), \
+             unittest.mock.patch("modules.reel_post_click_verifier.time.sleep"):
+            status, _ = task._verify_reel_publication(task.client.screenshot(), timeout=90)
+        self.assertEqual(status, "timed_out")
+        self.assertEqual(task.reel_upload_extension["stop_reason"], "max_wait")
+
+    def test_upload_percent_is_read_from_the_preview(self):
+        from modules.reel_post_click_verifier import ReelPostClickVerifier
+        task = self.make_task([], [])
+        task.vision.read_text.return_value = [{"text": "POLITICS"}, {"text": "Uploading 70%"}]
+        verifier = ReelPostClickVerifier(task)
+        self.assertEqual(verifier.upload_percent(np.zeros((1080, 1920, 3), dtype=np.uint8)), 70)
+        self.assertEqual(task.vision.read_text.call_args.kwargs["region"], (960, 540, 576, 162))
+        task.vision.read_text.return_value = [{"text": "Justice Department"}, {"text": "Uploading 849"}]
+        self.assertEqual(verifier.upload_percent(np.zeros((1080, 1920, 3), dtype=np.uint8)), 84)
+        task.vision.read_text.return_value = [{"text": "Posting"}]
+        self.assertIsNone(verifier.upload_percent(np.zeros((1080, 1920, 3), dtype=np.uint8)))
 
     def test_logo_alone_does_not_prove_composer_closure(self):
         task = self.make_task([], [])
         task.vision.read_text.return_value = [{"text": "Facebook"}]
         self.assertFalse(task._reel_composer_has_closed(
             task.client.screenshot(), StateObservation(ScreenState.FEED_READY, 0.68)))
+
+    def test_sidebar_rows_are_not_joined_into_composer_phrases(self):
+        task = self.make_task([], [])
+        task.vision.read_text.return_value = [
+            {"text": "Manage Page", "bounds": (16, 160, 170, 184)},
+            {"text": "Boost Instagram post", "bounds": (52, 548, 213, 570)},
+            {"text": "Settings", "bounds": (52, 592, 113, 614)},
+            {"text": "What's on your mind?", "bounds": (1121, 460, 1285, 482)},
+        ]
+        self.assertTrue(task._reel_composer_has_closed(
+            task.client.screenshot(), StateObservation(ScreenState.FEED_READY, 0.84)))
+
+    def test_composer_phrase_split_across_one_line_still_blocks(self):
+        task = self.make_task([], [])
+        task.vision.read_text.return_value = [
+            {"text": "Manage Page", "bounds": (16, 160, 170, 184)},
+            {"text": "Post", "bounds": (800, 300, 840, 322)},
+            {"text": "settings", "bounds": (846, 300, 910, 322)},
+        ]
+        self.assertFalse(task._reel_composer_has_closed(
+            task.client.screenshot(), StateObservation(ScreenState.FEED_READY, 0.84)))
 
     def test_composer_blocks_navigation_even_when_feed_text_is_visible(self):
         task = self.make_task([], [])
@@ -2276,7 +2340,7 @@ class FirstCommentTargetTests(unittest.TestCase):
         task._open_permalink_comment_input = Mock()
 
         with unittest.mock.patch("time.sleep", return_value=None), \
-             unittest.mock.patch("tasks.base_task.random.uniform", return_value=2.5):
+             unittest.mock.patch("skills.comment.random.uniform", return_value=2.5):
             result = task.post_first_comment("https://example.com/link")
 
         self.assertEqual(result, "submitted_unverified")
@@ -2337,7 +2401,7 @@ class FirstCommentTargetTests(unittest.TestCase):
         task._open_profile_first_comment_input = Mock(return_value=((90, 75), screen))
 
         with unittest.mock.patch("time.sleep", return_value=None), \
-             unittest.mock.patch("tasks.base_task.random.uniform", return_value=1.0):
+             unittest.mock.patch("skills.comment.random.uniform", return_value=1.0):
             result = task.post_first_comment("A posting guide")
 
         self.assertEqual(result, "submitted_verified")
@@ -2362,7 +2426,7 @@ class FirstCommentTargetTests(unittest.TestCase):
         )
 
         with unittest.mock.patch("time.sleep", return_value=None), \
-             unittest.mock.patch("tasks.base_task.random.uniform", return_value=1.0):
+             unittest.mock.patch("skills.comment.random.uniform", return_value=1.0):
             result = task.post_first_comment("Canary comment test — September 25, 2026")
 
         self.assertEqual(result, "submitted_verified")
@@ -2393,7 +2457,7 @@ class FirstCommentTargetTests(unittest.TestCase):
         task._open_profile_first_comment_input = Mock(return_value=((70, 98), screen))
 
         with unittest.mock.patch("time.sleep", return_value=None), \
-             unittest.mock.patch("tasks.base_task.random.uniform", return_value=1.0):
+             unittest.mock.patch("skills.comment.random.uniform", return_value=1.0):
             result = task.post_first_comment("Source: RT")
 
         self.assertEqual(result, "submitted_verified")
@@ -2415,7 +2479,7 @@ class FirstCommentTargetTests(unittest.TestCase):
         task._open_permalink_comment_input = Mock(return_value=((70, 80), screen))
 
         with unittest.mock.patch("time.sleep", return_value=None), \
-             unittest.mock.patch("tasks.base_task.random.uniform", return_value=1.0):
+             unittest.mock.patch("skills.comment.random.uniform", return_value=1.0):
             result = task.post_first_comment(
                 "https://example.com/link",
                 post_url="https://www.facebook.com/permalink.php?story_fbid=123&id=456",
@@ -2597,10 +2661,7 @@ class FirstCommentTargetTests(unittest.TestCase):
         self.assertTrue(visible)
         self.assertIs(final_screen, screen)
         self.assertEqual(task.client.screenshot.call_count, 3)
-        task.client.exec_cmd.assert_any_call(
-            ["xdotool", "key", "ctrl+home"],
-            check=False,
-        )
+        task.human.key_press.assert_any_call("ctrl+home", check=False)
         self.assertEqual(task.human.scroll.call_count, 2)
         task.human.scroll.assert_called_with("down", notches=2)
 
@@ -2664,7 +2725,7 @@ class FirstCommentTargetTests(unittest.TestCase):
         )
 
         with unittest.mock.patch("time.sleep", return_value=None), \
-             unittest.mock.patch("tasks.base_task.random.uniform", return_value=1.0):
+             unittest.mock.patch("skills.comment.random.uniform", return_value=1.0):
             result = task.post_first_comment("Verification comment — profile 002")
 
         self.assertEqual(result, "submitted_verified")
@@ -2692,7 +2753,7 @@ class FirstCommentTargetTests(unittest.TestCase):
         task._open_profile_first_comment_input = Mock(return_value=((1167, 839), screen))
 
         with unittest.mock.patch("time.sleep", return_value=None), \
-             unittest.mock.patch("tasks.base_task.random.uniform", return_value=1.0):
+             unittest.mock.patch("skills.comment.random.uniform", return_value=1.0):
             result = task.post_first_comment(
                 "https://asiandot.com/article/senate-rejects-sanders-led-effort-to-block-arms-sale-to-israel"
             )

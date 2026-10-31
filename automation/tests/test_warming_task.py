@@ -28,9 +28,9 @@ class FacebookWarmingTaskTests(unittest.TestCase):
     def test_success_reports_completed_outcome(self):
         task = self.make_task()
         with patch("tasks.facebook_warming.time.sleep"), \
-                patch("tasks.facebook_warming.random.randint", return_value=3), \
-                patch("tasks.facebook_warming.random.uniform", return_value=1.0), \
-                patch("tasks.facebook_warming.random.choice", return_value="profile"):
+                patch("tasks.base_task.random.randint", return_value=3), \
+                patch("tasks.base_task.random.uniform", return_value=1.0), \
+                patch("tasks.base_task.random.choice", return_value="profile"):
             self.assertTrue(task.run())
 
         task.set_stage.assert_called_once_with("warming", scroll_count=2)
@@ -50,6 +50,35 @@ class FacebookWarmingTaskTests(unittest.TestCase):
         )
         self.assertEqual(task.human.scroll.call_count, 3)
 
+    def test_an_account_check_opens_the_profile_and_stops(self):
+        task = self.make_task()
+        task.warming_options = {"check": True, "surface": "news_feed", "max_seconds": 60}
+        task.facebook_identity = "page"
+        self.assertTrue(task.run())
+        task.verify_logged_in.assert_called_once_with(target_url="https://www.facebook.com/me")
+        task.select_and_open_warming_surface.assert_not_called()
+        task.human.scroll.assert_not_called()
+        task.human.click.assert_not_called()
+        self.assertTrue(task.set_outcome.call_args.kwargs["account_check"])
+        task.capture_evidence.assert_called_once_with("account_check_passed", facebook_identity="page")
+
+    def test_a_check_that_cannot_confirm_the_page_does_not_pass(self):
+        task = self.make_task()
+        task.warming_options = {"check": True}
+        task.facebook_identity = None
+        self.assertFalse(task.run())
+        self.assertEqual(task.set_outcome.call_args.args, ("skipped_session_unverified",))
+        task.capture_evidence.assert_called_once_with("account_check_unconfirmed", facebook_identity=None)
+
+    def test_a_failed_account_check_is_skipped_like_any_session(self):
+        task = self.make_task()
+        task.warming_options = {"check": True}
+        task.verify_logged_in.return_value = False
+        task.skip_unverified_session = Mock(return_value=True)
+        task.run()
+        task.skip_unverified_session.assert_called_once()
+        task.set_outcome.assert_not_called()
+
     def test_random_depth_and_passive_extras(self):
         task = self.make_task()
         task.warming_options = {
@@ -59,8 +88,8 @@ class FacebookWarmingTaskTests(unittest.TestCase):
         }
         task.select_and_open_warming_surface.return_value = ("news_feed", "news_feed", False, None)
         with patch("tasks.facebook_warming.time.sleep") as sleep, \
-                patch("tasks.facebook_warming.random.random", return_value=0), \
-                patch("tasks.facebook_warming.random.uniform", side_effect=lambda a, b: a):
+                patch("tasks.base_task.random.random", return_value=0), \
+                patch("tasks.base_task.random.uniform", side_effect=lambda a, b: a):
             self.assertTrue(task.run())
         task.verify_logged_in.assert_called_once_with(target_url="https://www.facebook.com/")
         self.assertEqual(task.set_outcome.call_args.kwargs["planned_scroll_count"], 3)
@@ -78,7 +107,7 @@ class FacebookWarmingTaskTests(unittest.TestCase):
             elapsed[0] += seconds
         with patch("tasks.facebook_warming.time.monotonic", side_effect=lambda: elapsed[0]), \
                 patch("tasks.facebook_warming.time.sleep", side_effect=sleep), \
-                patch("tasks.facebook_warming.random.uniform", return_value=10):
+                patch("tasks.base_task.random.uniform", return_value=10):
             self.assertTrue(task.run())
         result = task.set_outcome.call_args.kwargs
         self.assertEqual(result["duration_seconds"], 15)

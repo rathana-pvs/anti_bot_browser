@@ -131,16 +131,6 @@ export function clearableFailures(profileId: string, executions: QueueExecutionI
     && (before === undefined || finishedAt(item) < before));
 }
 
-export function needsAttention(profile: Profile, activity?: AccountActivity) {
-  return profile.status === 'error' || Boolean(profile.restart_required)
-    || Boolean(profile.effective_environment?.network_preflight && !profile.effective_environment.network_preflight.startsWith('passed:'))
-    || Boolean(activity?.attention.length);
-}
-
-export function warmupLabel(profile: Profile) {
-  return profile.account?.warming_complete ? 'Warmed up' : `Warm-up week ${profile.account?.warming_week || 1}`;
-}
-
 export const STATUS_LABEL: Record<Profile['status'], string> = { running: 'Running', paused: 'Paused', stopped: 'Stopped', error: 'Error' };
 export const STATUS_TONE: Record<Profile['status'], string> = {
   running: 'text-emerald-400', paused: 'text-amber-400', stopped: 'text-zinc-500', error: 'text-red-400',

@@ -45,6 +45,7 @@ class FacebookPostTask(BaseTask):
         self.preflight_complete = preflight_complete
         self.defer_comment = defer_comment
         self.brain_metadata = brain_package.metadata() if brain_package is not None else None
+        self.brain_workflow = brain_package.workflow if brain_package is not None else None
         self.brain_targets = {}
         if brain_package is not None:
             targets_path = Path(brain_package.root) / "config" / "targets.json"
@@ -123,8 +124,8 @@ class FacebookPostTask(BaseTask):
     def _fail(self, code: str, message: str, screen=None) -> bool:
         self.log("ERROR", message)
         self.capture_evidence(code, screen, error_code=code, message=message)
-        status = "uncertain" if getattr(self, "current_stage", "") in ("publish_clicked", "verifying") else "failed_before_publish"
-        return self.set_outcome(status, code, message=message)
+        # set_outcome turns this into uncertain once the publish click may have been sent.
+        return self.set_outcome("failed_before_publish", code, message=message)
 
     def _uncertain(self, code: str, message: str, screen=None) -> bool:
         self.log("WARN", message)
@@ -666,7 +667,10 @@ class FacebookPostTask(BaseTask):
             else:
                 feed_streak = 0
 
-            time.sleep(1.5)
+            if getattr(getattr(self, "behavior_session", None), "natural", False) is True:
+                self.human.idle(1.5)
+            else:
+                time.sleep(1.5)
 
         # Never navigate away or begin commenting while a publishing/review modal
         # may still be open. This avoids confusing slow network processing with
@@ -674,7 +678,36 @@ class FacebookPostTask(BaseTask):
         self.log("WARN", "Publishing modal did not fully close before the maximum verification wait.")
         return "uncertain", last
 
+    # Workflow steps, in order. The pinned facebook_post workflow.yaml lists
+    # the same steps; see BaseTask.workflow_steps.
+    STEPS = (
+        "preflight",
+        "open_composer",
+        "attach_media",
+        "enter_caption",
+        "review",
+        "select_template",
+        "review_next",
+        "publish",
+        "verify",
+        "finish",
+    )
+
+    # Safe pauses: before the composer exists, and short ones inside it
+    # before media, caption and review. Never from publish onward.
+    HOLD_LIMITS = {"preflight": 120.0, "open_composer": 120.0, "attach_media": 90.0,
+                   "enter_caption": 60.0, "review": 60.0}
+
     def run(self) -> bool:
+        steps = self.workflow_steps(self.STEPS)
+        if steps is None:
+            return self._fail(
+                "workflow_steps_invalid",
+                "The pinned workflow lists steps that do not match this engine; nothing was done.",
+            )
+        return self.run_steps(steps)
+
+    def _step_preflight(self):
         self.set_stage("preparing")
         self.log("STEP", "Starting Facebook auto-post task...")
 
@@ -688,9 +721,10 @@ class FacebookPostTask(BaseTask):
 
         # Login verification already opened and validated the profile page.
         self.log("INFO", "Reusing the verified profile page for post composition.")
+        return None
 
+    def _step_open_composer(self):
         self.set_stage("composing")
-        # Step 3: Handle media attachment (Photo/Video) or text composer
         if self.media_path:
             self.log("STEP", f"Locating Photo/video button on profile for: {self.media_path}")
 
@@ -719,95 +753,107 @@ class FacebookPostTask(BaseTask):
             self.capture_evidence("before_click_photo_video", target=list(photo_btn))
             self.human.click(*photo_btn)
             time.sleep(self.composer_entry.timing.sample(.6, 1.0, 1.5))
+            return None
 
-            # Trigger Zero-CDP GTK file chooser
-            container_path = self.media_path
-            # If path is relative to shared_media on host, map to /data/shared_media
-            if not container_path.startswith("/"):
-                container_path = f"/data/shared_media/{container_path}"
+        self.log("STEP", "Locating post composer ('What\\'s on your mind?')...")
+        composer_pos = self.vision.find_stable(
+            lambda: self.vision.find_element("composer_input") or self.vision.find_element("composer_button"),
+            attempts=2,
+            tolerance_px=8.0,
+        )
+        if not composer_pos:
+            composer_pos = self._stable_feed_composer_target()
+        if not composer_pos:
+            composer_pos = self._stable_ocr_target(
+                self._brain_labels("composer_entry", (
+                    "what's on your mind",
+                    "what’s on your mind",
+                    "whats on your mind",
+                    "what s on your mind",
+                    "write something",
+                )),
+                region="profile_post_stream",
+            )
+        if not composer_pos:
+            return self._fail("composer_not_found", "Post composer could not be located confidently.")
+        self.human.click(*composer_pos)
+        time.sleep(self.composer_entry.timing.sample(.6, 1.0, 1.5))
+        return None
 
-            if not self.attach_file_gtk(container_path):
-                return self._fail("file_chooser_failed", "The media file chooser could not be completed safely.")
+    def _step_attach_media(self):
+        if not self.media_path:
+            return None
+        # Trigger Zero-CDP GTK file chooser
+        container_path = self.media_path
+        # If path is relative to shared_media on host, map to /data/shared_media
+        if not container_path.startswith("/"):
+            container_path = f"/data/shared_media/{container_path}"
 
-            self.log("INFO", "Waiting for the attached-media composer to become ready...")
-            media_result = self._wait_until_media_ready()
-            if media_result is None:
-                return self._fail("media_ready_timeout", "No visual media-ready state was detected.")
-            media_observation, media_screen = media_result
-            self.capture_evidence(
-                "media_state",
+        if not self.attach_file_gtk(container_path):
+            return self._fail("file_chooser_failed", "The media file chooser could not be completed safely.")
+
+        self.log("INFO", "Waiting for the attached-media composer to become ready...")
+        media_result = self._wait_until_media_ready()
+        if media_result is None:
+            return self._fail("media_ready_timeout", "No visual media-ready state was detected.")
+        media_observation, media_screen = media_result
+        self.capture_evidence(
+            "media_state",
+            media_screen,
+            state=media_observation.state.value,
+            confidence=media_observation.confidence,
+            signals=media_observation.signals,
+        )
+        if media_observation.state == ScreenState.ERROR_DIALOG:
+            return self._fail("upload_error", "Facebook displayed an upload or composer error.", media_screen)
+        if media_observation.state == ScreenState.FEED_READY:
+            return self._fail(
+                "media_attachment_rejected",
+                "The file chooser closed, but Facebook returned to the feed without attaching the media.",
                 media_screen,
-                state=media_observation.state.value,
-                confidence=media_observation.confidence,
-                signals=media_observation.signals,
             )
-            if media_observation.state == ScreenState.ERROR_DIALOG:
-                return self._fail("upload_error", "Facebook displayed an upload or composer error.", media_screen)
-            if media_observation.state == ScreenState.FEED_READY:
-                return self._fail(
-                    "media_attachment_rejected",
-                    "The file chooser closed, but Facebook returned to the feed without attaching the media.",
-                    media_screen,
-                )
-            if media_observation.state not in {ScreenState.MEDIA_READY, ScreenState.POST_ENABLED}:
-                return self._fail("media_ready_timeout", "Media never reached a confirmed ready state.", media_screen)
-        else:
-            self.log("STEP", "Locating post composer ('What\\'s on your mind?')...")
-            composer_pos = self.vision.find_stable(
-                lambda: self.vision.find_element("composer_input") or self.vision.find_element("composer_button"),
-                attempts=2,
-                tolerance_px=8.0,
-            )
-            if not composer_pos:
-                composer_pos = self._stable_feed_composer_target()
-            if not composer_pos:
-                composer_pos = self._stable_ocr_target(
-                    self._brain_labels("composer_entry", (
-                        "what's on your mind",
-                        "what’s on your mind",
-                        "whats on your mind",
-                        "what s on your mind",
-                        "write something",
-                    )),
-                    region="profile_post_stream",
-                )
-            if not composer_pos:
-                return self._fail("composer_not_found", "Post composer could not be located confidently.")
-            self.human.click(*composer_pos)
-            time.sleep(self.composer_entry.timing.sample(.6, 1.0, 1.5))
+        if media_observation.state not in {ScreenState.MEDIA_READY, ScreenState.POST_ENABLED}:
+            return self._fail("media_ready_timeout", "Media never reached a confirmed ready state.", media_screen)
+        return None
 
-        if self.caption:
-            # Locate the composer text area only when text actually needs to be entered.
-            caption_target = self._stable_caption_target()
-            self.log_decision(
-                "Enter caption",
-                "What's on your mind text inside the modal caption region",
-                f"target={caption_target}" if caption_target else "no caption input target",
-                "click and enter caption" if caption_target else "stop without typing",
-            )
-            if not caption_target:
-                return self._fail(
-                    "caption_input_not_found",
-                    "Caption input could not be visually confirmed; no fallback coordinate was used.",
-                )
-
-            entry = self.composer_entry.enter(
-                self.caption, caption_target, empty_confirmed=lambda: self._stable_caption_target() is not None,
-                surface_guard=lambda: self.recognizer.observe().state in {
-                    ScreenState.COMPOSER_OPEN, ScreenState.MEDIA_READY, ScreenState.POST_ENABLED,
-                },
-                deadline=time.monotonic() + 300,
-            )
-            if not entry.verified:
-                return self._needs_review("caption_" + entry.status,
-                                          "Caption entry could not be confirmed; stopped before publishing.")
-        else:
+    def _step_enter_caption(self):
+        if not self.caption:
             self.log("INFO", "No caption requested; skipping caption-field detection and text entry.")
+            return None
+        # Locate the composer text area only when text actually needs to be entered.
+        caption_target = self._stable_caption_target()
+        self.log_decision(
+            "Enter caption",
+            "What's on your mind text inside the modal caption region",
+            f"target={caption_target}" if caption_target else "no caption input target",
+            "click and enter caption" if caption_target else "stop without typing",
+        )
+        if not caption_target:
+            return self._fail(
+                "caption_input_not_found",
+                "Caption input could not be visually confirmed; no fallback coordinate was used.",
+            )
+
+        entry = self.composer_entry.enter(
+            self.caption, caption_target, empty_confirmed=lambda: self._stable_caption_target() is not None,
+            surface_guard=lambda: self.recognizer.observe().state in {
+                ScreenState.COMPOSER_OPEN, ScreenState.MEDIA_READY, ScreenState.POST_ENABLED,
+            },
+            deadline=time.monotonic() + 300,
+        )
+        if not entry.verified:
+            return self._needs_review("caption_" + entry.status,
+                                      "Caption entry could not be confirmed; stopped before publishing.")
+        return None
+
+    def _step_review(self):
         try:
             self.review_composer(self.caption or "", self.media_path or "", 1 if self.media_path else 0)
         except Exception:
             return self._needs_review("caption_review_interrupted", "Review interrupted; no publish action sent.")
+        return None
 
+    def _step_select_template(self):
         # Select a declarative composer family from stable visual signals.
         post_template, next_btn, detected_post_btn = self._select_post_template()
         if post_template is None:
@@ -821,52 +867,62 @@ class FacebookPostTask(BaseTask):
             f"template={post_template}, next={next_btn}, post={detected_post_btn}",
             "execute the selected template",
         )
-        if self._post_template_uses_review(post_template):
-            if not next_btn:
-                return self._fail(
-                    "post_next_not_found",
-                    "P2 was selected but its enabled Next action is unavailable.",
-                )
-            before_next = self.client.screenshot()
-            self.capture_evidence("before_next", before_next, target=list(next_btn))
-            self.log("STEP", f"Clicking the visually confirmed Next action at {next_btn}...")
-            self.click_reversible(next_btn, label="post_next", max_offset_px=5)
-            review_result = self.wait_for_states(
-                {ScreenState.POST_ENABLED, ScreenState.ERROR_DIALOG},
-                timeout=30.0,
-                poll_interval=1.0,
-            )
-            if not review_result:
-                return self._fail("post_review_timeout", "No review screen appeared after clicking Next.")
-            review_observation, review_screen = review_result
-            self.log_decision(
-                "Post review",
-                "Post settings or Post preview with Post text on the enabled blue button",
-                f"state={review_observation.state.value}, confidence={review_observation.confidence:.2f}, signals={review_observation.signals or 'none'}",
-                "continue to final Post" if review_observation.state == ScreenState.POST_ENABLED else "stop without publishing",
-                level="INFO",
-            )
-            self.capture_evidence(
-                "post_review_state",
-                review_screen,
-                state=review_observation.state.value,
-                confidence=review_observation.confidence,
-                signals=review_observation.signals,
-            )
-            if review_observation.state == ScreenState.ERROR_DIALOG:
-                return self._fail("post_review_error", "Facebook displayed an error after clicking Next.", review_screen)
-            if review_observation.state != ScreenState.POST_ENABLED:
-                return self._fail(
-                    "post_review_timeout",
-                    "The final enabled Post action did not appear after clicking Next.",
-                    review_screen,
-                )
+        self._post_template = post_template
+        self._next_btn = next_btn
+        self._detected_post_btn = detected_post_btn
+        return None
 
+    def _step_review_next(self):
+        if not self._post_template_uses_review(self._post_template):
+            return None
+        next_btn = self._next_btn
+        if not next_btn:
+            return self._fail(
+                "post_next_not_found",
+                "P2 was selected but its enabled Next action is unavailable.",
+            )
+        before_next = self.client.screenshot()
+        self.capture_evidence("before_next", before_next, target=list(next_btn))
+        self.log("STEP", f"Clicking the visually confirmed Next action at {next_btn}...")
+        self.click_reversible(next_btn, label="post_next", max_offset_px=5)
+        review_result = self.wait_for_states(
+            {ScreenState.POST_ENABLED, ScreenState.ERROR_DIALOG},
+            timeout=30.0,
+            poll_interval=1.0,
+        )
+        if not review_result:
+            return self._fail("post_review_timeout", "No review screen appeared after clicking Next.")
+        review_observation, review_screen = review_result
+        self.log_decision(
+            "Post review",
+            "Post settings or Post preview with Post text on the enabled blue button",
+            f"state={review_observation.state.value}, confidence={review_observation.confidence:.2f}, signals={review_observation.signals or 'none'}",
+            "continue to final Post" if review_observation.state == ScreenState.POST_ENABLED else "stop without publishing",
+            level="INFO",
+        )
+        self.capture_evidence(
+            "post_review_state",
+            review_screen,
+            state=review_observation.state.value,
+            confidence=review_observation.confidence,
+            signals=review_observation.signals,
+        )
+        if review_observation.state == ScreenState.ERROR_DIALOG:
+            return self._fail("post_review_error", "Facebook displayed an error after clicking Next.", review_screen)
+        if review_observation.state != ScreenState.POST_ENABLED:
+            return self._fail(
+                "post_review_timeout",
+                "The final enabled Post action did not appear after clicking Next.",
+                review_screen,
+            )
+        return None
+
+    def _step_publish(self):
         self.log("STEP", "Locating a stable enabled Post action...")
         self._requires_review = False
         post_btn = (
-            detected_post_btn
-            if post_template == "p1"
+            self._detected_post_btn
+            if self._post_template == "p1"
             else self._stable_post_target(review_confirmed=True)
         )
         self.log_decision(
@@ -884,17 +940,19 @@ class FacebookPostTask(BaseTask):
             return self._fail("post_button_not_found", "Enabled Post button could not be confirmed.")
 
         self.set_stage("ready_to_publish", target=list(post_btn))
-        before_publish = self.client.screenshot()
-        self.capture_evidence("before_publish", before_publish, target=list(post_btn))
+        self._before_publish = self.client.screenshot()
+        self.capture_evidence("before_publish", self._before_publish, target=list(post_btn))
         self.log("STEP", f"Clicking final Post action once at {post_btn}...")
         if not self.execute_publish_gate(post_btn):
             return self._fail(
                 "publish_gate_rejected",
                 "The engine-owned publish gate rejected the final action; no click was sent.",
             )
+        return None
 
+    def _step_verify(self):
         self.set_stage("verifying")
-        publication_status, verification = self._verify_publication(before_publish)
+        publication_status, verification = self._verify_publication(self._before_publish)
         if verification:
             observation, final_screen, similarity = verification
             self.capture_evidence(
@@ -922,7 +980,9 @@ class FacebookPostTask(BaseTask):
                 "The final Post action was clicked once, but publication could not be positively confirmed. Automatic retry is blocked.",
                 final_screen,
             )
+        return None
 
+    def _step_finish(self):
         if self.defer_comment:
             self.log("INFO", "Publication confirmed; deferring first comment to the Comment module.")
             return self.set_outcome(

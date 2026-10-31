@@ -6,7 +6,7 @@ import { Button } from '../ui/Button';
 import { cn } from '../ui/cn';
 import {
   ACTIVE_STATUSES, FAILED_STATUSES, UNCERTAIN_STATUSES, commentNeedsRetry, describe, timeParts,
-  hasOpenRecovery, isVideoFile, itemKind, kindLabel, statusLabel,
+  hasOpenRecovery, isInterruptedRetry, isVideoFile, itemKind, kindLabel, statusLabel,
 } from './queueModel';
 
 export interface QueueRowActions {
@@ -57,7 +57,7 @@ export function QueueRow({ item, profileName, selected, actions, busy, onContext
       <ShieldAlert className="w-3.5 h-3.5" />{kind === 'live' ? 'Confirm outcome' : 'Was it posted?'}</Button>;
   } else if (item.status === 'failed_after_publish') {
     action = <Button size="sm" variant="outline" onClick={() => actions.open(item)}>Check</Button>;
-  } else if (failed) {
+  } else if (failed || isInterruptedRetry(item)) {
     action = <Button size="sm" variant="outline" onClick={() => actions.runNow(item)} loading={busy}><RotateCcw className="w-3.5 h-3.5" />Retry</Button>;
   } else if (item.status === 'published' && commentNeedsRetry(item)) {
     action = <Button size="sm" variant="outline" onClick={() => actions.retryComment(item)} loading={busy || item.comment_retry_status === 'running'}>

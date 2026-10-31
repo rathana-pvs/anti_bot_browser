@@ -200,14 +200,9 @@ the release source of truth (`node scripts/release-version.mjs set VERSION`).
 * **Docker Engine** with Docker Compose
 * **Node.js** (v18+) & `npm`
 * **Python** (3.10+ / 3.12 recommended)
-* Host OS: Linux or Windows (WSL2)
+* Host OS: Linux only (Ubuntu, Debian, or a system based on them; x86_64). Windows is not supported.
 
-On Windows, `install-windows.ps1` detects physical RAM and recommends a WSL2
-memory ceiling. The default choice is 50% for hosts below 24 GB and 75% for
-hosts with 24 GB or more (for example, 24 GB on a 32 GB machine). Existing
-`.wslconfig` memory settings are preserved. Use `-KeepWslDefaults` to retain
-Microsoft's default policy or `-WslMemoryGB <GB>` for an explicit unattended
-choice. Applying a new limit restarts WSL during setup.
+See `BETA_README.md` for everything a new PC needs.
 
 Open **Settings → Setup and repair → Install / update runtime** after installing a newer desktop release.
 This runs the complete installer from that release, rather than only starting services.
@@ -223,8 +218,8 @@ runtime. It preserves an incompatible virtual environment as a backup before
 replacing it, without changing the system Python or browser profile data.
 
 The desktop Install/Repair action also installs the Mesa diagnostics and
-drivers used by browser acceleration. Profile startup supports native Linux
-`/dev/dri` devices and the WSL2 `/dev/dxg` bridge. `host_gpu` is the default;
+drivers used by browser acceleration. Profile startup passes the Linux
+`/dev/dri` devices. `host_gpu` is the default;
 if the requested device or libraries are unavailable, the container starts
 with software rendering and records the fallback reason instead of claiming
 hardware acceleration. Native Linux uses ANGLE's Vulkan backend so Chrome can
@@ -289,7 +284,7 @@ npm run build
 ```
 
 For **browser development without rebuilding the desktop app**, close the
-installed desktop first, then run this from the source checkout (Linux/WSL):
+installed desktop first, then run this from the source checkout:
 
 ```bash
 cd manager-app
@@ -563,7 +558,7 @@ Secondary text must agree at 3x and 4x with confidence at least 0.60; successful
 primary reads, recognized old timestamps, and conflicting ages skip recovery.
 All action/geometry checks still apply. Full-screen secondary OCR is disabled.
 
-Linux and Windows/WSL setup installs `tesseract-ocr` and `tesseract-ocr-eng` on
+Setup installs `tesseract-ocr` and `tesseract-ocr-eng` on
 the host where Python automation runs. Existing installs can add these packages
 separately. Missing Tesseract fails closed to the existing OCR outcome. Set
 `AUTOMATION_TESSERACT_ENABLED=0` to disable, `AUTOMATION_TESSERACT_BIN` to select

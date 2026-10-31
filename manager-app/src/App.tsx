@@ -13,6 +13,8 @@ import {
   executeProfileAction,
   deleteProfile,
   deleteExecution,
+  holdProfile,
+  releaseProfileHold,
   fetchSystemStats,
   fetchProxies,
 } from './services/api';
@@ -38,6 +40,7 @@ import type { PhoneAccountRequest } from './components/devices/PhoneAccountForm'
 import { AccountPage } from './components/accounts/AccountPage';
 import { MoveToGroupDialog } from './components/accounts/MoveToGroupDialog';
 import { AccountHandlers, FolderHandlers, ProfileAction } from './components/accounts/accountActions';
+import { refreshAccountHealth } from './components/accounts/accountHealth';
 import { FolderNameDialog, FolderDialogState } from './components/accounts/FolderNameDialog';
 import { AccountTab, clearableFailures, useQueueExecutions } from './components/accounts/accountModel';
 import { fetchSetupStatus, isDesktopApp, SetupSnapshot } from './services/setup';
@@ -57,7 +60,7 @@ const allowsNativeMenu = (target: EventTarget | null) =>
   target instanceof HTMLElement && Boolean(target.closest('input, textarea, [contenteditable="true"]'));
 
 export const App: React.FC = () => {
-  const { showAlert, showConfirm, showToast } = useAppDialog();
+  const { showAlert, showConfirm, showPrompt, showToast } = useAppDialog();
   const [setupStatus, setSetupStatus] = useState<SetupSnapshot | null | undefined>(
     () => isDesktopApp() ? undefined : null,
   );
@@ -80,7 +83,7 @@ export const App: React.FC = () => {
   const [folderDialog, setFolderDialog] = useState<FolderDialogState>(null);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [campaignAttention, setCampaignAttention] = useState(0);
-  const [queueRequest, setQueueRequest] = useState<{ profileId?: string; key: number } | null>(null);
+  const [queueRequest, setQueueRequest] = useState<{ profileId?: string; executionId?: string; key: number } | null>(null);
   const [profileActionError, setProfileActionError] = useState<ProfileActionError | null>(null);
 
   const [systemStats, setSystemStats] = useState<SystemStats>({
@@ -249,9 +252,9 @@ export const App: React.FC = () => {
     setPage('post');
   }, []);
 
-  const openQueue = (profileId?: string) => {
+  const openQueue = (profileId?: string, executionId?: string) => {
     setPage('queue');
-    setQueueRequest({ profileId, key: Date.now() });
+    setQueueRequest({ profileId, executionId, key: Date.now() });
   };
 
   const clearFailures = async (profile: Profile, before?: number) => {
@@ -276,7 +279,30 @@ export const App: React.FC = () => {
       removed === items.length ? 'success' : 'error');
   };
 
+  const toggleHold = async (profile: Profile) => {
+    try {
+      if (profile.account?.on_hold) {
+        await releaseProfileHold(profile.id);
+        showToast(`${profile.name} is no longer on hold.`, 'success');
+      } else {
+        const note = await showPrompt(
+          `Nothing automatic will run on ${profile.name}: no posts, no warming, no cloud jobs. A post that is already publishing finishes. You can still open its browser yourself. Release the hold when you are done.`,
+          { title: 'Put on hold', confirmLabel: 'Put on hold', placeholder: 'Why? e.g. changing proxy (optional)' },
+        );
+        if (note === null) return;
+        await holdProfile(profile.id, note);
+        showToast(`${profile.name} is on hold.`, 'success');
+      }
+    } catch (err: any) {
+      showToast(err?.message || 'Couldn’t change the hold.', 'error');
+    } finally {
+      refreshAccountHealth();
+      await loadData();
+    }
+  };
+
   const handlers: AccountHandlers = {
+    toggleHold: (profile) => { void toggleHold(profile); },
     openQueue,
     clearFailures: (profile, before) => { void clearFailures(profile, before); },
     open: openAccountPage,
@@ -415,7 +441,7 @@ export const App: React.FC = () => {
               onBack={() => { const from = openAccount.from; setOpenAccount(null); if (from === 'devices') setPage('devices'); }}
               onOpenDevice={openDevice} handlers={handlers} busy={busyIds.has(currentAccount.id)}
               executions={executions} proxies={proxies} groups={profileGroups} onSave={handleUpdate}
-              onOpenQueue={() => openQueue(currentAccount.id)} onReload={loadData} />
+              onOpenQueue={(executionId) => openQueue(currentAccount.id, executionId)} onReload={loadData} />
             : <AccountsPage profiles={profiles} proxies={proxies} devices={devices} onOpenDevice={openDevice} groups={profileGroups} executions={executions} handlers={handlers} folderHandlers={folderHandlers}
               busyIds={busyIds} onCreate={() => { setPhonePreset(null); setIsCreateModalOpen(true); }} />}
         </main>
@@ -475,7 +501,13 @@ export const App: React.FC = () => {
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
-        onOpenSetup={isDesktopApp() ? () => {
+        onOpenSetup={isDesktopApp() ? async () => {
+          // Setup is for repairing a broken install; its steps can interrupt work in progress.
+          const confirmed = await showConfirm(
+            'Setup and repair is for fixing the app when something is broken. Its steps can reinstall the app runtime and restart services, which stops running browsers and posts in progress.',
+            { title: 'Open Setup and repair?', confirmLabel: 'Open Setup and repair', variant: 'warning' },
+          );
+          if (!confirmed) return;
           void fetchSetupStatus().then(status => {
             setIsSettingsOpen(false);
             setSetupStatus(status);

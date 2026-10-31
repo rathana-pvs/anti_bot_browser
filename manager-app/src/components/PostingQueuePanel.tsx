@@ -22,7 +22,7 @@ import { QueueDetailDrawer, DrawerActions } from './queue/QueueDetailDrawer';
 import { SupportReportDialog } from './queue/SupportReportDialog';
 import {
   ACTIVE_STATUSES, QueueSectionKey, QueueTypeFilter, UNCERTAIN_STATUSES, WAITING_STATUSES, commentNeedsRetry, hasOpenRecovery, isVideoFile,
-  itemKind, kindLabel, matchesSearch, sectionOf,
+  isInterruptedRetry, itemKind, kindLabel, matchesSearch, sectionOf,
 } from './queue/queueModel';
 import {
   backfillExecutionPermalink, cancelAllQueuePosts, cancelNetworkRecovery, deleteBatch, deleteExecution, fetchQueue,
@@ -38,7 +38,8 @@ interface PostingQueuePanelProps {
   onOpenAccount?: (profileId: string) => void;
   onCreate?: () => void;
   /** Set from other pages to show one account's items; a new `key` re-applies it. */
-  focusAccount?: { profileId: string; key: number } | null;
+  /** Show one account's items, with one item's details open when `executionId` is given. */
+  focusAccount?: { profileId: string; executionId?: string; key: number } | null;
 }
 
 const TYPE_FILTERS: { value: QueueTypeFilter; label: string }[] = [
@@ -108,7 +109,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
     setTypeFilter('all');
     setBatchFilter(ALL_BATCHES);
     setSearch('');
-    setSelectedId(null);
+    setSelectedId(focusAccount.executionId ?? null);
   }, [focusAccount?.key]);
 
   const profileById = useMemo(() => new Map(profiles.map(p => [p.id, p])), [profiles]);
@@ -314,7 +315,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
     const items: ActionMenuItem[] = [{ label: 'View details', icon: <Eye className={icon} />, onSelect: () => setSelectedId(item.execution_id) }];
     if (uncertain) items.push({ label: item.post_type === 'live' ? 'Confirm outcome…' : 'Was it posted?…', icon: <ShieldAlert className={icon} />, onSelect: () => setSelectedId(item.execution_id) });
     if (item.status === 'pending') items.push({ label: 'Run now', icon: <Play className={icon} />, onSelect: () => runNow(item) });
-    if (['failed', 'failed_before_publish'].includes(item.status)) items.push({ label: 'Retry', icon: <RotateCcw className={icon} />, onSelect: () => runNow(item) });
+    if (['failed', 'failed_before_publish'].includes(item.status) || isInterruptedRetry(item)) items.push({ label: 'Retry', icon: <RotateCcw className={icon} />, onSelect: () => runNow(item) });
     if (uncertain && item.post_type !== 'live') items.push({ label: 'Re-run anyway', icon: <RotateCcw className={icon} />, onSelect: () => runNow(item) });
     if (item.status.startsWith('skipped')) items.push({ label: 'Re-run', icon: <RotateCcw className={icon} />, onSelect: () => runNow(item) });
     if (commentNeedsRetry(item)) items.push({ label: 'Retry comment only', icon: <MessageCircle className={icon} />, onSelect: () => retryComment(item) });

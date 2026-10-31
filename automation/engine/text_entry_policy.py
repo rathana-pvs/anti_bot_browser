@@ -41,6 +41,7 @@ def choose_entry_plan(text: str, field_kind: str, behavior) -> EntryPlan:
     elif not can_type(text):
         method, reason = 'paste', 'typing_unsupported'
     else:
-        method = 'type' if behavior.stream('entry_strategy').random() < 0.5 else 'paste'
+        paste_share = behavior.persona.paste_preference if getattr(behavior, 'natural', False) else 0.5
+        method = 'type' if behavior.stream('entry_strategy').random() < 1 - paste_share else 'paste'
         reason = 'short_caption_choice'
     return EntryPlan(method, reason, words, link, wpm=behavior.typing_speed() if method == 'type' else None)

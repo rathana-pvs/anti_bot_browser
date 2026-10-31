@@ -2,69 +2,86 @@ schema_version: 1
 brain_api_version: 1
 workflow_id: facebook_post
 
+# Each state is one engine step (FacebookPostTask._step_<name>). The engine
+# follows on_success from initial_state and runs the steps in that order; the
+# chain must match the engine's step list exactly. Optional steps such as
+# attach_media and review_next pass through when they do not apply.
+
 limits:
   max_steps: 60
   max_runtime_seconds: 300
   max_recovery_attempts: 3
 
-initial_state: feed_ready
+initial_state: preflight
 
 states:
-  feed_ready:
-    require:
-      any:
-        - text_target: composer_entry
-        - template_target: facebook_home
+  preflight:
+    actions:
+      - capability: observe_screen
+    on_success: open_composer
+    on_failure: failed_safe
+
+  open_composer:
     actions:
       - capability: click_candidate
         target: composer_entry
-    on_success: composer_open
-    on_timeout: operator_review
+    on_success: attach_media
     on_failure: failed_safe
 
-  composer_open:
-    require:
-      all:
-        - text_target: composer_heading
-        - region_visible: composer_modal
+  attach_media:
     actions:
       - capability: select_media
         input: media_path
         when: media_present
+    on_success: enter_caption
+    on_failure: failed_safe
+
+  enter_caption:
+    actions:
       - capability: type_text
         target: caption_input
         input: caption
-    on_success: wait_ready
-    on_known_dialog: handle_dialog
-    on_timeout: failed_safe
+    on_success: review
+    on_rejected: operator_review
     on_failure: failed_safe
 
-  handle_dialog:
+  review:
     actions:
-      - capability: dismiss_known_dialog
-    on_success: composer_open
+      - capability: observe_screen
+    on_success: select_template
     on_rejected: operator_review
-    on_failure: operator_review
 
-  wait_ready:
-    require:
-      all:
-        - target_enabled: publish_button
-        - upload_complete: true
+  select_template:
+    actions:
+      - capability: find_template
+    on_success: review_next
+    on_rejected: operator_review
+
+  review_next:
+    actions:
+      - capability: click_candidate
+        target: next_button
+        when: template_uses_review
+    on_success: publish
+    on_failure: failed_safe
+
+  publish:
     actions:
       - capability: request_publish
         target: publish_button
-    on_success: verify_publication
+    on_success: verify
     on_rejected: operator_review
-    on_timeout: failed_safe
-    on_uncertain: uncertain
     on_failure: failed_safe
 
-  verify_publication:
+  verify:
     actions:
       - capability: verify_publication
-    on_success: completed
+    on_success: finish
     on_uncertain: uncertain
-    on_timeout: uncertain
-    on_rejected: uncertain
+    on_failure: uncertain
+
+  finish:
+    actions:
+      - capability: observe_screen
+    on_success: completed
     on_failure: uncertain

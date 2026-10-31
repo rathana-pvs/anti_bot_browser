@@ -29,7 +29,7 @@ class BrainRuntimeTests(unittest.TestCase):
         registry = BrainRegistry(AUTOMATION_ROOT / "brains")
         package = registry.resolve("facebook_post")
         self.assertEqual(package.brain_id, "facebook_post")
-        self.assertEqual(package.version, "1.0.0")
+        self.assertEqual(package.version, "1.1.0")
         self.assertEqual(len(package.digest), 64)
 
     def test_bundled_reel_package_is_valid_and_resolvable(self):

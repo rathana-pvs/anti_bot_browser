@@ -1,3 +1,49 @@
+# Version 1.2.0
+
+**Linux only.** Windows and WSL are no longer supported: there is no Windows
+installer, and Windows installs will not receive this update.
+
+Accounts and automation
+- Auto warming: one switch in Settings → Resources keeps every account active
+  with short read-only visits (feed, the Page, Reels, notifications). It uses
+  spare capacity only, skips accounts that need attention, and always gives way
+  to posts.
+- Account health stages shown as icons and as locked system folders: New,
+  Warming up, Ready, Resting, Needs attention and On hold. The post creator
+  suggests which accounts to post with; only On hold is a hard block.
+- On hold: put an account on hold before changing its proxy. Nothing automatic
+  runs on it. After a proxy change the account restarts gently for 24 hours,
+  and its posts wait for one warming visit from the new IP.
+- Needs attention lists its evidence; each item opens the queue item and its
+  screenshots. After fixing an account, Check now runs one read-only visit and
+  moves it out of Needs attention when Facebook shows the Page again.
+- The personal profile showing instead of the Page is detected; posting is
+  skipped and the account goes to Needs attention.
+- Natural session is on for every account, and the Meta account notice is
+  dismissed safely.
+- Reel uploads on slow proxies keep waiting while the upload is still moving
+  (up to 4 minutes) instead of timing out early.
+- Warm-up is a simple secondary option: what to do and how long.
+- Cancelled and stopped items can be retried. A warming visit interrupted by
+  an app restart is no longer reported as an unconfirmed post.
+
+Storage
+- Daily housekeeping keeps the data folder from growing: evidence is kept by
+  what it proves (never for unconfirmed posts or open problems), screenshots
+  are shrunk, browser caches are trimmed, old runtime backups and finished
+  batches are cleaned up. Settings → Storage shows usage, progress, Preview and
+  Clean now. Below 3 GB free, new queue browsers wait.
+
+Setup
+- The Linux installer stops in the first minute with a clear reason on an
+  unsuitable PC (processor type, proxy tunnel device, internet, 25 GB free
+  disk), accepts Ubuntu-based systems, asks for administrator approval once,
+  and ends by saying whether OCR uses the GPU or the CPU.
+- Setup and repair asks for confirmation before it opens.
+- Saving a support ZIP now works on Linux.
+
+After installing, run **Settings → Setup and repair → Install / update runtime**.
+
 # Version 1.1.5
 
 - Fix Linux setup on computers whose system Python is 3.14. The OCR runtime now
