@@ -140,6 +140,7 @@ def compute(config: dict, entries: list[dict], now: datetime | None = None) -> d
     tomorrow = (today_start + timedelta(days=1)).astimezone(timezone.utc)
 
     posts = [entry for entry in entries if entry["status"] == "published" and entry.get("kind") != "warming"]
+    visits = [entry for entry in entries if entry.get("kind") == "warming" and entry["status"] == "completed"]
     successes = [entry for entry in entries if entry["status"] in SUCCESS_STATUSES]
     posts_today = sum(1 for entry in posts if _parse(entry["at"]).astimezone(zone) >= today_start)
     starts = [value for value in [_parse(config.get("created_at"))] + [_parse(entries[0]["at"]) if entries else None] if value]
@@ -161,6 +162,7 @@ def compute(config: dict, entries: list[dict], now: datetime | None = None) -> d
         "stage": growth, "growth_stage": growth, "reason": reason, "manual": bool(override),
         "until": None, "age_days": age_days, "posts": len(posts), "posts_today": posts_today,
         "daily_limit": limit, "last_post_at": posts[-1]["at"] if posts else None,
+        "last_visit_at": visits[-1]["at"] if visits else None,
     }
 
     hold = account_hold.on_hold(config)

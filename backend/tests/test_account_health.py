@@ -146,3 +146,9 @@ def test_history_entries_carry_their_execution_id():
     from backend.services.account_health import entries_for
     assert entries_for({"p": {"e1": {"at": "x"}}}, "p") == [{"at": "x", "execution_id": "e1"}]
     assert entries_for({}, "p") == []
+
+
+def test_the_last_finished_visit_is_reported():
+    visits = [entry(5, "completed", "warming"), entry(2, "completed", "warming"), entry(1, "failed_before_publish", "warming")]
+    assert compute(config(), posts(3) + visits, NOW)["last_visit_at"] == visits[1]["at"]
+    assert compute(config(), posts(3), NOW)["last_visit_at"] is None
