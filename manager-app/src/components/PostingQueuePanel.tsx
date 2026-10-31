@@ -22,7 +22,7 @@ import { QueueDetailDrawer, DrawerActions } from './queue/QueueDetailDrawer';
 import { SupportReportDialog } from './queue/SupportReportDialog';
 import {
   ACTIVE_STATUSES, QueueSectionKey, QueueTypeFilter, UNCERTAIN_STATUSES, WAITING_STATUSES, commentNeedsRetry, hasOpenRecovery, isVideoFile,
-  itemKind, kindLabel, matchesSearch, sectionOf,
+  isInterruptedRetry, itemKind, kindLabel, matchesSearch, sectionOf,
 } from './queue/queueModel';
 import {
   backfillExecutionPermalink, cancelAllQueuePosts, cancelNetworkRecovery, deleteBatch, deleteExecution, fetchQueue,
@@ -315,7 +315,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
     const items: ActionMenuItem[] = [{ label: 'View details', icon: <Eye className={icon} />, onSelect: () => setSelectedId(item.execution_id) }];
     if (uncertain) items.push({ label: item.post_type === 'live' ? 'Confirm outcome…' : 'Was it posted?…', icon: <ShieldAlert className={icon} />, onSelect: () => setSelectedId(item.execution_id) });
     if (item.status === 'pending') items.push({ label: 'Run now', icon: <Play className={icon} />, onSelect: () => runNow(item) });
-    if (['failed', 'failed_before_publish'].includes(item.status)) items.push({ label: 'Retry', icon: <RotateCcw className={icon} />, onSelect: () => runNow(item) });
+    if (['failed', 'failed_before_publish'].includes(item.status) || isInterruptedRetry(item)) items.push({ label: 'Retry', icon: <RotateCcw className={icon} />, onSelect: () => runNow(item) });
     if (uncertain && item.post_type !== 'live') items.push({ label: 'Re-run anyway', icon: <RotateCcw className={icon} />, onSelect: () => runNow(item) });
     if (item.status.startsWith('skipped')) items.push({ label: 'Re-run', icon: <RotateCcw className={icon} />, onSelect: () => runNow(item) });
     if (commentNeedsRetry(item)) items.push({ label: 'Retry comment only', icon: <MessageCircle className={icon} />, onSelect: () => retryComment(item) });
