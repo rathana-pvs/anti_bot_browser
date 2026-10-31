@@ -77,6 +77,14 @@ test('Python CI workflows install the shared offline test dependencies',()=>{
   }
 });
 
+test('media tests have FFmpeg installed in backend and release CI',()=>{
+  for (const file of ['test.yml','build-desktop.yml']) {
+    const workflow=readFileSync(join(root,'.github/workflows',file),'utf8');
+    assert.match(workflow,/apt-get install -y [^\n]*\bffmpeg\b/);
+    assert.ok(workflow.indexOf(' ffmpeg') < workflow.indexOf('python -m pytest backend/tests -q'));
+  }
+});
+
 test('backend CI receives the tested dashboard before importing the application',()=>{
   const workflow=readFileSync(join(root,'.github/workflows/test.yml'),'utf8');
   const [frontend,python]=workflow.split('\n  python:');
