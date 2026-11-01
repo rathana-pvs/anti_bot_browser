@@ -29,6 +29,8 @@ MIN_SDK = 33
 KILL_SWITCH_TIMEOUT_S = 45.0
 POLL_S = 1.0
 LOCATION_PERMISSIONS = ("android.permission.ACCESS_FINE_LOCATION", "android.permission.ACCESS_COARSE_LOCATION")
+# Without these, Facebook drops a shared photo and opens its feed instead of the composer.
+MEDIA_PERMISSIONS = ("android.permission.READ_MEDIA_IMAGES", "android.permission.READ_MEDIA_VIDEO")
 
 STEPS = (
     ("phone_ready", "Phone ready"),
@@ -216,6 +218,8 @@ def _facebook(ctx: _Context) -> None:
             ctx.client.revoke_permission(ctx.serial, ctx.user_id, FACEBOOK_PACKAGE, permission)
         except AdbError:
             pass  # Not requested by this Facebook version.
+    for permission in MEDIA_PERMISSIONS:
+        ctx.client.grant_permission(ctx.serial, ctx.user_id, FACEBOOK_PACKAGE, permission)
 
 
 def _save_details(ctx: _Context) -> None:

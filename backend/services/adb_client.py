@@ -327,6 +327,9 @@ class AdbClient:
         user = ["--user", str(int(user_id))] if user_id is not None else []
         self.shell(serial, "settings", "put", *user, namespace, key, value)
 
+    def grant_permission(self, serial: str, user_id: int, package: str, permission: str) -> None:
+        self.shell(serial, "pm", "grant", "--user", str(int(user_id)), package, permission)
+
     def revoke_permission(self, serial: str, user_id: int, package: str, permission: str) -> None:
         self.shell(serial, "pm", "revoke", "--user", str(int(user_id)), package, permission)
 

@@ -143,8 +143,28 @@ set_clipboard · put_media · open_target(url/intent) · foreground_app · scree
     open the Facebook composer with a share intent (`am start --user N`), or pick
     the newest gallery item. Remove pushed media after the run. Per-user storage
     paths must be verified per device.
-- Optional element lookup with `uiautomator dump` before OCR, behind a per-device
-  setting, because it uses Android's UI automation service and may be detectable.
+- No `uiautomator` in any form (dump, uiautomator2, Poco, Appium): it uses Android's UI
+  automation service, which apps may detect, and account safety comes first. Screens are read
+  only from screenshots, with OCR for text and OpenCV templates for icon-only controls.
+
+### Driver spike results (2026-11-01, Pixel 10 Pro XL, Android 17, Facebook 585.0.0.47.54, user 11)
+
+| Area | Result |
+| --- | --- |
+| `screencap` | Too slow for automation: PNG 1.4-5.3 s, raw 0.9-1.7 s (10 MB) per frame over USB. |
+| scrcpy video stream | First frame 1.2-1.4 s after start; frames decoded in Python with PyAV (codec config packets are prepended to the next frame, as scrcpy's client does). A swipe showed on screen in about 240 ms. A still screen sends no frames, so the driver keeps the last decoded frame. Stream size 576x1280 (`max_size=1280`). |
+| OCR (engine's PaddleOCR, PP-OCRv5 mobile, English, CPU) | Facebook login screen: every label read correctly at full size (0.71 s) and at stream size 576x1280 (0.28 s). Only status-bar icons were misread. |
+| Icon templates (OpenCV) | Facebook logo cut from a full screenshot and matched in a stream-size frame: score 0.986 where it is, 0.29 where it isn't, within 1 px, about 0.3 s with a small scale search. |
+| Touch | scrcpy touch down/move/up works for taps and swipes (a swipe up also dismissed the swipe lock). |
+| Text: scrcpy inject | ASCII only: scrcpy logs "Could not inject char" for Lao letters and emoji. |
+| Text: scrcpy clipboard + paste | Nothing pasted: Android keeps one clipboard per user, and the scrcpy server runs as shell for user 0. |
+| Text: companion app clipboard + paste key | Works. `set_clipboard` (companion app 0.3.1, inside the user), then KEYCODE_PASTE (279) through scrcpy pasted Lao letters, emoji, quotes and an em dash exactly, about 1.5 s in all. `clear_clipboard` empties it afterwards. The keyboard's suggestions and its clipboard chip appear after a paste, so screens must allow for them.
+| Screen timeout | The phone slept after 30 s mid-test. The driver must keep the screen awake for a job's duration. |
+| Media | The shell cannot write a secondary user's storage. Adding the photo through the user's media store works: `content insert --user N` into `content://media/external_primary/images/media`, then `content write --user N` with the file; it is indexed at once (no media scan). |
+| Share targets | Feed composer: `com.facebook.katana/com.facebook.composer.shareintent.ImplicitShareIntentHandlerDefaultAlias` (single and multiple). The same intent also resolves to the profile-picture and Stories camera activities, so the driver names the composer explicitly. |
+| Login state | `dumpsys account` lists a `com.facebook.auth.login` account for the user once Facebook is signed in, without touching the Facebook app. |
+| Composer from a share | Works once Facebook may read photos. Without READ_MEDIA_IMAGES, Facebook dropped the share and opened its feed. After `pm grant --user 11` (now part of setup's Install Facebook step), the photo, added through the media store, opened in "New post" with it attached (`am start --user N -a android.intent.action.SEND ... --grant-read-uri-permission -n <composer>`). The caption pasted exactly through the companion app's clipboard. The first button is Next, not Post. Closing with X asks "Discard changes?" (KEEP EDITING / DISCARD), which OCR read and located correctly. Nothing was posted. |
+| OCR of captions | The English OCR models misread Lao text in the caption, so a non-English caption is not verified by OCR; the driver only checks that the field is no longer empty. |
 
 ## Brains and templates
 
@@ -213,7 +233,7 @@ grants are part of this flow.
 
 - Location off, Facebook location permission denied, Wi-Fi and Bluetooth
   scanning off.
-- Facebook media and notification permissions pre-granted with `pm grant --user N`.
+- Facebook photo and video permissions granted with `pm grant --user N` (setup does this); the notification permission is still to decide.
 - Fixed font size, display size, theme and portrait lock.
 - Keyboard autocorrect and suggestions off.
 - No lock screen (or swipe only); automation never enters PINs.

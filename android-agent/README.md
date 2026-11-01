@@ -20,7 +20,8 @@ account back from the phone. The desktop app installs and configures it (`backen
 - Commands: `status` (also the saved proxy without its password, the account details and whether
   a PIN is set), `set_config`, `check`, `stop`, `set_account`, `same_proxy`, `try_config` (keeps a
   new proxy only if a reply comes back through it), `export` (needs the PIN when one is set),
-  `set_pin` and `clear_pin` (need the current PIN or the saved proxy's full details).
+  `set_pin` and `clear_pin` (need the current PIN or the saved proxy's full details),
+  `set_clipboard` and `clear_clipboard` (this user's clipboard, for pasting Unicode text).
 - `ControlActivity` starts the service; launched from ADB it may start a foreground service.
 - The saved proxy is encrypted with an AES-256-GCM key held in Android Keystore
   (`SecretStore`). The engine gets its config, which includes the password, through a

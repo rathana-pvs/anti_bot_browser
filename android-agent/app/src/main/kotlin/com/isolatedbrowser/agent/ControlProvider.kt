@@ -1,5 +1,7 @@
 package com.isolatedbrowser.agent
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.ContentProvider
 import android.content.ContentValues
 import android.database.Cursor
@@ -7,12 +9,16 @@ import android.net.Uri
 import android.net.VpnService
 import android.os.Binder
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Base64
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.URL
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * Control channel for the worker: `adb shell content call --user N --uri content://AUTHORITY --method M`.
@@ -38,6 +44,8 @@ class ControlProvider : ContentProvider() {
                 "export" -> export(arg)
                 "set_pin" -> changePin(arg, clear = false)
                 "clear_pin" -> changePin(arg, clear = true)
+                "set_clipboard" -> setClipboard(decode(arg).getString("text"))
+                "clear_clipboard" -> setClipboard(null)
                 else -> JSONObject().put("ok", false).put("error", "unknown method")
             }
         }.getOrElse { JSONObject().put("ok", false).put("error", it.message ?: it.javaClass.simpleName) }
@@ -120,6 +128,26 @@ class ControlProvider : ContentProvider() {
     }
 
     /**
+     * Android keeps one clipboard per user, and ADB's shell writes user 0's. Set from here, inside
+     * this user, a paste key injected by the worker pastes Unicode text that typed keys cannot.
+     * null clears it, so a caption does not stay on the clipboard after it was pasted.
+     */
+    private fun setClipboard(text: String?): JSONObject {
+        val clipboard = context!!.getSystemService(ClipboardManager::class.java)
+        val done = CountDownLatch(1)
+        var failure: Throwable? = null
+        Handler(Looper.getMainLooper()).post {
+            failure = runCatching {
+                if (text == null) clipboard.clearPrimaryClip() else clipboard.setPrimaryClip(ClipData.newPlainText("text", text))
+            }.exceptionOrNull()
+            done.countDown()
+        }
+        if (!done.await(CLIPBOARD_TIMEOUT_S, TimeUnit.SECONDS)) return JSONObject().put("ok", false).put("error", "clipboard timed out")
+        failure?.let { return JSONObject().put("ok", false).put("error", it.message ?: it.javaClass.simpleName) }
+        return JSONObject().put("ok", true)
+    }
+
+    /**
      * Measures from inside this Android user, through the tunnel: this app is not excluded from
      * its own VPN, so its requests take the same path as every other app's.
      */
@@ -179,6 +207,7 @@ class ControlProvider : ContentProvider() {
         const val SHELL_UID = 2000
         const val TRY_TIMEOUT_MS = 30000L
         const val TRY_RETRY_MS = 3000L
+        const val CLIPBOARD_TIMEOUT_S = 5L
     }
 
     override fun onCreate() = true
