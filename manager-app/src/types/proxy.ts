@@ -10,6 +10,8 @@ export interface ProxyItem {
   port: number;
   username: string;
   password?: string;
+  /** Known only by address: the proxy is kept on a phone another PC set up. */
+  held_by_phone?: boolean;
   type: string;
   assigned: boolean;
   profile_id: string | null;

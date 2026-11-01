@@ -3,7 +3,7 @@ import { BatteryCharging, BatteryMedium, Check, ChevronRight, CircleAlert, Copy,
 import { AndroidDevice, AndroidUserRow, DeviceListResponse } from '../../types/device';
 import { Profile, SystemStats } from '../../types/profile';
 import { ProxyItem } from '../../types/proxy';
-import { fetchDevices, forgetDevice, openAccountOnPhone, renameDevice, scanDevice, setDeviceTimezone, switchDeviceUser, updateDeviceSettings } from '../../services/devices';
+import { adoptDeviceUser, fetchDevices, forgetDevice, makeDevicePrimary, openAccountOnPhone, renameDevice, scanDevice, setDevicePin, setDeviceTimezone, switchDeviceUser, updateDeviceSettings } from '../../services/devices';
 import { Checkbox } from '../ui/Checkbox';
 import { formatUtcOffset, phoneTimeReport } from './phoneTime';
 import { API_BASE } from '../../services/api';
@@ -33,12 +33,22 @@ function stateBadge(device: AndroidDevice) {
   return <Badge variant={state.variant}>{state.label}</Badge>;
 }
 
+function roleBadge(device: AndroidDevice) {
+  if (device.role === 'primary') return <Badge variant="success">Managed here</Badge>;
+  if (device.role === 'secondary') return <Badge variant="warning">Managed by {device.primary_name || 'another PC'}</Badge>;
+  return null;
+}
+
+const PIN_RE = /^\d{4}$/;
+
 /** The hardware accounts live on: This PC (browser accounts) and physical Android phones. */
-export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpenAccount, focus, rescan }: {
+export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpenAccount, onAccountsChanged, focus, rescan }: {
   active: boolean; profiles: Profile[]; proxies: ProxyItem[]; stats: SystemStats;
   /** Opens New account for this Android user. */
   onImport: (device: AndroidDevice, user: AndroidUserRow) => void;
   onOpenAccount: (profileId: string) => void;
+  /** Reloads accounts after this page added or changed some. */
+  onAccountsChanged?: () => Promise<void> | void;
   /** Device to select when another page links here (null is This PC); a new object re-selects it. */
   focus?: { serial: string | null } | null;
   /** Phone to scan again after one of its users became an account. */
@@ -51,6 +61,7 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
   const [selected, setSelected] = useState<string>(THIS_PC);
   const [scanning, setScanning] = useState<string | null>(null);
   const [switching, setSwitching] = useState<number | null>(null);
+  const [taking, setTaking] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -159,6 +170,72 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
     }
   };
 
+  /** Adds this PC's account for an Android user another PC set up. */
+  const adopt = async (target: AndroidDevice, user: AndroidUserRow) => {
+    try {
+      const profile = await adoptDeviceUser(target.serial, user.user_id);
+      showToast(`${profile.name} added to Accounts`, 'success');
+      await Promise.all([scan(target.serial), onAccountsChanged?.()]);
+      await load();
+    } catch (error) {
+      await showAlert(error instanceof Error ? error.message : 'Could not add the account', { title: 'Account not added', variant: 'danger' });
+    }
+  };
+
+  const takeOver = async (target: AndroidDevice) => {
+    const locked = target.last_scan?.users.some(user => user.agent?.pin_set);
+    let pin: string | undefined;
+    let forgotPin = false;
+    if (locked) {
+      const entered = await showPrompt('This phone has a PIN. Enter its 4 digits. Leave it empty if you forgot it: each account’s proxy is then '
+        + 'matched in this PC’s proxy pool instead.', { title: 'Make this PC primary', confirmLabel: 'Continue' });
+      if (entered === null) return;
+      if (entered.trim() && !PIN_RE.test(entered.trim())) {
+        await showAlert('The PIN is 4 digits.', { variant: 'warning' });
+        return;
+      }
+      pin = entered.trim() || undefined;
+      forgotPin = !pin;
+    } else if (!await showConfirm(`Manage ${target.label} from this PC? Its accounts and their proxies (with passwords) are copied from the `
+      + 'phone, and the other PC sees this phone as managed by another PC.', { title: 'Make this PC primary', confirmLabel: 'Make primary' })) return;
+    setTaking(true);
+    try {
+      const result = await makeDevicePrimary(target.serial, { pin, forgotPin });
+      const waiting = result.accounts.filter(account => account.status === 'needs_proxy');
+      await Promise.all([onAccountsChanged?.(), scan(target.serial)]);
+      await load();
+      if (waiting.length) await showAlert(`${waiting.length} ${waiting.length === 1 ? 'account needs' : 'accounts need'} a proxy from this PC: `
+        + `${waiting.map(account => account.reason).filter(Boolean)[0] ?? ''} Open each account and choose a proxy.`, { title: 'This PC is primary', variant: 'warning' });
+      else showToast(`${target.label} is managed from this PC`, 'success');
+    } catch (error) {
+      await showAlert(error instanceof Error ? error.message : 'Could not take the phone over', { title: 'Not made primary', variant: 'danger' });
+    } finally {
+      setTaking(false);
+    }
+  };
+
+  const changePin = async (target: AndroidDevice, remove: boolean) => {
+    let pin: string | null = null;
+    if (!remove) {
+      const entered = await showPrompt('4 digits. Another PC needs this PIN to take this phone over with its proxy passwords.',
+        { title: target.pin_set ? 'Change PIN' : 'Set a PIN', confirmLabel: 'Save PIN' });
+      if (entered === null) return;
+      if (!PIN_RE.test(entered.trim())) {
+        await showAlert('The PIN is 4 digits.', { variant: 'warning' });
+        return;
+      }
+      pin = entered.trim();
+    } else if (!await showConfirm('Remove the PIN? Any PC could then take this phone over with its proxy passwords.',
+      { title: 'Remove PIN', confirmLabel: 'Remove', variant: 'danger' })) return;
+    try {
+      await setDevicePin(target.serial, pin);
+      showToast(pin ? 'PIN saved on the phone' : 'PIN removed', 'success');
+      await load();
+    } catch (error) {
+      await showAlert(error instanceof Error ? error.message : 'Could not save the PIN', { title: 'PIN not saved', variant: 'danger' });
+    }
+  };
+
   const phones = data?.devices ?? [];
   return <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
     <header className="flex items-center gap-3 border-b border-border px-5 py-3">
@@ -200,7 +277,7 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
         {device && <section aria-label={device.label} className="min-w-0 rounded-panel border border-zinc-800 bg-surface/70">
           <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-4 py-3">
             <div className="min-w-0 flex-1">
-              <p className="flex items-center gap-2 truncate text-sm font-semibold text-zinc-100">{device.label} {stateBadge(device)}</p>
+              <p className="flex items-center gap-2 truncate text-sm font-semibold text-zinc-100">{device.label} {stateBadge(device)} {roleBadge(device)}</p>
               <p className="truncate text-[11px] text-zinc-500">
                 {[device.manufacturer, device.model, device.android_version && `Android ${device.android_version}`, device.serial].filter(Boolean).join(' · ')}
               </p>
@@ -211,6 +288,21 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
             <IconButton aria-label="Rename phone" onClick={() => void rename(device)}><PencilLine className="h-4 w-4" /></IconButton>
             <IconButton aria-label="Remove phone" onClick={() => void forget(device)}><Trash2 className="h-4 w-4" /></IconButton>
           </div>
+          {device.role === 'secondary' && <div className="px-4 pt-3"><Alert variant="warning">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="min-w-0 flex-1">{device.primary_name || 'Another PC'} set this phone up. Its accounts work here, but only that PC can change them.
+                Make this PC primary to manage it from here, for example when the other PC is gone.</span>
+              <Button size="sm" variant="outline" loading={taking} disabled={device.state !== 'device'} onClick={() => void takeOver(device)}>Make this PC primary</Button>
+            </div>
+          </Alert></div>}
+          {device.role === 'primary' && <div className="flex flex-wrap items-center gap-2 px-4 pt-3 text-xs text-zinc-300">
+            <span className="min-w-0 flex-1"><span className="font-medium">PIN {device.pin_set ? 'on' : 'off'}</span>
+              <span className="block text-[11px] text-zinc-500">{device.pin_set
+                ? 'Another PC needs this PIN to take this phone over with its proxy passwords.'
+                : 'Optional. Without it, another PC can take this phone over with its proxy passwords.'}</span></span>
+            <Button size="sm" variant="outline" disabled={device.state !== 'device'} onClick={() => void changePin(device, false)}>{device.pin_set ? 'Change PIN' : 'Set a PIN'}</Button>
+            {device.pin_set && <Button size="sm" variant="ghost" disabled={device.state !== 'device'} onClick={() => void changePin(device, true)}>Remove PIN</Button>}
+          </div>}
           <label className="flex items-start gap-2 px-4 pt-3 text-xs text-zinc-300">
             <Checkbox checked={device.switch_from_app_only !== false} onCheckedChange={(on) => void saveSettings(device, { switch_from_app_only: on })}
               ariaLabel="Switch accounts from this app only" disabled={device.state !== 'device'} className="mt-0.5" />
@@ -226,7 +318,8 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
               <span className="block text-[11px] text-zinc-500">Opening an account stops this phone’s other accounts and sets the phone’s time to that account’s proxy, so nothing runs in the background on the wrong time or uses resources. Opening takes up to about two minutes while the proxy is checked.</span></span>
           </label>
           <DeviceWarnings device={device} profiles={profiles} proxies={proxies} onSetTimezone={(zone) => void setTimezone(device, zone)} />
-          <UsersTable device={device} switching={switching} onSwitch={switchTo} onImport={(user) => onImport(device, user)} onOpenAccount={onOpenAccount} />
+          <UsersTable device={device} switching={switching} onSwitch={switchTo} onImport={(user) => onImport(device, user)}
+            onAdopt={(user) => void adopt(device, user)} onOpenAccount={onOpenAccount} />
         </section>}
       </div>
     </div>
@@ -441,9 +534,9 @@ function DeviceWarnings({ device, profiles, proxies, onSetTimezone }: {
   </div>;
 }
 
-function UsersTable({ device, switching, onSwitch, onImport, onOpenAccount }: {
+function UsersTable({ device, switching, onSwitch, onImport, onAdopt, onOpenAccount }: {
   device: AndroidDevice; switching: number | null; onSwitch: (user: AndroidUserRow) => void;
-  onImport: (user: AndroidUserRow) => void; onOpenAccount: (profileId: string) => void;
+  onImport: (user: AndroidUserRow) => void; onAdopt: (user: AndroidUserRow) => void; onOpenAccount: (profileId: string) => void;
 }) {
   const scan = device.last_scan;
   if (!scan) {
@@ -470,13 +563,15 @@ function UsersTable({ device, switching, onSwitch, onImport, onOpenAccount }: {
                   : user.facebook_installed ? 'Installed' : <span className="text-amber-300">Not installed</span>}
             </td>
             <td className="px-3 py-2.5">
-              {user.control_user ? <span className="text-zinc-500">Control user</span> : <span className="text-zinc-400">Not set up</span>}
+              {user.control_user ? <span className="text-zinc-500">Control user</span> : <AgentCell user={user} />}
             </td>
             <td className="px-3 py-2.5">
               {user.control_user ? <span className="text-zinc-500">Not used for accounts</span>
                 : user.profile_id ? <button type="button" title="Open this account" className="inline-flex max-w-full items-center gap-1.5 text-blue-300 underline-offset-2 hover:underline" onClick={() => onOpenAccount(user.profile_id!)}>
                   <UserRound className="h-3.5 w-3.5 shrink-0" aria-hidden="true" /><span className="truncate">{user.profile_name}</span></button>
-                  : <Button size="sm" variant="outline" onClick={() => onImport(user)}>Create account</Button>}
+                  : user.agent?.account?.profile_id
+                    ? <Button size="sm" variant="outline" onClick={() => onAdopt(user)}>Add {user.agent.account.name || 'account'}</Button>
+                    : <Button size="sm" variant="outline" onClick={() => onImport(user)}>Create account</Button>}
             </td>
             <td className="px-3 py-2.5 text-right">
               {!user.current && <Button size="sm" variant="ghost" disabled={!online || switching !== null} loading={switching === user.user_id}
@@ -487,7 +582,19 @@ function UsersTable({ device, switching, onSwitch, onImport, onOpenAccount }: {
       </table>
     </div>
     <p className="mt-2 text-[11px] text-zinc-500">
-      Scanned {new Date(scan.scanned_at).toLocaleString()}. A phone account’s proxy is reserved now and used once the companion app is set up. Automation for phone accounts isn’t available yet.
+      Scanned {new Date(scan.scanned_at).toLocaleString()}. Accounts set up by another PC are read from the phone; adding one here doesn’t change the phone. Automation for phone accounts isn’t available yet.
     </p>
   </div>;
+}
+
+/** What the user's companion app holds: set up (here or by another PC), or nothing yet. */
+function AgentCell({ user }: { user: AndroidUserRow }) {
+  const agent = user.agent;
+  if (!agent) return <span className="text-zinc-400">Not set up</span>;
+  if (!agent.readable) return <span className="text-amber-300" title={agent.reason}>Companion app not answering</span>;
+  const proxy = agent.proxy ? `${agent.proxy.host}:${agent.proxy.port}` : 'no proxy';
+  return <span className="text-zinc-300">
+    {user.profile_id ? 'Set up' : 'Set up by another PC'}
+    <span className="block text-[11px] text-zinc-500">{[proxy, agent.account?.timezone, agent.pin_set && 'PIN'].filter(Boolean).join(' · ')}</span>
+  </span>;
 }

@@ -1,11 +1,12 @@
 """A phone account's network: reads the companion app in its Android user and verifies, from
 inside that user, that traffic leaves through the account's reserved proxy.
 
-Only a passing check marks the account verified. The companion app itself is installed and
-configured outside the app for now (see android-agent/tools/agent_poc.py).
+Only a passing check marks the account verified. The companion app is installed and configured
+by `android_setup`.
 """
 from __future__ import annotations
 
+import base64
 import json
 import re
 import threading
@@ -38,12 +39,23 @@ def parse_agent_reply(output: str) -> dict:
     return json.loads(match.group(1))
 
 
-def agent_call(client: AdbClient, serial: str, user_id: int, method: str, timeout: float) -> dict:
+class AgentRefused(AdbError):
+    """The companion app answered but refused; `code` is its error, e.g. "wrong_pin"."""
+
+    def __init__(self, method: str, code: str):
+        super().__init__(f"The companion app refused {method}: {code}")
+        self.code = code
+
+
+def agent_call(client: AdbClient, serial: str, user_id: int, method: str, timeout: float,
+               arg: dict | None = None) -> dict:
+    """`arg` goes base64-encoded, so neither the shell nor the command line needs quoting."""
+    extra = ["--arg", base64.b64encode(json.dumps(arg).encode()).decode()] if arg is not None else []
     output = client.shell(serial, "content", "call", "--user", str(int(user_id)),
-                          "--uri", f"content://{AGENT_AUTHORITY}", "--method", method, timeout=timeout)
+                          "--uri", f"content://{AGENT_AUTHORITY}", "--method", method, *extra, timeout=timeout)
     reply = parse_agent_reply(output)
     if not reply.get("ok"):
-        raise AdbError(f"The companion app refused {method}: {reply.get('error') or 'unknown error'}")
+        raise AgentRefused(method, reply.get("error") or "unknown error")
     return reply
 
 

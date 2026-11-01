@@ -6,7 +6,7 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.security import websocket_token_valid
-from backend.services import android_devices, android_live, android_network
+from backend.services import android_devices, android_live, android_network, android_ownership, android_setup
 from backend.services.adb_client import AdbError, AdbUnavailable
 
 
@@ -36,6 +36,27 @@ class DeviceSettingsRequest(BaseModel):
     switch_from_app_only: bool | None = None
 
 
+class CreateUserRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    name: str = Field(min_length=1, max_length=40)
+
+
+class ProxyChangeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    proxy_id: str = Field(min_length=1, max_length=120)
+
+
+class MakePrimaryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    pin: str | None = Field(default=None, pattern=r"^\d{4}$")
+    forgot_pin: bool = False
+
+
+class PinRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    pin: str | None = Field(default=None, pattern=r"^\d{4}$")
+
+
 class SwitchUserRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     user_id: int = Field(ge=0)
@@ -46,6 +67,8 @@ def _call(action):
         return action()
     except android_devices.DeviceNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except android_ownership.WrongPin as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except AdbUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except AdbError as exc:
@@ -93,6 +116,46 @@ def verify_account_network(profile_id: str):
 @router.post("/accounts/{profile_id}/open")
 def open_account(profile_id: str):
     return _call(lambda: android_network.open_account(profile_id))
+
+
+@router.get("/accounts/{profile_id}/setup")
+def setup_progress(profile_id: str):
+    return _call(lambda: android_setup.progress(profile_id))
+
+
+@router.post("/accounts/{profile_id}/setup")
+def start_setup(profile_id: str):
+    return _call(lambda: android_setup.start(profile_id))
+
+
+@router.post("/accounts/{profile_id}/setup/login-done")
+def confirm_login(profile_id: str):
+    return _call(lambda: android_setup.confirm_login(profile_id))
+
+
+@router.post("/accounts/{profile_id}/proxy")
+def replace_proxy(profile_id: str, request: ProxyChangeRequest):
+    return _call(lambda: android_ownership.replace_proxy(profile_id, request.proxy_id))
+
+
+@router.post("/{serial}/users", status_code=201)
+def create_user(serial: str, request: CreateUserRequest):
+    return _call(lambda: android_devices.create_android_user(serial, request.name))
+
+
+@router.post("/{serial}/users/{user_id}/adopt", status_code=201)
+def adopt_user(serial: str, user_id: int):
+    return _call(lambda: android_ownership.import_from_phone(serial, user_id))
+
+
+@router.post("/{serial}/make-primary")
+def make_primary(serial: str, request: MakePrimaryRequest):
+    return _call(lambda: android_ownership.make_primary(serial, request.pin, request.forgot_pin))
+
+
+@router.put("/{serial}/pin")
+def set_pin(serial: str, request: PinRequest):
+    return _call(lambda: android_ownership.set_pin(serial, request.pin))
 
 
 @router.put("/{serial}/settings")

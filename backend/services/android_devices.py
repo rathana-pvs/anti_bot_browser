@@ -110,6 +110,11 @@ def _profile_for(links: list[dict], serial: str, user_id: int, user_serial: int 
     return None
 
 
+def _ownership_reader(client: AdbClient):
+    from backend.services import android_ownership  # imports this module
+    return lambda serial: android_ownership.phone_role(client, serial)
+
+
 def _health(client: AdbClient, serial: str) -> dict:
     """Read-only checks, run at once: the read takes as long as the slowest one (`top`), not their sum."""
     reads = (("battery", client.battery), ("free_storage_mb", client.free_storage_mb),
@@ -117,7 +122,7 @@ def _health(client: AdbClient, serial: str) -> dict:
              ("memory", client.memory), ("timezone", client.timezone_state),
              ("user_switcher", client.user_switcher_enabled),
              ("current_user", client.current_user), ("max_users", client.max_users),
-             ("facebook_version", client.package_version))
+             ("facebook_version", client.package_version), ("ownership", _ownership_reader(client)))
 
     def read_one(read) -> Any:
         try:
@@ -170,11 +175,18 @@ def list_devices() -> dict:
                  "health": None}
         if state == "device":
             entry["health"] = healths[serial]
+            # The phone file is the truth; the saved role covers a phone that is unplugged.
+            entry.update(healths[serial].get("ownership") or {})
+        entry.setdefault("role", saved.get("role", "unclaimed"))
+        entry.setdefault("primary_name", saved.get("primary_name"))
+        entry.pop("pin", None)
+        entry["pin_set"] = bool(saved.get("pin"))
         devices.append(entry)
     return {"adb_available": adb_error is None, "adb_error": adb_error, "devices": devices}
 
 
 def scan_device(serial: str) -> dict:
+    from backend.services import android_ownership  # imports this module
     validate_serial(serial)
     client = _client()
     connected = {device["serial"]: device for device in client.devices()}
@@ -197,6 +209,10 @@ def scan_device(serial: str) -> dict:
         except AdbError:
             facebook_installed = None
         link = _profile_for(links, serial, user.user_id, user_serial)
+        try:
+            agent = android_ownership.read_user(client, serial, user.user_id)
+        except AdbError as exc:
+            agent = {"readable": False, "reason": str(exc)}
         rows.append({
             "user_id": user.user_id, "name": user.name, "user_serial": user_serial,
             "running": user.running, "current": user.user_id == current,
@@ -204,16 +220,31 @@ def scan_device(serial: str) -> dict:
             "facebook_installed": facebook_installed,
             "profile_id": link["profile_id"] if link else None,
             "profile_name": link["name"] if link else None,
+            "agent": agent,
         })
     scan = {"scanned_at": utc_now(), "current_user": current, "users": rows}
+    ownership = android_ownership.phone_role(client, serial)
     with _store_lock:
         store = load_store()
         saved = store["devices"].setdefault(serial, {"serial": serial, "first_seen": utc_now()})
         saved.update({key: value for key, value in properties.items() if value is not None})
         saved.setdefault("label", properties.get("model") or serial)
-        saved.update(last_seen=utc_now(), last_scan=scan)
+        saved.update(last_seen=utc_now(), last_scan=scan, **ownership)
         _save_store(store)
-    return {**saved, "state": live["state"], "connection": live["connection"]}
+    result = {**saved, "state": live["state"], "connection": live["connection"], "pin_set": bool(saved.get("pin"))}
+    result.pop("pin", None)
+    return result
+
+
+def update_device_record(serial: str, **changes: Any) -> dict:
+    """Saves fields of this PC's record of a phone, e.g. its last known role."""
+    validate_serial(serial)
+    with _store_lock:
+        store = load_store()
+        saved = store["devices"].setdefault(serial, {"serial": serial, "label": serial, "first_seen": utc_now()})
+        saved.update(changes)
+        _save_store(store)
+        return dict(saved)
 
 
 def rename_device(serial: str, label: str) -> dict:
@@ -423,7 +454,28 @@ def _android_profile(profile_id: str, name: str, group: str, serial: str, user: 
     }
 
 
-def import_user(serial: str, user_id: int, name: str, group: str = "", proxy_id: str | None = None) -> dict:
+def create_android_user(serial: str, name: str) -> dict:
+    """Creates a new Android user to hold one account, then rescans the phone."""
+    from backend.services import android_ownership  # imports this module
+    validate_serial(serial)
+    name = name.strip()
+    if not name or len(name) > 40:
+        raise ValueError("The Android user's name must be 1-40 characters")
+    client = _client()
+    android_ownership.ensure_primary(serial, client)
+    limit = client.max_users(serial)
+    if limit is not None and len(client.users(serial)) >= limit:
+        raise ValueError(f"This phone already has its maximum of {limit} Android users.")
+    user_id = client.create_user(serial, name)
+    scan = scan_device(serial)
+    user = next((row for row in scan["last_scan"]["users"] if row["user_id"] == user_id), None)
+    if not user:
+        raise AdbError("The new Android user did not appear on the phone.")
+    return user
+
+
+def import_user(serial: str, user_id: int, name: str, group: str = "", proxy_id: str | None = None,
+                profile_id: str | None = None) -> dict:
     validate_serial(serial)
     name = name.strip()
     if not name or len(name) > 120:
@@ -440,7 +492,9 @@ def import_user(serial: str, user_id: int, name: str, group: str = "", proxy_id:
     with creation_lock():
         if _profile_for(linked_profiles(), serial, user_id, user.get("user_serial")):
             raise ValueError("This Android user is already linked to an account.")
-        profile_id, _, _ = allocate_profile_identity(PROFILES_DIR)
+        # An account read from the phone keeps its ID, so it is the same account on every PC.
+        if not profile_id or (PROFILES_DIR / profile_id).exists():
+            profile_id, _, _ = allocate_profile_identity(PROFILES_DIR)
         profile_dir = PROFILES_DIR / profile_id
         # One account, one proxy: the pool refuses a proxy another account already holds.
         proxy = proxy_service.assign_proxy_by_id(profile_id, proxy_id) if proxy_id else None

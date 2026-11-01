@@ -35,7 +35,7 @@ import { NavRail, AppPage } from './components/NavRail';
 import { AccountsPage } from './components/accounts/AccountsPage';
 import { DevicesPage } from './components/devices/DevicesPage';
 import { useDevices } from './components/devices/useDevices';
-import { importDeviceUser } from './services/devices';
+import { createDeviceUser, importDeviceUser, startAccountSetup } from './services/devices';
 import type { PhoneAccountRequest } from './components/devices/PhoneAccountForm';
 import { AccountPage } from './components/accounts/AccountPage';
 import { MoveToGroupDialog } from './components/accounts/MoveToGroupDialog';
@@ -369,8 +369,12 @@ export const App: React.FC = () => {
   };
 
   // Rethrows so the dialog can show the error next to its Create button.
-  const handleCreatePhone = async (serial: string, userId: number, request: PhoneAccountRequest) => {
-    const profile = await importDeviceUser(serial, userId, request.name, request.group, request.proxyId);
+  const handleCreatePhone = async (serial: string, userId: number | null, request: PhoneAccountRequest) => {
+    // Android user names are short; the account keeps its full name.
+    const user = userId ?? (await createDeviceUser(serial, request.name.slice(0, 40))).user_id;
+    const profile = await importDeviceUser(serial, user, request.name, request.group, request.proxyId);
+    // Setup runs in the background; the account page shows its progress.
+    if (request.proxyId) await startAccountSetup(profile.id).catch(() => undefined);
     showToast(`${profile.name} added to Accounts`, 'success');
     setPhoneRescan({ serial });
     await Promise.all([loadData(), reloadDevices()]);
@@ -467,6 +471,7 @@ export const App: React.FC = () => {
         <main className={`flex-1 flex min-w-0 overflow-hidden ${page === 'devices' ? '' : 'hidden'}`}>
           <DevicesPage active={page === 'devices'} profiles={profiles} proxies={proxies} stats={systemStats} focus={phoneFocus} rescan={phoneRescan}
             onImport={(device, user) => { setPhonePreset({ serial: device.serial, userId: user.user_id }); setIsCreateModalOpen(true); }}
+            onAccountsChanged={loadData}
             onOpenAccount={(profileId) => openAccountPage(profileId, 'overview', 'devices')} />
         </main>
 

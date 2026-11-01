@@ -32,6 +32,12 @@ class ControlProvider : ContentProvider() {
                 "set_config" -> setConfig(arg)
                 "stop" -> { service()?.shutdown(); JSONObject().put("ok", true) }
                 "check" -> check()
+                "set_account" -> { AccountStore.saveDetails(context!!, decode(arg)); JSONObject().put("ok", true) }
+                "same_proxy" -> JSONObject().put("ok", true).put("same", ProxyConfig.load(context!!) == config(arg))
+                "try_config" -> tryConfig(arg)
+                "export" -> export(arg)
+                "set_pin" -> changePin(arg, clear = false)
+                "clear_pin" -> changePin(arg, clear = true)
                 else -> JSONObject().put("ok", false).put("error", "unknown method")
             }
         }.getOrElse { JSONObject().put("ok", false).put("error", it.message ?: it.javaClass.simpleName) }
@@ -48,17 +54,69 @@ class ControlProvider : ContentProvider() {
             .put("vpn_permission", VpnService.prepare(context) == null)
             .put("service_running", service() != null)
             .put("proxy_configured", ProxyConfig.load(context!!) != null)
+        // The saved proxy is reported even while the VPN is stopped, without its password.
+        ProxyConfig.load(context!!)?.let { json.put("saved_proxy", "${it.host}:${it.port}").put("saved_username", it.username) }
+        json.put("account", AccountStore.details(context!!))
         service()?.status()?.forEach { (key, value) -> json.put(key, value ?: JSONObject.NULL) }
         return json
     }
 
-    /** arg is base64 JSON {host, port, username, password}, so no shell quoting is needed. */
+    /** Every argument is base64 JSON, so no shell quoting is needed. */
+    private fun decode(arg: String?): JSONObject =
+        JSONObject(String(Base64.decode(requireNotNull(arg) { "argument is required" }, Base64.DEFAULT)))
+
+    /** arg is {host, port, username, password}. */
+    private fun config(arg: String?) = ProxyConfig.fromJson(decode(arg))
+
     private fun setConfig(arg: String?): JSONObject {
-        val decoded = String(Base64.decode(requireNotNull(arg) { "config is required" }, Base64.DEFAULT))
-        val config = ProxyConfig.fromJson(JSONObject(decoded))
+        val config = config(arg)
         val running = service()
         if (running != null) running.applyConfig(config) else ProxyConfig.save(context!!, config)
         return JSONObject().put("ok", true).put("applied", running != null)
+    }
+
+    /**
+     * Applies a proxy and keeps it only if a reply comes back through it; otherwise the phone goes
+     * back to its old proxy. The probe uses a literal address, because DNS can take about 30 s to
+     * recover after the engine restarts.
+     */
+    private fun tryConfig(arg: String?): JSONObject {
+        val candidate = config(arg)
+        val running = service() ?: return JSONObject().put("ok", false).put("error", "The VPN is not running in this Android user.")
+        val previous = ProxyConfig.load(context!!)
+        running.applyConfig(candidate)
+        val deadline = System.currentTimeMillis() + TRY_TIMEOUT_MS
+        while (System.currentTimeMillis() < deadline) {
+            val trace = runCatching { traceIp("1.1.1.1") }.getOrNull()
+            if (!trace?.optString("ip").isNullOrEmpty()) return JSONObject().put("ok", true).put("applied", true).put("exit", trace)
+            Thread.sleep(TRY_RETRY_MS)
+        }
+        previous?.let { running.applyConfig(it) }
+        return JSONObject().put("ok", true).put("applied", false).put("reverted", previous != null)
+    }
+
+    /** Account details and the proxy with its password, for a PC taking this phone over. */
+    private fun export(arg: String?): JSONObject {
+        val pin = arg?.let { decode(it).optString("pin").ifEmpty { null } }
+        if (!AccountStore.pinMatches(context!!, pin)) return JSONObject().put("ok", false).put("error", "wrong_pin")
+        return JSONObject().put("ok", true).put("account", AccountStore.details(context!!))
+            .put("proxy", ProxyConfig.load(context!!)?.toJson() ?: JSONObject.NULL)
+    }
+
+    /**
+     * arg is {pin?, current_pin?, proxy?}. With a PIN set, the current PIN or the saved proxy's full
+     * details are needed: the PIN only protects the proxy, so knowing the proxy is as good.
+     */
+    private fun changePin(arg: String?, clear: Boolean): JSONObject {
+        val request = decode(arg)
+        val context = context!!
+        if (AccountStore.pinSet(context)) {
+            val byPin = AccountStore.pinMatches(context, request.optString("current_pin").ifEmpty { null })
+            val byProxy = request.optJSONObject("proxy")?.let { ProxyConfig.fromJson(it) == ProxyConfig.load(context) } == true
+            if (!byPin && !byProxy) return JSONObject().put("ok", false).put("error", "wrong_pin")
+        }
+        if (clear) AccountStore.clearPin(context) else AccountStore.setPin(context, request.getString("pin"))
+        return JSONObject().put("ok", true)
     }
 
     /**
@@ -119,6 +177,8 @@ class ControlProvider : ContentProvider() {
         // android.os.Process does not expose these as public API.
         const val ROOT_UID = 0
         const val SHELL_UID = 2000
+        const val TRY_TIMEOUT_MS = 30000L
+        const val TRY_RETRY_MS = 3000L
     }
 
     override fun onCreate() = true

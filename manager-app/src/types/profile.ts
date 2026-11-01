@@ -181,6 +181,8 @@ export interface Profile {
   live?: { configured: boolean };
   runtime?: AndroidRuntime;
   android_network?: AndroidNetwork;
+  /** In-app setup progress of a phone account; `done` once the login is confirmed. */
+  android_setup?: { state?: string };
   group?: string;
   schema_version?: number;
   configuration_revision?: number;

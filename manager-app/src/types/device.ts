@@ -26,7 +26,22 @@ export interface AndroidUserRow {
   facebook_installed: boolean | null;
   profile_id: string | null;
   profile_name: string | null;
+  /** The companion app in this user; null when it is not installed. */
+  agent?: AgentInfo | null;
 }
+
+/** What a user's companion app reports. The proxy's password never leaves the phone this way. */
+export interface AgentInfo {
+  readable: boolean;
+  reason?: string;
+  version?: string | null;
+  account?: { profile_id: string | null; name: string | null; group: string | null; exit_ip: string | null; timezone: string | null };
+  pin_set?: boolean;
+  proxy?: { host: string; port: number; username: string } | null;
+}
+
+/** primary: this PC set the phone up and may change it. secondary: another PC manages it. */
+export type PhoneRole = 'primary' | 'secondary' | 'unclaimed';
 
 export interface SwitchReadiness {
   current_user: number | null;
@@ -61,6 +76,25 @@ export interface AndroidDevice {
   /** The phone's own user switcher is hidden, so accounts change only through this app. */
   switch_from_app_only?: boolean;
   health?: DeviceHealth | null;
+  role?: PhoneRole;
+  /** Name of the PC that manages the phone, when known. */
+  primary_name?: string | null;
+  /** This PC keeps a PIN for the phone, needed by another PC to take it over. */
+  pin_set?: boolean;
+}
+
+export type SetupStepStatus = 'pending' | 'running' | 'passed' | 'failed';
+
+export interface SetupProgress {
+  profile_id: string;
+  state: 'not_started' | 'running' | 'failed' | 'waiting_login' | 'done';
+  steps: { key: string; label: string; status: SetupStepStatus; reason: string | null }[];
+  updated_at: string | null;
+}
+
+export interface TakeOverResult {
+  role: PhoneRole;
+  accounts: { profile_id: string; user_id: number; status: 'ok' | 'needs_proxy'; reason: string | null }[];
 }
 
 export interface DeviceListResponse {

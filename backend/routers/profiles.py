@@ -19,6 +19,7 @@ from backend.services.docker_service import (
     get_container_stats, get_container_status, get_profile_disk_usage,
     paste_text_to_container, remove_container, run_profile_action,
 )
+from backend.services import android_ownership
 from backend.services.android_devices import ANDROID_RUNTIME
 from backend.services.evidence_cleanup import clean_profile_evidence
 from backend.services.profile_service import (
@@ -300,6 +301,14 @@ def update_profile(profile_id: str, request: ProfileUpdateRequest):
     if android and any(value is not None for value in (
             request.network, request.requested_environment, request.resources, request.automation)):
         raise HTTPException(status_code=400, detail="Network, environment, resources and automation are not editable for Android phone profiles yet.")
+    phone_details_changed = android and any(
+        value is not None and value != existing.get(key) for key, value in (("name", request.name), ("group", request.group)))
+    if phone_details_changed:
+        # The phone keeps each account's name and folder; only its primary PC may change them.
+        try:
+            android_ownership.ensure_primary_offline_safe(existing["runtime"]["device_serial"])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     try:
         if request.group is not None:
             existing["group"] = request.group
@@ -349,6 +358,8 @@ def update_profile(profile_id: str, request: ProfileUpdateRequest):
         if runtime_changed:
             existing["restart_required"] = True
         atomic_write_json(config_path, existing)
+        if phone_details_changed:
+            android_ownership.try_sync_details(profile_id)
         return existing
     except Exception as exc:
         release_proxy(profile_id)

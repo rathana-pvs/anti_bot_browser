@@ -161,7 +161,11 @@ class FakeAdb:
         return 4
 
     def package_installed(self, serial, user_id, package=adb_client.FACEBOOK_PACKAGE):
-        return user_id != 11
+        # No companion app: these users were not set up by a PC.
+        return user_id != 11 and package == adb_client.FACEBOOK_PACKAGE
+
+    def read_file(self, serial, path):
+        return None
 
     def package_version(self, serial, package=adb_client.FACEBOOK_PACKAGE):
         return "450.0.0.40.109"

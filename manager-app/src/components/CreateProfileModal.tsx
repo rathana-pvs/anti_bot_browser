@@ -23,7 +23,7 @@ interface CreateProfileModalProps {
   devices?: AndroidDevice[];
   /** Opens on the phone side with this Android user chosen, as Devices → Create account does. */
   phonePreset?: { serial: string; userId: number } | null;
-  onCreatePhone: (serial: string, userId: number, request: PhoneAccountRequest) => Promise<void>;
+  onCreatePhone: (serial: string, userId: number | null, request: PhoneAccountRequest) => Promise<void>;
   /** Reloads proxies after a retest saved new results. */
   onProxiesChanged: () => Promise<void> | void;
 }

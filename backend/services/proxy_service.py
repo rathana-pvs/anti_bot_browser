@@ -170,6 +170,52 @@ def assign_proxy_by_id(profile_id: str, proxy_id: str) -> dict:
         save_proxy_pool(pool)
         return dict(selected)
 
+def find_proxy(host: str, port: int, username: str) -> dict | None:
+    """The pool entry for a phone's proxy, matched on host, port and username: providers often
+    serve many proxies from one gateway address that differ only by username."""
+    return next((dict(p) for p in load_proxy_pool()
+                 if p.get("host") == host and str(p.get("port")) == str(port)
+                 and (p.get("username") or "") == (username or "")), None)
+
+
+def hold_phone_proxy(profile_id: str, host: str, port: int, username: str, password: str | None,
+                     exit_ip: str | None = None, timezone_name: str | None = None) -> dict:
+    """Reserve a phone account's proxy for it, adding the proxy to the pool when it is missing.
+
+    Without a password (a secondary PC) the entry is a placeholder marked `held_by_phone`: this
+    PC cannot use it, but never gives it to another account. With a password it becomes a normal
+    pool entry. One account, one proxy: an entry another account holds is refused.
+    """
+    with _proxy_assignment_lock:
+        pool = load_proxy_pool()
+        entry = next((p for p in pool if p.get("host") == host and str(p.get("port")) == str(port)), None)
+        if entry and (entry.get("assigned") or entry.get("profile_id")) and entry.get("profile_id") != profile_id:
+            raise ValueError(f"Proxy {host}:{port} is already used by another account on this PC.")
+        if entry is None:
+            entry = {"id": f"proxy_{int(time.time() * 1000)}_{str(time.time())[-4:]}", "host": host, "port": int(port),
+                     "username": username or "", "password": "", "type": "socks5", "latency_ms": None,
+                     "last_checked": None, "timezone": None, "country": None, "country_code": None,
+                     "region": None, "city": None, "geo_source": "unknown"}
+            pool.append(entry)
+        if password:
+            entry.update(username=username or "", password=password)
+            entry.pop("held_by_phone", None)
+        elif not entry.get("password"):
+            entry.update(username=username or "", held_by_phone=True)
+        if exit_ip and not entry.get("exit_ip"):
+            entry["exit_ip"] = exit_ip
+        if timezone_name and not entry.get("timezone"):
+            entry["timezone"] = timezone_name
+        for proxy in pool:
+            if proxy.get("profile_id") == profile_id and proxy is not entry:
+                proxy["assigned"] = False
+                proxy["profile_id"] = None
+        entry["assigned"] = True
+        entry["profile_id"] = profile_id
+        save_proxy_pool(pool)
+        return dict(entry)
+
+
 def release_proxy(profile_id: str) -> bool:
     with _proxy_assignment_lock:
         pool = load_proxy_pool()

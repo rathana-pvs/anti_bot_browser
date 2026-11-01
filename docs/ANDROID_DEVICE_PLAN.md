@@ -1,6 +1,6 @@
 # Android devices: design and implementation plan
 
-Date: 2026-10-28 · Revision: 1 · Status: Milestone 1 implemented. ADB discovery, users, health, user switching
+Date: 2026-11-01 · Revision: 2 · Status: Milestone 1 implemented; in-app setup and moving phones between PCs in progress. ADB discovery, users, health, user switching
 with readiness and the scrcpy live view checked on a Pixel 10 Pro XL (Android 17).
 
 ## Recommendation
@@ -218,6 +218,88 @@ grants are part of this flow.
 - Keyboard autocorrect and suggestions off.
 - No lock screen (or swipe only); automation never enters PINs.
 - No Google account.
+
+## In-app setup and moving phones between PCs
+
+Decided 2026-11-01. Replaces the manual `agent_poc.py` onboarding; that tool keeps only its leak test.
+
+### Decisions
+
+| Topic | Decision |
+| --- | --- |
+| Who sets up | The app, through a checklist per account. Each step checks first and acts only when needed, so Retry resumes safely. |
+| Android users | The app creates a new one (`pm create-user`) or uses an existing free one. |
+| Companion app | Release build (not debuggable), signed with one fixed key kept out of git, bundled in `backend/vendor/android-agent/` and checked against a pinned SHA-256 before install. |
+| Facebook login | Manual in the live view; the operator confirms "I'm logged in". Automatic detection is later. |
+| Source of truth | The phone. Each Android user's companion app keeps that account's details and its proxy, password included, encrypted with Android Keystore. |
+| PC roles | **Primary** (set the phone up; may change it) and **secondary** (reads details from the phone; uses the accounts normally). One PC is connected to a phone at a time. |
+| Security | Simple: an optional 4-digit PIN that the companion app checks before it exports a proxy password. It guards against mistakes, not against someone with ADB access and time. |
+| Proxy on a new primary | Matched in that PC's pool by host + port + username. If the phone says the password differs, the pool's version is tried; the phone keeps its old proxy when the pool's version fails. |
+
+### What the phone keeps
+
+- Per Android user, in the companion app (encrypted): account ID, name, folder, proxy (host, port, username, password), proxy exit IP and time zone, and a salted hash of the PIN when one is set.
+- Per phone, `/data/local/tmp/isolatedbrowser/phone.json` (not secret, written over ADB): primary PC ID and name, phone name, and the one-account-at-a-time and switch-from-app-only settings.
+- Never on the phone or copied off it: posting history, queue items, evidence. Facebook sessions stay inside the phone.
+
+The primary PC keeps the PIN it set (in `android_devices.json`) so it can apply it to accounts it adds later. A secondary PC learns the PIN only when it is entered to take over.
+
+### Companion app commands (0.3.0)
+
+Still accepted only from ADB shell or root.
+
+| Command | Purpose |
+| --- | --- |
+| `status` | Adds the saved proxy (`host:port`, username) even while the VPN is stopped, the saved account details, and whether a PIN is set. |
+| `set_account` | Saves account details (no password). |
+| `same_proxy` | Whether a given proxy equals the saved one. Changes nothing. |
+| `try_config` | Applies a proxy, waits for a reply through it, and goes back to the old proxy when none comes. |
+| `export` | Account details and the proxy with its password. Needs the PIN when one is set. |
+| `set_pin` / `clear_pin` | Needs the current PIN, or proof of the saved proxy (its full details), when one is set. Knowing the proxy is as good as the PIN, because the PIN only protects the proxy. |
+
+### Flow 1: setup on the primary PC
+
+| # | Step | Done when |
+| --- | --- | --- |
+| 0 | Phone ready: Android 13+, Facebook on the phone, companion app bundled | All pass |
+| 1 | Android user exists with its saved serial number | Found in `dumpsys user` |
+| 2 | Install the companion app in the user, exempt it from battery limits | Installed version = bundled version |
+| 3 | Allow VPN (`appops ... ACTIVATE_VPN allow`) | Reads back as allowed |
+| 4 | Send the account's proxy | The app reports the same proxy (`same_proxy`) |
+| 5 | Always-on and lockdown: write the settings, show user 0, restart the user | The app reports `always_on` and `lockdown` |
+| 6 | Phone settings: location off, Wi-Fi and Bluetooth scanning off | Each reads back as set |
+| 7 | Check network (`android_network.verify`) | `verified` |
+| 8 | Install Facebook (`pm install-existing`), deny its location permission | Installed for that user |
+| 9 | Save account details and the PIN to the phone; mark this PC primary | `status` shows the details |
+| 10 | Log in on the live screen; the operator confirms | Confirmed |
+
+Facebook is installed only after the kill switch and the proxy are proven, so no Facebook traffic can leave through the phone's own network. The run happens in the background under the phone lock, its progress is saved in the account's `config.json` (`android_setup`), and a run interrupted by a crash is resumed by Retry.
+
+### Flow 2: phone on a secondary PC
+
+1. Allow USB debugging for this PC once on the phone.
+2. Scan reads each user's companion app: "Set up by another PC", with name, folder, proxy `host:port` and time zone.
+3. Import creates the account read-only, keeping the phone's account ID when it is free. Its proxy is matched in this PC's pool by host + port + username and reserved; with no match a placeholder pool entry without a password is reserved, so this PC never gives that proxy to another account.
+4. The accounts open and verify normally. Changes are disabled with "Managed by another PC".
+
+### Flow 3: make this PC primary
+
+1. **Make this PC primary**, with the PIN when the phone has one.
+2. Correct PIN or no PIN: each account's details are exported, its proxy is added to or updated in this PC's pool, and missing accounts are imported.
+3. Forgot the PIN: each account's proxy is looked up in this PC's pool by host + port + username.
+   - Match and `same_proxy` says yes: the phone is unchanged and the entry is linked.
+   - Match but the password differs: `try_config` with the pool's version. It passes, or the phone keeps its old proxy and the account asks for another proxy.
+   - No match: the account asks for a free proxy from the pool, applied with `try_config`.
+   The old PIN is cleared with proof of the proxy.
+4. The phone file records this PC as primary. Every account ends with exactly one proxy held in this PC's pool.
+
+### Flow 4: the old primary comes back
+
+It reads another PC's ID in the phone file and treats the phone as secondary: its accounts become read-only with "Managed by another PC", and nothing is overwritten.
+
+### Keeping the phone current
+
+The primary PC writes account details to the phone when the account is set up, renamed or moved to another folder, and when it takes over. A failed write is retried by the next setup run or open.
 
 ## Preflight gate
 

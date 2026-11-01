@@ -10,12 +10,15 @@ import { Select } from '../ui/Select';
 
 export interface PhoneAccountRequest { name: string; group: string; proxyId: string | null }
 const OWN_NETWORK = 'phone-network';
+const NEW_USER = 'new';
 
-/** New account on an Android user of a phone. Users that already hold an account are not offered. */
+/** New account on a new or free Android user of a phone. Users that already hold an account, here or on
+ *  another PC, are not offered; another PC's accounts are added from the Devices page. */
 export function PhoneAccountForm({ devices, preset, proxies, groups, onCreate, onCancel, onProxiesChanged }: {
   devices: AndroidDevice[]; preset?: { serial: string; userId: number } | null;
   proxies: ProxyItem[]; groups: string[];
-  onCreate: (serial: string, userId: number, request: PhoneAccountRequest) => Promise<void>;
+  /** userId null creates a new Android user. */
+  onCreate: (serial: string, userId: number | null, request: PhoneAccountRequest) => Promise<void>;
   onCancel: () => void;
   onProxiesChanged: () => Promise<void> | void;
 }) {
@@ -23,8 +26,10 @@ export function PhoneAccountForm({ devices, preset, proxies, groups, onCreate, o
   useEffect(() => setPhones(devices), [devices]);
   const [serial, setSerial] = useState(preset?.serial ?? devices.find(d => d.state === 'device')?.serial ?? devices[0]?.serial ?? '');
   const phone = phones.find(d => d.serial === serial);
-  const freeUsers = useMemo(() => (phone?.last_scan?.users ?? []).filter(user => !user.control_user && !user.profile_id), [phone]);
+  const freeUsers = useMemo(() => (phone?.last_scan?.users ?? []).filter(user =>
+    !user.control_user && !user.profile_id && !user.agent?.account?.profile_id), [phone]);
   const [userId, setUserId] = useState<number | null>(preset?.userId ?? null);
+  const [newUser, setNewUser] = useState(false);
   const user = freeUsers.find(row => row.user_id === userId);
   const [name, setName] = useState('');
   const [nameTouched, setNameTouched] = useState(false);
@@ -42,7 +47,8 @@ export function PhoneAccountForm({ devices, preset, proxies, groups, onCreate, o
   useEffect(() => {
     if (!freeUsers.some(row => row.user_id === userId)) setUserId(freeUsers[0]?.user_id ?? null);
   }, [freeUsers, userId]);
-  useEffect(() => { if (!nameTouched) setName(user?.name ?? ''); }, [user, nameTouched]);
+  useEffect(() => { if (freeUsers.length === 0) setNewUser(true); }, [freeUsers]);
+  useEffect(() => { if (!nameTouched) setName(newUser ? '' : user?.name ?? ''); }, [user, newUser, nameTouched]);
 
   const scan = async () => {
     if (!phone) return;
@@ -61,12 +67,12 @@ export function PhoneAccountForm({ devices, preset, proxies, groups, onCreate, o
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (saving) return;
-    if (!phone || userId === null) { setError('Choose a phone and a free Android user'); return; }
+    if (!phone || (!newUser && userId === null)) { setError('Choose a phone and an Android user'); return; }
     if (!name.trim()) { setError('Enter an account name'); return; }
     setSaving(true);
     setError(null);
     try {
-      await onCreate(phone.serial, userId, { name: name.trim(), group: group.trim(), proxyId: proxyChoice === OWN_NETWORK ? null : proxyChoice });
+      await onCreate(phone.serial, newUser ? null : userId, { name: name.trim(), group: group.trim(), proxyId: proxyChoice === OWN_NETWORK ? null : proxyChoice });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Could not create the account');
       setSaving(false);
@@ -85,16 +91,17 @@ export function PhoneAccountForm({ devices, preset, proxies, groups, onCreate, o
                 options={phones.map(d => ({ value: d.serial, label: d.state === 'device' ? d.label : `${d.label} (offline)` }))} />
             </label>
             <label className="block text-zinc-400"><span className="mb-1.5 block font-medium">Android user</span>
-              {freeUsers.length > 0
-                ? <Select value={userId === null ? '' : String(userId)} onValueChange={(value) => setUserId(Number(value))} ariaLabel="Android user"
-                  options={freeUsers.map(row => ({ value: String(row.user_id), label: `${row.name} · User ${row.user_id}` }))} />
+              {phone?.last_scan
+                ? <Select value={newUser ? NEW_USER : userId === null ? '' : String(userId)} ariaLabel="Android user"
+                  onValueChange={(value) => { setNewUser(value === NEW_USER); if (value !== NEW_USER) setUserId(Number(value)); }}
+                  options={[...freeUsers.map(row => ({ value: String(row.user_id), label: `${row.name} · User ${row.user_id}` })),
+                    { value: NEW_USER, label: 'New Android user' }]} />
                 : <button type="button" onClick={() => void scan()} disabled={!phone || phone.state !== 'device' || scanning}
                   className="flex w-full items-center justify-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2 text-zinc-300 disabled:opacity-50">
-                  {scanning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ScanLine className="h-3.5 w-3.5" />}
-                  {phone?.last_scan ? 'No free users · scan again' : 'Scan phone'}</button>}
+                  {scanning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ScanLine className="h-3.5 w-3.5" />}Scan phone</button>}
             </label>
           </div>}
-        {user?.facebook_installed === false && <p className="rounded border border-amber-900/50 bg-amber-950/20 p-2 text-amber-300">Facebook is not installed for this Android user yet.</p>}
+        {!newUser && user?.facebook_installed === false && <p className="rounded border border-amber-900/50 bg-amber-950/20 p-2 text-amber-300">Facebook is not installed for this Android user yet. Setup installs it once the proxy is proven.</p>}
 
         <label className="block text-zinc-400">
           <span className="mb-1.5 block font-medium">Account name</span>
@@ -122,15 +129,15 @@ export function PhoneAccountForm({ devices, preset, proxies, groups, onCreate, o
           {selectedProxy && isPoorProxy(selectedProxy) && <p className="text-[11px] text-amber-300">This proxy failed its last speed check (below 1 Mbps or the test failed). Pick a Good one if you can.</p>}
           <p className="text-[11px] text-zinc-500">{selectedProxy
             ? 'Only free proxies are listed, best first. This one is reserved for this account and used once the companion app is set up on the phone.'
-            : 'The phone uses its own network. You can’t add a proxy to a phone account later yet.'}</p>
+            : 'The phone uses its own network, so the account can’t be set up on the phone until it has a proxy.'}</p>
         </div>
         {error && <p className="rounded border border-red-900/50 bg-red-950/30 p-2 text-red-300">{error}</p>}
-        <p className="text-[11px] text-zinc-500">Log in to Facebook on the phone yourself after the account is created.</p>
+        <p className="text-[11px] text-zinc-500">After you create it, the app sets the account up on the phone. You log in to Facebook at the end, on the phone screen.</p>
       </fieldset>
     </div>
     <div className="flex justify-end gap-2 border-t border-border px-5 py-3">
       <button type="button" disabled={saving} onClick={onCancel} className="rounded border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-zinc-300 disabled:opacity-40">Cancel</button>
-      <button disabled={saving || !phone || userId === null} type="submit" className="flex items-center gap-2 rounded bg-white px-4 py-1.5 font-semibold text-zinc-950 disabled:opacity-50">
+      <button disabled={saving || !phone || (!newUser && userId === null)} type="submit" className="flex items-center gap-2 rounded bg-white px-4 py-1.5 font-semibold text-zinc-950 disabled:opacity-50">
         {saving && <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />}{saving ? 'Creating…' : 'Create account'}
       </button>
     </div>

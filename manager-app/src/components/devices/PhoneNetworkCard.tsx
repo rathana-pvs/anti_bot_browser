@@ -1,23 +1,31 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Loader2, ShieldCheck } from 'lucide-react';
 import { Profile } from '../../types/profile';
-import { ProxyItem } from '../../types/proxy';
+import { ProxyItem, freeProxies, proxyOptionLabel } from '../../types/proxy';
 import { AndroidDevice } from '../../types/device';
-import { AccountNetworkStatus, fetchAccountNetwork, verifyAccountNetwork } from '../../services/devices';
+import { AccountNetworkStatus, fetchAccountNetwork, replaceAccountProxy, verifyAccountNetwork } from '../../services/devices';
+import { Button } from '../ui/Button';
+import { Select } from '../ui/Select';
 import { cn } from '../ui/cn';
 import { formatUtcOffset, phoneZone, sameTime } from './phoneTime';
 
 const card = 'rounded-xl border border-zinc-800 bg-zinc-950/40 p-4';
 
 /** Network of a phone account, measured inside its Android user through the companion app. */
-export function PhoneNetworkCard({ profile, proxies, devices, onChanged }: {
+export function PhoneNetworkCard({ profile, proxies, devices, onChanged, canChangeProxy = false }: {
   profile: Profile; proxies: ProxyItem[]; devices: AndroidDevice[]; onChanged: () => Promise<void> | void;
+  /** Only the PC that manages the phone may give the account another proxy. */
+  canChangeProxy?: boolean;
 }) {
   const proxy = profile.network.mode === 'pool' ? proxies.find(p => p.id === profile.network.proxy_id) : undefined;
   const [live, setLive] = useState<AccountNetworkStatus | null>(null);
   const [liveError, setLiveError] = useState('');
   const [verifying, setVerifying] = useState(false);
   const [verifyError, setVerifyError] = useState('');
+  const choices = freeProxies(proxies).filter(item => item.password);
+  const [replacement, setReplacement] = useState('');
+  const [replacing, setReplacing] = useState(false);
+  const [replaceError, setReplaceError] = useState('');
   const check = profile.android_network;
   const zone = phoneZone(devices.find(d => d.serial === profile.runtime?.device_serial));
 
@@ -38,6 +46,22 @@ export function PhoneNetworkCard({ profile, proxies, devices, onChanged }: {
       setVerifyError(error instanceof Error ? error.message : 'Verify failed');
     } finally {
       setVerifying(false);
+    }
+  };
+
+  const replace = async () => {
+    if (!replacement) return;
+    setReplacing(true);
+    setReplaceError('');
+    try {
+      await replaceAccountProxy(profile.id, replacement);
+      setReplacement('');
+      await onChanged();
+      readLive();
+    } catch (error) {
+      setReplaceError(error instanceof Error ? error.message : 'Could not change the proxy');
+    } finally {
+      setReplacing(false);
     }
   };
 
@@ -72,5 +96,15 @@ export function PhoneNetworkCard({ profile, proxies, devices, onChanged }: {
       </div>
       {verifyError && <p role="alert" className="mt-2 break-words text-[11px] text-red-300">{verifyError}</p>}
     </>}
+    {canChangeProxy && choices.length > 0 && <div className="mt-4 space-y-2 border-t border-zinc-800 pt-3">
+      <p className="font-medium text-zinc-300">{proxy && !proxy.held_by_phone ? 'Change proxy' : 'Choose a proxy'}</p>
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="min-w-[14rem] flex-1"><Select value={replacement} onValueChange={setReplacement} ariaLabel="New proxy"
+          placeholder="Pick a free proxy" options={choices.map(item => ({ value: item.id, label: proxyOptionLabel(item) }))} /></div>
+        <Button size="sm" loading={replacing} disabled={!replacement} onClick={() => void replace()}>Use this proxy</Button>
+      </div>
+      <p className="text-[11px] text-zinc-500">The phone tries it first and keeps its current proxy if traffic doesn’t get through.</p>
+      {replaceError && <p role="alert" className="break-words text-[11px] text-red-300">{replaceError}</p>}
+    </div>}
   </section>;
 }

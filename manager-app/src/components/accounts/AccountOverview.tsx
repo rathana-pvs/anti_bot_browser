@@ -13,6 +13,7 @@ import { STAGE_META, StageBadge, StageView, refreshAccountHealth, restartEnds, s
 import { Alert } from '../ui/Alert';
 import { DeviceChip } from './DeviceChip';
 import { PhoneNetworkCard } from '../devices/PhoneNetworkCard';
+import { PhoneSetupCard } from '../devices/PhoneSetupCard';
 
 const card = 'rounded-xl border border-zinc-800 bg-zinc-950/40 p-4';
 
@@ -77,7 +78,8 @@ export function AccountOverview({ profile, proxies, devices, activity, onOpenQue
       </dl>
     </section>
 
-    {android ? <PhoneNetworkCard profile={profile} proxies={proxies} devices={devices} onChanged={onChanged} /> : <NetworkChecks profile={profile} />}
+    {android ? <PhoneSide profile={profile} proxies={proxies} devices={devices} onOpenTab={onOpenTab} onChanged={onChanged} />
+      : <NetworkChecks profile={profile} />}
 
     <section className={cn(card, 'lg:col-span-2')} aria-labelledby="overview-work">
       <div className="mb-3 flex items-center justify-between">
@@ -249,4 +251,33 @@ function TechnicalDetails({ profile }: { profile: Profile }) {
       <dt>Data folder</dt><dd className="break-all font-mono text-zinc-300">{profile.container.volume_path}</dd>
     </dl>
   </details>;
+}
+
+/** A phone account's setup until it is done, then its network. Read-only on a PC that doesn't manage the phone. */
+function PhoneSide({ profile, proxies, devices, onOpenTab, onChanged }: {
+  profile: Profile; proxies: ProxyItem[]; devices: AndroidDevice[]; onOpenTab: (tab: AccountTab) => void;
+  onChanged: () => Promise<void> | void;
+}) {
+  const phone = devices.find(d => d.serial === profile.runtime?.device_serial);
+  if (phone?.role === 'secondary') {
+    return <div className="space-y-3">
+      <p className="rounded-xl border border-zinc-800 bg-zinc-950/40 p-4 text-zinc-400">
+        This phone is managed by {phone.primary_name || 'another PC'}. The account works here, but its proxy, name and folder can only
+        be changed there. To manage it from this PC, use Make this PC primary on the Devices page.</p>
+      <PhoneNetworkCard profile={profile} proxies={proxies} devices={devices} onChanged={onChanged} />
+    </div>;
+  }
+  return profile.android_setup?.state === 'done'
+    ? <PhoneNetworkCard profile={profile} proxies={proxies} devices={devices} onChanged={onChanged} canChangeProxy={phone?.role === 'primary'} />
+    : <div className="space-y-3">
+      <PhoneSetupCard profile={profile} onOpenScreen={() => onOpenTab('browser')} onChanged={onChanged} />
+      {/* After a takeover without the PIN, an account whose proxy wasn't in this PC's pool needs one. */}
+      {phone?.role === 'primary' && needsProxy(profile, proxies)
+        && <PhoneNetworkCard profile={profile} proxies={proxies} devices={devices} onChanged={onChanged} canChangeProxy />}
+    </div>;
+}
+
+function needsProxy(profile: Profile, proxies: ProxyItem[]) {
+  const proxy = profile.network.mode === 'pool' ? proxies.find(p => p.id === profile.network.proxy_id) : undefined;
+  return !proxy || (proxy.held_by_phone && !proxy.password);
 }

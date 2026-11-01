@@ -5,8 +5,10 @@ command runs against one explicit serial; nothing here talks to "the" device.
 """
 from __future__ import annotations
 
+import base64
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -185,6 +187,17 @@ def parse_lock_screen_showing(output: str) -> bool | None:
     return "true" in fallback if fallback else None
 
 
+def parse_created_user(output: str) -> int | None:
+    """`pm create-user` prints e.g. `Success: created user id 12`."""
+    match = re.search(r"created user id (\d+)", output)
+    return int(match.group(1)) if match else None
+
+
+def parse_appop_allowed(output: str) -> bool:
+    """`appops get --user N PKG ACTIVATE_VPN` prints e.g. `ACTIVATE_VPN: allow`."""
+    return bool(re.search(r"ACTIVATE_VPN:\s*allow\b", output))
+
+
 def parse_int(output: str) -> int | None:
     match = re.search(r"(-?\d+)", output)
     return int(match.group(1)) if match else None
@@ -278,6 +291,55 @@ class AdbClient:
     def set_user_switcher(self, serial: str, enabled: bool) -> None:
         """Hiding it removes switching from the phone's UI only; `am switch-user` still works (Android 17)."""
         self.shell(serial, "settings", "put", "global", "user_switcher_enabled", "1" if enabled else "0")
+
+    def create_user(self, serial: str, name: str) -> int:
+        output = self.shell(serial, "pm", "create-user", shlex.quote(name), timeout=60)
+        user_id = parse_created_user(output)
+        if user_id is None:
+            raise AdbError(f"The phone did not create the Android user: {output.strip()[:200]}")
+        return user_id
+
+    def package_on_phone(self, serial: str, package: str = FACEBOOK_PACKAGE) -> bool:
+        """Installed for any user, so `pm install-existing` can add it to another one."""
+        return parse_package_installed(self.shell(serial, "pm", "list", "packages", "-u", package), package)
+
+    def install_apk(self, serial: str, user_id: int, apk: str) -> None:
+        self._run(["-s", validate_serial(serial), "install", "--user", str(int(user_id)), "-r", apk], timeout=180)
+
+    def install_existing(self, serial: str, user_id: int, package: str) -> None:
+        self.shell(serial, "pm", "install-existing", "--user", str(int(user_id)), package, timeout=60)
+
+    def appop_vpn_allowed(self, serial: str, user_id: int, package: str) -> bool:
+        return parse_appop_allowed(self.shell(serial, "appops", "get", "--user", str(int(user_id)), package, "ACTIVATE_VPN"))
+
+    def allow_vpn(self, serial: str, user_id: int, package: str) -> None:
+        self.shell(serial, "appops", "set", "--user", str(int(user_id)), package, "ACTIVATE_VPN", "allow")
+
+    def exempt_battery(self, serial: str, package: str) -> None:
+        self.shell(serial, "dumpsys", "deviceidle", "whitelist", f"+{package}")
+
+    def setting(self, serial: str, namespace: str, key: str, user_id: int | None = None) -> str | None:
+        user = ["--user", str(int(user_id))] if user_id is not None else []
+        value = self.shell(serial, "settings", "get", *user, namespace, key).strip()
+        return None if value in ("", "null") else value
+
+    def put_setting(self, serial: str, namespace: str, key: str, value: str, user_id: int | None = None) -> None:
+        user = ["--user", str(int(user_id))] if user_id is not None else []
+        self.shell(serial, "settings", "put", *user, namespace, key, value)
+
+    def revoke_permission(self, serial: str, user_id: int, package: str, permission: str) -> None:
+        self.shell(serial, "pm", "revoke", "--user", str(int(user_id)), package, permission)
+
+    def read_file(self, serial: str, path: str) -> str | None:
+        """None when the file does not exist."""
+        output = self.shell(serial, f"cat {shlex.quote(path)} 2>/dev/null || echo __missing__")
+        return None if output.strip() == "__missing__" else output
+
+    def write_file(self, serial: str, path: str, text: str) -> None:
+        """Through base64, so the shell never interprets the content."""
+        encoded = base64.b64encode(text.encode()).decode()
+        folder = path.rsplit("/", 1)[0]
+        self.shell(serial, f"mkdir -p {shlex.quote(folder)} && echo {encoded} | base64 -d > {shlex.quote(path)}")
 
     def start_user(self, serial: str, user_id: int) -> None:
         self.shell(serial, "am", "start-user", "-w", str(int(user_id)), timeout=60)

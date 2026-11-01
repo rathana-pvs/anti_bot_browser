@@ -1,5 +1,5 @@
 import { AndroidNetwork, Profile } from '../types/profile';
-import { AndroidDevice, DeviceListResponse, SwitchReadiness } from '../types/device';
+import { AndroidDevice, AndroidUserRow, DeviceListResponse, SetupProgress, SwitchReadiness, TakeOverResult } from '../types/device';
 import { API_BASE, apiError, backendWebSocketUrl } from './api';
 
 const devicePath = (serial: string) => `${API_BASE}/devices/${encodeURIComponent(serial)}`;
@@ -108,4 +108,54 @@ export async function importDeviceUser(serial: string, userId: number, name: str
 
 export function deviceLiveUrl(serial: string, userId: number): string {
   return backendWebSocketUrl(`/devices/${encodeURIComponent(serial)}/live`, { user_id: String(userId) });
+}
+
+const accountPath = (profileId: string) => `${API_BASE}/devices/accounts/${encodeURIComponent(profileId)}`;
+
+async function post<T>(url: string, body: unknown, fallback: string, method = 'POST'): Promise<T> {
+  const res = await fetch(url, {
+    method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!res.ok) throw await networkError(res, fallback);
+  return res.json();
+}
+
+/** Creates a new Android user on the phone to hold one account. */
+export function createDeviceUser(serial: string, name: string): Promise<AndroidUserRow> {
+  return post(`${devicePath(serial)}/users`, { name }, 'Failed to create the Android user');
+}
+
+/** Creates this PC's account for an Android user another PC set up, from the phone's details. */
+export function adoptDeviceUser(serial: string, userId: number): Promise<Profile> {
+  return post(`${devicePath(serial)}/users/${userId}/adopt`, undefined, 'Failed to add the account');
+}
+
+export async function fetchAccountSetup(profileId: string): Promise<SetupProgress> {
+  const res = await fetch(`${accountPath(profileId)}/setup`);
+  if (!res.ok) throw await networkError(res, 'Failed to read the setup');
+  return res.json();
+}
+
+/** Starts or resumes setup on the phone; it runs in the background. */
+export function startAccountSetup(profileId: string): Promise<SetupProgress> {
+  return post(`${accountPath(profileId)}/setup`, undefined, 'Failed to start the setup');
+}
+
+export function confirmAccountLogin(profileId: string): Promise<SetupProgress> {
+  return post(`${accountPath(profileId)}/setup/login-done`, undefined, 'Failed to confirm the login');
+}
+
+/** Gives a phone account another proxy; the phone keeps it only if traffic gets through. */
+export function replaceAccountProxy(profileId: string, proxyId: string): Promise<AndroidNetwork> {
+  return post(`${accountPath(profileId)}/proxy`, { proxy_id: proxyId }, 'Failed to change the proxy');
+}
+
+export function makeDevicePrimary(serial: string, options: { pin?: string; forgotPin?: boolean }): Promise<TakeOverResult> {
+  return post(`${devicePath(serial)}/make-primary`, { pin: options.pin ?? null, forgot_pin: Boolean(options.forgotPin) },
+    'Failed to make this PC primary');
+}
+
+/** Sets the phone's PIN, or clears it with null. */
+export function setDevicePin(serial: string, pin: string | null): Promise<{ pin_set: boolean }> {
+  return post(`${devicePath(serial)}/pin`, { pin }, 'Failed to save the PIN', 'PUT');
 }
