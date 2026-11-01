@@ -767,3 +767,24 @@ template sets, scheduler grouping by device.
 - A fake `AndroidDriver` for unit tests of admission, locking and the gate.
 - Leak tests per release: proxy killed, companion app force-stopped, IPv6 and
   UDP probes, DNS probe.
+
+### Phone driver in the app (2026-11-01)
+
+The prototype is now `automation/phone/`, started per job by `automation/phone_runner.py` (one JSON line
+per event, the result last, like `runner.py`):
+
+| Module | Role |
+| --- | --- |
+| `phone/device.py` | The only phone I/O: scrcpy frames and input, OCR, templates, companion clipboard and media, shortcut intents |
+| `phone/screen.py` | Pure screen reading: text matching, post ages, pop-ups, discard prompts, logged-out and checkpoint screens |
+| `phone/flows.py` | Feed, composer, publish, confirmation, profile and first comment, with the hybrid route |
+| `phone/job.py` | One job's outcome: `published` (with `comment`), `failed`, `uncertain` or `blocked`; media cleanup |
+
+It imports only `backend.services.adb_client`, `android_live` and `android_agent` (the companion app call,
+moved out of `android_network` so the runner needs nothing else from the backend). Any error after the
+publish tap, a dropped stream included, makes the job `uncertain`, and its media stays on the phone until
+reviewed, since an upload may still be running from it. A comment whose send tap went through but did not
+show is `uncertain` too and is never sent again.
+
+First runs: a photo (published in 13 s) and a reel (8 s), both commented on the first look, no fallbacks.
+The shell media fallback was checked on its own (added and removed). Not yet wired to the queue.

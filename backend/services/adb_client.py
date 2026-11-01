@@ -198,6 +198,12 @@ def parse_appop_allowed(output: str) -> bool:
     return bool(re.search(r"ACTIVATE_VPN:\s*allow\b", output))
 
 
+def parse_focused_window(dumpsys_window: str) -> str | None:
+    """`com.facebook.katana/...ComposerActivity` from `mCurrentFocus=Window{... u11 NAME}`."""
+    match = re.search(r"mCurrentFocus=Window\{[^}]*?\s(\S+)\}", dumpsys_window)
+    return match.group(1) if match else None
+
+
 def parse_int(output: str) -> int | None:
     match = re.search(r"(-?\d+)", output)
     return int(match.group(1)) if match else None
@@ -343,6 +349,29 @@ class AdbClient:
         encoded = base64.b64encode(text.encode()).decode()
         folder = path.rsplit("/", 1)[0]
         self.shell(serial, f"mkdir -p {shlex.quote(folder)} && echo {encoded} | base64 -d > {shlex.quote(path)}")
+
+    def write_content(self, serial: str, user_id: int, uri: str, local: str, timeout: float = 120) -> None:
+        """Streams a local file into a content URI (`content write`) inside one Android user."""
+        if not self.binary:
+            raise AdbUnavailable("ADB is not installed. Install Android platform-tools and reopen the app.")
+        command = f"content write --user {int(user_id)} --uri {shlex.quote(uri)}"
+        try:
+            with open(local, "rb") as source:
+                result = subprocess.run([self.binary, "-s", validate_serial(serial), "shell", command],
+                                        stdin=source, capture_output=True, timeout=timeout, check=False)
+        except subprocess.TimeoutExpired as exc:
+            raise AdbError("ADB timed out writing a file to the phone") from exc
+        if result.returncode != 0 or result.stderr.strip():
+            raise AdbError((result.stderr or result.stdout).decode("utf-8", "replace").strip() or "content write failed")
+
+    def start_activity(self, serial: str, user_id: int, *intent: str) -> None:
+        """`am start --user N INTENT...`; raises when Android reports an error."""
+        output = self.shell(serial, "am", "start", "--user", str(int(user_id)), *intent, timeout=30)
+        if "Error" in output:
+            raise AdbError(output.strip().splitlines()[-1])
+
+    def focused_window(self, serial: str) -> str | None:
+        return parse_focused_window(self.shell(serial, "dumpsys window | grep -m1 mCurrentFocus; true"))
 
     def start_user(self, serial: str, user_id: int) -> None:
         self.shell(serial, "am", "start-user", "-w", str(int(user_id)), timeout=60)

@@ -41,6 +41,7 @@ ALLOWED_KEYCODES = frozenset({
     3, 4, 187,  # home, back, recent apps
     19, 20, 21, 22, 61, 66, 67, 112,  # arrows, tab, enter, backspace, forward delete
     24, 25, 26, 224,  # volume, power, wake
+    111, 279,  # escape (hides the keyboard), paste
 })
 
 

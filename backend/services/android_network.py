@@ -6,7 +6,6 @@ by `android_setup`.
 """
 from __future__ import annotations
 
-import base64
 import json
 import re
 import threading
@@ -16,12 +15,12 @@ from typing import Any
 from backend.config import PROFILES_DIR
 from backend.services import android_devices, proxy_service
 from backend.services.adb_client import AdbClient, AdbError
+from backend.services.android_agent import (  # noqa: F401  (re-exported)
+    AGENT_AUTHORITY, AGENT_PACKAGE, AgentRefused, agent_call, parse_agent_reply,
+)
 from backend.services.android_devices import ANDROID_RUNTIME, CONTROL_USER_ID, DeviceNotFound, _client
 from backend.services.profile_service import atomic_write_json, utc_now
 
-AGENT_PACKAGE = "com.isolatedbrowser.agent"
-AGENT_AUTHORITY = f"{AGENT_PACKAGE}.control"
-_REPLY = re.compile(r"json=(\{.*\})\}\]\s*$", re.S)
 STATUS_TIMEOUT_S = 15.0
 # The check makes HTTPS requests through the proxy; about 17 s on a Pixel 10 Pro XL.
 CHECK_TIMEOUT_S = 60.0
@@ -30,33 +29,6 @@ CHECK_TIMEOUT_S = 60.0
 OPEN_VERIFY_TIMEOUT_S = 150.0
 OPEN_RETRY_S = 10.0
 _write_lock = threading.Lock()
-
-
-def parse_agent_reply(output: str) -> dict:
-    match = _REPLY.search(output.strip())
-    if not match:
-        raise AdbError("The companion app did not answer. It may not be installed in this Android user.")
-    return json.loads(match.group(1))
-
-
-class AgentRefused(AdbError):
-    """The companion app answered but refused; `code` is its error, e.g. "wrong_pin"."""
-
-    def __init__(self, method: str, code: str):
-        super().__init__(f"The companion app refused {method}: {code}")
-        self.code = code
-
-
-def agent_call(client: AdbClient, serial: str, user_id: int, method: str, timeout: float,
-               arg: dict | None = None) -> dict:
-    """`arg` goes base64-encoded, so neither the shell nor the command line needs quoting."""
-    extra = ["--arg", base64.b64encode(json.dumps(arg).encode()).decode()] if arg is not None else []
-    output = client.shell(serial, "content", "call", "--user", str(int(user_id)),
-                          "--uri", f"content://{AGENT_AUTHORITY}", "--method", method, *extra, timeout=timeout)
-    reply = parse_agent_reply(output)
-    if not reply.get("ok"):
-        raise AgentRefused(method, reply.get("error") or "unknown error")
-    return reply
 
 
 def _account(profile_id: str) -> tuple[dict, dict, dict | None]:
