@@ -233,6 +233,7 @@ grants are part of this flow.
 
 - Location off, Facebook location permission denied, Wi-Fi and Bluetooth
   scanning off.
+- Screen timeout 15 minutes, so a job never has to wake the screen midway.
 - Facebook photo and video permissions granted with `pm grant --user N` (setup does this); the notification permission is still to decide.
 - Fixed font size, display size, theme and portrait lock.
 - Keyboard autocorrect and suggestions off.
