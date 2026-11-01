@@ -88,17 +88,21 @@ async def run_post(device, item: PostItem, media_path: str, log: Callable[..., N
     return result
 
 
-async def run_comment(device, item: PostItem, log: Callable[..., None], *, published_at: float | None = None,
+async def run_comment(device, item: PostItem, log: Callable[..., None], *, published_ago: float | None = None,
                       human_only: bool = False) -> dict:
-    """The first comment of an already published post: a follow-up job. With `published_at` the
-    three looks keep their timing; without, the post is looked for at once, any age."""
+    """The first comment of an already published post: a follow-up job. `published_ago` is the time
+    since the publish tap: the three looks keep their timing when it is recent; a later start looks
+    at once and allows posts as old as that. Without it, the post is looked for at any age."""
     flows = Flows(device, log, human_only=human_only)
     result: dict = {"status": "published", "kind": item.kind, "stage": "comment"}
     try:
-        if published_at is None:
+        if published_ago is None:
             result.update(await _comment(flows, item, device.now(), waits=(0, 25, 25), max_age_minutes=10 ** 6))
+        elif published_ago < COMMENT_WAITS[0]:
+            result.update(await _comment(flows, item, device.now() - published_ago))
         else:
-            result.update(await _comment(flows, item, published_at))
+            result.update(await _comment(flows, item, device.now(), waits=(0, 25, 25),
+                                         max_age_minutes=published_ago / 60 + 4))
     except AccountBlocked as blocked:
         result.update(comment="blocked", reason=str(blocked), account_blocked=True)
     finally:

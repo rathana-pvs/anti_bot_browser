@@ -114,12 +114,13 @@ def verify(profile_id: str) -> dict:
     return result
 
 
-def open_account(profile_id: str) -> dict:
+def open_account(profile_id: str, job: bool = False) -> dict:
     """Shows the account's Android user on screen and checks its proxy before anything uses it.
 
     With one account at a time (the phone's default), the phone's other users are stopped, so no
     other account runs in the background, and the phone's time is set to this account's proxy.
-    The target is switched to first because Android cannot stop the user on screen.
+    The target is switched to first because Android cannot stop the user on screen. `job` is set by
+    the queued job that holds the phone.
     """
     _, runtime, proxy = _account(profile_id)
     serial, user_id = runtime["device_serial"], runtime["android_user_id"]
@@ -127,7 +128,7 @@ def open_account(profile_id: str) -> dict:
     client = _client()
     stopped: list[int] = []
     zone_set = None
-    with android_devices.phone_lock(serial):
+    with android_devices.phone_lock(serial, job=job):
         # The phone's switcher may have been turned back on in Settings; opening hides it again.
         if android_devices.switch_from_app_only(serial) and client.user_switcher_enabled(serial) is not False:
             client.set_user_switcher(serial, False)

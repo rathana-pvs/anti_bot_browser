@@ -125,6 +125,8 @@ function CommentAndLinkNotes({ item }: { item: QueueExecutionItem }) {
   if (item.first_comment_status === 'submitted_verified') notes.push({ tone: 'ok', text: 'First comment verified.' });
   if (item.first_comment_status === 'submission_pending') notes.push({ tone: 'warn', text: 'First comment may still be sending. Check before acting.' });
   if (item.first_comment_status === 'submitted_unverified') notes.push({ tone: 'warn', text: 'First comment was sent but not verified. Check it on Facebook.' });
+  if (item.first_comment_status === 'phone_pending') notes.push({ tone: 'ok', text: 'First comment will be added when the phone is free.' });
+  if (item.first_comment_status === 'phone_commenting') notes.push({ tone: 'ok', text: 'Adding the first comment on the phone.' });
   if (item.post_url && item.permalink_status === 'recovered') notes.push({ tone: 'ok', text: 'Post link was found on a second check.' });
   if (!item.post_url && item.permalink_status === 'rejected_invalid') notes.push({ tone: 'warn', text: 'The captured post link was invalid.' });
   if (!item.post_url && item.permalink_status === 'missing_after_recovery') notes.push({ tone: 'warn', text: 'The post link couldn’t be found.' });

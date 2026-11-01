@@ -21,6 +21,9 @@ FEED_PROMPT = "What's on your mind?"
 # Seconds before each of the three looks for a new post on the profile; a reel can take a while.
 COMMENT_WAITS = (30, 25, 25)
 PUBLISH_CONFIRM_TIMEOUT_S = 180
+# The comment box's placeholder: "Write a comment..." on posts, "Add a comment" in the reel player, and
+# "Comment as NAME" under the "Get the ball rolling" sheet of a post with no comments yet.
+COMMENT_BOX = ["Write a comment", "Add a comment", "Comment as"]
 
 
 class StepFailed(Exception):
@@ -120,6 +123,18 @@ class Flows:
             self.fallbacks.append({**record, "worked": True})
             return result
 
+    async def scroll(self, start: Point, end: Point) -> None:
+        """A swipe that never lands on the keyboard: with the keyboard up (a comment box focused) it
+        would gesture-type words into the box. The keyboard is hidden and its sheet closed first."""
+        dev = self.device
+        if await asyncio.to_thread(dev.keyboard_shown):
+            self.log(event="keyboard", action="hide and close before scrolling")
+            await dev.key(KEY_ESCAPE)
+            if await asyncio.to_thread(dev.keyboard_shown):
+                raise StepFailed("keyboard: still shown after Escape; not scrolling over it")
+            await dev.key(KEY_BACK)
+        await dev.swipe(start, end)
+
     # --- feed ---------------------------------------------------------------------------------
     async def open_feed(self) -> None:
         """Facebook on its feed, scrolled to the top, with nothing half-made left open."""
@@ -141,7 +156,7 @@ class Flows:
             if label:
                 break
             self.log(event="retry", step="app drawer", attempt=attempt + 1, screen=texts(lines, 8))
-            await dev.swipe(dev.pt(540, 700), dev.pt(540, 1900))
+            await self.scroll(dev.pt(540, 700), dev.pt(540, 1900))
         if not label:
             dev.snapshot(f"fail_drawer_{int(time.time())}")
             raise StepFailed("app drawer: the Facebook icon was not found")
@@ -170,8 +185,8 @@ class Flows:
                 if match(lines, FEED_PROMPT):
                     return
                 self.log(event="feed", action="scroll to top")  # reopened part-way down the feed
-                await dev.swipe(dev.pt(540, 700), dev.pt(540, 1900))
-                await dev.swipe(dev.pt(540, 700), dev.pt(540, 1900))
+                await self.scroll(dev.pt(540, 700), dev.pt(540, 1900))
+                await self.scroll(dev.pt(540, 700), dev.pt(540, 1900))
                 continue
             self.log(event="leftover", screen=found, action="back")
             await dev.key(KEY_BACK)
@@ -307,8 +322,8 @@ class Flows:
         for _ in range(6):
             if match(await dev.read(), "followers"):
                 break
-            await dev.swipe(dev.pt(540, 800), dev.pt(540, 2000))
-        await dev.swipe(dev.pt(540, 900), dev.pt(540, 2000))
+            await self.scroll(dev.pt(540, 800), dev.pt(540, 2000))
+        await self.scroll(dev.pt(540, 900), dev.pt(540, 2000))
         await dev.sleep(3)
         tab = match(await dev.read(), "Posts", exact=True)
         if tab:
@@ -337,7 +352,7 @@ class Flows:
                     self.log(event="found", step="post", attempt=attempt, scroll=scroll)
                     await dev.tap(icon)
                     try:
-                        await self.wait_for("comment sheet", ["Write a comment", "Add a comment"], timeout=6)
+                        await self.wait_for("comment sheet", COMMENT_BOX, timeout=6)
                         return True
                     except StepFailed:
                         self.log(event="retry", step="comment icon")
@@ -349,14 +364,18 @@ class Flows:
                         self.log(event="stop", step="find post", attempt=attempt,
                                  reason=f"reached a post {age} min old")
                         return False
-            await dev.swipe(dev.pt(540, 1700), dev.pt(540, 1150))
+            await self.scroll(dev.pt(540, 1700), dev.pt(540, 1150))
         return False
 
     async def write_comment(self, item: PostItem) -> None:
         dev = self.device
-        _, box, _ = await self.wait_for("comment box", ["Write a comment", "Add a comment"], timeout=10)
+        _, box, _ = await self.wait_for("comment box", COMMENT_BOX, timeout=10)
         await dev.tap(box)
         await dev.paste(item.comment)
+        key = screen.caption_key(item.comment)
+        if key and not match(await dev.read(), key[:16]):
+            # Something else is in the box (or nothing): never send it. Clear by leaving the sheet.
+            raise StepFailed("comment: the box does not show the comment after paste; not sent")
         send = None
         for _ in range(5):
             send = dev.find_icon("send")
@@ -367,7 +386,6 @@ class Flows:
             raise StepFailed("comment: the send arrow was not found")
         self.log(event="about_to_comment")
         await dev.tap(send)
-        key = screen.caption_key(item.comment)
         if key:
             try:
                 await self.wait_for("comment shown", [key[:16]], timeout=15)

@@ -150,6 +150,13 @@ class PhoneDevice:
         except AdbError:
             return None
 
+    def keyboard_shown(self) -> bool:
+        """The on-screen keyboard is up. A swipe over it would gesture-type words into the focused field."""
+        try:
+            return "mInputShown=true" in self.client.shell(self.serial, "dumpsys input_method | grep -m1 mInputShown; true")
+        except AdbError:
+            return True  # unknown: treat as shown, so no swipe lands on a keyboard
+
     def pt(self, x_full: float, y_full: float) -> Point:
         scale = self.width / 1080
         return x_full * scale, y_full * scale

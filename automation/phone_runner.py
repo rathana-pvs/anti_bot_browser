@@ -5,6 +5,7 @@ the account and phone locks and has checked the account's network before startin
 
   phone_runner.py --serial S --user 11 --task photo|reel --media FILE --caption TEXT [--comment TEXT]
   phone_runner.py --serial S --user 11 --task comment --kind photo|reel --caption TEXT --comment TEXT
+                  [--published-ago SECONDS]
 """
 
 import argparse
@@ -37,7 +38,7 @@ async def main(args) -> dict:
     try:
         if args.task == "comment":
             item = PostItem(args.kind, args.caption, args.comment)
-            return await run_comment(device, item, emit, human_only=args.human_only)
+            return await run_comment(device, item, emit, published_ago=args.published_ago, human_only=args.human_only)
         item = PostItem(args.task, args.caption, args.comment or "")
         return await run_post(device, item, args.media, emit, human_only=args.human_only,
                               comment_now=not args.comment_later)
@@ -54,6 +55,7 @@ if __name__ == "__main__":
     parser.add_argument("--media")
     parser.add_argument("--caption", required=True)
     parser.add_argument("--comment", default="")
+    parser.add_argument("--published-ago", type=float, help="comment task: seconds since the publish tap")
     parser.add_argument("--human-only", action="store_true", help="never use shortcut intents")
     parser.add_argument("--comment-later", action="store_true", help="leave the first comment pending")
     parser.add_argument("--evidence-dir")

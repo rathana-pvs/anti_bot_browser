@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Body
 from fastapi.responses import FileResponse
 
 from backend.config import PROFILES_DIR
+from backend.services import android_jobs
 from backend.services.execution_evidence import resolve_execution_evidence
 from backend.services.caption_hook import prepare_scheduled_post
 from backend.services.queue_service import (
@@ -229,12 +230,14 @@ async def create_batch(payload: dict = Body(...)):
             try:
                 with open(cfg_path, "r", encoding="utf-8") as f:
                     cfg = json.load(f)
-                if cfg.get("automation") and cfg["automation"].get("enabled") is False:
+                if cfg.get("automation") and cfg["automation"].get("enabled") is False and not android_jobs.accepts_automation(cfg):
                     skipped_profiles.append({"profile_id": pid, "reason": cfg["automation"].get("reason") or "manual_control_only"})
                     continue
             except Exception:
                 pass
         accepted_profiles.append(pid)
+
+    phone_profiles = {pid for pid in accepted_profiles if android_jobs.phone_of(pid)}
 
     if not accepted_profiles:
         raise HTTPException(status_code=400, detail={
@@ -309,8 +312,9 @@ async def create_batch(payload: dict = Body(...)):
                 "status": "pending",
                 "stage": "pending",
                 "stage_history": [{"stage": "pending", "timestamp": datetime.now(timezone.utc).isoformat()}],
-                "preparation_mode": item_preparation_mode,
-                "preparation_status": "not_requested" if item_preparation_mode == "off" else "pending",
+                # Phone accounts have no passive browsing session to prepare.
+                "preparation_mode": "off" if pid in phone_profiles else item_preparation_mode,
+                "preparation_status": "not_requested" if item_preparation_mode == "off" or pid in phone_profiles else "pending",
                 "retry_count": 0,
                 "error": None,
                 "published_at": None,
@@ -739,13 +743,20 @@ async def run_execution_now(execution_id: str):
             raise HTTPException(status_code=409, detail="All preparation buffers are currently occupied.")
 
     pid = target_exec["profile_id"]
-    if get_container_status(pid) != "running" and count_running_profile_containers() >= scheduler_cfg["max_active_profile_containers"]:
+    phone = android_jobs.phone_of(pid)  # a phone has no container; it waits only for the phone itself
+    if phone and android_jobs.phone_busy(phone.get("device_serial")):
+        if is_manual_retry:
+            deferred_reason = "waiting for the phone to finish its current job"
+        else:
+            raise HTTPException(status_code=409, detail="The phone is running another job.")
+
+    if not phone and get_container_status(pid) != "running" and count_running_profile_containers() >= scheduler_cfg["max_active_profile_containers"]:
         if is_manual_retry:
             deferred_reason = "waiting for a profile-container slot"
         else:
             raise HTTPException(status_code=409, detail="The active profile-container limit has been reached.")
 
-    if get_container_status(pid) != "running" and deferred_reason is None:
+    if not phone and get_container_status(pid) != "running" and deferred_reason is None:
         admission = claim_container_start_admission()
         if not admission["allowed"]:
             if is_manual_retry:
@@ -969,6 +980,11 @@ async def retry_comment(execution_id: str):
     from backend.services.automation_service import is_task_process_active, active_automation_tasks
     if is_task_process_active(active_automation_tasks.get(pid)):
         raise HTTPException(status_code=409, detail=f"Automation is already running for profile '{pid}'")
+
+    if android_jobs.phone_of(pid):  # no container: the comment waits for the phone as a follow-up
+        result = android_jobs.request_comment_retry(execution_id)
+        asyncio.create_task(dispatch_pending_queue())
+        return {**result, "message": "The first comment will be retried when the phone is free."}
 
     scheduler_cfg = get_scheduler_config()
     slot_check = can_acquire_scheduler_slot(queue, active_in_memory_scheduler_leases(), "publisher", pid, scheduler_cfg)

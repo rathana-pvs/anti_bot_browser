@@ -123,7 +123,7 @@ export interface QueueExecutionItem {
   permalink_missing?: boolean;
   permalink_source?: string | null;
   permalink_note?: string | null;
-  first_comment_status?: 'submitted_verified' | 'submitted_unverified' | 'submission_pending' | 'failed_input_not_found' | 'not_requested' | string | null;
+  first_comment_status?: 'submitted_verified' | 'submitted_unverified' | 'submission_pending' | 'failed_input_not_found' | 'not_requested' | 'phone_pending' | 'phone_commenting' | string | null;
   first_comment_method?: 'profile_first_post' | 'verified_permalink_fallback' | string | null;
   first_comment_verified_at?: string | null;
   first_comment_evidence_dir?: string | null;

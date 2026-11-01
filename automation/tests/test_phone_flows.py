@@ -30,6 +30,7 @@ class FakeDevice:
         self.icons = {}
         self.deleted = []
         self.width = 576
+        self.keyboard = []  # answers to keyboard_shown, in order; then False
 
     def now(self):
         return self.t
@@ -47,6 +48,9 @@ class FakeDevice:
     def find_icon(self, name, below=None):
         point = self.icons.get(name)
         return point if point and (below is None or point[1] > below) else None
+
+    def keyboard_shown(self):
+        return self.keyboard.pop(0) if self.keyboard else False
 
     def snapshot(self, name):
         self.actions.append(("snapshot", name))
@@ -224,6 +228,36 @@ class FindPostTests(unittest.TestCase):
                 run(flows.find_and_comment(PostItem("reel", "Clip", "hi"), published_at=0.0))
         self.assertEqual([attempt for attempt, _ in looks], [1, 2, 3])
         self.assertEqual([round(t) for _, t in looks], [30, 55, 80])
+
+
+class KeyboardTests(unittest.TestCase):
+    def test_scroll_hides_the_keyboard_and_closes_the_sheet_first(self):
+        device = FakeDevice()
+        device.keyboard = [True, False]
+        run(Flows(device, lambda **e: None).scroll((10, 900), (10, 300)))
+        kinds = [action[0] if action[0] != "key" else ("key", action[1]) for action in device.actions]
+        self.assertEqual(kinds, [("key", 111), ("key", 4), "swipe"])
+
+    def test_scroll_refuses_while_the_keyboard_stays_up(self):
+        device = FakeDevice()
+        device.keyboard = [True, True]
+        with self.assertRaises(StepFailed):
+            run(Flows(device, lambda **e: None).scroll((10, 900), (10, 300)))
+        self.assertNotIn("swipe", [action[0] for action in device.actions])
+
+    def test_comment_is_not_sent_when_the_box_shows_other_text(self):
+        device = FakeDevice([lines(("Comment as Eliza", 1200)), lines(("By see see see", 1200))])
+        device.icons["send"] = (500.0, 1200.0)
+        with self.assertRaises(StepFailed):
+            run(Flows(device, lambda **e: None).write_comment(PostItem("reel", "Clip", "share our thought")))
+        self.assertNotIn(("tap", (500.0, 1200.0)), device.actions)
+
+    def test_empty_comment_sheet_is_recognised(self):
+        device = FakeDevice([lines(("Get the ball rolling", 400), ("Comment as Eliza", 1200)),
+                             lines(("share our thought", 1200)), lines(("share our thought", 600))])
+        device.icons["send"] = (500.0, 1200.0)
+        run(Flows(device, lambda **e: None).write_comment(PostItem("reel", "Clip", "share our thought")))
+        self.assertIn(("tap", (500.0, 1200.0)), device.actions)
 
 
 class JobTests(unittest.TestCase):

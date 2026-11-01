@@ -69,6 +69,7 @@ from backend.services.queue_service import (
 from backend.services import container_lifecycle as lifecycle
 from backend.services import network_recovery
 from backend.services.android_devices import ensure_not_android
+from backend.services import android_jobs
 
 # Brain CLI wrapper
 def run_brain_cli(args: list[str]) -> dict:
@@ -1065,6 +1066,9 @@ async def _execute_queue_item_inner(execution_id: str, scheduler_kind: str = "pu
     lease = claim_res["lease"]
     profile_id = target_exec["profile_id"]
 
+    if android_jobs.phone_of(profile_id):
+        return await android_jobs.execute_queue_phone(claim_res)
+
     if target_post.get("type") == "live":
         from backend.services.live_service import execute_queue_live
         return await execute_queue_live(claim_res)
@@ -1329,6 +1333,10 @@ async def _execute_queue_comment_retry_inner(execution_id: str, start_admission_
         raise RuntimeError("Comment retry is allowed only after a definite pre-submission input failure")
 
     profile_id = match["execution"]["profile_id"]
+    if android_jobs.phone_of(profile_id):  # runs as a phone follow-up when the phone is free
+        result = android_jobs.request_comment_retry(execution_id)
+        asyncio.create_task(_delayed_dispatch(100))
+        return result
     existing = active_automation_tasks.get(profile_id)
     if is_task_process_active(existing):
         raise RuntimeError(f"Automation is already running for profile '{profile_id}'")
@@ -1762,6 +1770,9 @@ async def dispatch_pending_queue():
         }
 
         from backend.services import auto_warming
+        # Phone comment follow-ups first: they finish posts that already went out.
+        busy_profiles = {pid for pid, record in active_automation_tasks.items() if is_task_process_active(record)}
+        android_jobs.dispatch_comments(busy_profiles)
         cooldown_retry_ms = None
         # Once a post could not start in this pass, no auto visit may take a slot.
         post_waiting = False
@@ -1810,6 +1821,22 @@ async def dispatch_pending_queue():
                         if cooldown_retry_ms is None
                         else min(cooldown_retry_ms, retry_after_ms)
                     )
+                continue
+
+            phone = android_jobs.phone_of(pid)
+            if phone:
+                # A phone has no container; it runs one job at a time across its accounts.
+                serial = phone.get("device_serial")
+                if android_jobs.phone_busy(serial) or serial in reservations.setdefault("phones", set()):
+                    continue
+                if not can_acquire_scheduler_slot(current_q, active_in_memory_scheduler_leases(), "publisher",
+                                                  pid, scheduler_cfg)["allowed"]:
+                    continue
+                if not _reserve_dispatch_slot(reservations, "publisher", pid, scheduler_cfg):
+                    continue
+                reservations["phones"].add(serial)
+                print(f"[Queue Dispatcher] Claiming phone slot for {exec_id} on profile {pid}...")
+                asyncio.create_task(_run_dispatched_queue_task(exec_id, "publisher"))
                 continue
 
             if needs_prep and count_buffered_preparations(current_q, exec_id) >= scheduler_cfg["max_preparers"]:

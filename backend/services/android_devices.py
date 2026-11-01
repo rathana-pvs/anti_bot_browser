@@ -342,9 +342,34 @@ def set_timezone(serial: str, zone: str) -> dict:
     return state
 
 
+# serial -> the queued job holding the phone ("post:<execution>" or "comment:<execution>")
+_job_holders: dict[str, str] = {}
+
+
+def hold_for_job(serial: str, holder: str) -> bool:
+    """Reserves the phone for one queued job; False when another job has it."""
+    with _store_lock:
+        if serial in _job_holders:
+            return False
+        _job_holders[serial] = holder
+        return True
+
+
+def release_job(serial: str) -> None:
+    with _store_lock:
+        _job_holders.pop(serial, None)
+
+
+def job_on(serial: str) -> str | None:
+    return _job_holders.get(serial)
+
+
 @contextmanager
-def phone_lock(serial: str):
-    """One switch at a time per phone: only the user on screen can be seen and controlled."""
+def phone_lock(serial: str, job: bool = False):
+    """One switch at a time per phone: only the user on screen can be seen and controlled. While a
+    queued job holds the phone, only that job (`job=True`) may switch it."""
+    if not job and serial in _job_holders:
+        raise AdbError("This phone is running a queued post. Wait for it to finish.")
     with _store_lock:
         lock = _switch_locks.setdefault(serial, threading.Lock())
     if not lock.acquire(blocking=False):
