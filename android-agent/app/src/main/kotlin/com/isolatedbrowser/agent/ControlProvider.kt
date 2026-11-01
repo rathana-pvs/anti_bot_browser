@@ -11,6 +11,7 @@ import android.os.Binder
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.ParcelFileDescriptor
 import android.util.Base64
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -46,6 +47,8 @@ class ControlProvider : ContentProvider() {
                 "clear_pin" -> changePin(arg, clear = true)
                 "set_clipboard" -> setClipboard(decode(arg).getString("text"))
                 "clear_clipboard" -> setClipboard(null)
+                "media_status" -> MediaWriter.status(decode(arg).getString("name")).put("ok", true)
+                "delete_media" -> JSONObject().put("ok", true).put("deleted", MediaWriter.delete(context!!, decode(arg).getString("uri")))
                 else -> JSONObject().put("ok", false).put("error", "unknown method")
             }
         }.getOrElse { JSONObject().put("ok", false).put("error", it.message ?: it.javaClass.simpleName) }
@@ -208,6 +211,14 @@ class ControlProvider : ContentProvider() {
         const val TRY_TIMEOUT_MS = 30000L
         const val TRY_RETRY_MS = 3000L
         const val CLIPBOARD_TIMEOUT_S = 5L
+    }
+
+    /** `content write` streams a file in for [MediaWriter]; only ADB shell and root may. */
+    override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor? {
+        val caller = Binder.getCallingUid() % 100000
+        if (caller != SHELL_UID && caller != ROOT_UID) throw SecurityException("caller not allowed")
+        require(uri.path == "/media" && mode.startsWith("w")) { "only writing to /media is supported" }
+        return MediaWriter.open(context!!, uri)
     }
 
     override fun onCreate() = true

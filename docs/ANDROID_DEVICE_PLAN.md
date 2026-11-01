@@ -165,6 +165,178 @@ set_clipboard · put_media · open_target(url/intent) · foreground_app · scree
 | Login state | `dumpsys account` lists a `com.facebook.auth.login` account for the user once Facebook is signed in, without touching the Facebook app. |
 | Composer from a share | Works once Facebook may read photos. Without READ_MEDIA_IMAGES, Facebook dropped the share and opened its feed. After `pm grant --user 11` (now part of setup's Install Facebook step), the photo, added through the media store, opened in "New post" with it attached (`am start --user N -a android.intent.action.SEND ... --grant-read-uri-permission -n <composer>`). The caption pasted exactly through the companion app's clipboard. The first button is Next, not Post. Closing with X asks "Discard changes?" (KEEP EDITING / DISCARD), which OCR read and located correctly. Nothing was posted. |
 | OCR of captions | The English OCR models misread Lao text in the caption, so a non-English caption is not verified by OCR; the driver only checks that the field is no longer empty. |
+| Photo post flow (Facebook 585.0.0.47.54) | Share intent, then "New post" (`ComposerActivity`): caption field "What's on your mind?", top-right **Next**. Next opens "Post settings" (`UnifiedShareSheetActivity`): Post audience, Who can comment, Scheduling options, Share to story, Monetization, an Add AI label switch, and the top-right **SHARE** button, which publishes. Post audience opens a "Choose audience" sheet (Public, Friends, Friends except..., Specific friends, Only me, Set as default audience, Done) that Back closes unchanged. Back returns from Post settings to the composer with the caption kept; X then asks Discard changes?. An English caption was read back exactly by OCR. SHARE was never tapped. |
+| Small icons (OpenCV) | Templates cut from one capture, found in another shrunk to 576x1280 with JPEG artefacts: X 0.981, trash 0.990, + 0.981, Next 0.957, back arrow 0.974, SHARE 0.906, all within 2 px. On screens without them the best scores were 0.40-0.66, so a threshold around 0.85 separates them. Tested on one theme (light) and one Facebook version; dark mode and other versions need their own templates. |
+
+## Phone automation flows (design)
+
+Decided 2026-11-01 from real runs on the Pixel (Facebook 585.0.0.47.54, user 11, a test account): a photo
+post, a reel and a first comment on each were published end to end. Live could not be tested (see below).
+
+### Driver primitives
+
+`share` and `open` below are fallbacks only; jobs use the human route first (see Hybrid route).
+
+| Primitive | How |
+| --- | --- |
+| `frame()` | Latest decoded scrcpy frame (576x1280). A still screen sends no frames, so the last one is kept. |
+| `read()` | PaddleOCR lines with centres, in phone pixels. English Facebook UI only. |
+| `find(template)` | OpenCV match on the frame, small scale search, threshold 0.85; returns the centre. |
+| `tap(point)`, `swipe(path)` | scrcpy touch with `HumanInput` timing. Points always come from the current frame, never fixed coordinates: the feed scrolls and reflows by itself. |
+| `paste(text)` | Companion app `set_clipboard`, KEYCODE_PASTE, then `clear_clipboard`. |
+| `key(code)` | Back, Home, Escape (hides the keyboard). |
+| `put_media(file)` | Media store insert and `content write --user N`; returns the content URI. Removed after the job. |
+| `share(uri, mime)` | `am start --user N -a android.intent.action.SEND --grant-read-uri-permission -n com.facebook.katana/com.facebook.composer.shareintent.ImplicitShareIntentHandlerDefaultAlias`. Always this component, never Android's chooser (it also offers profile picture and Stories). |
+| `open(link)` | `am start --user N -a android.intent.action.VIEW -d fb://profile -p com.facebook.katana` opens the account's profile directly. |
+| `wait_for(screen)` | Polls frames until a recognised screen or a timeout; every step names the screens it may lead to. |
+
+### Media source
+
+Media comes from the manager app's library (`profiles/shared_media/`), the same files browser accounts
+post: photos as they are, reels from Reel Studio (`reel_*.mp4`, 4:5 or 9:16, about 10 s). The file is
+copied into the account's Android user for the job and removed after it; nothing is kept in the phone's
+gallery.
+
+### Screens (recognised by OCR text first, icons second)
+
+| Screen | Facebook activity | Recognised by |
+| --- | --- | --- |
+| Feed | `FbMainTabActivity` | "facebook" title, "What's on your mind?" |
+| Composer | `ComposerActivity` | "New post", top-right "Next", caption field |
+| Post settings | `UnifiedShareSheetActivity` | "Post settings", top-right "SHARE" |
+| Reel settings | `UnifiedShareSheetActivity` | "Reel settings", bottom "Share now" |
+| Discard dialog | composer | "Discard changes?", KEEP EDITING / DISCARD |
+| Posting | feed | "Posting... Keep Facebook open." bar under the stories |
+| Comments sheet | feed or reel player | "Write a comment..." / "Add a comment", send arrow (template) |
+| Profile | `ImmersivePortraitActivity` | name, "Posts", "Reels" tabs |
+| Reel player | `ImmersiveActivity` | "Add a comment", "View insights" |
+| Logged out | `FbExperimentalLoggedOutBloksActivity` | "Log in", "Create new account" |
+| Interruption | any | known pop-ups: reels streak ("View my reels achievements"), "Update your public details", tips |
+| Unknown | any | nothing above matches |
+
+The activity name from `dumpsys window` is read with every frame as a cheap second check.
+
+### Flow: photo post
+
+1. Preconditions: phone lock held, **Open on phone** reported ready, Facebook signed in (`dumpsys account`).
+2. `put_media(photo)`, `share(uri, image/jpeg)`; wait for Composer.
+3. Tap the caption field, `paste(caption)`, Escape; check the field is not empty (OCR reads English
+   captions back exactly; other languages only as not empty).
+4. Tap **Next**; wait for Post settings. Audience is read and changed only when the job asks (Choose
+   audience sheet, then Done).
+5. Record the attempt as **about to publish**, then tap **SHARE**. From here the outcome is uncertain until
+   verified.
+6. Wait for the feed's "Posting..." bar to disappear, then verify: the account's post with the caption and
+   "Just now" at the top of the feed, or on the profile (`fb://profile`, Posts). Measured: about 50 s.
+7. Remove the media; publish result with the post's position as evidence (screenshot frames).
+
+### Flow: reel
+
+Same as the photo post with `video/mp4`. Facebook turns a shared video into a reel by itself: Next leads to
+**Reel settings** and the button is **Share now** (bottom). Verification: the reels streak pop-up, if it
+shows, is dismissed with Back; the reel appears in the profile's Reels tab. Measured: under 40 s.
+
+### Flow: first comment
+
+Right after a verified post or reel:
+
+- Post: on the feed, find the post by its caption, then the comment icon below it (template), tap; the
+  comments sheet opens. Reel: from the profile's Reels tab open the newest reel; "Add a comment".
+- Tap the comment field, `paste(text)`, find the send arrow (template, same in both), tap.
+- Verify: the comment shows with "Author" and "Just now"; the post's comment count goes up.
+- If the post cannot be found again, the comment is skipped and reported, never posted elsewhere.
+
+### Failure and uncertain handling
+
+- Any unknown screen: try Back up to twice when that is safe (before SHARE / Share now); otherwise stop and
+  report "screen not recognised" with the frame as evidence.
+- Interruptions are closed only when known (Back or their "Not now" button).
+- Before the publish tap, a failure is a normal failed job and can be retried.
+- After the publish tap, a lost connection, a crash or a timeout makes the attempt **uncertain**: it is
+  never retried automatically. The next run of that account first looks on the profile for a post with
+  the same caption and media before anything else.
+- Logged out or a checkpoint: the job is blocked (not failed) and the account goes to Needs review.
+
+### Live
+
+Not available to this account: Facebook requires an account at least 60 days old and a Page or professional
+profile with at least 100 followers. Live from the phone also streams its camera, and needs camera and
+microphone permission (not granted). To revisit when an eligible account exists; the likely route for
+pre-recorded video is a stream from the PC rather than the phone camera.
+
+### Templates collected
+
+Comment icon and send arrow (feed and reel player share the same send arrow), plus X, trash, +, Next,
+back arrow and SHARE from the composer screens. Light theme only; dark mode and new Facebook versions need
+their own set.
+
+### Hybrid route: human taps first, shortcuts only as a logged fallback
+
+Decided 2026-11-01. Intents sent from the ADB shell (`fb://profile`, the share intent, `am start`) reach
+Facebook with the shell as their sender, and media added by the shell is recorded as owned by the shell.
+Facebook may not look at either, but both are avoidable, so every step first works the way a person would.
+
+| Step | Human route (first) | Shortcut (fallback, logged) |
+| --- | --- | --- |
+| Add media | Companion app saves the file to the user's gallery (`content write` to its `/media` path; owned by the companion app) | Shell inserts it into the media store |
+| Open Facebook | Home (twice, closing an open drawer), swipe up, tap the Facebook icon above its label | `am start` of the launcher activity |
+| Start a post | Feed "What's on your mind?", Gallery, first item's selection circle, picker Next | Share intent into the composer |
+| Find own post | Profile picture left of "What's on your mind?", profile Posts | `fb://profile` |
+| Comment | The comment icon under the post's caption on the profile | none: skipped and reported |
+| Publish tap | SHARE (photo) / Share now (reel) | none |
+
+Rules:
+
+- A shortcut is used only before the publish tap, at most once per step and job, after the screen has been
+  brought back to the feed (any composer discarded). Account problems (logged out, checkpoint, blocked)
+  never fall back: the job stops and the account needs review.
+- An account can be set to human only: no shortcuts at all, the job stops with a report instead.
+- Each fallback is logged with the account, step, reason, the frame, and whether the shortcut worked; the
+  app counts them per step so a screen Facebook changed is noticed and its templates updated.
+
+### First comment: three looks, then skip
+
+After the publish tap the post can take a while to show on the profile (reels especially). The comment step
+looks 30 s, 55 s and 80 s after the tap (waits 30, 25, 25 s):
+
+1. Profile, Posts tab (pull to refresh before the second and third look), scrolling newest first.
+2. Pinned posts are skipped. A post whose time label ("Just now", "7m", "2h") is older than the time since
+   the publish tap plus 2 minutes ends that look: this job's post would be above it.
+3. The post is the one whose caption matches (ignoring case, spaces and punctuation, which OCR sometimes
+   merges or drops); then the comment icon under it, the comment box, paste, the send arrow.
+4. After three misses the comment is skipped and reported with the last frame. The post is never published
+   again.
+
+In a real job the phone is not held during the waits: the job ends as "published, first comment pending"
+and the comment runs as a follow-up for the same account when the phone is free.
+
+### Human-route runs (2026-11-01, test account, Pixel, user 11)
+
+Ten jobs from the manager app's media (photos from Reel Studio's images, reels from `shared_media`),
+45-75 s apart, all by on-screen taps:
+
+| Run | Jobs | Published | First comment |
+| --- | --- | --- | --- |
+| Series 1 (prototype being fixed) | 3 photos, 2 reels | 5/5, 8-14 s after the publish tap | 5/5, the reels' only after the fixes below |
+| Series 2 (fixed runner) | 2 photos, 1 reel (stopped after the third, as asked) | 3/3, 7-21 s | 3/3, all on the first look |
+
+Problems found and fixed on the way:
+
+| Problem | Fix |
+| --- | --- |
+| App drawer already open, so the swipe scrolled it | Home twice, then scroll the drawer to the top if the icon isn't shown |
+| "Post settings" shows before its SHARE button is drawn | Wait for the button itself |
+| A draft left by an earlier run, and Back dismissing its prompt | Look for a discard prompt first; two kinds: "Discard changes?" (DISCARD) and "finish your post later?" (Discard post) |
+| Media deleted while a failed composer still held it | Discard the composer first, then delete the media |
+| A tap while the feed still coasted after a swipe only stopped the scroll | Wait for a still screen (no new frames) before tapping; retry once when the next screen doesn't come |
+| Facebook reopened part-way down the feed | The "facebook" title counts as the feed; scroll to the top |
+| Own post not found on a refreshed feed (ranking) | Find own posts on the profile, never the feed |
+| Reels grid shows a new reel late; reel captions not always readable in the player | Use the profile's Posts list, where reels show with their caption |
+| Autoplaying video means the profile is never still | Shorter settle time while scrolling the profile |
+
+Permission prompts seen on opening Facebook (camera, microphone, notifications) were answered "Don't allow";
+Facebook's own "Allow access to your camera roll" screens appear once and are allowed, since posting needs
+the gallery. Setup should settle these up front so jobs do not meet them.
 
 ## Brains and templates
 

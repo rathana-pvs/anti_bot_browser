@@ -71,3 +71,7 @@ data/container_owners.lock
 
 # Adaptive resource signal read by running automation
 data/resources/
+
+# Phone records and this PC's identity (written per machine)
+data/android_devices.json
+data/pc_identity.json

@@ -21,7 +21,9 @@ account back from the phone. The desktop app installs and configures it (`backen
   a PIN is set), `set_config`, `check`, `stop`, `set_account`, `same_proxy`, `try_config` (keeps a
   new proxy only if a reply comes back through it), `export` (needs the PIN when one is set),
   `set_pin` and `clear_pin` (need the current PIN or the saved proxy's full details),
-  `set_clipboard` and `clear_clipboard` (this user's clipboard, for pasting Unicode text).
+  `set_clipboard` and `clear_clipboard` (this user's clipboard, for pasting Unicode text),
+  `media_status` and `delete_media`. A file streamed in with `content write --uri content://AUTHORITY/media?name=N&mime=M`
+  is saved to this user's gallery, owned by this app, so it can be removed after the job.
 - `ControlActivity` starts the service; launched from ADB it may start a foreground service.
 - The saved proxy is encrypted with an AES-256-GCM key held in Android Keystore
   (`SecretStore`). The engine gets its config, which includes the password, through a
