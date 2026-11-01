@@ -1,4 +1,5 @@
-"""Phone job runner: one post, reel or first comment on one phone account (an Android user).
+"""Phone job runner: one post, reel or first comment on one phone account (an Android user), or setup's
+first-use pass.
 
 Prints one JSON line per event, then the result as the last line, like ``runner.py``. The caller holds
 the account and phone locks and has checked the account's network before starting it.
@@ -6,6 +7,7 @@ the account and phone locks and has checked the account's network before startin
   phone_runner.py --serial S --user 11 --task photo|reel --media FILE --caption TEXT [--comment TEXT]
   phone_runner.py --serial S --user 11 --task comment --kind photo|reel --caption TEXT --comment TEXT
                   [--published-ago SECONDS]
+  phone_runner.py --serial S --user 11 --task get_ready     (setup: Facebook's first screens, no post)
 """
 
 import argparse
@@ -23,7 +25,7 @@ sys.path.insert(1, str(AUTOMATION.parent))  # backend.services: adb, scrcpy and 
 from engine.runtime_paths import runtime_root  # noqa: E402
 from phone.device import PhoneDevice  # noqa: E402
 from phone.flows import PostItem  # noqa: E402
-from phone.job import run_comment, run_post  # noqa: E402
+from phone.job import run_comment, run_get_ready, run_post  # noqa: E402
 
 
 def emit(**event) -> None:
@@ -36,6 +38,8 @@ async def main(args) -> dict:
     device = PhoneDevice(args.serial, args.user, evidence, emit)
     await device.open()
     try:
+        if args.task == "get_ready":
+            return await run_get_ready(device, emit)
         if args.task == "comment":
             item = PostItem(args.kind, args.caption, args.comment)
             return await run_comment(device, item, emit, published_ago=args.published_ago, human_only=args.human_only)
@@ -50,17 +54,19 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Phone job runner")
     parser.add_argument("--serial", required=True)
     parser.add_argument("--user", type=int, required=True, help="Android user of the account")
-    parser.add_argument("--task", required=True, choices=["photo", "reel", "comment"])
+    parser.add_argument("--task", required=True, choices=["photo", "reel", "comment", "get_ready"])
     parser.add_argument("--kind", choices=["photo", "reel"], default="photo", help="comment task: the post's kind")
     parser.add_argument("--media")
-    parser.add_argument("--caption", required=True)
+    parser.add_argument("--caption", default="")
     parser.add_argument("--comment", default="")
     parser.add_argument("--published-ago", type=float, help="comment task: seconds since the publish tap")
     parser.add_argument("--human-only", action="store_true", help="never use shortcut intents")
     parser.add_argument("--comment-later", action="store_true", help="leave the first comment pending")
     parser.add_argument("--evidence-dir")
     options = parser.parse_args()
-    if options.task != "comment" and not (options.media and os.path.isfile(options.media)):
+    if options.task in ("photo", "reel", "comment") and not options.caption:
+        parser.error("--caption is required for photo, reel and comment tasks")
+    if options.task in ("photo", "reel") and not (options.media and os.path.isfile(options.media)):
         parser.error("--media must be an existing file for photo and reel tasks")
     if options.task == "comment" and not options.comment:
         parser.error("--comment is required for the comment task")

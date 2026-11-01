@@ -32,6 +32,9 @@ POLL_S = 1.0
 LOCATION_PERMISSIONS = ("android.permission.ACCESS_FINE_LOCATION", "android.permission.ACCESS_COARSE_LOCATION")
 # Without these, Facebook drops a shared photo and opens its feed instead of the composer.
 MEDIA_PERMISSIONS = ("android.permission.READ_MEDIA_IMAGES", "android.permission.READ_MEDIA_VIDEO")
+# Posts use gallery media only. Denied with "don't ask again", so their prompts never cover a job.
+DENIED_PERMISSIONS = ("android.permission.CAMERA", "android.permission.RECORD_AUDIO",
+                      "android.permission.POST_NOTIFICATIONS")
 
 STEPS = (
     ("phone_ready", "Phone ready"),
@@ -45,7 +48,10 @@ STEPS = (
     ("facebook", "Install Facebook"),
     ("save_details", "Save to phone"),
     ("login", "Log in to Facebook"),
+    # After the login: Facebook's own first screens (camera roll consent), answered once by taps.
+    ("facebook_ready", "Get Facebook ready"),
 )
+LOGIN_INDEX = [key for key, _ in STEPS].index("login")
 _running: set[str] = set()
 _running_lock = threading.Lock()
 
@@ -223,6 +229,11 @@ def _facebook(ctx: _Context) -> None:
             pass  # Not requested by this Facebook version.
     for permission in MEDIA_PERMISSIONS:
         ctx.client.grant_permission(ctx.serial, ctx.user_id, FACEBOOK_PACKAGE, permission)
+    for permission in DENIED_PERMISSIONS:
+        ctx.client.deny_permission(ctx.serial, ctx.user_id, FACEBOOK_PACKAGE, permission)
+        state = ctx.client.permission_state(ctx.serial, ctx.user_id, FACEBOOK_PACKAGE, permission)
+        if state is not None and (state[0] or "USER_FIXED" not in state[1]):
+            raise StepFailed(f"The phone did not keep {permission.rsplit('.', 1)[-1]} denied.")
 
 
 def _save_details(ctx: _Context) -> None:
@@ -308,7 +319,7 @@ def _run(ctx: _Context) -> None:
     key = STEPS[0][0]
     try:
         with android_devices.phone_lock(ctx.serial):
-            for key, _ in STEPS[:-1]:
+            for key, _ in STEPS[:LOGIN_INDEX]:
                 _set_step(ctx.profile_id, key, "running")
                 ctx.reload()
                 ACTIONS[key](ctx)
@@ -327,13 +338,42 @@ def _run(ctx: _Context) -> None:
 
 
 def confirm_login(profile_id: str) -> dict:
-    """The operator logged in to Facebook on the live screen."""
+    """The operator logged in to Facebook on the live screen. Setup is then done; Facebook's first
+    screens are answered in the background, and a failure there is only reported, since jobs can
+    still answer them themselves."""
     current = progress(profile_id)
-    if any(step["status"] != "passed" for step in current["steps"] if step["key"] != "login"):
+    if any(step["status"] != "passed" for step in current["steps"][:LOGIN_INDEX]):
         raise ValueError("Finish the other setup steps before confirming the login.")
     _set_step(profile_id, "login", "passed")
     _update(profile_id, lambda setup: setup.update(state="done"))
+    start_get_ready(profile_id)
     return progress(profile_id)
+
+
+def start_get_ready(profile_id: str) -> dict:
+    """Runs the "Get Facebook ready" step in the background (also its retry)."""
+    with _running_lock:
+        if profile_id in _running:
+            return progress(profile_id)
+        _running.add(profile_id)
+    _set_step(profile_id, "facebook_ready", "running")
+    threading.Thread(target=_get_ready, args=(profile_id,), name=f"android-ready-{profile_id}", daemon=True).start()
+    return progress(profile_id)
+
+
+def _get_ready(profile_id: str) -> None:
+    from backend.services import android_jobs
+    try:
+        result = android_jobs.run_get_ready(profile_id)
+        if result.get("status") == "ready":
+            _set_step(profile_id, "facebook_ready", "passed")
+        else:
+            _set_step(profile_id, "facebook_ready", "failed", result.get("reason") or "Facebook did not get ready.")
+    except Exception as exc:
+        _set_step(profile_id, "facebook_ready", "failed", f"Unexpected error: {exc.__class__.__name__}")
+    finally:
+        with _running_lock:
+            _running.discard(profile_id)
 
 
 def is_set_up(config: dict) -> bool:

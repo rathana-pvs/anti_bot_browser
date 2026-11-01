@@ -111,6 +111,20 @@ async def run_comment(device, item: PostItem, log: Callable[..., None], *, publi
     return result
 
 
+async def run_get_ready(device, log: Callable[..., None]) -> dict:
+    """Setup's first-use pass: Facebook's first screens answered, nothing posted. Taps only."""
+    flows = Flows(device, log, human_only=True)
+    try:
+        await flows.get_ready()
+        result = {"status": "ready"}
+    except AccountBlocked as blocked:
+        result = {"status": "blocked", "reason": str(blocked), "account_blocked": True}
+    except Exception as failure:
+        result = {"status": "failed", "reason": f"{type(failure).__name__}: {failure}"[:400]}
+    await _home(flows)
+    return result
+
+
 async def _comment(flows: Flows, item: PostItem, published_at: float, waits=COMMENT_WAITS,
                    max_age_minutes: float | None = None) -> dict:
     try:

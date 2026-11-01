@@ -204,6 +204,18 @@ def parse_focused_window(dumpsys_window: str) -> str | None:
     return match.group(1) if match else None
 
 
+def parse_permission_state(dumpsys_package: str, user_id: int, permission: str) -> tuple[bool, set[str]] | None:
+    """(granted, flags) of a runtime permission in one user's section of `dumpsys package`."""
+    section = re.split(r"^\s*User (\d+):", dumpsys_package, flags=re.M)
+    for index in range(1, len(section) - 1, 2):
+        if int(section[index]) != int(user_id):
+            continue
+        found = re.search(rf"{re.escape(permission)}: granted=(true|false)(?:, flags=\[([^\]]*)\])?", section[index + 1])
+        if found:
+            return found.group(1) == "true", set((found.group(2) or "").replace("|", " ").split())
+    return None
+
+
 def parse_int(output: str) -> int | None:
     match = re.search(r"(-?\d+)", output)
     return int(match.group(1)) if match else None
@@ -338,6 +350,15 @@ class AdbClient:
 
     def revoke_permission(self, serial: str, user_id: int, package: str, permission: str) -> None:
         self.shell(serial, "pm", "revoke", "--user", str(int(user_id)), package, permission)
+
+    def deny_permission(self, serial: str, user_id: int, package: str, permission: str) -> None:
+        """Denied and marked "don't ask again", so the app never shows its prompt."""
+        self.revoke_permission(serial, user_id, package, permission)
+        self.shell(serial, "pm", "set-permission-flags", "--user", str(int(user_id)), package, permission,
+                   "user-set", "user-fixed")
+
+    def permission_state(self, serial: str, user_id: int, package: str, permission: str) -> tuple[bool, set[str]] | None:
+        return parse_permission_state(self.shell(serial, "dumpsys", "package", package, timeout=30), user_id, permission)
 
     def read_file(self, serial: str, path: str) -> str | None:
         """None when the file does not exist."""

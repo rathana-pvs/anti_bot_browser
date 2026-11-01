@@ -267,8 +267,12 @@ function PhoneSide({ profile, proxies, devices, onOpenTab, onChanged }: {
       <PhoneNetworkCard profile={profile} proxies={proxies} devices={devices} onChanged={onChanged} />
     </div>;
   }
+  const facebookReady = profile.android_setup?.steps?.facebook_ready?.status === 'passed';
   return profile.android_setup?.state === 'done'
-    ? <PhoneNetworkCard profile={profile} proxies={proxies} devices={devices} onChanged={onChanged} canChangeProxy={phone?.role === 'primary'} />
+    ? <div className="space-y-3">
+      {!facebookReady && <PhoneSetupCard profile={profile} onOpenScreen={() => onOpenTab('browser')} onChanged={onChanged} />}
+      <PhoneNetworkCard profile={profile} proxies={proxies} devices={devices} onChanged={onChanged} canChangeProxy={phone?.role === 'primary'} />
+    </div>
     : <div className="space-y-3">
       <PhoneSetupCard profile={profile} onOpenScreen={() => onOpenTab('browser')} onChanged={onChanged} />
       {/* After a takeover without the PIN, an account whose proxy wasn't in this PC's pool needs one. */}

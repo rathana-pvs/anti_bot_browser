@@ -205,6 +205,19 @@ class Flows:
 
     async def _compose_from_gallery(self) -> None:
         dev = self.device
+        point = await self.open_gallery()
+        # The job's media was just saved, so it is the newest: the first cell, its circle top-right.
+        offset = dev.pt(168, 110)
+        await dev.tap((point[0] + offset[0], point[1] + offset[1]))
+        _, nxt, _ = await self.wait_for("picker selection", ["Next"], exact=True, timeout=10)
+        await dev.tap(nxt)
+        await self.wait_for("composer with media", [FEED_PROMPT, "Describe your reel", "Add a description"],
+                            timeout=30)
+
+    async def open_gallery(self) -> Point:
+        """From the feed: the composer, then its Gallery picker, past Facebook's camera roll consent
+        (shown once; posting needs it). Returns the picker's "Gallery" title."""
+        dev = self.device
         _, point, _ = await self.wait_for("feed", [FEED_PROMPT])
         await dev.tap(point)
         _, gallery, _ = await self.wait_for("composer", ["Gallery"], exact=True)
@@ -220,13 +233,18 @@ class Flows:
             self.log(event="interruption", kind="camera roll consent", answer="Allow")
             await dev.tap(target)
             found, point, lines = await self.wait_for("picker", ["Gallery", "Allow"], timeout=10)
-        # The job's media was just saved, so it is the newest: the first cell, its circle top-right.
-        offset = dev.pt(168, 110)
-        await dev.tap((point[0] + offset[0], point[1] + offset[1]))
-        _, nxt, _ = await self.wait_for("picker selection", ["Next"], exact=True, timeout=10)
-        await dev.tap(nxt)
-        await self.wait_for("composer with media", [FEED_PROMPT, "Describe your reel", "Add a description"],
-                            timeout=30)
+        if found != "Gallery" or match(lines, "Allow access"):
+            raise StepFailed(f"picker: still asking for camera roll access; {texts(lines)}")
+        return point
+
+    async def get_ready(self) -> None:
+        """First use after login: open the Gallery picker once, so Facebook's own consent screens are
+        answered before any job, then leave without posting."""
+        await self.open_feed()
+        await self.open_gallery()
+        self.log(event="gallery_ready")
+        await self.device.key(KEY_BACK)  # the picker, then the empty composer is discarded
+        await self.discard_until_feed()
 
     async def write_caption(self, item: PostItem) -> None:
         dev = self.device

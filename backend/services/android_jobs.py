@@ -245,6 +245,45 @@ def phone_settings(profile_id: str) -> dict:
     return config.get("phone_automation") or {}
 
 
+# --- setup's first-use pass -----------------------------------------------------------------------
+
+GET_READY_TIMEOUT_S = 240
+
+
+def run_get_ready(profile_id: str) -> dict:
+    """Setup's pass after login: opens Facebook's Gallery once so its consent screens are answered
+    before any job. Holds the phone like a job; nothing is posted. Returns the runner's result."""
+    import subprocess
+    from backend.services.automation_service import automation_worker_env
+    runtime = phone_of(profile_id) or {}
+    serial = runtime.get("device_serial")
+    if not serial or not android_devices.hold_for_job(serial, f"setup:{profile_id}"):
+        return {"status": "failed", "reason": "The phone is running a queued job; try again when it finishes."}
+    try:
+        opened = android_network.open_account(profile_id, True)
+        if not opened["ready"]:
+            return {"status": "failed", "reason": f"The phone account is not ready: {opened.get('reason')}"}
+        evidence = PROFILES_DIR / profile_id / "automation_evidence" / "setup_get_ready"
+        completed = subprocess.run(
+            [str(AUTOMATION_PYTHON), "-u", str(PHONE_RUNNER), "--serial", serial, "--user",
+             str(runtime["android_user_id"]), "--task", "get_ready", "--evidence-dir", str(evidence)],
+            cwd=str(ROOT_DIR), env=automation_worker_env(), capture_output=True, text=True,
+            timeout=GET_READY_TIMEOUT_S, check=False)
+    except subprocess.TimeoutExpired:
+        return {"status": "failed", "reason": "Facebook did not get ready in time."}
+    finally:
+        android_devices.release_job(serial)
+    for line in reversed(completed.stdout.splitlines()):
+        if line.startswith("{"):
+            try:
+                result = json.loads(line)
+            except ValueError:
+                continue
+            if "status" in result and "event" not in result:
+                return result
+    return {"status": "failed", "reason": f"The phone runner exited with code {completed.returncode}"}
+
+
 # --- first comment follow-ups ----------------------------------------------------------------------
 
 def due_comments(queue: dict, now: float) -> list[tuple[dict, dict]]:

@@ -141,6 +141,11 @@ export function startAccountSetup(profileId: string): Promise<SetupProgress> {
   return post(`${accountPath(profileId)}/setup`, undefined, 'Failed to start the setup');
 }
 
+/** Facebook's first screens (camera roll consent) answered once by taps; nothing is posted. */
+export function startFacebookReady(profileId: string): Promise<SetupProgress> {
+  return post(`${accountPath(profileId)}/setup/get-ready`, undefined, 'Failed to get Facebook ready');
+}
+
 export function confirmAccountLogin(profileId: string): Promise<SetupProgress> {
   return post(`${accountPath(profileId)}/setup/login-done`, undefined, 'Failed to confirm the login');
 }

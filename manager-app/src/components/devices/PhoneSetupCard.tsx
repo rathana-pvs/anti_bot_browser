@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Check, Circle, Loader2, RotateCcw, X } from 'lucide-react';
 import { Profile } from '../../types/profile';
 import { SetupProgress } from '../../types/device';
-import { confirmAccountLogin, fetchAccountSetup, startAccountSetup } from '../../services/devices';
+import { confirmAccountLogin, fetchAccountSetup, startAccountSetup, startFacebookReady } from '../../services/devices';
 import { Button } from '../ui/Button';
 import { cn } from '../ui/cn';
 
@@ -34,7 +34,8 @@ export function PhoneSetupCard({ profile, onOpenScreen, onChanged }: {
   }, [profile.id]);
 
   useEffect(() => { void read(); }, [read]);
-  const running = progress?.state === 'running';
+  // "Get Facebook ready" runs after setup is done, so a running step counts too.
+  const running = progress?.state === 'running' || !!progress?.steps.some(step => step.status === 'running');
   useEffect(() => {
     if (!running) return;
     const timer = window.setInterval(() => void read(), POLL_MS);
@@ -57,6 +58,7 @@ export function PhoneSetupCard({ profile, onOpenScreen, onChanged }: {
   };
 
   const failed = progress?.steps.find(step => step.status === 'failed');
+  const ready = progress?.steps.find(step => step.key === 'facebook_ready');
   const started = progress && progress.state !== 'not_started';
   return <section className={card} aria-labelledby="overview-phone-setup">
     <h3 id="overview-phone-setup" className="mb-1 text-sm font-semibold text-zinc-100">Set up on the phone</h3>
@@ -76,6 +78,10 @@ export function PhoneSetupCard({ profile, onOpenScreen, onChanged }: {
         <Button size="sm" variant="outline" onClick={onOpenScreen}>Open the phone screen</Button>
         <Button size="sm" loading={busy} onClick={() => void act(() => confirmAccountLogin(profile.id))}>I’m logged in</Button>
         <span className="text-[11px] text-zinc-500">Log in to Facebook on the phone screen, then confirm.</span>
+      </> : !running && progress?.state === 'done' ? ready?.status !== 'passed' && <>
+        <Button size="sm" variant="outline" loading={busy} onClick={() => void act(() => startFacebookReady(profile.id))}>
+          {ready?.status === 'failed' ? <><RotateCcw className="mr-1.5 h-3.5 w-3.5" />Retry</> : 'Get Facebook ready'}</Button>
+        <span className="text-[11px] text-zinc-500">Opens Facebook’s gallery once so its first-use screens never stop a post. Nothing is posted.</span>
       </> : !running && progress?.state !== 'done' && <Button size="sm" loading={busy} onClick={() => void act(() => startAccountSetup(profile.id))}>
         {failed ? <><RotateCcw className="mr-1.5 h-3.5 w-3.5" />Retry</> : started ? 'Continue setup' : 'Start setup'}</Button>}
       {running && <span className="flex items-center gap-1.5 text-[11px] text-zinc-400"><Loader2 className="h-3 w-3 animate-spin" />

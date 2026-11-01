@@ -128,6 +128,11 @@ def start_setup(profile_id: str):
     return _call(lambda: android_setup.start(profile_id))
 
 
+@router.post("/accounts/{profile_id}/setup/get-ready")
+def get_facebook_ready(profile_id: str):
+    return _call(lambda: android_setup.start_get_ready(profile_id))
+
+
 @router.post("/accounts/{profile_id}/setup/login-done")
 def confirm_login(profile_id: str):
     return _call(lambda: android_setup.confirm_login(profile_id))

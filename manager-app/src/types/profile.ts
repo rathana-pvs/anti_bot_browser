@@ -182,7 +182,7 @@ export interface Profile {
   runtime?: AndroidRuntime;
   android_network?: AndroidNetwork;
   /** In-app setup progress of a phone account; `done` once the login is confirmed. */
-  android_setup?: { state?: string };
+  android_setup?: { state?: string; steps?: Record<string, { status?: string; reason?: string | null }> };
   group?: string;
   schema_version?: number;
   configuration_revision?: number;

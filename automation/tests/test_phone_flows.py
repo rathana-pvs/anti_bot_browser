@@ -260,6 +260,38 @@ class KeyboardTests(unittest.TestCase):
         self.assertIn(("tap", (500.0, 1200.0)), device.actions)
 
 
+class GetReadyTests(unittest.TestCase):
+    def test_consent_is_allowed_and_the_composer_left_without_posting(self):
+        device = FakeDevice([lines(("What's on your mind?", 300)), lines(("Gallery", 900)),
+                             lines(("Allow access to your camera roll", 400), ("Allow", 1100)),
+                             lines(("Gallery", 200))])
+        events = []
+        flows = Flows(device, lambda **e: events.append(e), human_only=True)
+
+        async def ok():
+            return None
+        with patch.object(flows, "open_feed", ok), patch.object(flows, "discard_until_feed", ok):
+            run(flows.get_ready())
+        kinds = [e["event"] for e in events]
+        self.assertIn("gallery_ready", kinds)
+        self.assertIn("camera roll consent", [e.get("kind") for e in events])
+        self.assertIn(("key", 4), device.actions)
+        self.assertNotIn("about_to_publish", kinds)
+
+    def test_runner_result_is_ready_or_failed(self):
+        async def ready(self_):
+            return None
+
+        async def broken(self_):
+            raise StepFailed("picker: still asking for camera roll access")
+        with patch.object(Flows, "get_ready", ready):
+            self.assertEqual(run(job.run_get_ready(FakeDevice(), lambda **e: None))["status"], "ready")
+        with patch.object(Flows, "get_ready", broken):
+            result = run(job.run_get_ready(FakeDevice(), lambda **e: None))
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("camera roll", result["reason"])
+
+
 class JobTests(unittest.TestCase):
     def run_job(self, publish=None, wait=None, start=None, comment=None):
         device = FakeDevice()

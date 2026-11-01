@@ -153,6 +153,14 @@ class FakePhone:
     def revoke_permission(self, serial, user_id, package, permission):
         pass
 
+    def deny_permission(self, serial, user_id, package, permission):
+        self.denied = getattr(self, "denied", set()) | {(user_id, package, permission)}
+
+    def permission_state(self, serial, user_id, package, permission):
+        if (user_id, package, permission) in getattr(self, "denied", set()) and not getattr(self, "denial_ignored", False):
+            return False, {"USER_SET", "USER_FIXED"}
+        return False, {"USER_SET"}
+
     def grant_permission(self, serial, user_id, package, permission):
         self.granted = getattr(self, "granted", set()) | {(user_id, package, permission)}
 
@@ -199,6 +207,8 @@ def phone(tmp_path, monkeypatch):
     monkeypatch.setattr(android_network, "OPEN_RETRY_S", 0)
     monkeypatch.setattr(android_network, "OPEN_VERIFY_TIMEOUT_S", 0)
     monkeypatch.setattr(proxy_service, "PROXY_POOL_FILE", pool)
+    fake.get_ready_runs = []
+    monkeypatch.setattr(android_setup, "start_get_ready", lambda pid: fake.get_ready_runs.append(pid))
     (root / "profile_020").mkdir(parents=True)
     (root / "profile_020" / "config.json").write_text(json.dumps({
         "id": "profile_020", "name": "Anna", "group": "Shop",
@@ -220,7 +230,7 @@ def statuses(progress):
 def test_setup_runs_every_step_then_waits_for_the_login(phone):
     progress = run_setup()
     assert progress["state"] == "waiting_login"
-    assert all(status == "passed" for key, status in statuses(progress).items() if key != "login")
+    assert all(status == "passed" for key, status in statuses(progress).items() if key not in ("login", "facebook_ready"))
     agent = phone.agents[11]
     assert agent.proxy["password"] == "secret" and agent.account["name"] == "Anna"
     assert (11, FACEBOOK) in phone.packages and phone.settings[(11, "secure", "location_mode")] == "0"
@@ -228,6 +238,36 @@ def test_setup_runs_every_step_then_waits_for_the_login(phone):
     assert phone.settings[(11, "system", "screen_off_timeout")] == "900000"
     assert android_ownership.role_of(json.loads(phone.files[android_ownership.PHONE_FILE])) == "primary"
     assert android_setup.confirm_login("profile_020")["state"] == "done"
+    assert phone.get_ready_runs == ["profile_020"]  # Facebook's first screens, in the background
+
+
+def test_camera_microphone_and_notifications_are_denied_for_good(phone):
+    run_setup()
+    for name in ("CAMERA", "RECORD_AUDIO", "POST_NOTIFICATIONS"):
+        assert (11, FACEBOOK, f"android.permission.{name}") in phone.denied
+
+
+def test_a_denial_the_phone_did_not_keep_fails_the_facebook_step(phone):
+    phone.denial_ignored = True
+    progress = run_setup()
+    assert statuses(progress)["facebook"] == "failed"
+    assert "did not keep CAMERA denied" in next(s["reason"] for s in progress["steps"] if s["key"] == "facebook")
+
+
+def test_get_ready_result_is_reported_on_its_step(phone, monkeypatch):
+    from backend.services import android_jobs
+    run_setup()
+    android_setup.confirm_login("profile_020")
+    monkeypatch.setattr(android_jobs, "run_get_ready", lambda pid: {"status": "failed", "reason": "picker: no Gallery"})
+    android_setup._running.add("profile_020")
+    android_setup._get_ready("profile_020")
+    step = next(s for s in android_setup.progress("profile_020")["steps"] if s["key"] == "facebook_ready")
+    assert (step["status"], step["reason"]) == ("failed", "picker: no Gallery")
+    assert android_setup.progress("profile_020")["state"] == "done"  # only reported
+    monkeypatch.setattr(android_jobs, "run_get_ready", lambda pid: {"status": "ready"})
+    android_setup._running.add("profile_020")
+    android_setup._get_ready("profile_020")
+    assert statuses(android_setup.progress("profile_020"))["facebook_ready"] == "passed"
 
 
 def test_retry_skips_steps_that_are_already_done(phone):
@@ -365,3 +405,21 @@ def test_a_proxy_that_does_not_work_leaves_the_phone_on_its_old_one(phone, tmp_p
     with pytest.raises(AdbError, match="kept its old one"):
         android_ownership.replace_proxy("profile_020", "dead")
     assert phone.agents[11].proxy["host"] == "9.142.198.36"
+
+
+def test_permission_state_is_read_from_the_right_user():
+    from backend.services.adb_client import parse_permission_state
+    dumpsys = """
+    User 0: ceDataInode=1
+      runtime permissions:
+        android.permission.CAMERA: granted=true, flags=[ USER_SET]
+    User 11: ceDataInode=2
+      runtime permissions:
+        android.permission.POST_NOTIFICATIONS: granted=false, flags=[ USER_SET|USER_FIXED|USER_SENSITIVE_WHEN_DENIED]
+        android.permission.CAMERA: granted=false, flags=[ USER_SET|USER_SENSITIVE_WHEN_GRANTED]
+    """
+    assert parse_permission_state(dumpsys, 11, "android.permission.CAMERA") == (False, {"USER_SET", "USER_SENSITIVE_WHEN_GRANTED"})
+    granted, flags = parse_permission_state(dumpsys, 11, "android.permission.POST_NOTIFICATIONS")
+    assert not granted and "USER_FIXED" in flags
+    assert parse_permission_state(dumpsys, 0, "android.permission.CAMERA") == (True, {"USER_SET"})
+    assert parse_permission_state(dumpsys, 12, "android.permission.CAMERA") is None
