@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,6 +36,34 @@ COMMENT_PENDING, COMMENT_RUNNING = "phone_pending", "phone_commenting"
 
 MAX_COMMENT_STARTS = 5
 _comments_running: set[str] = set()
+
+# Per-account cooldown so the same account doesn't post on a metronome. Keyed by profile_id, holds
+# the monotonic time the last post finished. Only published / uncertain outcomes record a cooldown;
+# failed-before-publish does not, so retries aren't throttled. In-memory is fine — a restart takes
+# longer than the cooldown anyway.
+POST_COOLDOWN_FLOOR_S = 60.0
+POST_COOLDOWN_MEAN_EXTRA_S = 60.0
+POST_COOLDOWN_CEILING_S = 240.0
+_last_post_at: dict[str, float] = {}
+
+
+def _post_cooldown_seconds() -> float:
+    """A 60 s floor plus an exponential tail with mean 60 s, clamped at 240 s: most gaps 60–180 s,
+    the occasional longer break — not a flat uniform."""
+    extra = min(POST_COOLDOWN_CEILING_S - POST_COOLDOWN_FLOOR_S,
+                random.expovariate(1 / POST_COOLDOWN_MEAN_EXTRA_S))
+    return POST_COOLDOWN_FLOOR_S + extra
+
+
+async def _wait_post_cooldown(profile_id: str) -> None:
+    last = _last_post_at.get(profile_id)
+    if last is None:
+        return
+    needed = _post_cooldown_seconds()
+    waited = time.monotonic() - last
+    remaining = needed - waited
+    if remaining > 0:
+        await asyncio.sleep(remaining)
 
 
 def now_iso() -> str:
@@ -166,6 +195,8 @@ async def execute_queue_phone(claim_res: dict) -> dict:
     reason = unsupported_reason(post)
     if reason or not serial:
         return finish("skipped_unsupported", reason or "The account's phone is not known.")
+    # Space posts for the same account; the phone stays free for other accounts during the wait.
+    await _wait_post_cooldown(profile_id)
     if not android_devices.hold_for_job(serial, f"post:{execution_id}"):
         def back_to_pending(ex):
             ex.update(status="pending", stage="pending", automation_container_owned=False)
@@ -232,6 +263,8 @@ async def execute_queue_phone(claim_res: dict) -> dict:
         record["scheduler_lease"] = None
         record["lifecycle_active"] = False
         android_devices.release_job(serial)
+        if record.get("status") in ("completed", "uncertain"):
+            _last_post_at[profile_id] = time.monotonic()
 
 
 # --- setup's first-use pass -----------------------------------------------------------------------

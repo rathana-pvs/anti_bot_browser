@@ -222,8 +222,10 @@ class PhoneDevice:
         await asyncio.sleep(random.uniform(0.5, 1.0))
 
     async def swipe(self, start: Point, end: Point, duration: float = 0.35) -> None:
-        """An eased finger path with a little sideways wobble, then wait for the scroll to stop."""
+        """An eased finger path with a little sideways wobble, then wait for the scroll to stop. The
+        per-step sleep carries a small jitter so events aren't on a perfect clock."""
         steps = 14
+        step_sleep = duration / steps
         await self._clear_of_approval()
         await self._touch(android_live.ACTION_DOWN, *start)
         for i in range(1, steps + 1):
@@ -231,32 +233,9 @@ class PhoneDevice:
             ease = t * t * (3 - 2 * t)
             await self._touch(android_live.ACTION_MOVE, start[0] + (end[0] - start[0]) * ease + random.uniform(-2, 2),
                               start[1] + (end[1] - start[1]) * ease)
-            await asyncio.sleep(duration / steps)
+            await asyncio.sleep(step_sleep * random.uniform(0.80, 1.20))
         await self._touch(android_live.ACTION_UP, *end)
         await self.settle()
-
-    async def warm(self, scrolls: int = 2) -> None:
-        """A short browse before the session's first post: varied swipe length and pacing, with a
-        rare short backtrack, so the account is not posting from a cold open. No-op after the first
-        call until `close()` resets the session."""
-        if self._warmed or scrolls <= 0:
-            return
-        self._warmed = True
-        reverse_at = random.randint(4, 6)  # one backtrack every 4–6 forward swipes
-        for i in range(scrolls):
-            dwell = random.uniform(4.0, 8.0) if random.random() < 0.15 else random.uniform(0.8, 2.5)
-            await asyncio.sleep(dwell)
-            x = self.width * random.uniform(0.20, 0.80)
-            span = self.height * random.uniform(0.40, 0.75)
-            duration = random.uniform(0.25, 0.55)
-            if i > 0 and i % reverse_at == 0:
-                start_y = self.height * random.uniform(0.25, 0.40)  # finger goes down: feed scrolls back
-                end_y = min(self.height * 0.95, start_y + span * 0.5)
-                reverse_at = random.randint(4, 6)
-            else:
-                start_y = self.height * random.uniform(0.70, 0.85)  # finger goes up: feed scrolls forward
-                end_y = max(self.height * 0.05, start_y - span)
-            await self.swipe((x, start_y), (x, end_y), duration=duration)
 
     async def key(self, code: int) -> None:
         await self._clear_of_approval()
@@ -273,6 +252,26 @@ class PhoneDevice:
         finally:
             await asyncio.to_thread(agent_call, self.client, self.serial, self.user_id, "clear_clipboard",
                                     AGENT_TIMEOUT_S)
+
+    async def type_text(self, text: str) -> None:
+        """Type text one or two characters at a time through scrcpy's inject-text, with per-chunk
+        random delays, so the field fills the way a thumb would type instead of landing all at once.
+        Caller handles the paste fallback if typing fails."""
+        await self._clear_of_approval()
+        i = 0
+        while i < len(text):
+            chunk_len = 1 if random.random() < 0.75 else 2
+            chunk = text[i:i + chunk_len]
+            # scrcpy caps inject-text at 300 bytes; one or two chars never approach that.
+            await self.session.send({"type": "text", "text": chunk})
+            i += len(chunk)
+            # Base ~70 ms/char with jitter, plus a longer pause at word breaks and the odd think.
+            delay = random.uniform(0.05, 0.11) * chunk_len
+            if chunk.endswith(" ") or chunk.endswith("\n"):
+                delay += random.uniform(0.10, 0.25)
+            if random.random() < 0.04:
+                delay += random.uniform(0.35, 0.90)
+            await asyncio.sleep(delay)
 
     # --- media --------------------------------------------------------------------------------
     def put_media(self, path: str, name: str) -> str:

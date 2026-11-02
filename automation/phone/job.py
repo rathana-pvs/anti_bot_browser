@@ -49,7 +49,7 @@ async def run_post(device, item: PostItem, media_path: str, log: Callable[..., N
         result["stage"] = "open"
         await flows.open_feed()
         result["stage"] = "warm"
-        await device.warm(scrolls=3)
+        await flows.warm(scrolls=3)
         result["stage"] = "compose"
         await flows.start_post(item)
         result["stage"] = "publish"

@@ -8,6 +8,8 @@ the publish tap is ever retried: an unconfirmed publish is uncertain, not failed
 from __future__ import annotations
 
 import asyncio
+import random
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Callable
@@ -15,6 +17,27 @@ from typing import Callable
 from phone import screen
 from phone.device import KEY_BACK, KEY_ESCAPE, KEY_HOME
 from phone.screen import Line, Point, match, texts
+
+# A URL or long digit run that nobody types on a phone; paste is used so the caption lands verbatim.
+_PASTE_PATTERNS = (
+    re.compile(r"https?://|www\.", re.IGNORECASE),
+    re.compile(r"\b\w+\.(com|net|org|co|io|me|app|dev|xyz|info|biz)\b", re.IGNORECASE),
+    re.compile(r"\d{6,}"),
+)
+
+
+def _should_paste(text: str) -> bool:
+    """True when the text is something a real person pastes rather than types on a phone: URLs,
+    long number runs, or multi-line captions. For other text, length and content weight the choice."""
+    if "\n" in text:
+        return True
+    if any(pattern.search(text) for pattern in _PASTE_PATTERNS):
+        return True
+    if len(text) <= 30:
+        return False
+    if len(text) > 150:
+        return random.random() < 0.70
+    return random.random() < 0.20
 
 FEED_PROMPT = "What's on your mind?"
 # A Page's composer once a photo is picked; it shows POST right there, with no Next.
@@ -121,6 +144,62 @@ class Flows:
                 raise StepFailed("keyboard: still shown after Escape; not scrolling over it")
             await dev.key(KEY_BACK)
         await dev.swipe(start, end)
+
+    # --- warming ------------------------------------------------------------------------------
+    async def warm(self, scrolls: int = 3) -> None:
+        """A short browse before the session's first post: varied swipes with the occasional backtrack
+        and, once in a while, a tap into a post. No-op after the first call until the device's
+        session closes. Failures are swallowed: warming is comfort, never fatal."""
+        dev = self.device
+        if dev._warmed or scrolls <= 0:
+            return
+        dev._warmed = True
+        reverse_at = random.randint(4, 6)
+        tap_after = random.randint(2, 3)
+        forward_count = 0
+        try:
+            for i in range(scrolls):
+                dwell = random.uniform(4.0, 8.0) if random.random() < 0.15 else random.uniform(0.8, 2.5)
+                await dev.sleep(dwell)
+                if forward_count >= tap_after and random.random() < 0.5:
+                    if await self._warm_open_post():
+                        tap_after = forward_count + random.randint(3, 5)
+                        continue
+                    break  # recovery failed; stop warming rather than risk the post
+                x = dev.width * random.uniform(0.20, 0.80)
+                span = dev.height * random.uniform(0.40, 0.75)
+                duration = random.uniform(0.25, 0.55)
+                if i > 0 and i % reverse_at == 0:
+                    start_y = dev.height * random.uniform(0.25, 0.40)  # finger down: feed goes back
+                    end_y = min(dev.height * 0.95, start_y + span * 0.5)
+                    reverse_at = i + random.randint(4, 6)
+                else:
+                    start_y = dev.height * random.uniform(0.70, 0.85)  # finger up: feed goes forward
+                    end_y = max(dev.height * 0.05, start_y - span)
+                    forward_count += 1
+                await dev.swipe((x, start_y), (x, end_y), duration=duration)
+        except (StepFailed, Exception) as warm_error:  # don't let warming fail the job
+            self.log(event="warm_skipped", reason=str(warm_error)[:200])
+
+    async def _warm_open_post(self) -> bool:
+        """Tap something in the middle of the feed, dwell, then Back to the feed. True if the feed
+        comes back; False if it does not after a few tries (the caller should stop warming)."""
+        dev = self.device
+        x = dev.width * random.uniform(0.30, 0.70)
+        y = dev.height * random.uniform(0.40, 0.65)
+        self.log(event="warm", action="tap into post")
+        await dev.tap((x, y))
+        await dev.sleep(random.uniform(2.0, 5.0))
+        for _ in range(3):
+            lines = await dev.read()
+            if await self.close_interruption(lines):
+                continue
+            if match(lines, FEED_PROMPT) or match(lines, "facebook", exact=True):
+                return True
+            await dev.key(KEY_BACK)
+            await dev.sleep(0.8)
+        self.log(event="warm", action="tap recovery incomplete")
+        return False
 
     # --- feed ---------------------------------------------------------------------------------
     async def open_feed(self) -> None:
@@ -267,12 +346,30 @@ class Flows:
         await self.device.key(KEY_BACK)  # the picker, then the empty composer is discarded
         await self.discard_until_feed()
 
+    async def _enter_text(self, text: str, kind: str) -> None:
+        """Paste or type into the focused field. Paste is used for URLs, newlines and long captions;
+        otherwise we type with per-chunk delays. A mid-type failure falls back to paste so one
+        flaky keystroke doesn't lose the job."""
+        if not text:
+            return
+        dev = self.device
+        if _should_paste(text):
+            self.log(event="input", kind=kind, method="paste", length=len(text))
+            await dev.paste(text)
+            return
+        try:
+            self.log(event="input", kind=kind, method="type", length=len(text))
+            await dev.type_text(text)
+        except Exception as typing_failed:
+            self.log(event="input_fallback", kind=kind, reason=str(typing_failed)[:200])
+            await dev.paste(text)
+
     async def write_caption(self, item: PostItem) -> None:
         dev = self.device
         _, field_point, _ = await self.wait_for("caption field", [FEED_PROMPT, PHOTO_PROMPT, "Describe your reel",
                                                                   "Add a description"], timeout=15)
         await dev.tap(field_point)
-        await dev.paste(item.caption)
+        await self._enter_text(item.caption, "caption")
         await dev.key(KEY_ESCAPE)
         lines = await dev.read()
         if item.caption_key and not match(lines, item.caption_key) and not (
@@ -420,7 +517,7 @@ class Flows:
         dev = self.device
         _, box, _ = await self.wait_for("comment box", COMMENT_BOX, timeout=10)
         await dev.tap(box)
-        await dev.paste(item.comment)
+        await self._enter_text(item.comment, "comment")
         key = screen.caption_key(item.comment)
         if key and not match(await dev.read(), key[:16]):
             # Something else is in the box (or nothing): never send it. Clear by leaving the sheet.
