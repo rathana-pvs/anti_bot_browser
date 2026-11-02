@@ -70,6 +70,7 @@ class PhoneDevice:
         self.frame_count = 0
         self._lock = threading.Lock()
         self._tasks: list[asyncio.Task] = []
+        self._warmed = False
 
     # --- session ------------------------------------------------------------------------------
     async def open(self) -> None:
@@ -94,6 +95,7 @@ class PhoneDevice:
         if self.session:
             await android_live.close_session(self.session)
             self.session = None
+        self._warmed = False
 
     def _wake_into_user(self) -> None:
         """The account's Android user on screen, awake and past a swipe lock screen."""
@@ -232,6 +234,29 @@ class PhoneDevice:
             await asyncio.sleep(duration / steps)
         await self._touch(android_live.ACTION_UP, *end)
         await self.settle()
+
+    async def warm(self, scrolls: int = 2) -> None:
+        """A short browse before the session's first post: varied swipe length and pacing, with a
+        rare short backtrack, so the account is not posting from a cold open. No-op after the first
+        call until `close()` resets the session."""
+        if self._warmed or scrolls <= 0:
+            return
+        self._warmed = True
+        reverse_at = random.randint(4, 6)  # one backtrack every 4–6 forward swipes
+        for i in range(scrolls):
+            dwell = random.uniform(4.0, 8.0) if random.random() < 0.15 else random.uniform(0.8, 2.5)
+            await asyncio.sleep(dwell)
+            x = self.width * random.uniform(0.20, 0.80)
+            span = self.height * random.uniform(0.40, 0.75)
+            duration = random.uniform(0.25, 0.55)
+            if i > 0 and i % reverse_at == 0:
+                start_y = self.height * random.uniform(0.25, 0.40)  # finger goes down: feed scrolls back
+                end_y = min(self.height * 0.95, start_y + span * 0.5)
+                reverse_at = random.randint(4, 6)
+            else:
+                start_y = self.height * random.uniform(0.70, 0.85)  # finger goes up: feed scrolls forward
+                end_y = max(self.height * 0.05, start_y - span)
+            await self.swipe((x, start_y), (x, end_y), duration=duration)
 
     async def key(self, code: int) -> None:
         await self._clear_of_approval()
