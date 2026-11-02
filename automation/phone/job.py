@@ -11,6 +11,7 @@ Outcomes:
 from __future__ import annotations
 
 import asyncio
+import random
 import uuid
 from typing import Callable
 
@@ -71,6 +72,8 @@ async def run_post(device, item: PostItem, media_path: str, log: Callable[..., N
     except Exception as failure:  # a dropped stream counts too: after the tap it is never "failed"
         result.update(status="uncertain" if tapped else "failed", reason=f"{type(failure).__name__}: {failure}"[:400])
     finally:
+        if result["status"] == "published" and result["comment"] in ("not_requested", "pending", "posted"):
+            await _after_success(flows)
         result["seconds"] = round(device.now() - begun)
         log(event=result["status"], stage=result["stage"], reason=result.get("reason"))
         await _clean_up(flows, result, media_uri)
@@ -94,6 +97,8 @@ async def run_comment(device, item: PostItem, log: Callable[..., None], *, publi
     except AccountBlocked as blocked:
         result.update(comment="blocked", reason=str(blocked), account_blocked=True)
     finally:
+        if result.get("comment") == "posted":
+            await _after_success(flows)
         await _home(flows)
     return result
 
@@ -149,6 +154,19 @@ async def _clean_up(flows: Flows, result: dict, media_uri: str | None) -> None:
                 result["media_left"] = media_uri
                 flows.log(event="media_not_removed", reason=str(error)[:200])
     await _home(flows)
+
+
+async def _after_success(flows: Flows) -> None:
+    """Linger on the confirmed result, then browse a little before leaving Facebook."""
+    try:
+        flows.log(event="after_success", action="pause and browse")
+        await flows.device.sleep(random.uniform(3.0, 5.0))
+        await flows.discard_until_feed()
+        await flows.scroll(flows.device.pt(540, 1700), flows.device.pt(540, 1100))
+        await flows.device.sleep(random.uniform(2.0, 4.0))
+    except Exception as error:
+        # Optional browsing cannot undo a confirmed post/comment or cause it to be retried.
+        flows.log(event="after_success_skipped", reason=str(error)[:200])
 
 
 async def _home(flows: Flows) -> None:

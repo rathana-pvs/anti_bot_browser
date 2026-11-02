@@ -131,13 +131,47 @@ class FeedTests(unittest.TestCase):
         run(Flows(device, lambda **e: None).open_feed())
         self.assertIn(("tap", (100.0, 500.0 - device.pt(0, 110)[1])), device.actions)
 
-    def test_a_feed_still_far_down_after_scrolling_taps_the_home_tab(self):
+    def test_a_scrolled_feed_taps_home_before_swiping(self):
+        device = FakeDevice([lines(("facebook", 100)),
+                             lines(("facebook", 100), ("What's on your mind?", 200))])
+        device.icons["home_tab"] = (48.0, 1211.0)
+        run(Flows(device, lambda **e: None).discard_until_feed())
+        self.assertEqual(device.actions, [("tap", (48.0, 1211.0))])
+
+    def test_home_that_does_not_reach_the_composer_falls_back_to_swiping(self):
         device = FakeDevice([lines(("facebook", 100)), lines(("facebook", 100)),
                              lines(("facebook", 100), ("What's on your mind?", 200))])
         device.icons["home_tab"] = (48.0, 1211.0)
         run(Flows(device, lambda **e: None).discard_until_feed())
-        self.assertEqual(device.actions, device.actions[:2] + [("tap", (48.0, 1211.0))])
-        self.assertEqual([action[0] for action in device.actions[:2]], ["swipe", "swipe"])
+        self.assertEqual([action[0] for action in device.actions], ["tap", "swipe", "swipe"])
+
+    def test_start_post_recovers_the_scrolled_feed_before_opening_gallery(self):
+        for kind in ("photo", "reel"):
+            with self.subTest(kind=kind):
+                feed = lines(("facebook", 100), ("What's on your mind?", 200))
+                device = FakeDevice([lines(("facebook", 100)), feed, feed,
+                                     lines(("Gallery", 900)), lines(("Gallery", 200))])
+                device.icons["home_tab"] = (48.0, 1211.0)
+                flows = Flows(device, lambda **e: None)
+
+                async def compose():
+                    await flows.open_gallery()
+
+                async def caption(item):
+                    pass
+
+                with patch.object(flows, "_compose_from_gallery", compose), \
+                        patch.object(flows, "write_caption", caption):
+                    run(flows.start_post(PostItem(kind, "Clip")))
+                self.assertEqual(device.actions[:2], [("tap", (48.0, 1211.0)), ("tap", (100.0, 200.0))])
+
+    def test_start_post_does_not_compose_if_home_and_swipes_cannot_recover_feed(self):
+        device = FakeDevice([lines(("facebook", 100))])
+        device.icons["home_tab"] = (48.0, 1211.0)
+        flows = Flows(device, lambda **e: None)
+        with patch.object(flows, "_compose_from_gallery") as compose, self.assertRaises(StepFailed):
+            run(flows.start_post(PostItem("reel", "Clip")))
+        compose.assert_not_called()
 
     def test_the_last_try_reaching_the_top_counts(self):
         device = FakeDevice([lines(("facebook", 100))] * 8 + [lines(("facebook", 100), ("What's on your mind?", 200))])
@@ -333,7 +367,7 @@ class PublishTests(unittest.TestCase):
 
     def test_video_that_opens_a_plain_post_goes_through_create_reel(self):
         feed = lines(("facebook", 100), ("What's on your mind?", 300))
-        device = FakeDevice([feed, feed, lines(("All", 1100), ("Create reel", 800)),
+        device = FakeDevice([feed, feed, feed, lines(("All", 1100), ("Create reel", 800)),
                              lines(("Gallery", 280)), lines(("→ Next", 1130)), lines(("Describe your reel", 300)),
                              lines(("Describe your reel", 300)), lines(("Morning coffee test", 300))])
         flows = Flows(device, lambda **e: None)
@@ -481,7 +515,7 @@ class GetReadyTests(unittest.TestCase):
 
 
 class JobTests(unittest.TestCase):
-    def run_job(self, publish=None, wait=None, start=None, comment=None):
+    def run_job(self, publish=None, wait=None, start=None, comment=None, comment_now=True):
         device = FakeDevice()
         events = []
 
@@ -495,6 +529,7 @@ class JobTests(unittest.TestCase):
         async def published(self_, item, at):
             return 12.0
         patches = [patch.object(Flows, "open_feed", ok), patch.object(Flows, "discard_until_feed", ok),
+                   patch.object(Flows, "warm", ok),
                    patch.object(Flows, "start_post", start or ok), patch.object(Flows, "publish", publish or tapped),
                    patch.object(Flows, "wait_published", wait or published),
                    patch.object(Flows, "find_and_comment", comment or (lambda *a, **k: ok()))]
@@ -503,7 +538,7 @@ class JobTests(unittest.TestCase):
         try:
             with patch.object(job, "media_mime", lambda path: "image/jpeg"):
                 result = run(job.run_post(device, PostItem("photo", "Morning coffee test", "First!"),
-                                          "/media/a.jpg", lambda **e: events.append(e)))
+                                          "/media/a.jpg", lambda **e: events.append(e), comment_now=comment_now))
         finally:
             for item in patches:
                 item.stop()
@@ -516,6 +551,49 @@ class JobTests(unittest.TestCase):
         self.assertEqual((result["status"], result["comment"], result["comment_looks"]), ("published", "posted", 2))
         self.assertEqual(device.deleted, ["content://agent/media/1"])
 
+    def test_confirmed_post_lingers_and_scrolls_before_home_with_comment_deferred(self):
+        with patch.object(job.random, "uniform", return_value=4.0):
+            result, device, events = self.run_job(comment_now=False)
+        self.assertEqual((result["status"], result["comment"]), ("published", "pending"))
+        self.assertEqual(result["seconds"], 9)  # two four-second pauses plus the swipe
+        self.assertEqual([a[0] for a in device.actions], ["swipe", "key"])
+        self.assertEqual(device.actions[-1], ("key", phone_device.KEY_HOME))
+        self.assertIn("after_success", [e["event"] for e in events])
+
+    def test_confirmed_follow_up_comment_lingers_before_home(self):
+        device = FakeDevice([lines(("facebook", 100), ("What's on your mind?", 200))])
+        events = []
+
+        async def commented(*args):
+            return 1
+
+        with patch.object(Flows, "find_and_comment", commented), patch.object(job.random, "uniform", return_value=4.0):
+            result = run(job.run_comment(device, PostItem("reel", "Clip", "First!"), lambda **e: events.append(e)))
+        self.assertEqual(result["comment"], "posted")
+        self.assertGreaterEqual(device.now(), 9)
+        self.assertEqual([a[0] for a in device.actions], ["swipe", "key"])
+        self.assertEqual(device.actions[-1], ("key", phone_device.KEY_HOME))
+
+    def test_optional_browsing_failure_keeps_publication_confirmed(self):
+        async def dropped(*args):
+            raise ConnectionResetError("stream closed")
+
+        with patch.object(Flows, "scroll", dropped):
+            result, device, events = self.run_job(comment_now=False)
+        self.assertEqual(result["status"], "published")
+        self.assertEqual(device.deleted, ["content://agent/media/1"])
+        self.assertEqual(device.actions[-1], ("key", phone_device.KEY_HOME))
+        self.assertIn("after_success_skipped", [e["event"] for e in events])
+
+    def test_uncertain_comment_does_not_browse(self):
+        async def uncertain(*args):
+            raise job.CommentUncertain("send not confirmed")
+
+        result, device, events = self.run_job(comment=uncertain)
+        self.assertEqual((result["status"], result["comment"]), ("published", "uncertain"))
+        self.assertNotIn("after_success", [e["event"] for e in events])
+        self.assertFalse(any(a[0] == "swipe" for a in device.actions))
+
     def test_failure_before_the_tap_is_a_plain_failure(self):
         async def broken(self_, item):
             raise StepFailed("composer: none of ['Gallery'] appeared")
@@ -526,10 +604,11 @@ class JobTests(unittest.TestCase):
     def test_lost_stream_after_the_tap_is_uncertain_and_keeps_the_media(self):
         async def dropped(self_, item, at):
             raise ConnectionResetError("stream closed")
-        result, device, _ = self.run_job(wait=dropped)
+        result, device, events = self.run_job(wait=dropped)
         self.assertEqual((result["status"], result["stage"]), ("uncertain", "confirm"))
         self.assertEqual(device.deleted, [])
         self.assertEqual(result["media_left"], "content://agent/media/1")
+        self.assertNotIn("after_success", [e["event"] for e in events])
 
     def test_approval_screen_stops_the_job_without_breaking_cleanup(self):
         async def stayed(self_, item):
@@ -538,7 +617,9 @@ class JobTests(unittest.TestCase):
         async def stuck(self_):
             raise phone_device.ApprovalScreenUp("stayed open")
         with patch.object(job.Flows, "discard_until_feed", stuck):
-            with patch.object(Flows, "open_feed", lambda self_: asyncio.sleep(0)), patch.object(Flows, "start_post", stayed), \
+            with patch.object(Flows, "open_feed", lambda self_: asyncio.sleep(0)), \
+                    patch.object(Flows, "warm", lambda self_, **kw: asyncio.sleep(0)), \
+                    patch.object(Flows, "start_post", stayed), \
                     patch.object(job, "media_mime", lambda path: "image/jpeg"):
                 result = run(job.run_post(FakeDevice(), PostItem("photo", "Morning coffee test"), "/media/a.jpg",
                                           lambda **e: None))

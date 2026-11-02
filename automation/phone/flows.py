@@ -226,7 +226,7 @@ class Flows:
     async def discard_until_feed(self) -> None:
         """Back to the feed without publishing anything: a draft left by an earlier job is discarded."""
         dev = self.device
-        scrolled = False
+        home_attempted = False
         for _ in range(8):
             try:
                 found, _, lines = await self.wait_for("open facebook", [
@@ -245,15 +245,15 @@ class Flows:
             if match(lines, "facebook", exact=True) and not match(lines, "New post"):
                 if match(lines, FEED_PROMPT):
                     return
-                home = dev.find_icon("home_tab") if scrolled else None
-                if home:  # still far down: the Home tab jumps to the top (under the logo on a Page, else at the bottom)
+                home = dev.find_icon("home_tab") if not home_attempted else None
+                if home:  # Jump to the top first; if it does not work, fall back to bounded swipes.
+                    home_attempted = True
                     self.log(event="feed", action="tap Home")
                     await dev.tap(home)
                 else:
                     self.log(event="feed", action="scroll to top")  # reopened part-way down the feed
                     await self.scroll(dev.pt(540, 700), dev.pt(540, 1900))
                     await self.scroll(dev.pt(540, 700), dev.pt(540, 1900))
-                    scrolled = True
                 await dev.settle(timeout=2.0)  # read the feed where it stopped, not while it still moves
                 continue
             self.log(event="leftover", screen=found, action="back")
@@ -268,6 +268,8 @@ class Flows:
     # --- composing ----------------------------------------------------------------------------
     async def start_post(self, item: PostItem) -> None:
         """The composer with this job's media and caption."""
+        # Warming can leave the feed far below its composer.
+        await self.discard_until_feed()
         try:
             await self._compose_from_gallery()
         except NotAReel as plain:
