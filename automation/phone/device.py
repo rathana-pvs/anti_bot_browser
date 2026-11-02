@@ -3,14 +3,13 @@
 Frames come from a scrcpy stream (H.264 decoded with PyAV; a still screen sends no frames, so the last
 one is kept). Touches and keys go over scrcpy's control socket, text through the companion app's
 clipboard in the account's own Android user, and media through the companion app's gallery writer.
-Shortcut intents (`am start`) exist only as the hybrid route's logged fallbacks.
+Facebook is only ever operated through the screen: no intents are sent to it.
 """
 
 from __future__ import annotations
 
 import asyncio
 import random
-import shlex
 import struct
 import threading
 import time
@@ -27,15 +26,21 @@ from backend.services.android_agent import AGENT_AUTHORITY, agent_call
 from phone.screen import Line, Point, find_template, lines_from_ocr, load_templates
 
 FACEBOOK = "com.facebook.katana"
-SHARE_COMPONENT = f"{FACEBOOK}/com.facebook.composer.shareintent.ImplicitShareIntentHandlerDefaultAlias"
 KEY_HOME, KEY_BACK, KEY_ESCAPE, KEY_PASTE = 3, 4, 111, 279
 AGENT_TIMEOUT_S = 15.0
 MEDIA_SAVE_TIMEOUT_S = 60.0
+# Facebook's own login approval screen: it can open over the feed at any moment, and input must never land on it.
+APPROVAL_SCREEN = "approvefromanotherdevice"
+APPROVAL_WAIT_S = 15.0
 MIME = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".mp4": "video/mp4"}
 
 
 class PhoneError(RuntimeError):
     pass
+
+
+class ApprovalScreenUp(PhoneError):
+    """Facebook's login approval screen stayed up: a person looks at it; nothing is tapped."""
 
 
 def media_mime(path: str) -> str:
@@ -183,6 +188,24 @@ class PhoneDevice:
                 return
 
     # --- acting -------------------------------------------------------------------------------
+    def _approval_up(self) -> bool:
+        return APPROVAL_SCREEN in (self.focus() or "")
+
+    async def _clear_of_approval(self) -> None:
+        """Right before any input: waits while the login approval screen has focus, keeping its frame."""
+        if not await asyncio.to_thread(self._approval_up):
+            return
+        self.log(event="approval_screen", action="waiting, no input")
+        self.snapshot(f"approval_screen_{int(time.time())}")
+        deadline = time.monotonic() + APPROVAL_WAIT_S
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.5)
+            if not await asyncio.to_thread(self._approval_up):
+                self.log(event="approval_screen", action="closed by itself")
+                return
+        self.snapshot(f"approval_screen_stayed_{int(time.time())}")
+        raise ApprovalScreenUp("Facebook's login approval screen stayed open; check the account on the phone")
+
     async def _touch(self, action: int, x: float, y: float) -> None:
         await self.session.send({"type": "touch", "action": action, "x": int(x), "y": int(y),
                                  "width": self.width, "height": self.height})
@@ -190,6 +213,7 @@ class PhoneDevice:
     async def tap(self, point: Point, jitter: float = 4) -> None:
         x, y = point[0] + random.uniform(-jitter, jitter), point[1] + random.uniform(-jitter, jitter)
         await asyncio.sleep(random.uniform(0.25, 0.7))
+        await self._clear_of_approval()
         await self._touch(android_live.ACTION_DOWN, x, y)
         await asyncio.sleep(random.uniform(0.05, 0.12))
         await self._touch(android_live.ACTION_UP, x, y)
@@ -198,6 +222,7 @@ class PhoneDevice:
     async def swipe(self, start: Point, end: Point, duration: float = 0.35) -> None:
         """An eased finger path with a little sideways wobble, then wait for the scroll to stop."""
         steps = 14
+        await self._clear_of_approval()
         await self._touch(android_live.ACTION_DOWN, *start)
         for i in range(1, steps + 1):
             t = i / steps
@@ -209,6 +234,7 @@ class PhoneDevice:
         await self.settle()
 
     async def key(self, code: int) -> None:
+        await self._clear_of_approval()
         await self.session.send({"type": "key", "keycode": code})
         await asyncio.sleep(random.uniform(0.5, 0.9))
 
@@ -225,7 +251,7 @@ class PhoneDevice:
 
     # --- media --------------------------------------------------------------------------------
     def put_media(self, path: str, name: str) -> str:
-        """Human route: the companion app saves the file to this user's gallery as its own item, like
+        """The companion app saves the file to this user's gallery as its own item, like
         any app saving a download. Returns the gallery item's content URI."""
         mime = media_mime(path)
         uri = f"content://{AGENT_AUTHORITY}/media?name={name}&mime={mime}"
@@ -240,43 +266,8 @@ class PhoneDevice:
             time.sleep(0.5)
         raise PhoneError("The companion app did not finish saving the media")
 
-    def put_media_shell(self, path: str, name: str) -> str:
-        """Shortcut: the shell adds the file to the media store (recorded as owned by the shell)."""
-        mime = media_mime(path)
-        video = mime.startswith("video/")
-        collection = "content://media/external/" + ("video" if video else "images") + "/media"
-        user = str(self.user_id)
-        self.client.shell(self.serial, "content", "insert", "--user", user, "--uri", collection,
-                          "--bind", f"_display_name:s:{name}", "--bind", f"mime_type:s:{mime}",
-                          "--bind", f"relative_path:s:{'Movies/' if video else 'Pictures/'}")
-        where = shlex.quote(f"_display_name='{name}'")
-        found = self.client.shell(self.serial, f"content query --user {user} --uri {collection} "
-                                               f"--projection _id --where {where}")
-        ids = [part.split("=", 1)[1].strip() for part in found.split() if part.startswith("_id=")]
-        if not ids:
-            raise PhoneError("The media store did not accept the file")
-        uri = f"{collection}/{ids[-1]}"
-        self.client.write_content(self.serial, self.user_id, uri, path)
-        return uri
-
     def delete_media(self, uri: str) -> None:
         if uri.startswith("content://media/"):
             self.client.shell(self.serial, "content", "delete", "--user", str(self.user_id), "--uri", uri)
         else:
             agent_call(self.client, self.serial, self.user_id, "delete_media", AGENT_TIMEOUT_S, {"uri": uri})
-
-    # --- shortcuts (hybrid route fallbacks only) ----------------------------------------------
-    def launch_facebook(self) -> None:
-        self.client.start_activity(self.serial, self.user_id, "-a", "android.intent.action.MAIN",
-                                   "-c", "android.intent.category.LAUNCHER", "-p", FACEBOOK)
-
-    def share_to_composer(self, uri: str, mime: str) -> None:
-        """Always Facebook's own share component, never Android's chooser (which also offers profile
-        picture and Stories)."""
-        self.client.start_activity(self.serial, self.user_id, "-a", "android.intent.action.SEND", "-t", mime,
-                                   "--eu", "android.intent.extra.STREAM", uri, "--grant-read-uri-permission",
-                                   "-n", SHARE_COMPONENT)
-
-    def open_profile_link(self) -> None:
-        self.client.start_activity(self.serial, self.user_id, "-a", "android.intent.action.VIEW",
-                                   "-d", "fb://profile", "-p", FACEBOOK)

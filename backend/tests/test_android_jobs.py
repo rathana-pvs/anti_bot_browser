@@ -89,7 +89,7 @@ def test_phone_accounts_are_accepted_by_the_queue():
 
 def test_published_post_leaves_the_comment_for_a_follow_up(world, monkeypatch):
     runner(monkeypatch, world, [{"event": "about_to_publish"}, {"event": "published"}],
-           {"status": "published", "comment": "pending", "fallbacks": []})
+           {"status": "published", "comment": "pending"})
     result = asyncio.run(android_jobs.execute_queue_phone(claim(world)))
     ex = execution(world)
     assert result == {"success": True, "status": "published"}

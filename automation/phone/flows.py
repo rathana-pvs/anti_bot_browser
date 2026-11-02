@@ -1,9 +1,8 @@
 """Facebook flows on a phone, done the way a person would: launcher icon, feed, Gallery, profile picture.
 
-Hybrid route: each step tries on-screen taps first. When that fails before the publish tap, the step
-may use its shortcut (an intent from the shell) once, after the screen is back on the feed, and the
-fallback is logged with its frame. Account problems (logged out, checkpoint) never fall back, and
-nothing after the publish tap is ever retried: an unconfirmed publish is uncertain, not failed.
+Every step reads the screen with OCR and taps what it sees; Facebook is never started or steered by an
+intent from the shell. A step that does not reach its screen fails the job with a report. Nothing after
+the publish tap is ever retried: an unconfirmed publish is uncertain, not failed.
 """
 
 from __future__ import annotations
@@ -11,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable
+from typing import Callable
 
 from phone import screen
 from phone.device import KEY_BACK, KEY_ESCAPE, KEY_HOME
@@ -31,7 +30,7 @@ class StepFailed(Exception):
 
 
 class AccountBlocked(Exception):
-    """Logged out or stopped by Facebook: the account needs review; no shortcut is tried."""
+    """Logged out or stopped by Facebook: the account needs review."""
 
 
 class PublishUncertain(Exception):
@@ -56,12 +55,9 @@ class PostItem:
 
 
 class Flows:
-    def __init__(self, device, log: Callable[..., None], human_only: bool = False):
+    def __init__(self, device, log: Callable[..., None]):
         self.device = device
         self.log = log
-        self.human_only = human_only
-        self.fallbacks: list[dict] = []
-        self._fallen_back: set[str] = set()
 
     # --- waiting ------------------------------------------------------------------------------
     async def wait_for(self, step: str, any_of: list[str], timeout: float = 20.0, exact: bool = False,
@@ -103,26 +99,6 @@ class Flows:
             await self.device.key(KEY_BACK)
         return True
 
-    # --- hybrid route -------------------------------------------------------------------------
-    async def hybrid(self, step: str, human: Callable[[], Awaitable], shortcut: Callable[[], Awaitable] | None):
-        try:
-            return await human()
-        except StepFailed as failure:
-            if self.human_only or shortcut is None or step in self._fallen_back:
-                raise
-            self._fallen_back.add(step)
-            frame = self.device.snapshot(f"fallback_{step}_{int(time.time())}")
-            record = {"step": step, "reason": str(failure)[:300], "frame": frame}
-            self.log(event="fallback", **record)
-            try:
-                result = await shortcut()
-            except StepFailed as again:
-                self.fallbacks.append({**record, "worked": False})
-                self.log(event="fallback_failed", step=step, reason=str(again)[:300])
-                raise
-            self.fallbacks.append({**record, "worked": True})
-            return result
-
     async def scroll(self, start: Point, end: Point) -> None:
         """A swipe that never lands on the keyboard: with the keyboard up (a comment box focused) it
         would gesture-type words into the box. The keyboard is hidden and its sheet closed first."""
@@ -138,12 +114,6 @@ class Flows:
     # --- feed ---------------------------------------------------------------------------------
     async def open_feed(self) -> None:
         """Facebook on its feed, scrolled to the top, with nothing half-made left open."""
-        async def by_intent():
-            await asyncio.to_thread(self.device.launch_facebook)
-            await self.discard_until_feed()
-        await self.hybrid("open_facebook", self._open_from_launcher, by_intent)
-
-    async def _open_from_launcher(self) -> None:
         dev = self.device
         # Home twice closes an open app drawer; then open it, scrolled to the top when needed.
         await dev.key(KEY_HOME)
@@ -166,6 +136,7 @@ class Flows:
     async def discard_until_feed(self) -> None:
         """Back to the feed without publishing anything: a draft left by an earlier job is discarded."""
         dev = self.device
+        scrolled = False
         for _ in range(8):
             try:
                 found, _, lines = await self.wait_for("open facebook", [
@@ -181,26 +152,33 @@ class Flows:
                 await dev.tap(discard)
                 await dev.sleep(1)
                 continue
-            if match(lines, "facebook", exact=True) and not match(lines, "New post"):
+            logo = match(lines, "facebook", exact=True)
+            if logo and not match(lines, "New post"):
                 if match(lines, FEED_PROMPT):
                     return
-                self.log(event="feed", action="scroll to top")  # reopened part-way down the feed
-                await self.scroll(dev.pt(540, 700), dev.pt(540, 1900))
-                await self.scroll(dev.pt(540, 700), dev.pt(540, 1900))
+                if scrolled:  # still far down: the Home tab, under the logo at the left, jumps to the top
+                    self.log(event="feed", action="tap Home")
+                    await dev.tap((dev.pt(135, 0)[0], logo[1] + dev.pt(0, 107)[1]))
+                else:
+                    self.log(event="feed", action="scroll to top")  # reopened part-way down the feed
+                    await self.scroll(dev.pt(540, 700), dev.pt(540, 1900))
+                    await self.scroll(dev.pt(540, 700), dev.pt(540, 1900))
+                    scrolled = True
+                await dev.settle(timeout=2.0)  # read the feed where it stopped, not while it still moves
                 continue
             self.log(event="leftover", screen=found, action="back")
             await dev.key(KEY_BACK)
             await dev.sleep(0.8)
-        raise StepFailed("open facebook: could not reach the feed")
+        lines = await dev.read()  # the last pass may have just reached the top
+        if match(lines, "facebook", exact=True) and match(lines, FEED_PROMPT):
+            return
+        dev.snapshot(f"fail_feed_{int(time.time())}")
+        raise StepFailed(f"open facebook: could not reach the feed; screen shows {texts(lines)}")
 
     # --- composing ----------------------------------------------------------------------------
-    async def start_post(self, item: PostItem, media_uri: str, mime: str) -> None:
+    async def start_post(self, item: PostItem) -> None:
         """The composer with this job's media and caption."""
-        async def by_share():
-            await self.discard_until_feed()
-            await asyncio.to_thread(self.device.share_to_composer, media_uri, mime)
-            await self.wait_for("composer with media", ["Next"], exact=True, timeout=30)
-        await self.hybrid("start_post", self._compose_from_gallery, by_share)
+        await self._compose_from_gallery()
         await self.write_caption(item)
 
     async def _compose_from_gallery(self) -> None:
@@ -220,8 +198,9 @@ class Flows:
         dev = self.device
         _, point, _ = await self.wait_for("feed", [FEED_PROMPT])
         await dev.tap(point)
-        _, gallery, _ = await self.wait_for("composer", ["Gallery"], exact=True)
-        await dev.tap((gallery[0], gallery[1] - dev.pt(0, 35)[1]))
+        # Facebook shows either a Gallery tile (tapped above its label) or a list with a Photo/video row.
+        found, entry, _ = await self.wait_for("composer", ["Gallery", "Photo/video"], exact=True)
+        await dev.tap(entry if found == "Photo/video" else (entry[0], entry[1] - dev.pt(0, 35)[1]))
         found, point, lines = await self.wait_for("picker", ["Gallery", "Allow access", "Allow Facebook to access"],
                                                   timeout=15)
         for _ in range(2):  # Facebook's own camera roll consent, first time only; posting needs it
@@ -300,16 +279,9 @@ class Flows:
 
     # --- profile and first comment ------------------------------------------------------------
     async def open_profile(self) -> None:
-        async def by_link():
-            await self.discard_until_feed()
-            await asyncio.to_thread(self.device.open_profile_link)
-            await self.wait_for("profile", ["Posts"], exact=True, timeout=15)
-
-        async def by_picture():
-            _, point, _ = await self.wait_for("feed for profile", [FEED_PROMPT])
-            await self.device.tap((self.device.pt(77, 0)[0], point[1]))  # profile picture left of the box
-            await self.wait_for("profile", ["Posts"], exact=True, timeout=15)
-        await self.hybrid("open_profile", by_picture, by_link)
+        _, point, _ = await self.wait_for("feed for profile", [FEED_PROMPT])
+        await self.device.tap((self.device.pt(77, 0)[0], point[1]))  # profile picture left of the box
+        await self.wait_for("profile", ["Posts"], exact=True, timeout=15)
 
     async def find_and_comment(self, item: PostItem, published_at: float, waits=COMMENT_WAITS,
                                max_age_minutes: float | None = None) -> int:

@@ -17,8 +17,7 @@ from typing import Callable
 from backend.services.adb_client import AdbError
 
 from phone.device import KEY_HOME, PhoneError, media_mime
-from phone.flows import (COMMENT_WAITS, AccountBlocked, CommentUncertain, Flows, PostItem, PublishUncertain,
-                         StepFailed)
+from phone.flows import COMMENT_WAITS, AccountBlocked, CommentUncertain, Flows, PostItem, PublishUncertain, StepFailed
 
 
 EXTENSION = {"image/jpeg": ".jpg", "image/png": ".png", "video/mp4": ".mp4"}
@@ -29,30 +28,19 @@ def _media_name(path: str) -> str:
 
 
 async def _put_media(flows: Flows, path: str) -> str:
-    device = flows.device
-    name = _media_name(path)
-
-    async def human():
-        try:
-            return await asyncio.to_thread(device.put_media, path, name)
-        except (PhoneError, AdbError) as error:
-            raise StepFailed(f"media: {error}") from error
-
-    async def shortcut():
-        try:
-            return await asyncio.to_thread(device.put_media_shell, path, name)
-        except (PhoneError, AdbError) as error:
-            raise StepFailed(f"media by shell: {error}") from error
-    return await flows.hybrid("add_media", human, shortcut)
+    try:
+        return await asyncio.to_thread(flows.device.put_media, path, _media_name(path))
+    except (PhoneError, AdbError) as error:
+        raise StepFailed(f"media: {error}") from error
 
 
 async def run_post(device, item: PostItem, media_path: str, log: Callable[..., None], *,
-                   human_only: bool = False, comment_now: bool = True,
+                   comment_now: bool = True,
                    before_publish: Callable[[], None] = lambda: None) -> dict:
     """Posts `item` with the media at `media_path`. With `comment_now` the first comment follows
     right away (the phone stays held through the three looks); otherwise it is left "pending" for a
     follow-up `run_comment` once the phone is free."""
-    flows = Flows(device, log, human_only=human_only)
+    flows = Flows(device, log)
     result: dict = {"status": "failed", "kind": item.kind, "stage": "media", "comment": "not_requested"}
     media_uri, tapped = None, None
     begun = device.now()
@@ -61,7 +49,7 @@ async def run_post(device, item: PostItem, media_path: str, log: Callable[..., N
         result["stage"] = "open"
         await flows.open_feed()
         result["stage"] = "compose"
-        await flows.start_post(item, media_uri, media_mime(media_path))
+        await flows.start_post(item)
         result["stage"] = "publish"
         tapped = await flows.publish(before_publish)
         result["stage"] = "confirm"
@@ -81,19 +69,17 @@ async def run_post(device, item: PostItem, media_path: str, log: Callable[..., N
     except Exception as failure:  # a dropped stream counts too: after the tap it is never "failed"
         result.update(status="uncertain" if tapped else "failed", reason=f"{type(failure).__name__}: {failure}"[:400])
     finally:
-        result["fallbacks"] = flows.fallbacks
         result["seconds"] = round(device.now() - begun)
         log(event=result["status"], stage=result["stage"], reason=result.get("reason"))
         await _clean_up(flows, result, media_uri)
     return result
 
 
-async def run_comment(device, item: PostItem, log: Callable[..., None], *, published_ago: float | None = None,
-                      human_only: bool = False) -> dict:
+async def run_comment(device, item: PostItem, log: Callable[..., None], *, published_ago: float | None = None) -> dict:
     """The first comment of an already published post: a follow-up job. `published_ago` is the time
     since the publish tap: the three looks keep their timing when it is recent; a later start looks
     at once and allows posts as old as that. Without it, the post is looked for at any age."""
-    flows = Flows(device, log, human_only=human_only)
+    flows = Flows(device, log)
     result: dict = {"status": "published", "kind": item.kind, "stage": "comment"}
     try:
         if published_ago is None:
@@ -106,14 +92,13 @@ async def run_comment(device, item: PostItem, log: Callable[..., None], *, publi
     except AccountBlocked as blocked:
         result.update(comment="blocked", reason=str(blocked), account_blocked=True)
     finally:
-        result["fallbacks"] = flows.fallbacks
         await _home(flows)
     return result
 
 
 async def run_get_ready(device, log: Callable[..., None]) -> dict:
     """Setup's first-use pass: Facebook's first screens answered, nothing posted. Taps only."""
-    flows = Flows(device, log, human_only=True)
+    flows = Flows(device, log)
     try:
         await flows.get_ready()
         result = {"status": "ready"}
@@ -138,7 +123,7 @@ async def _comment(flows: Flows, item: PostItem, published_at: float, waits=COMM
         flows.log(event="comment_skipped", reason=str(failure)[:300])
         try:
             await flows.discard_until_feed()
-        except StepFailed:
+        except (StepFailed, PhoneError):
             pass
         return {"comment": "skipped", "comment_reason": str(failure)[:300]}
 
@@ -148,7 +133,7 @@ async def _clean_up(flows: Flows, result: dict, media_uri: str | None) -> None:
     if result["status"] == "failed":
         try:
             await flows.discard_until_feed()  # the composer may still hold the media
-        except (StepFailed, AccountBlocked) as cleanup:
+        except (StepFailed, AccountBlocked, PhoneError) as cleanup:
             flows.log(event="cleanup_failed", reason=str(cleanup)[:200])
     if media_uri:
         if result["status"] == "uncertain":

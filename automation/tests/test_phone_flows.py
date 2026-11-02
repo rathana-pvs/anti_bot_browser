@@ -1,8 +1,9 @@
-"""Phone flows against scripted screens: the hybrid route, the publish rules and the first comment."""
+"""Phone flows against scripted screens: reaching the feed, the publish rules and the first comment."""
 
 import asyncio
 import os
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -11,7 +12,7 @@ sys.path.insert(1, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 from phone import screen  # noqa: E402
 from phone.flows import (AccountBlocked, Flows, PostItem, PublishUncertain, StepFailed)  # noqa: E402
-from phone import job  # noqa: E402
+from phone import device as phone_device, job  # noqa: E402
 from phone.screen import Line  # noqa: E402
 
 
@@ -76,17 +77,8 @@ class FakeDevice:
     def put_media(self, path, name):
         return "content://agent/media/1"
 
-    def put_media_shell(self, path, name):
-        return "content://media/external/images/media/9"
-
     def delete_media(self, uri):
         self.deleted.append(uri)
-
-    def launch_facebook(self):
-        self.actions.append(("intent", "launch"))
-
-    def open_profile_link(self):
-        self.actions.append(("intent", "profile"))
 
 
 def run(coroutine):
@@ -125,48 +117,81 @@ class ScreenTests(unittest.TestCase):
         self.assertTrue(screen.logged_out(lines(("Log in", 900), ("Create new account", 1100))))
 
 
-class HybridRouteTests(unittest.TestCase):
-    def test_shortcut_runs_once_after_the_human_route_fails_and_is_logged(self):
-        events = []
-        flows = Flows(FakeDevice(), lambda **e: events.append(e))
+class FeedTests(unittest.TestCase):
+    def test_facebook_opens_by_tapping_the_icon_ocr_found(self):
+        device = FakeDevice([lines(("Facebook", 500)), lines(("facebook", 100), ("What's on your mind?", 200))])
+        run(Flows(device, lambda **e: None).open_feed())
+        self.assertIn(("tap", (100.0, 500.0 - device.pt(0, 110)[1])), device.actions)
 
-        async def human():
-            raise StepFailed("app drawer: the Facebook icon was not found")
+    def test_a_feed_still_far_down_after_scrolling_taps_the_home_tab(self):
+        device = FakeDevice([lines(("facebook", 100)), lines(("facebook", 100)),
+                             lines(("facebook", 100), ("What's on your mind?", 200))])
+        run(Flows(device, lambda **e: None).discard_until_feed())
+        self.assertEqual([action[0] for action in device.actions], ["swipe", "swipe", "tap"])
+        self.assertEqual(device.actions[-1][1], (device.pt(135, 0)[0], 100.0 + device.pt(0, 107)[1]))
 
-        async def shortcut():
-            return "ok"
-        self.assertEqual(run(flows.hybrid("open_facebook", human, shortcut)), "ok")
-        self.assertEqual(flows.fallbacks[0]["step"], "open_facebook")
-        self.assertTrue(flows.fallbacks[0]["worked"])
-        self.assertTrue(flows.fallbacks[0]["frame"].endswith(".png"))
-        self.assertEqual(events[0]["event"], "fallback")
-        # The same step does not fall back twice in one job.
+    def test_the_last_try_reaching_the_top_counts(self):
+        device = FakeDevice([lines(("facebook", 100))] * 8 + [lines(("facebook", 100), ("What's on your mind?", 200))])
+        run(Flows(device, lambda **e: None).discard_until_feed())
+
+    def test_a_feed_never_reaching_the_top_fails_with_a_frame(self):
+        device = FakeDevice([lines(("facebook", 100))])
         with self.assertRaises(StepFailed):
-            run(flows.hybrid("open_facebook", human, shortcut))
+            run(Flows(device, lambda **e: None).discard_until_feed())
+        self.assertTrue(any(action[0] == "snapshot" for action in device.actions))
 
-    def test_human_only_never_uses_the_shortcut(self):
-        flows = Flows(FakeDevice(), lambda **e: None, human_only=True)
-        used = []
-
-        async def human():
-            raise StepFailed("no")
-
-        async def shortcut():
-            used.append(True)
-        with self.assertRaises(StepFailed):
-            run(flows.hybrid("open_profile", human, shortcut))
-        self.assertEqual(used, [])
-
-    def test_account_problems_never_fall_back(self):
+    def test_account_problems_stop_the_step(self):
         device = FakeDevice([lines(("Log in", 900), ("Create new account", 1100))])
-        flows = Flows(device, lambda **e: None)
-        used = []
-
-        async def shortcut():
-            used.append(True)
         with self.assertRaises(AccountBlocked):
-            run(flows.hybrid("open_facebook", lambda: flows.wait_for("feed", ["What's on your mind?"]), shortcut))
-        self.assertEqual(used, [])
+            run(Flows(device, lambda **e: None).wait_for("feed", ["What's on your mind?"]))
+
+
+class ApprovalScreenTests(unittest.TestCase):
+    APPROVAL = "com.facebook.katana/com.facebook.fxcal.approvefromanotherdevice.BloksApproveFromAnotherDeviceActivity"
+    FEED = "com.facebook.katana/com.facebook.katana.LoginActivity"
+
+    def real_device(self, focus):
+        class Client:
+            def focused_window(self, serial):
+                return focus.pop(0) if len(focus) > 1 else focus[0]
+
+        class Session:
+            sent = []
+
+            async def send(self, message):
+                self.sent.append(message)
+        folder = tempfile.mkdtemp()
+        device = phone_device.PhoneDevice("S", 12, phone_device.Path(folder), lambda **e: None, client=Client())
+        device.session, device.width, device.height = Session(), 576, 1280
+        Session.sent = []
+        return device
+
+    def quickly(self):
+        real_sleep = asyncio.sleep
+
+        async def no_wait(seconds):
+            await real_sleep(0)
+        return patch.object(phone_device.asyncio, "sleep", no_wait)
+
+    def test_input_waits_until_the_screen_closes(self):
+        device = self.real_device([self.APPROVAL, self.APPROVAL, self.FEED])
+        with self.quickly():
+            run(device.tap((100, 200)))
+        self.assertEqual(len(device.session.sent), 2)
+
+    def test_nothing_is_sent_while_the_screen_stays_up(self):
+        for act in (lambda d: d.tap((100, 200)), lambda d: d.swipe((1, 2), (3, 4)), lambda d: d.key(4)):
+            device = self.real_device([self.APPROVAL])
+            with self.quickly(), patch.object(phone_device, "APPROVAL_WAIT_S", 0.01):
+                with self.assertRaises(phone_device.ApprovalScreenUp):
+                    run(act(device))
+            self.assertEqual(device.session.sent, [])
+
+    def test_input_goes_through_on_other_screens(self):
+        device = self.real_device([self.FEED])
+        with self.quickly():
+            run(device.key(4))
+        self.assertEqual(device.session.sent, [{"type": "key", "keycode": 4}])
 
 
 class PublishTests(unittest.TestCase):
@@ -266,7 +291,7 @@ class GetReadyTests(unittest.TestCase):
                              lines(("Allow access to your camera roll", 400), ("Allow", 1100)),
                              lines(("Gallery", 200))])
         events = []
-        flows = Flows(device, lambda **e: events.append(e), human_only=True)
+        flows = Flows(device, lambda **e: events.append(e))
 
         async def ok():
             return None
@@ -277,6 +302,11 @@ class GetReadyTests(unittest.TestCase):
         self.assertIn("camera roll consent", [e.get("kind") for e in events])
         self.assertIn(("key", 4), device.actions)
         self.assertNotIn("about_to_publish", kinds)
+
+    def test_composer_with_a_photo_video_row_opens_the_picker(self):
+        device = FakeDevice([lines(("What's on your mind?", 300)), lines(("Photo/video", 700)), lines(("Gallery", 200))])
+        run(Flows(device, lambda **e: None).open_gallery())
+        self.assertIn(("tap", (100.0, 700.0)), device.actions)
 
     def test_runner_result_is_ready_or_failed(self):
         async def ready(self_):
@@ -329,7 +359,7 @@ class JobTests(unittest.TestCase):
         self.assertEqual(device.deleted, ["content://agent/media/1"])
 
     def test_failure_before_the_tap_is_a_plain_failure(self):
-        async def broken(self_, item, uri, mime):
+        async def broken(self_, item):
             raise StepFailed("composer: none of ['Gallery'] appeared")
         result, device, _ = self.run_job(start=broken)
         self.assertEqual((result["status"], result["stage"]), ("failed", "compose"))
@@ -343,8 +373,22 @@ class JobTests(unittest.TestCase):
         self.assertEqual(device.deleted, [])
         self.assertEqual(result["media_left"], "content://agent/media/1")
 
+    def test_approval_screen_stops_the_job_without_breaking_cleanup(self):
+        async def stayed(self_, item):
+            raise phone_device.ApprovalScreenUp("stayed open")
+
+        async def stuck(self_):
+            raise phone_device.ApprovalScreenUp("stayed open")
+        with patch.object(job.Flows, "discard_until_feed", stuck):
+            with patch.object(Flows, "open_feed", lambda self_: asyncio.sleep(0)), patch.object(Flows, "start_post", stayed), \
+                    patch.object(job, "media_mime", lambda path: "image/jpeg"):
+                result = run(job.run_post(FakeDevice(), PostItem("photo", "Morning coffee test"), "/media/a.jpg",
+                                          lambda **e: None))
+        self.assertEqual((result["status"], result["stage"]), ("failed", "compose"))
+        self.assertIn("stayed open", result["reason"])
+
     def test_logged_out_before_the_tap_blocks_the_account(self):
-        async def logged_out(self_, item, uri, mime):
+        async def logged_out(self_, item):
             raise AccountBlocked("Facebook shows its login screen")
         result, _, _ = self.run_job(start=logged_out)
         self.assertEqual(result["status"], "blocked")

@@ -385,12 +385,6 @@ class AdbClient:
         if result.returncode != 0 or result.stderr.strip():
             raise AdbError((result.stderr or result.stdout).decode("utf-8", "replace").strip() or "content write failed")
 
-    def start_activity(self, serial: str, user_id: int, *intent: str) -> None:
-        """`am start --user N INTENT...`; raises when Android reports an error."""
-        output = self.shell(serial, "am", "start", "--user", str(int(user_id)), *intent, timeout=30)
-        if "Error" in output:
-            raise AdbError(output.strip().splitlines()[-1])
-
     def focused_window(self, serial: str) -> str | None:
         return parse_focused_window(self.shell(serial, "dumpsys window | grep -m1 mCurrentFocus; true"))
 

@@ -200,14 +200,11 @@ async def execute_queue_phone(claim_res: dict) -> dict:
         args = ["--serial", serial, "--user", str(user_id), "--task", kind, "--media", str(media_path(post)),
                 "--caption", execution.get("spun_caption") or post.get("base_caption") or "",
                 "--comment", post.get("first_comment") or "", "--comment-later", "--evidence-dir", str(evidence)]
-        if (phone_settings(profile_id)).get("human_only"):
-            args.append("--human-only")
         record["current_stage"] = "running"
         result = await _run_runner(args, record, on_event)
         record["result"] = result
         outcome = result.get("status")
-        common = {"logs": [entry["message"] for entry in record["logs"]][-500:], "evidence_dir": str(evidence),
-                  "phone_fallbacks": result.get("fallbacks") or []}
+        common = {"logs": [entry["message"] for entry in record["logs"]][-500:], "evidence_dir": str(evidence)}
         if outcome == "published":
             record["status"] = "completed"
             comment = {}
@@ -235,14 +232,6 @@ async def execute_queue_phone(claim_res: dict) -> dict:
         record["scheduler_lease"] = None
         record["lifecycle_active"] = False
         android_devices.release_job(serial)
-
-
-def phone_settings(profile_id: str) -> dict:
-    try:
-        config = json.loads((PROFILES_DIR / profile_id / "config.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return config.get("phone_automation") or {}
 
 
 # --- setup's first-use pass -----------------------------------------------------------------------
@@ -381,8 +370,6 @@ async def run_comment(execution_id: str, runtime: dict, post: dict) -> None:
             tapped = execution.get("publish_tapped_at")
             if tapped and not execution.get("phone_comment_any_age"):
                 args += ["--published-ago", str(max(0, int(time.time() - datetime.fromisoformat(tapped).timestamp())))]
-            if phone_settings(profile_id).get("human_only"):
-                args.append("--human-only")
             result = await _run_runner(args, record, lambda e: sent.append(True) if e.get("event") == "about_to_comment" else None)
     except Exception as error:
         result = {"comment": "uncertain" if sent else "not_started", "comment_reason": f"{type(error).__name__}: {error}"}

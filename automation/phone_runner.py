@@ -42,10 +42,9 @@ async def main(args) -> dict:
             return await run_get_ready(device, emit)
         if args.task == "comment":
             item = PostItem(args.kind, args.caption, args.comment)
-            return await run_comment(device, item, emit, published_ago=args.published_ago, human_only=args.human_only)
+            return await run_comment(device, item, emit, published_ago=args.published_ago)
         item = PostItem(args.task, args.caption, args.comment or "")
-        return await run_post(device, item, args.media, emit, human_only=args.human_only,
-                              comment_now=not args.comment_later)
+        return await run_post(device, item, args.media, emit, comment_now=not args.comment_later)
     finally:
         await device.close()
 
@@ -60,7 +59,6 @@ if __name__ == "__main__":
     parser.add_argument("--caption", default="")
     parser.add_argument("--comment", default="")
     parser.add_argument("--published-ago", type=float, help="comment task: seconds since the publish tap")
-    parser.add_argument("--human-only", action="store_true", help="never use shortcut intents")
     parser.add_argument("--comment-later", action="store_true", help="leave the first comment pending")
     parser.add_argument("--evidence-dir")
     options = parser.parse_args()

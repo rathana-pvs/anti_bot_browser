@@ -175,8 +175,6 @@ post, a reel and a first comment on each were published end to end. Live could n
 
 ### Driver primitives
 
-`share` and `open` below are fallbacks only; jobs use the human route first (see Hybrid route).
-
 | Primitive | How |
 | --- | --- |
 | `frame()` | Latest decoded scrcpy frame (576x1280). A still screen sends no frames, so the last one is kept. |
@@ -186,8 +184,6 @@ post, a reel and a first comment on each were published end to end. Live could n
 | `paste(text)` | Companion app `set_clipboard`, KEYCODE_PASTE, then `clear_clipboard`. |
 | `key(code)` | Back, Home, Escape (hides the keyboard). |
 | `put_media(file)` | Media store insert and `content write --user N`; returns the content URI. Removed after the job. |
-| `share(uri, mime)` | `am start --user N -a android.intent.action.SEND --grant-read-uri-permission -n com.facebook.katana/com.facebook.composer.shareintent.ImplicitShareIntentHandlerDefaultAlias`. Always this component, never Android's chooser (it also offers profile picture and Stories). |
-| `open(link)` | `am start --user N -a android.intent.action.VIEW -d fb://profile -p com.facebook.katana` opens the account's profile directly. |
 | `wait_for(screen)` | Polls frames until a recognised screen or a timeout; every step names the screens it may lead to. |
 
 ### Media source
@@ -219,7 +215,7 @@ The activity name from `dumpsys window` is read with every frame as a cheap seco
 ### Flow: photo post
 
 1. Preconditions: phone lock held, **Open on phone** reported ready, Facebook signed in (`dumpsys account`).
-2. `put_media(photo)`, `share(uri, image/jpeg)`; wait for Composer.
+2. `put_media(photo)`, then the feed's "What's on your mind?", Gallery and the first item; wait for Composer.
 3. Tap the caption field, `paste(caption)`, Escape; check the field is not empty (OCR reads English
    captions back exactly; other languages only as not empty).
 4. Tap **Next**; wait for Post settings. Audience is read and changed only when the job asks (Choose
@@ -227,7 +223,7 @@ The activity name from `dumpsys window` is read with every frame as a cheap seco
 5. Record the attempt as **about to publish**, then tap **SHARE**. From here the outcome is uncertain until
    verified.
 6. Wait for the feed's "Posting..." bar to disappear, then verify: the account's post with the caption and
-   "Just now" at the top of the feed, or on the profile (`fb://profile`, Posts). Measured: about 50 s.
+   "Just now" at the top of the feed, or on the profile (profile picture, Posts). Measured: about 50 s.
 7. Remove the media; publish result with the post's position as evidence (screenshot frames).
 
 ### Flow: reel
@@ -270,29 +266,26 @@ Comment icon and send arrow (feed and reel player share the same send arrow), pl
 back arrow and SHARE from the composer screens. Light theme only; dark mode and new Facebook versions need
 their own set.
 
-### Hybrid route: human taps first, shortcuts only as a logged fallback
+### OCR route only: no shortcuts
 
-Decided 2026-11-01. Intents sent from the ADB shell (`fb://profile`, the share intent, `am start`) reach
-Facebook with the shell as their sender, and media added by the shell is recorded as owned by the shell.
-Facebook may not look at either, but both are avoidable, so every step first works the way a person would.
+Decided 2026-11-02 (replaces the hybrid route of 2026-11-01). Intents sent from the ADB shell (`fb://profile`,
+the share intent, `am start`) reach Facebook with the shell as their sender, and media added by the shell is
+recorded as owned by the shell. Jobs use neither: every step reads the screen with OCR and taps what it sees.
 
-| Step | Human route (first) | Shortcut (fallback, logged) |
-| --- | --- | --- |
-| Add media | Companion app saves the file to the user's gallery (`content write` to its `/media` path; owned by the companion app) | Shell inserts it into the media store |
-| Open Facebook | Home (twice, closing an open drawer), swipe up, tap the Facebook icon above its label | `am start` of the launcher activity |
-| Start a post | Feed "What's on your mind?", Gallery, first item's selection circle, picker Next | Share intent into the composer |
-| Find own post | Profile picture left of "What's on your mind?", profile Posts | `fb://profile` |
-| Comment | The comment icon under the post's caption on the profile | none: skipped and reported |
-| Publish tap | SHARE (photo) / Share now (reel) | none |
+| Step | Route |
+| --- | --- |
+| Add media | Companion app saves the file to the user's gallery (`content write` to its `/media` path; owned by the companion app) |
+| Open Facebook | Home (twice, closing an open drawer), swipe up, tap the Facebook icon above its label |
+| Start a post | Feed "What's on your mind?", Gallery tile or Photo/video row, first item's selection circle, picker Next |
+| Find own post | Profile picture left of "What's on your mind?", profile Posts |
+| Comment | The comment icon under the post's caption on the profile; skipped and reported when not found |
+| Publish tap | SHARE (photo) / Share now (reel) |
 
-Rules:
+A step that does not reach its screen stops the job with a report and its frame. Account problems (logged out,
+checkpoint, blocked) stop the job and the account needs review.
 
-- A shortcut is used only before the publish tap, at most once per step and job, after the screen has been
-  brought back to the feed (any composer discarded). Account problems (logged out, checkpoint, blocked)
-  never fall back: the job stops and the account needs review.
-- An account can be set to human only: no shortcuts at all, the job stops with a report instead.
-- Each fallback is logged with the account, step, reason, the frame, and whether the shortcut worked; the
-  app counts them per step so a screen Facebook changed is noticed and its templates updated.
+Facebook can open its own login approval screen (`BloksApproveFromAnotherDeviceActivity`) over the feed. No touch
+or key is sent while it has focus: the frame is kept, input waits up to 15 s, and then the job stops with a report.
 
 ### First comment: three looks, then skip
 
@@ -775,9 +768,9 @@ per event, the result last, like `runner.py`):
 
 | Module | Role |
 | --- | --- |
-| `phone/device.py` | The only phone I/O: scrcpy frames and input, OCR, templates, companion clipboard and media, shortcut intents |
+| `phone/device.py` | The only phone I/O: scrcpy frames and input, OCR, templates, companion clipboard and media |
 | `phone/screen.py` | Pure screen reading: text matching, post ages, pop-ups, discard prompts, logged-out and checkpoint screens |
-| `phone/flows.py` | Feed, composer, publish, confirmation, profile and first comment, with the hybrid route |
+| `phone/flows.py` | Feed, composer, publish, confirmation, profile and first comment, by OCR and taps only |
 | `phone/job.py` | One job's outcome: `published` (with `comment`), `failed`, `uncertain` or `blocked`; media cleanup |
 
 It imports only `backend.services.adb_client`, `android_live` and `android_agent` (the companion app call,
@@ -787,4 +780,4 @@ reviewed, since an upload may still be running from it. A comment whose send tap
 show is `uncertain` too and is never sent again.
 
 First runs: a photo (published in 13 s) and a reel (8 s), both commented on the first look, no fallbacks.
-The shell media fallback was checked on its own (added and removed). Not yet wired to the queue.
+Not yet wired to the queue.
