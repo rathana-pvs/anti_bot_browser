@@ -231,6 +231,12 @@ class PublishTests(unittest.TestCase):
                                                                        ("More detail in the comment", 330))])
         run(Flows(device, lambda **e: None).write_caption(PostItem("reel", caption)))
 
+    def test_caption_end_wrapping_onto_two_lines_counts_as_shown(self):
+        caption = "A very long story about many things\n#DonaldTrump #USPolitics #Cuba #MarcoRubio"
+        device = FakeDevice([lines(("Describe your reel", 300)),
+                             lines(("New reel", 50), ("#MarcoRubio", 330), ("#DonaldTrump #USPolitics #Cuba", 300))])
+        run(Flows(device, lambda **e: None).write_caption(PostItem("reel", caption)))
+
     def test_caption_nowhere_on_screen_still_fails(self):
         caption = "A very long story about many things\nMore detail in the comment 👇"
         device = FakeDevice([lines(("Describe your reel", 300)), lines(("Describe your reel", 300))])
@@ -277,6 +283,16 @@ class PublishTests(unittest.TestCase):
         self.assertGreater(took, 25)
         self.assertLess(took, 30)
 
+    def test_reels_tab_after_create_reel_confirms_a_reel(self):
+        device = FakeDevice([lines(("Reels", 200), ("Create reel", 520))])
+        took = run(Flows(device, lambda **e: None).wait_published(PostItem("reel", "Clip"), 0.0))
+        self.assertLess(took, 30)
+
+    def test_create_reel_with_share_now_still_up_is_not_confirmed(self):
+        device = FakeDevice([lines(("Create reel", 520), ("Share now", 1200))])
+        with self.assertRaises(PublishUncertain):
+            run(Flows(device, lambda **e: None).wait_published(PostItem("reel", "Clip"), 0.0))
+
     def test_profile_does_not_confirm_a_photo(self):
         device = FakeDevice([lines(("66K followers · 16 following", 640))])
         with self.assertRaises(PublishUncertain):
@@ -291,6 +307,7 @@ class PublishTests(unittest.TestCase):
     def test_page_profile_opens_on_its_all_tab(self):
         device = FakeDevice([lines(("What's on your mind?", 300)), lines(("All", 1100), ("Photos", 1100))])
         run(Flows(device, lambda **e: None).open_profile())
+        self.assertIn(("tap", (100.0, 1100.0)), device.actions)
 
     def test_page_photo_composer_goes_straight_to_post(self):
         device = FakeDevice([lines(("Create post", 50), ("POST", 60), ("court", 300))])
@@ -316,7 +333,7 @@ class PublishTests(unittest.TestCase):
 
     def test_video_that_opens_a_plain_post_goes_through_create_reel(self):
         feed = lines(("facebook", 100), ("What's on your mind?", 300))
-        device = FakeDevice([feed, feed, lines(("All", 1100), ("Create reel", 800)), lines(("Create reel", 800)),
+        device = FakeDevice([feed, feed, lines(("All", 1100), ("Create reel", 800)),
                              lines(("Gallery", 280)), lines(("→ Next", 1130)), lines(("Describe your reel", 300)),
                              lines(("Describe your reel", 300)), lines(("Morning coffee test", 300))])
         flows = Flows(device, lambda **e: None)
@@ -329,6 +346,14 @@ class PublishTests(unittest.TestCase):
         offset = device.pt(68, 394)
         self.assertEqual(taps[1:4], [(100.0, 800.0), (100.0 + offset[0], 280.0 + offset[1]), (100.0, 1130.0)])
         self.assertIn(("paste", "Morning coffee test"), device.actions)
+
+    def test_create_reel_scrolls_up_to_find_the_button(self):
+        device = FakeDevice([lines(("What's on your mind?", 300)), lines(("All", 200)), lines(("All", 900)),
+                             lines(("Create reel", 800)), lines(("Gallery", 280)), lines(("→ Next", 1130)),
+                             lines(("Describe your reel", 300))])
+        run(Flows(device, lambda **e: None)._compose_from_create_reel())
+        self.assertIn(("tap", (100.0, 800.0)), device.actions)
+        self.assertEqual(len([a for a in device.actions if a[0] == "swipe"]), 2)
 
     def test_page_photo_picked_needs_no_next(self):
         device = FakeDevice([lines(("Say something about this photo...", 300)), lines(("Say something about this photo...", 300))])

@@ -214,8 +214,18 @@ class Flows:
     async def _compose_from_create_reel(self) -> None:
         """From the feed: the profile's Create reel button, the newest video in its picker, then Next."""
         dev = self.device
-        await self.open_profile()
-        _, button, _ = await self.wait_for("create reel button", ["Create reel"], timeout=10)
+        await self._tap_profile_picture()
+        _, _, lines = await self.wait_for("profile", ["Create reel", "All", "Posts"], timeout=15)
+        button = match(lines, "Create reel")
+        for _ in range(4):  # the profile reopens where it was last scrolled to
+            if button:
+                break
+            await self.scroll(dev.pt(540, 700), dev.pt(540, 1900))
+            await dev.settle(timeout=2.0)
+            button = match(await dev.read(), "Create reel")
+        if not button:
+            dev.snapshot(f"fail_create_reel_{int(time.time())}")
+            raise StepFailed("create reel: the button was not found on the profile")
         await dev.tap(button)
         _, gallery, _ = await self.wait_for("reel picker", ["Gallery"], exact=True, timeout=15)
         offset = dev.pt(68, 394)  # the first cell, whether or not a Drafts row sits above the grid
@@ -266,7 +276,7 @@ class Flows:
         await dev.key(KEY_ESCAPE)
         lines = await dev.read()
         if item.caption_key and not match(lines, item.caption_key) and not (
-                item.caption_tail and match(lines, item.caption_tail)):
+                item.caption_tail and screen.shown_across_lines(lines, item.caption_tail)):
             raise StepFailed(f"caption: not shown after paste; screen shows {texts(lines, 10)}")
         if not item.caption_key and any(match(lines, prompt) for prompt in (FEED_PROMPT, PHOTO_PROMPT, "Describe your reel")):
             raise StepFailed("caption: the field is still empty after paste")
@@ -297,7 +307,7 @@ class Flows:
         returns to an empty composer after sharing; it also shows the feed's prompt, so the feed is
         told by its logo, and the composer is left with Back. The feed may come back without the
         prompt in view, so the prompt is not required. A reel made with Create reel lands back on
-        the profile, told by its followers line."""
+        the profile, on whichever tab it last showed, told by its followers line or Create reel."""
         dev = self.device
         seen_posting = False
         while dev.now() < tapped + PUBLISH_CONFIRM_TIMEOUT_S:
@@ -309,7 +319,8 @@ class Flows:
             elif match(lines, "Create post"):
                 self.log(event="leftover", screen="empty composer", action="back")
                 await dev.key(KEY_BACK)
-            elif match(lines, "facebook", exact=True) or (item.kind == "reel" and match(lines, "followers")):
+            elif match(lines, "facebook", exact=True) or (item.kind == "reel" and not match(lines, "Share now") and (
+                    match(lines, "followers") or match(lines, "Create reel"))):
                 if item.kind == "photo" and match(lines, "Just now") and (
                         not item.caption_key or match(lines, item.caption_key)):
                     return dev.now() - tapped
@@ -320,11 +331,16 @@ class Flows:
         raise PublishUncertain(f"no confirmation within {PUBLISH_CONFIRM_TIMEOUT_S} s after the publish tap")
 
     # --- profile and first comment ------------------------------------------------------------
-    async def open_profile(self) -> None:
+    async def _tap_profile_picture(self) -> None:
         _, point, _ = await self.wait_for("feed for profile", [FEED_PROMPT])
         await self.device.tap((self.device.pt(77, 0)[0], point[1]))  # profile picture left of the box
-        # A Page's profile opens on its All tab; its Posts list starts further down.
-        await self.wait_for("profile", ["Posts", "All"], exact=True, timeout=15)
+
+    async def open_profile(self) -> None:
+        await self._tap_profile_picture()
+        # A Page's profile has an All tab, with its Posts list further down. It reopens on the tab it
+        # last showed, so the tab is tapped.
+        _, tab, _ = await self.wait_for("profile", ["Posts", "All"], exact=True, timeout=15)
+        await self.device.tap(tab)
 
     async def find_and_comment(self, item: PostItem, published_at: float, waits=COMMENT_WAITS,
                                max_age_minutes: float | None = None) -> int:

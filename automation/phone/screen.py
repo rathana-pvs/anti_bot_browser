@@ -48,6 +48,12 @@ def match(lines: list[Line], wanted: str, exact: bool = False) -> Point | None:
     return None
 
 
+def shown_across_lines(lines: list[Line], wanted: str) -> bool:
+    """`wanted` anywhere in the screen's text read top to bottom, for text that wraps onto several lines."""
+    key = squash(wanted)
+    return bool(key) and key in squash("".join(line.text for line in sorted(lines, key=lambda line: line.point[1])))
+
+
 def texts(lines: list[Line], limit: int = 12) -> list[str]:
     return [line.text for line in lines][:limit]
 
