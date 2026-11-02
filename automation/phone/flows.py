@@ -17,6 +17,10 @@ from phone.device import KEY_BACK, KEY_ESCAPE, KEY_HOME
 from phone.screen import Line, Point, match, texts
 
 FEED_PROMPT = "What's on your mind?"
+# A Page's composer once a photo is picked; it shows POST right there, with no Next.
+PHOTO_PROMPT = "Say something about this photo"
+# The same composer for a video that is not 9:16: it would post as a plain video, not a reel.
+VIDEO_PROMPT = "Say something about this video"
 # Seconds before each of the three looks for a new post on the profile; a reel can take a while.
 COMMENT_WAITS = (30, 25, 25)
 PUBLISH_CONFIRM_TIMEOUT_S = 180
@@ -47,11 +51,13 @@ class PostItem:
     caption: str
     comment: str = ""
     caption_key: str = field(init=False)
+    caption_tail: str = field(init=False)
 
     def __post_init__(self):
         if self.kind not in ("photo", "reel"):
             raise ValueError("kind must be photo or reel")
         self.caption_key = screen.caption_key(self.caption)
+        self.caption_tail = screen.caption_tail_key(self.caption)
 
 
 class Flows:
@@ -140,8 +146,8 @@ class Flows:
         for _ in range(8):
             try:
                 found, _, lines = await self.wait_for("open facebook", [
-                    FEED_PROMPT, "New post", "Post settings", "Reel settings", "Discard changes", "Discard post",
-                    "facebook"], timeout=12)
+                    FEED_PROMPT, "New post", "Create post", "New reel", "Post settings", "Reel settings", "Discard changes",
+                    "Discard post", "Discard video", "facebook"], timeout=12)
             except StepFailed as unknown:
                 self.log(event="unknown screen", action="back", detail=str(unknown)[:200])
                 await dev.key(KEY_BACK)
@@ -187,10 +193,13 @@ class Flows:
         # The job's media was just saved, so it is the newest: the first cell, its circle top-right.
         offset = dev.pt(168, 110)
         await dev.tap((point[0] + offset[0], point[1] + offset[1]))
-        _, nxt, _ = await self.wait_for("picker selection", ["Next"], exact=True, timeout=10)
-        await dev.tap(nxt)
-        await self.wait_for("composer with media", [FEED_PROMPT, "Describe your reel", "Add a description"],
-                            timeout=30)
+        found, nxt, _ = await self.wait_for("picker selection", ["Next", PHOTO_PROMPT, VIDEO_PROMPT], timeout=10)
+        if found == VIDEO_PROMPT:
+            raise StepFailed("reel: Facebook opened a plain video post, not a reel; the video may need to be 9:16")
+        if found == "Next":
+            await dev.tap(nxt)
+        await self.wait_for("composer with media", [FEED_PROMPT, PHOTO_PROMPT, "Describe your reel",
+                                                    "Add a description"], timeout=30)
 
     async def open_gallery(self) -> Point:
         """From the feed: the composer, then its Gallery picker, past Facebook's camera roll consent
@@ -227,25 +236,28 @@ class Flows:
 
     async def write_caption(self, item: PostItem) -> None:
         dev = self.device
-        _, field_point, _ = await self.wait_for("caption field", [FEED_PROMPT, "Describe your reel",
+        _, field_point, _ = await self.wait_for("caption field", [FEED_PROMPT, PHOTO_PROMPT, "Describe your reel",
                                                                   "Add a description"], timeout=15)
         await dev.tap(field_point)
         await dev.paste(item.caption)
         await dev.key(KEY_ESCAPE)
         lines = await dev.read()
-        if item.caption_key and not match(lines, item.caption_key):
+        if item.caption_key and not match(lines, item.caption_key) and not (
+                item.caption_tail and match(lines, item.caption_tail)):
             raise StepFailed(f"caption: not shown after paste; screen shows {texts(lines, 10)}")
-        if not item.caption_key and any(match(lines, prompt) for prompt in (FEED_PROMPT, "Describe your reel")):
+        if not item.caption_key and any(match(lines, prompt) for prompt in (FEED_PROMPT, PHOTO_PROMPT, "Describe your reel")):
             raise StepFailed("caption: the field is still empty after paste")
 
     async def publish(self, before_tap: Callable[[], None]) -> float:
-        """Next, then SHARE (photo) or Share now (reel). `before_tap` records the attempt as about to
-        publish; from the tap on, the outcome is uncertain until confirmed. Returns the tap time."""
+        """Next, then SHARE (photo) or Share now (reel); a Page's composer has POST, and its "New reel"
+        screen has Share now under the caption, both with no Next. `before_tap` records the attempt as about to publish; from the
+        tap on, the outcome is uncertain until confirmed. Returns the tap time."""
         dev = self.device
-        _, nxt, _ = await self.wait_for("composer next", ["Next"], exact=True)
-        await dev.tap(nxt)
-        found, _, _ = await self.wait_for("settings", ["Post settings", "Reel settings"], timeout=20)
-        button = "SHARE" if found == "Post settings" else "Share now"
+        found, nxt, _ = await self.wait_for("composer next", ["Next", "Share now", "POST"], exact=True)
+        if found == "Next":
+            await dev.tap(nxt)
+            found, _, _ = await self.wait_for("settings", ["Post settings", "Reel settings"], timeout=20)
+        button = {"Post settings": "SHARE", "POST": "POST"}.get(found, "Share now")
         # The title shows before the button has finished drawing.
         _, point, _ = await self.wait_for(f"settings {button}", [button], exact=True, timeout=10,
                                           handle_interruptions=False)
@@ -258,7 +270,9 @@ class Flows:
 
     async def wait_published(self, item: PostItem, tapped: float) -> float:
         """A photo shows on the feed with its caption and "Just now"; a reel is confirmed once the
-        "Posting" bar has come and gone (it is then found on the profile for the comment)."""
+        "Posting" bar has come and gone (it is then found on the profile for the comment). A Page
+        returns to an empty composer after sharing; it also shows the feed's prompt, so the feed is
+        told by its logo, and the composer is left with Back."""
         dev = self.device
         seen_posting = False
         while dev.now() < tapped + PUBLISH_CONFIRM_TIMEOUT_S:
@@ -267,7 +281,10 @@ class Flows:
                 continue
             if match(lines, "Posting"):
                 seen_posting = True
-            elif match(lines, FEED_PROMPT):
+            elif match(lines, "Create post"):
+                self.log(event="leftover", screen="empty composer", action="back")
+                await dev.key(KEY_BACK)
+            elif match(lines, "facebook", exact=True) and match(lines, FEED_PROMPT):
                 if item.kind == "photo" and match(lines, "Just now") and (
                         not item.caption_key or match(lines, item.caption_key)):
                     return dev.now() - tapped
@@ -281,7 +298,8 @@ class Flows:
     async def open_profile(self) -> None:
         _, point, _ = await self.wait_for("feed for profile", [FEED_PROMPT])
         await self.device.tap((self.device.pt(77, 0)[0], point[1]))  # profile picture left of the box
-        await self.wait_for("profile", ["Posts"], exact=True, timeout=15)
+        # A Page's profile opens on its All tab; its Posts list starts further down.
+        await self.wait_for("profile", ["Posts", "All"], exact=True, timeout=15)
 
     async def find_and_comment(self, item: PostItem, published_at: float, waits=COMMENT_WAITS,
                                max_age_minutes: float | None = None) -> int:

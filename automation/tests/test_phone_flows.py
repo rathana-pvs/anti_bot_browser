@@ -108,6 +108,14 @@ class ScreenTests(unittest.TestCase):
                                                      ("Discard post", 800))), (100.0, 800.0))
         self.assertIsNone(screen.discard_button(lines(("DISCARD", 700))))
 
+    def test_reel_draft_sheet_is_discarded(self):
+        self.assertEqual(screen.discard_button(lines(("Save this reel as a draft?", 500), ("Save as draft", 600),
+                                                     ("Keep editing", 700), ("Discard video", 800))), (100.0, 800.0))
+
+    def test_caption_tail_is_the_end_of_the_last_line(self):
+        self.assertEqual(screen.caption_tail_key("Long story here\nMore detail in the comment 👇"), "etail in the comment")
+        self.assertEqual(screen.caption_tail_key("ព្រះអាទិត្យលិច 🌅"), "")
+
     def test_permission_prompt_is_denied(self):
         kind, action, point = screen.interruption(lines(("Allow Facebook to send you notifications?", 500),
                                                         ("Allow", 700), ("Don't allow", 800)))
@@ -133,6 +141,14 @@ class FeedTests(unittest.TestCase):
     def test_the_last_try_reaching_the_top_counts(self):
         device = FakeDevice([lines(("facebook", 100))] * 8 + [lines(("facebook", 100), ("What's on your mind?", 200))])
         run(Flows(device, lambda **e: None).discard_until_feed())
+
+    def test_a_left_over_reel_is_discarded_on_the_way_to_the_feed(self):
+        device = FakeDevice([lines(("New reel", 50), ("Share now", 1200)), lines(("Audio", 400)),
+                             lines(("Save this reel as a draft?", 700), ("Discard video", 900)),
+                             lines(("facebook", 100), ("What's on your mind?", 200))])
+        run(Flows(device, lambda **e: None).discard_until_feed())
+        self.assertIn(("tap", (100.0, 900.0)), device.actions)
+        self.assertEqual([action for action in device.actions if action[0] == "tap"], [("tap", (100.0, 900.0))])
 
     def test_a_feed_never_reaching_the_top_fails_with_a_frame(self):
         device = FakeDevice([lines(("facebook", 100))])
@@ -203,9 +219,86 @@ class PublishTests(unittest.TestCase):
 
     def test_photo_is_confirmed_by_caption_and_just_now(self):
         device = FakeDevice([lines(("Posting...", 300)),
-                             lines(("What's on your mind?", 200), ("Just now", 400), ("Morning coffee test", 500))])
+                             lines(("facebook", 100), ("What's on your mind?", 200), ("Just now", 400),
+                                   ("Morning coffee test", 500))])
         took = run(Flows(device, lambda **e: None).wait_published(PostItem("photo", "Morning coffee test"), 0.0))
         self.assertLess(took, 5)
+
+    def test_long_caption_scrolled_to_its_end_counts_as_shown(self):
+        caption = "A very long story about many things\nMore detail in the comment 👇"
+        device = FakeDevice([lines(("Describe your reel", 300)), lines(("New reel", 50), ("is...See more", 300),
+                                                                       ("More detail in the comment", 330))])
+        run(Flows(device, lambda **e: None).write_caption(PostItem("reel", caption)))
+
+    def test_caption_nowhere_on_screen_still_fails(self):
+        caption = "A very long story about many things\nMore detail in the comment 👇"
+        device = FakeDevice([lines(("Describe your reel", 300)), lines(("Describe your reel", 300))])
+        with self.assertRaises(StepFailed):
+            run(Flows(device, lambda **e: None).write_caption(PostItem("reel", caption)))
+
+    def test_new_reel_screen_goes_straight_to_share_now(self):
+        device = FakeDevice([lines(("New reel", 50), ("Share now", 1200))])
+        order = []
+        original = device.tap
+
+        async def tap(point):
+            order.append(("tap", point))
+            await original(point)
+        device.tap = tap
+        events = []
+        run(Flows(device, lambda **e: events.append(e)).publish(lambda: order.append("recorded")))
+        self.assertEqual(order, ["recorded", ("tap", (100.0, 1200.0))])
+        self.assertEqual(events[-1]["event"], "about_to_publish")
+
+    def test_empty_composer_after_a_reel_is_not_the_feed(self):
+        composer = lines(("< Create post", 100), ("What's on your mind?", 400))
+        device = FakeDevice([composer])
+        with self.assertRaises(PublishUncertain):
+            run(Flows(device, lambda **e: None).wait_published(PostItem("reel", "Clip"), 0.0))
+        self.assertIn(("key", 4), device.actions)
+
+    def test_reel_is_confirmed_on_the_feed_after_leaving_the_composer(self):
+        device = FakeDevice([lines(("< Create post", 100), ("What's on your mind?", 400)),
+                             lines(("facebook", 100), ("What's on your mind?", 200), ("Posting...", 300)),
+                             lines(("facebook", 100), ("What's on your mind?", 200))])
+        run(Flows(device, lambda **e: None).wait_published(PostItem("reel", "Clip"), 0.0))
+        self.assertEqual(device.actions, [("key", 4)])
+
+    def test_page_profile_opens_on_its_all_tab(self):
+        device = FakeDevice([lines(("What's on your mind?", 300)), lines(("All", 1100), ("Photos", 1100))])
+        run(Flows(device, lambda **e: None).open_profile())
+
+    def test_page_photo_composer_goes_straight_to_post(self):
+        device = FakeDevice([lines(("Create post", 50), ("POST", 60), ("court", 300))])
+        order = []
+        original = device.tap
+
+        async def tap(point):
+            order.append(("tap", point))
+            await original(point)
+        device.tap = tap
+        run(Flows(device, lambda **e: None).publish(lambda: order.append("recorded")))
+        self.assertEqual(order, ["recorded", ("tap", (100.0, 60.0))])
+
+    def test_video_that_opens_a_plain_post_is_not_posted(self):
+        device = FakeDevice([lines(("Say something about this video...", 300), ("POST", 60))])
+        flows = Flows(device, lambda **e: None)
+
+        async def gallery():
+            return (100.0, 200.0)
+        with patch.object(flows, "open_gallery", gallery), self.assertRaises(StepFailed):
+            run(flows._compose_from_gallery())
+        self.assertNotIn(("tap", (100.0, 60.0)), device.actions)
+
+    def test_page_photo_picked_needs_no_next(self):
+        device = FakeDevice([lines(("Say something about this photo...", 300)), lines(("Say something about this photo...", 300))])
+        flows = Flows(device, lambda **e: None)
+
+        async def gallery():
+            return (100.0, 200.0)
+        with patch.object(flows, "open_gallery", gallery):
+            run(flows._compose_from_gallery())
+        self.assertEqual(len([a for a in device.actions if a[0] == "tap"]), 1)
 
     def test_record_is_written_before_the_publish_tap(self):
         device = FakeDevice([lines(("Next", 50)), lines(("Post settings", 60)), lines(("Post settings", 60), ("SHARE", 60))])

@@ -279,7 +279,7 @@ recorded as owned by the shell. Jobs use neither: every step reads the screen wi
 | Start a post | Feed "What's on your mind?", Gallery tile or Photo/video row, first item's selection circle, picker Next |
 | Find own post | Profile picture left of "What's on your mind?", profile Posts |
 | Comment | The comment icon under the post's caption on the profile; skipped and reported when not found |
-| Publish tap | SHARE (photo) / Share now (reel) |
+| Publish tap | SHARE (photo) / Share now (reel; under the caption on a Page's "New reel" screen, which has no Next) / POST (a Page's photo composer, which has no Next) |
 
 A step that does not reach its screen stops the job with a report and its frame. Account problems (logged out,
 checkpoint, blocked) stop the job and the account needs review.

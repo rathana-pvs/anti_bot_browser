@@ -60,6 +60,14 @@ def caption_key(caption: str) -> str:
     return words[:20] if len(squash(words[:20])) >= 6 else ""
 
 
+def caption_tail_key(caption: str) -> str:
+    """The end of a caption's last line: a long caption's box scrolls there, so its start is out of sight.
+    Empty when that line has nothing OCR can read back."""
+    last = (caption.strip().splitlines() or [""])[-1]
+    words = " ".join(re.sub(r"[^\x20-\x7e]", " ", last).split())
+    return words[-20:] if len(squash(words[-20:])) >= 6 else ""
+
+
 def load_templates(names=("comment", "send")) -> dict[str, np.ndarray]:
     templates = {name: cv2.imread(str(TEMPLATE_DIR / f"{name}.png")) for name in names}
     missing = [name for name, image in templates.items() if image is None]
@@ -129,10 +137,10 @@ def interruption(lines: list[Line]) -> tuple[str, str, Point | None] | None:
 
 
 def discard_button(lines: list[Line]) -> Point | None:
-    """The discard choice of either prompt a half-made post shows: "Discard changes?" (DISCARD) or
-    the "finish your post later?" sheet (Discard post)."""
+    """The discard choice of the prompts a half-made post shows: "Discard changes?" (DISCARD), the
+    "finish your post later?" sheet (Discard post) or "Save this reel as a draft?" (Discard video)."""
     if match(lines, "Discard changes"):
         point = match(lines, "DISCARD", exact=True)
         if point:
             return point
-    return match(lines, "Discard post", exact=True)
+    return match(lines, "Discard post", exact=True) or match(lines, "Discard video", exact=True)
