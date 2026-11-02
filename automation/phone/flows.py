@@ -19,7 +19,8 @@ from phone.screen import Line, Point, match, texts
 FEED_PROMPT = "What's on your mind?"
 # A Page's composer once a photo is picked; it shows POST right there, with no Next.
 PHOTO_PROMPT = "Say something about this photo"
-# The same composer for a video that is not 9:16: it would post as a plain video, not a reel.
+# The same composer for a video that is not 9:16: it would post as a plain video, not a reel, so
+# such a video goes through the profile's Create reel button instead.
 VIDEO_PROMPT = "Say something about this video"
 # Seconds before each of the three looks for a new post on the profile; a reel can take a while.
 COMMENT_WAITS = (30, 25, 25)
@@ -31,6 +32,10 @@ COMMENT_BOX = ["Write a comment", "Add a comment", "Comment as"]
 
 class StepFailed(Exception):
     """A step did not reach the screen it expects. Before the publish tap a job can be retried."""
+
+
+class NotAReel(StepFailed):
+    """Facebook opened a plain video post for the picked video."""
 
 
 class AccountBlocked(Exception):
@@ -184,7 +189,12 @@ class Flows:
     # --- composing ----------------------------------------------------------------------------
     async def start_post(self, item: PostItem) -> None:
         """The composer with this job's media and caption."""
-        await self._compose_from_gallery()
+        try:
+            await self._compose_from_gallery()
+        except NotAReel as plain:
+            self.log(event="route", step="create reel", reason=str(plain))
+            await self.discard_until_feed()
+            await self._compose_from_create_reel()
         await self.write_caption(item)
 
     async def _compose_from_gallery(self) -> None:
@@ -195,11 +205,24 @@ class Flows:
         await dev.tap((point[0] + offset[0], point[1] + offset[1]))
         found, nxt, _ = await self.wait_for("picker selection", ["Next", PHOTO_PROMPT, VIDEO_PROMPT], timeout=10)
         if found == VIDEO_PROMPT:
-            raise StepFailed("reel: Facebook opened a plain video post, not a reel; the video may need to be 9:16")
+            raise NotAReel("reel: Facebook opened a plain video post, not a reel; the video may not be 9:16")
         if found == "Next":
             await dev.tap(nxt)
         await self.wait_for("composer with media", [FEED_PROMPT, PHOTO_PROMPT, "Describe your reel",
                                                     "Add a description"], timeout=30)
+
+    async def _compose_from_create_reel(self) -> None:
+        """From the feed: the profile's Create reel button, the newest video in its picker, then Next."""
+        dev = self.device
+        await self.open_profile()
+        _, button, _ = await self.wait_for("create reel button", ["Create reel"], timeout=10)
+        await dev.tap(button)
+        _, gallery, _ = await self.wait_for("reel picker", ["Gallery"], exact=True, timeout=15)
+        offset = dev.pt(68, 394)  # the first cell, whether or not a Drafts row sits above the grid
+        await dev.tap((gallery[0] + offset[0], gallery[1] + offset[1]))
+        _, nxt, _ = await self.wait_for("reel editor", ["Next"], timeout=30)  # OCR reads its arrow too
+        await dev.tap(nxt)
+        await self.wait_for("composer with media", ["Describe your reel", "Add a description"], timeout=30)
 
     async def open_gallery(self) -> Point:
         """From the feed: the composer, then its Gallery picker, past Facebook's camera roll consent
@@ -273,7 +296,8 @@ class Flows:
         "Posting" bar has come and gone (it is then found on the profile for the comment). A Page
         returns to an empty composer after sharing; it also shows the feed's prompt, so the feed is
         told by its logo, and the composer is left with Back. The feed may come back without the
-        prompt in view, so the prompt is not required."""
+        prompt in view, so the prompt is not required. A reel made with Create reel lands back on
+        the profile, told by its followers line."""
         dev = self.device
         seen_posting = False
         while dev.now() < tapped + PUBLISH_CONFIRM_TIMEOUT_S:
@@ -285,7 +309,7 @@ class Flows:
             elif match(lines, "Create post"):
                 self.log(event="leftover", screen="empty composer", action="back")
                 await dev.key(KEY_BACK)
-            elif match(lines, "facebook", exact=True):
+            elif match(lines, "facebook", exact=True) or (item.kind == "reel" and match(lines, "followers")):
                 if item.kind == "photo" and match(lines, "Just now") and (
                         not item.caption_key or match(lines, item.caption_key)):
                     return dev.now() - tapped

@@ -277,6 +277,7 @@ recorded as owned by the shell. Jobs use neither: every step reads the screen wi
 | Add media | Companion app saves the file to the user's gallery (`content write` to its `/media` path; owned by the companion app) |
 | Open Facebook | Home (twice, closing an open drawer), swipe up, tap the Facebook icon above its label |
 | Start a post | Feed "What's on your mind?", Gallery tile or Photo/video row, first item's selection circle, picker Next |
+| Reel from a video that opens a plain post (seen on a Page with 4:5) | Discard it, then profile, Create reel, first video in its picker, Next |
 | Find own post | Profile picture left of "What's on your mind?", profile Posts |
 | Comment | The comment icon under the post's caption on the profile; skipped and reported when not found |
 | Publish tap | SHARE (photo) / Share now (reel; under the caption on a Page's "New reel" screen, which has no Next) / POST (a Page's photo composer, which has no Next) |

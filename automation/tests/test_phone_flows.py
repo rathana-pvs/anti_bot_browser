@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(1, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from phone import screen  # noqa: E402
-from phone.flows import (AccountBlocked, Flows, PostItem, PublishUncertain, StepFailed)  # noqa: E402
+from phone.flows import (AccountBlocked, Flows, NotAReel, PostItem, PublishUncertain, StepFailed)  # noqa: E402
 from phone import device as phone_device, job  # noqa: E402
 from phone.screen import Line  # noqa: E402
 
@@ -271,6 +271,17 @@ class PublishTests(unittest.TestCase):
         self.assertGreater(took, 25)
         self.assertLess(took, 30)
 
+    def test_profile_after_create_reel_confirms_a_reel(self):
+        device = FakeDevice([lines(("66K followers · 16 following", 640), ("Create reel", 800))])
+        took = run(Flows(device, lambda **e: None).wait_published(PostItem("reel", "Clip"), 0.0))
+        self.assertGreater(took, 25)
+        self.assertLess(took, 30)
+
+    def test_profile_does_not_confirm_a_photo(self):
+        device = FakeDevice([lines(("66K followers · 16 following", 640))])
+        with self.assertRaises(PublishUncertain):
+            run(Flows(device, lambda **e: None).wait_published(PostItem("photo", "Morning coffee test"), 0.0))
+
     def test_no_home_tab_found_keeps_swiping(self):
         device = FakeDevice([lines(("facebook", 100)), lines(("facebook", 100)),
                              lines(("facebook", 100), ("What's on your mind?", 200))])
@@ -302,6 +313,22 @@ class PublishTests(unittest.TestCase):
         with patch.object(flows, "open_gallery", gallery), self.assertRaises(StepFailed):
             run(flows._compose_from_gallery())
         self.assertNotIn(("tap", (100.0, 60.0)), device.actions)
+
+    def test_video_that_opens_a_plain_post_goes_through_create_reel(self):
+        feed = lines(("facebook", 100), ("What's on your mind?", 300))
+        device = FakeDevice([feed, feed, lines(("All", 1100), ("Create reel", 800)), lines(("Create reel", 800)),
+                             lines(("Gallery", 280)), lines(("→ Next", 1130)), lines(("Describe your reel", 300)),
+                             lines(("Describe your reel", 300)), lines(("Morning coffee test", 300))])
+        flows = Flows(device, lambda **e: None)
+
+        async def plain():
+            raise NotAReel("plain video")
+        with patch.object(flows, "_compose_from_gallery", plain):
+            run(flows.start_post(PostItem("reel", "Morning coffee test")))
+        taps = [action[1] for action in device.actions if action[0] == "tap"]
+        offset = device.pt(68, 394)
+        self.assertEqual(taps[1:4], [(100.0, 800.0), (100.0 + offset[0], 280.0 + offset[1]), (100.0, 1130.0)])
+        self.assertIn(("paste", "Morning coffee test"), device.actions)
 
     def test_page_photo_picked_needs_no_next(self):
         device = FakeDevice([lines(("Say something about this photo...", 300)), lines(("Say something about this photo...", 300))])
