@@ -34,6 +34,7 @@ PACKET_HEADER = struct.Struct(">QI")
 MSG_INJECT_KEYCODE = 0
 MSG_INJECT_TEXT = 1
 MSG_INJECT_TOUCH = 2
+MSG_RESET_VIDEO = 17  # the encoder restarts: a new config and key frame follow, even on a still screen
 ACTION_DOWN, ACTION_UP, ACTION_MOVE = 0, 1, 2
 POINTER_ID_FINGER = -2
 MAX_TEXT_BYTES = 300
@@ -89,6 +90,8 @@ def control_messages(message: dict) -> list[bytes]:
         return [pack_key(ACTION_DOWN, keycode), pack_key(ACTION_UP, keycode)]
     if kind == "text":
         return [pack_text(str(message["text"]))]
+    if kind == "reset_video":
+        return [struct.pack(">B", MSG_RESET_VIDEO)]
     raise ValueError("Unsupported message")
 
 

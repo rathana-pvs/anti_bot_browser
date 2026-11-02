@@ -62,25 +62,45 @@ export function PhoneLiveView({ runtime }: { runtime: AndroidRuntime }) {
     }
     setState({ kind: 'connecting', message: 'Connecting…' });
     let pendingConfig: Uint8Array | null = null;
+    let lastConfig: Uint8Array | null = null;
+    let lastKeyFrame: { data: Uint8Array; timestamp: number } | null = null;
     let configuredCodec = '';
     let waitingForKeyFrame = true;
+    // The web view may pick a hardware decoder that refuses the stream; the software ones decode it.
+    let acceleration: HardwareAcceleration = 'no-preference';
     const fail = (message: string) => { setState({ kind: 'error', message }); stop(); };
 
-    const decoder = new VideoDecoder({
-      output: (frame) => {
-        const canvas = canvasRef.current;
-        if (canvas) {
-          if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
-            canvas.width = frame.displayWidth;
-            canvas.height = frame.displayHeight;
-            setSize({ width: frame.displayWidth, height: frame.displayHeight });
-          }
-          canvas.getContext('2d')?.drawImage(frame, 0, 0);
+    const draw = (frame: VideoFrame) => {
+      const canvas = canvasRef.current;
+      if (canvas) {
+        if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+          canvas.width = frame.displayWidth;
+          canvas.height = frame.displayHeight;
+          setSize({ width: frame.displayWidth, height: frame.displayHeight });
         }
-        frame.close();
-      },
-      error: () => fail('The phone’s video couldn’t be decoded.'),
-    });
+        canvas.getContext('2d')?.drawImage(frame, 0, 0);
+      }
+      frame.close();
+    };
+    const configure = (codec: string) => decoder.configure({ codec, optimizeForLatency: true, hardwareAcceleration: acceleration });
+    const decodeFailed = (error: DOMException) => {
+      if (acceleration !== 'prefer-software' && configuredCodec && socketRef.current === socket) {
+        // A decoder that failed is closed: start a software one and resume at the next key frame.
+        acceleration = 'prefer-software';
+        decoder = new VideoDecoder({ output: draw, error: decodeFailed });
+        decoderRef.current = decoder;
+        configure(configuredCodec);
+        pendingConfig = lastConfig;
+        waitingForKeyFrame = true;
+        // A still screen sends no frames: show the last picture now and ask the phone for a new key frame.
+        if (lastKeyFrame) decoder.decode(new EncodedVideoChunk({ type: 'key', ...lastKeyFrame }));
+        send({ type: 'reset_video' });
+        return;
+      }
+      fail(`The phone’s video couldn’t be decoded${error?.message ? ` (${error.message})` : ''}.`);
+    };
+
+    let decoder = new VideoDecoder({ output: draw, error: decodeFailed });
     decoderRef.current = decoder;
 
     const socket = new WebSocket(deviceLiveUrl(runtime.device_serial, runtime.android_user_id));
@@ -101,13 +121,14 @@ export function PhoneLiveView({ runtime }: { runtime: AndroidRuntime }) {
       const payload = new Uint8Array(event.data as ArrayBuffer, 12, view.getUint32(8));
       if (flags & CONFIG_FLAG) {
         pendingConfig = payload.slice();
+        lastConfig = pendingConfig;
         const codec = h264Codec(pendingConfig);
         if (!codec) return fail('The phone sent a video format this view doesn’t understand.');
         if (codec !== configuredCodec) {
           const support = await VideoDecoder.isConfigSupported({ codec, optimizeForLatency: true });
           if (!support.supported) return fail(`This app’s web view can’t decode the phone’s video (${codec}).`);
           if (decoder.state === 'closed') return;
-          decoder.configure({ codec, optimizeForLatency: true });
+          configure(codec);
           configuredCodec = codec;
           waitingForKeyFrame = true;
         }
@@ -124,6 +145,7 @@ export function PhoneLiveView({ runtime }: { runtime: AndroidRuntime }) {
         data.set(payload, pendingConfig.length);
         pendingConfig = null;
       }
+      if (key) lastKeyFrame = { data: data.slice(), timestamp: Number(flags & PTS_MASK) };
       if (decoder.state === 'configured') {
         decoder.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: Number(flags & PTS_MASK), data }));
       }

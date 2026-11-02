@@ -114,9 +114,13 @@ def _android_user(ctx: _Context) -> None:
 def _companion_app(ctx: _Context) -> None:
     manifest = bundled_agent()
     installed = ctx.client.package_installed(ctx.serial, ctx.user_id, AGENT_PACKAGE)
-    if not installed or ctx.client.package_version(ctx.serial, AGENT_PACKAGE) != manifest["version_name"]:
+    current = ctx.client.package_version(ctx.serial, AGENT_PACKAGE) == manifest["version_name"]
+    if not installed and current and ctx.client.package_on_phone(ctx.serial, AGENT_PACKAGE):
+        # Another user has this version: add the same copy, which needs no install verification.
+        ctx.client.install_existing(ctx.serial, ctx.user_id, AGENT_PACKAGE)
+    elif not installed or not current:
         try:
-            ctx.client.install_apk(ctx.serial, ctx.user_id, str(AGENT_APK))
+            _install_agent(ctx)
         except AdbError as exc:
             if "UPDATE_INCOMPATIBLE" in str(exc):
                 raise StepFailed("The phone has a test build of the companion app signed with another key. "
@@ -125,6 +129,21 @@ def _companion_app(ctx: _Context) -> None:
     if not ctx.client.package_installed(ctx.serial, ctx.user_id, AGENT_PACKAGE):
         raise StepFailed("The companion app did not install in this Android user.")
     ctx.client.exempt_battery(ctx.serial, AGENT_PACKAGE)
+
+
+def _install_agent(ctx: _Context) -> None:
+    """Play Protect checks ADB installs in the user on screen; for a user in the background it can
+    refuse outright (INSTALL_FAILED_VERIFICATION_FAILURE). Then the user is shown and it is tried again."""
+    try:
+        ctx.client.install_apk(ctx.serial, ctx.user_id, str(AGENT_APK))
+    except AdbError as exc:
+        if "VERIFICATION_FAILURE" not in str(exc) or ctx.client.current_user(ctx.serial) == ctx.user_id:
+            raise
+        switch = android_devices.switch_and_wait(ctx.client, ctx.serial, ctx.user_id)
+        if not switch["ready"]:
+            raise StepFailed(f"Android refused the install, and this user could not be shown to retry it: "
+                             f"{switch.get('reason')}") from exc
+        ctx.client.install_apk(ctx.serial, ctx.user_id, str(AGENT_APK))
 
 
 def _allow_vpn(ctx: _Context) -> None:

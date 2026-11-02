@@ -73,3 +73,7 @@ def test_live_websocket_accepts_the_token_header_from_the_dev_proxy(monkeypatch)
 
 async def _no_phone(serial):
     raise android_live.LiveViewError("no phone")
+
+
+def test_reset_video_asks_the_phone_for_a_new_key_frame():
+    assert android_live.control_messages({"type": "reset_video"}) == [bytes([17])]

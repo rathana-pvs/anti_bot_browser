@@ -99,6 +99,12 @@ class FakePhone:
     def switch_user(self, serial, user_id):
         self.current = user_id
 
+    def screen_awake(self, serial):
+        return True
+
+    def lock_screen_showing(self, serial):
+        return False
+
     def start_user(self, serial, user_id):
         self.users_running[user_id] = True
 
@@ -129,6 +135,8 @@ class FakePhone:
         return "0.3.0" if any(pkg == package for _, pkg in self.packages) else None
 
     def install_apk(self, serial, user_id, apk):
+        if getattr(self, "verify_background_installs", False) and self.current != user_id:
+            raise AdbError("Failure [INSTALL_FAILED_VERIFICATION_FAILURE: Install not allowed]")
         self.installs.append(user_id)
         self.packages.add((user_id, AGENT))
 
@@ -268,6 +276,20 @@ def test_get_ready_result_is_reported_on_its_step(phone, monkeypatch):
     android_setup._running.add("profile_020")
     android_setup._get_ready("profile_020")
     assert statuses(android_setup.progress("profile_020"))["facebook_ready"] == "passed"
+
+
+def test_a_copy_in_another_user_is_added_without_installing(phone):
+    phone.packages.add((12, AGENT))  # the companion app, same version, set up for another account
+    progress = run_setup()
+    assert statuses(progress)["companion_app"] == "passed"
+    assert phone.installs == [] and (11, AGENT) in phone.packages
+
+
+def test_an_install_refused_in_the_background_is_retried_on_screen(phone):
+    phone.verify_background_installs = True
+    progress = run_setup()
+    assert statuses(progress)["companion_app"] == "passed"
+    assert phone.installs == [11]  # the second try, made with this user on screen
 
 
 def test_retry_skips_steps_that_are_already_done(phone):
