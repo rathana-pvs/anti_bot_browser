@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { BatteryCharging, BatteryMedium, Check, ChevronRight, CircleAlert, Copy, Cpu, MemoryStick, Monitor, PencilLine, Plus, RefreshCw, ScanLine, ShieldCheck, Smartphone, Thermometer, Trash2, Usb, UserRound, Wifi } from 'lucide-react';
 import { AndroidDevice, AndroidUserRow, DeviceListResponse } from '../../types/device';
 import { Profile, SystemStats } from '../../types/profile';
 import { ProxyItem } from '../../types/proxy';
 import { adoptDeviceUser, fetchDevices, forgetDevice, makeDevicePrimary, openAccountOnPhone, renameDevice, scanDevice, setDevicePin, setDeviceTimezone, switchDeviceUser, updateDeviceSettings } from '../../services/devices';
 import { Checkbox } from '../ui/Checkbox';
+import { Select } from '../ui/Select';
 import { formatUtcOffset, phoneTimeReport } from './phoneTime';
 import { API_BASE } from '../../services/api';
 import { writeHostClipboardText } from '../../services/clipboard';
@@ -21,6 +22,16 @@ const HOT_C = 40;
 /** List keys for the two entries that are not phones. ADB serials never take these values. */
 const THIS_PC = 'this-pc';
 const ADD_PHONE = 'add-phone';
+const POLL_INTERVALS = [
+  { value: '0', label: 'Off' },
+  { value: '5000', label: '5 seconds' },
+  { value: '10000', label: '10 seconds' },
+  { value: '15000', label: '15 seconds' },
+  { value: '30000', label: '30 seconds' },
+  { value: '60000', label: '1 minute' },
+  { value: '120000', label: '2 minutes' },
+];
+const POLL_STORAGE_KEY = 'devices.scanInterval';
 
 const STATE_LABEL: Record<string, { label: string; variant: 'success' | 'warning' | 'danger' | 'neutral' }> = {
   device: { label: 'Online', variant: 'success' },
@@ -62,6 +73,14 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
   const [scanning, setScanning] = useState<string | null>(null);
   const [switching, setSwitching] = useState<number | null>(null);
   const [taking, setTaking] = useState(false);
+  const [pollInterval, setPollInterval] = useState(() => {
+    try {
+      const saved = localStorage.getItem(POLL_STORAGE_KEY);
+      return POLL_INTERVALS.some(option => option.value === saved) ? saved! : '10000';
+    } catch { return '10000'; }
+  });
+  const [scanError, setScanError] = useState<{ serial: string; message: string } | null>(null);
+  const scansInFlight = useRef(new Set<string>());
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -83,17 +102,54 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
 
   const device = data?.devices.find(d => d.serial === selected) ?? null;
 
-  const scan = async (serial: string) => {
+  const scan = useCallback(async (serial: string, automatic = false) => {
+    if (scansInFlight.current.has(serial)) return;
+    scansInFlight.current.add(serial);
     setScanning(serial);
     try {
       const scanned = await scanDevice(serial);
       setData(current => current && { ...current, devices: current.devices.map(d => d.serial === serial ? { ...d, ...scanned } : d) });
+      setScanError(current => current?.serial === serial ? null : current);
     } catch (error) {
-      await showAlert(error instanceof Error ? error.message : 'Scan failed', { title: 'Could not scan phone', variant: 'danger' });
+      const message = error instanceof Error ? error.message : 'Scan failed';
+      if (automatic) setScanError({ serial, message });
+      else await showAlert(message, { title: 'Could not scan phone', variant: 'danger' });
     } finally {
-      setScanning(null);
+      scansInFlight.current.delete(serial);
+      setScanning(current => current === serial ? null : current);
     }
-  };
+  }, [showAlert]);
+
+  useEffect(() => {
+    const delay = Number(pollInterval);
+    if (!active || !device || device.state !== 'device' || !delay || switching !== null || taking) return;
+    const serial = device.serial;
+    let stopped = false;
+    let polling = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const schedule = () => {
+      if (!stopped && !polling && !document.hidden) timer = setTimeout(() => void poll(), delay);
+    };
+    const poll = async () => {
+      if (stopped || document.hidden) return;
+      polling = true;
+      await scan(serial, true);
+      polling = false;
+      schedule();
+    };
+    const onVisibility = () => {
+      clearTimeout(timer);
+      // Returning to the app starts a fresh interval, without a burst of missed scans.
+      schedule();
+    };
+    schedule();
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [active, device?.serial, device?.state, pollInterval, switching, taking, scan]);
 
   useEffect(() => {
     if (rescan) void scan(rescan.serial).then(load);
@@ -288,6 +344,18 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
             <IconButton aria-label="Rename phone" onClick={() => void rename(device)}><PencilLine className="h-4 w-4" /></IconButton>
             <IconButton aria-label="Remove phone" onClick={() => void forget(device)}><Trash2 className="h-4 w-4" /></IconButton>
           </div>
+          <div className="flex flex-wrap items-center gap-2 px-4 pt-3 text-xs text-zinc-400">
+            <span>Auto-scan</span>
+            <Select value={pollInterval} options={POLL_INTERVALS} ariaLabel="Phone scan interval" className="w-36"
+              onValueChange={value => {
+                setPollInterval(value);
+                try { localStorage.setItem(POLL_STORAGE_KEY, value); } catch { /* Keep the preference for this session. */ }
+              }} />
+            <span className="text-[11px] text-zinc-500">Only the selected phone, while this page is visible.</span>
+          </div>
+          {scanError?.serial === device.serial && <div className="px-4 pt-3"><Alert variant="warning">
+            Couldn’t auto-scan this phone: {scanError.message} Last scanned users are still shown.
+          </Alert></div>}
           {device.role === 'secondary' && <div className="px-4 pt-3"><Alert variant="warning">
             <div className="flex flex-wrap items-center gap-2">
               <span className="min-w-0 flex-1">{device.primary_name || 'Another PC'} set this phone up. Its accounts work here, but only that PC can change them.
