@@ -158,13 +158,13 @@ class Flows:
                 await dev.tap(discard)
                 await dev.sleep(1)
                 continue
-            logo = match(lines, "facebook", exact=True)
-            if logo and not match(lines, "New post"):
+            if match(lines, "facebook", exact=True) and not match(lines, "New post"):
                 if match(lines, FEED_PROMPT):
                     return
-                if scrolled:  # still far down: the Home tab, under the logo at the left, jumps to the top
+                home = dev.find_icon("home_tab") if scrolled else None
+                if home:  # still far down: the Home tab jumps to the top (under the logo on a Page, else at the bottom)
                     self.log(event="feed", action="tap Home")
-                    await dev.tap((dev.pt(135, 0)[0], logo[1] + dev.pt(0, 107)[1]))
+                    await dev.tap(home)
                 else:
                     self.log(event="feed", action="scroll to top")  # reopened part-way down the feed
                     await self.scroll(dev.pt(540, 700), dev.pt(540, 1900))
@@ -272,7 +272,8 @@ class Flows:
         """A photo shows on the feed with its caption and "Just now"; a reel is confirmed once the
         "Posting" bar has come and gone (it is then found on the profile for the comment). A Page
         returns to an empty composer after sharing; it also shows the feed's prompt, so the feed is
-        told by its logo, and the composer is left with Back."""
+        told by its logo, and the composer is left with Back. The feed may come back without the
+        prompt in view, so the prompt is not required."""
         dev = self.device
         seen_posting = False
         while dev.now() < tapped + PUBLISH_CONFIRM_TIMEOUT_S:
@@ -284,7 +285,7 @@ class Flows:
             elif match(lines, "Create post"):
                 self.log(event="leftover", screen="empty composer", action="back")
                 await dev.key(KEY_BACK)
-            elif match(lines, "facebook", exact=True) and match(lines, FEED_PROMPT):
+            elif match(lines, "facebook", exact=True):
                 if item.kind == "photo" and match(lines, "Just now") and (
                         not item.caption_key or match(lines, item.caption_key)):
                     return dev.now() - tapped

@@ -68,7 +68,7 @@ def caption_tail_key(caption: str) -> str:
     return words[-20:] if len(squash(words[-20:])) >= 6 else ""
 
 
-def load_templates(names=("comment", "send")) -> dict[str, np.ndarray]:
+def load_templates(names=("comment", "send", "home_tab")) -> dict[str, np.ndarray]:
     templates = {name: cv2.imread(str(TEMPLATE_DIR / f"{name}.png")) for name in names}
     missing = [name for name, image in templates.items() if image is None]
     if missing:

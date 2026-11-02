@@ -134,9 +134,10 @@ class FeedTests(unittest.TestCase):
     def test_a_feed_still_far_down_after_scrolling_taps_the_home_tab(self):
         device = FakeDevice([lines(("facebook", 100)), lines(("facebook", 100)),
                              lines(("facebook", 100), ("What's on your mind?", 200))])
+        device.icons["home_tab"] = (48.0, 1211.0)
         run(Flows(device, lambda **e: None).discard_until_feed())
-        self.assertEqual([action[0] for action in device.actions], ["swipe", "swipe", "tap"])
-        self.assertEqual(device.actions[-1][1], (device.pt(135, 0)[0], 100.0 + device.pt(0, 107)[1]))
+        self.assertEqual(device.actions, device.actions[:2] + [("tap", (48.0, 1211.0))])
+        self.assertEqual([action[0] for action in device.actions[:2]], ["swipe", "swipe"])
 
     def test_the_last_try_reaching_the_top_counts(self):
         device = FakeDevice([lines(("facebook", 100))] * 8 + [lines(("facebook", 100), ("What's on your mind?", 200))])
@@ -263,6 +264,18 @@ class PublishTests(unittest.TestCase):
                              lines(("facebook", 100), ("What's on your mind?", 200))])
         run(Flows(device, lambda **e: None).wait_published(PostItem("reel", "Clip"), 0.0))
         self.assertEqual(device.actions, [("key", 4)])
+
+    def test_feed_without_the_prompt_in_view_confirms_a_reel(self):
+        device = FakeDevice([lines(("facebook", 100), ("Create story", 400))])
+        took = run(Flows(device, lambda **e: None).wait_published(PostItem("reel", "Clip"), 0.0))
+        self.assertGreater(took, 25)
+        self.assertLess(took, 30)
+
+    def test_no_home_tab_found_keeps_swiping(self):
+        device = FakeDevice([lines(("facebook", 100)), lines(("facebook", 100)),
+                             lines(("facebook", 100), ("What's on your mind?", 200))])
+        run(Flows(device, lambda **e: None).discard_until_feed())
+        self.assertEqual([action[0] for action in device.actions], ["swipe"] * 4)
 
     def test_page_profile_opens_on_its_all_tab(self):
         device = FakeDevice([lines(("What's on your mind?", 300)), lines(("All", 1100), ("Photos", 1100))])
