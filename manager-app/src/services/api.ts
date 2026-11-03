@@ -587,6 +587,7 @@ export async function cancelAllQueuePosts(batchId?: string): Promise<{ success: 
 
 export interface SupportBundleOptions {
   executionId?: string;
+  batchId?: string;
   description?: string;
   includeEvidence?: boolean;
   includeContent?: boolean;
@@ -595,6 +596,7 @@ export interface SupportBundleOptions {
 export async function downloadSupportBundle(options: SupportBundleOptions = {}): Promise<string> {
   const endpoint = options.executionId
     ? `${API_BASE}/support/execution/${encodeURIComponent(options.executionId)}`
+    : options.batchId ? `${API_BASE}/support/batch/${encodeURIComponent(options.batchId)}`
     : `${API_BASE}/support/export`;
   const res = await fetch(endpoint, {
     method: 'POST',
@@ -607,7 +609,7 @@ export async function downloadSupportBundle(options: SupportBundleOptions = {}):
   });
   if (!res.ok) {
     const error = await res.json().catch(() => ({}));
-    throw new Error(error.error || 'Failed to create support bundle');
+    throw new Error(error.detail || error.error || 'Failed to create support bundle');
   }
 
   const disposition = res.headers.get('Content-Disposition') || '';

@@ -7,8 +7,9 @@ import { Checkbox } from '../ui/Checkbox';
 import { Dialog } from '../ui/Dialog';
 import { Textarea } from '../ui/Textarea';
 
-export function SupportReportDialog({ open, item, profileName, onClose, onSaved, onError }: {
+export function SupportReportDialog({ open, item, profileName, batch, onClose, onSaved, onError }: {
   open: boolean; item: QueueExecutionItem | null; profileName?: string;
+  batch?: { batch_id: string; name: string } | null;
   onClose: () => void; onSaved: (location: string) => void; onError: (message: string) => void;
 }) {
   const [description, setDescription] = useState('');
@@ -18,16 +19,17 @@ export function SupportReportDialog({ open, item, profileName, onClose, onSaved,
   useEffect(() => {
     if (!open) return;
     setDescription(''); setIncludeEvidence(false); setIncludeContent(false);
-  }, [open, item?.execution_id]);
+  }, [open, item?.execution_id, batch?.batch_id]);
 
   const download = async () => {
     setBusy(true);
     try {
       const location = await downloadSupportBundle({
         executionId: item?.execution_id,
+        batchId: batch?.batch_id,
         description: description.trim(),
-        includeEvidence: Boolean(item) && includeEvidence,
-        includeContent: Boolean(item) && includeContent,
+        includeEvidence: Boolean(item || batch) && includeEvidence,
+        includeContent: Boolean(item || batch) && includeContent,
       });
       onSaved(location);
     } catch (err) {
@@ -38,13 +40,18 @@ export function SupportReportDialog({ open, item, profileName, onClose, onSaved,
   };
 
   return <Dialog open={open} onOpenChange={(next) => { if (!next && !busy) onClose(); }} className="max-w-lg"
-    title={item ? 'Report a problem with this item' : 'Export diagnostics'}
+    title={item ? 'Report a problem with this item' : batch ? 'Export batch report ZIP' : 'Export diagnostics'}
     description="Creates a local ZIP you can send to support."
     footer={<>
       <Button variant="outline" onClick={onClose} disabled={busy}>Cancel</Button>
       <Button onClick={download} loading={busy}><Download className="h-3.5 w-3.5" />Save support ZIP</Button>
     </>}>
     <div className="space-y-4 text-xs">
+      {batch && <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 text-zinc-300">
+        <p className="font-medium">{batch.name}</p>
+        <p className="mt-1 text-zinc-400">Includes every item: successful, failed, skipped, in progress and needing review. Includes outcomes, errors, stage history, logs and available evidence metadata.</p>
+        <p className="mt-1 text-zinc-500">This is a snapshot at export time. Available screenshots include up to six per item.</p>
+      </div>}
       {item && <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
         <dt className="text-zinc-500">Account</dt><dd className="text-zinc-200">{profileName || item.profile_id}</dd>
         <dt className="text-zinc-500">Status</dt><dd className="text-zinc-200">{item.status}{item.stage ? ` · ${item.stage}` : ''}</dd>
@@ -55,7 +62,7 @@ export function SupportReportDialog({ open, item, profileName, onClose, onSaved,
         <Textarea value={description} onChange={(e) => setDescription(e.target.value.slice(0, 4000))} rows={4}
           placeholder="The Reel published, but the first comment didn’t appear." />
       </label>
-      {item && <div className="space-y-2">
+      {(item || batch) && <div className="space-y-2">
         <label htmlFor="report-include-evidence" className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-zinc-800 p-3 hover:border-zinc-700">
           <Checkbox id="report-include-evidence" checked={includeEvidence} onCheckedChange={setIncludeEvidence} className="mt-0.5" />
           <span><span className="block font-medium text-zinc-200">Include evidence screenshots</span>
