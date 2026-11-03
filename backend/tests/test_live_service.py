@@ -10,7 +10,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from backend.services import live_service as live, automation_service as automation, container_lifecycle as lifecycle
+from backend.services import live_service as live, automation_service as automation, container_lifecycle as lifecycle, android_devices
 from backend.routers.live import router
 
 PROFILE = 'profile_001'
@@ -38,6 +38,7 @@ def sandbox(tmp_path, monkeypatch):
     media.mkdir()
     (media / 'video.mp4').write_bytes(b'fake video')
     monkeypatch.setattr(live, 'PROFILES_DIR', profiles)
+    monkeypatch.setattr(android_devices, 'PROFILES_DIR', profiles)
     monkeypatch.setattr(live, 'SHARED_MEDIA_DIR', media)
     monkeypatch.setattr(live, 'LIVE_DIR', tmp_path / 'live')
     monkeypatch.setattr(live, 'CONTROLS', {})
@@ -467,6 +468,32 @@ async def test_live_batch_rejects_duplicate_destinations(sandbox):
     with pytest.raises(HTTPException, match='different Facebook stream keys'):
         await queue_api.create_batch({'target_profiles': [PROFILE, PROFILE],
                                      'posts': [{'type': 'live', 'media_file': 'video.mp4'}]})
+
+
+@pytest.mark.parametrize('named', [True, False])
+@run_async_test
+async def test_live_batch_names_all_duplicate_groups_without_exposing_keys(sandbox, named):
+    from backend.routers import queue as queue_api
+    from fastapi import HTTPException
+    profiles = [f'profile_{number:03}' for number in range(1, 6)]
+    keys = [SETTINGS['stream_key'], SETTINGS['stream_key'], 'FB-other-secret-key-123',
+            'FB-other-secret-key-123', 'FB-unique-secret-key-123']
+    for pid, key in zip(profiles, keys):
+        directory = live.PROFILES_DIR / pid
+        directory.mkdir(exist_ok=True)
+        # Identical names must still be distinguishable by ID.
+        (directory / 'config.json').write_text(json.dumps({'name': 'Same name'} if named else {}))
+        live.save_settings(pid, {**SETTINGS, 'stream_key': key})
+    with pytest.raises(HTTPException) as caught:
+        await queue_api.create_batch({'target_profiles': profiles,
+                                     'posts': [{'type': 'live', 'media_file': 'video.mp4'}]})
+    message = caught.value.detail
+    assert caught.value.status_code == 400
+    labels = [f'Same name ({pid})' if named else pid for pid in profiles[:4]]
+    assert f'{labels[0]}, {labels[1]}; {labels[2]}, {labels[3]}' in message
+    assert profiles[4] not in message
+    assert all(key not in message for key in keys)
+    assert SETTINGS['server_url'] not in message
 
 
 @pytest.mark.parametrize('loop,limit,muted', [(True, None, False), (True, 14401, False), (True, 0, False),

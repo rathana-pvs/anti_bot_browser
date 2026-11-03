@@ -170,13 +170,27 @@ async def create_batch(payload: dict = Body(...)):
     if any(post.get("type") == "live" for post in posts):
         from backend.services import live_service
         try:
-            destinations = set()
+            destinations = {}
             for pid in target_profiles:
                 settings = live_service.validate_settings(live_service.read_json(live_service.settings_path(pid)))
                 destination = settings['server_url'] + settings['stream_key']
-                if destination in destinations:
-                    raise ValueError('Selected profiles must have different Facebook stream keys')
-                destinations.add(destination)
+                destinations.setdefault(destination, []).append(pid)
+            duplicate_groups = [ids for ids in destinations.values() if len(ids) > 1]
+            if duplicate_groups:
+                groups = []
+                for ids in duplicate_groups:
+                    labels = []
+                    for pid in ids:
+                        try:
+                            config = live_service.read_json(live_service.profile_path(pid) / 'config.json')
+                            name = config.get('name')
+                        except (OSError, ValueError, AttributeError):
+                            name = None
+                        labels.append(f'{name} ({pid})' if name else pid)
+                    groups.append(', '.join(labels))
+                raise ValueError('Selected profiles must have different Facebook stream keys. '
+                                 'Profiles sharing a key: ' + '; '.join(groups) +
+                                 '. Update their Live settings or select only one profile from each group.')
             for post in posts:
                 if post.get("type") == "live":
                     post.update(live_service.validate_playback(post.get("loop", False), post.get("max_duration_seconds"), post.get("muted", False), post.get("playback_mode", "auto")))
