@@ -1,3 +1,20 @@
+# Version 1.2.1
+
+- Export a complete batch support ZIP from Posting Queue → Batch → Export batch
+  report ZIP. Includes all outcomes, including successful posts, errors, skipped
+  items, and items needing review, with per-item logs, stage history and telemetry.
+- Optionally include post content and available evidence screenshots. The report
+  includes a readable summary, structured JSON and interpretation instructions
+  for support. Browser profiles and session directories are excluded; diagnostic
+  credentials and stream keys are redacted.
+- Live setup warnings identify the account names and IDs sharing a Facebook
+  stream key, making duplicate destinations easier to correct.
+- Keep local Android signing credentials and device identity files out of Git.
+
+**Linux only.** After installing, run **Settings → Setup and repair → Install /
+update runtime** when prompted. Existing profiles, sessions and settings remain
+in persistent app storage.
+
 # Version 1.2.0
 
 **Linux only.** Windows and WSL are no longer supported: there is no Windows
