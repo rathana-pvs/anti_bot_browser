@@ -41,9 +41,9 @@ export function AccountsPage({ profiles, proxies, groups, executions, handlers, 
 
   const activity = useMemo(() => new Map(profiles.map(p => [p.id, activityFor(p.id, executions, period)])), [profiles, executions, period]);
   const { health } = useAccountHealth();
-  // Stages use today's open items, whatever period the table shows.
-  const stages = useMemo(() => new Map(profiles.map(p => [p.id, stageView(p, health[p.id], activityFor(p.id, executions, 1))])),
-    [profiles, health, executions]);
+  // Account health is independent of job failures and the table's activity period.
+  const stages = useMemo(() => new Map(profiles.map(p => [p.id, stageView(p, health[p.id])])),
+    [profiles, health]);
   const systemFolders: SystemFolder[] = STAGE_ORDER.map(stage => {
     const meta = STAGE_META[stage];
     const Icon = meta.icon;

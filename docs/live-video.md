@@ -11,10 +11,25 @@ under 100 whitespace-separated words choose whole typing or whole paste; links,
 100+ words, Unicode, and multiline text always use paste. Preset pinned comments
 always use paste. The adapter uses profile pacing, checks existing field contents,
 reads back entered text, and applies bounded review pauses before Save. It never
-falls back to typing after a clipboard failure or clears a conflicting draft.
+falls back to typing after a clipboard failure. Conflicting title and caption
+drafts stop preparation. In the verified preset pinned-comment editor, the
+supplied comment replaces the saved preset with one paste; its exact text is
+checked before Save and in the saved preview. Unreadable content and
+content that changes during replacement still stop preparation.
 
-The existing preparation deadline still applies, with time reserved for Save and
-retention checks. Insufficient entry time, unknown/changed drafts, focus loss, or
+Live title, caption and preset entry each read the existing field once, then
+verify the final text once after the review pause. After Save, the complete
+pinned-comment preview is checked with OCR, without reopening or copying again.
+A hidden, truncated, low-confidence or different preview falls back to one
+editor reopening and exact clipboard readback. A saved preset that already
+matches is reused without saving or reopening it again.
+Clipboard synchronization continues to show its existing copy notifications;
+fewer notifications come from reducing actual verification reads.
+
+Preparation is bounded to 120 seconds, with 45 extra seconds when configuring
+the optional pinned comment. Text entry stops 20 seconds early to reserve time
+for Save and retention checks; Save may use that reserve. Insufficient entry
+time, unknown/changed drafts, focus loss, or
 unconfirmed empty pinned-comment fields require operator review before streaming.
 Only supported English field layouts are recognized. Existing saved-details
 handling remains unchanged. Go live, End live, FFmpeg startup/playback, and broadcast

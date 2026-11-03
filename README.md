@@ -76,6 +76,11 @@ flowchart TD
 
 ---
 
+Account **Needs attention** is reserved for detected login/verification and
+Page identity problems. Routine job failures, uncertain publication outcomes,
+proxy errors and required browser restarts keep their own queue or browser
+indicators; they do not change the account's health stage.
+
 ## Caption entry and optional hooks
 
 Photo/text posts, Reels, and automated Live title/caption entry share one policy: captions below 100
@@ -92,9 +97,12 @@ confidence scores and form-check results. Background credentials are masked. If 
 dialog cannot be verified, only recognized controls and the last confirmed dialog
 are retained. Dialog screenshots may include the supplied title and caption;
 arbitrary OCR text and clipboard payloads are discarded.
-Different
-or unconfirmed drafts stop preparation for review. If a preset editor lacks a
-recognized empty placeholder, preparation stops rather than assuming it is blank.
+Different title/caption drafts or unconfirmed fields stop preparation for review.
+In the verified Live preset pinned-comment editor, the supplied comment replaces
+the saved preset and is read back before Save. The saved preview is verified with
+OCR; the editor is reopened only if that preview cannot confirm the full comment.
+If a preset editor lacks both readable content and a recognized empty placeholder,
+preparation stops rather than assuming it is blank.
 
 In the batch creator, enable **Generate opening hook** on a Photo or Reel row.
 Supply a caption or description, optional audience/language/tone, and words to

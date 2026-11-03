@@ -29,7 +29,6 @@ WARMING_UP_DAYS = 21
 READY_MIN_POSTS = 10
 DAILY_POST_LIMITS = {"new": 0, "warming_up": 2, "ready": 4}
 PUSHBACK_REST_HOURS = 72
-FAILURE_STREAK = 3
 
 SUCCESS_STATUSES = {"published", "completed"}
 FAILURE_STATUSES = {"failed", "failed_before_publish", "skipped_session_unverified"}
@@ -186,12 +185,6 @@ def compute(config: dict, entries: list[dict], now: datetime | None = None) -> d
                       reason="Facebook was showing the personal profile instead of the Page. Switch back to the Page in the browser.",
                       evidence=_evidence(identified))
         return result
-    recent = entries[-FAILURE_STREAK:]
-    if len(recent) == FAILURE_STREAK and all(entry["status"] in FAILURE_STATUSES for entry in recent):
-        result.update(stage="attention", reason=f"The last {FAILURE_STREAK} sessions failed before posting.",
-                      evidence=_evidence(*reversed(recent)))
-        return result
-
     window = account_hold.restart(config, now)
     if window:
         visited = account_hold.visited_since(entries, window["since"])

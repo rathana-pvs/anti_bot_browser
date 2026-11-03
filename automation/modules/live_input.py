@@ -63,38 +63,39 @@ class LiveInput:
         deadline = getattr(self.task, 'preparation_deadline', None)
         return (deadline if deadline is not None else time.monotonic() + 120) - 20
 
-    def enter(self, text, target, *, field, empty_check, surface_guard):
+    def enter(self, text, target, *, field, empty_check, surface_guard, replace_existing=False):
         field_label = {'live_title': 'title', 'live_caption': 'caption', 'comment': 'pinned comment'}.get(field, 'text')
         deadline = self.deadline()
+        review_started = False
+        def review(waiter):
+            nonlocal review_started
+            review_started = True
+            self.review.review(text, field, 0, waiter)
         result = self.composer_entry.enter(
             text, target['center'], field=field, empty_confirmed=empty_check,
             surface_guard=surface_guard, deadline=deadline,
+            replace_existing=replace_existing,
+            before_verify=review,
         )
         if not result.verified:
+            if review_started:
+                if result.interruption_reason:
+                    raise RuntimeError('Live ' + field_label + ' review was interrupted ('
+                                       + result.interruption_reason + '); nothing was saved or published.')
+                raise RuntimeError('Live ' + field_label + ' review failed (verification_unavailable); '
+                                   'nothing was saved or published.')
             reason = result.interruption_reason or result.status
             raise RuntimeError('Live ' + field_label + ' entry could not be verified (' + reason
                                + '). Nothing was saved or published.')
-        owner = self.composer_entry.last_owner
-        waiter = self.composer_entry.waiter(owner, deadline, surface_guard)
-        try:
-            waiter.checkpoint()
-            # Include field identity so title and caption do not share a review credit.
-            self.review.review(text, field, 0, waiter)
-            waiter.checkpoint()
-            if self.composer_entry.read_field(waiter) != text:
-                raise EntryInterrupted('Live text changed during review', 'field_content_changed')
-        except EntryInterrupted as error:
-            raise RuntimeError('Live ' + field_label + ' review was interrupted (' + error.reason
-                               + '); nothing was saved or published.') from None
-        except Exception:
-            raise RuntimeError('Live ' + field_label + ' review failed (verification_unavailable); '
-                               'nothing was saved or published.') from None
         return result
 
     def before_save(self):
         try:
             self.check_owner(self.composer_entry.last_owner)
-            if time.monotonic() >= self.deadline():
-                raise EntryInterrupted('Live preparation deadline reached')
         except Exception:
-            raise RuntimeError('Live input ownership or preparation time was lost before Save.') from None
+            raise RuntimeError('Live input ownership was lost before Save.') from None
+        # Entry stops early to reserve time for Save and retention checks.
+        # Save itself may use that reserve, up to the preparation deadline.
+        deadline = getattr(self.task, 'preparation_deadline', None)
+        if deadline is not None and time.monotonic() >= deadline:
+            raise RuntimeError('Live preparation deadline was reached before Save.')

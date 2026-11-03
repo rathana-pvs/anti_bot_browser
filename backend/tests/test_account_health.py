@@ -62,11 +62,30 @@ def test_a_checkpoint_needs_attention_until_a_later_success():
     assert compute(config(), posts(12) + [checkpoint, entry(1)], NOW)["stage"] == "ready"
 
 
-def test_three_failed_sessions_in_a_row_need_attention():
+def test_routine_failures_do_not_mark_the_account_as_needing_attention():
     failures = [entry(3, "failed_before_publish"), entry(2, "skipped_session_unverified"), entry(1, "failed_before_publish")]
-    assert compute(config(), posts(12) + failures, NOW)["stage"] == "attention"
-    # A slow proxy's uncertain upload is not a failure streak.
+    assert compute(config(), posts(12) + failures, NOW)["stage"] == "ready"
+    # Unknown publication outcomes remain a job-level concern as well.
     assert compute(config(), posts(12) + failures[:2] + [entry(1, "uncertain")], NOW)["stage"] == "ready"
+
+
+@pytest.mark.parametrize('error', [
+    'Absolute automation deadline exceeded or ownership lost',
+    'Live pinned comment entry could not be verified (draft_conflict)',
+    'Stream stopped before Facebook confirmed the broadcast',
+    'Proxy connection timed out',
+])
+def test_repeated_job_errors_remain_in_history_without_an_account_warning(error):
+    failures = [entry(hours, 'failed_before_publish', error=error) for hours in (3, 2, 1)]
+    health = compute(config(), posts(12) + failures, NOW)
+    assert health['stage'] == 'ready'
+    assert 'evidence' not in health
+
+
+def test_routine_failures_do_not_clear_an_unresolved_login_problem():
+    checkpoint = entry(5, status='skipped_auth_required')
+    failures = [entry(hours, 'failed_before_publish', error='Timed out') for hours in (3, 2, 1)]
+    assert compute(config(), posts(12) + [checkpoint] + failures, NOW)['stage'] == 'attention'
 
 
 def test_facebook_pushback_rests_for_three_days():
@@ -137,9 +156,6 @@ def test_attention_names_the_items_behind_it():
     assert health["stage"] == "attention"
     assert health["evidence"] == [{"execution_id": "e_check", "at": checkpoint["at"], "kind": "post",
                                    "status": "skipped_auth_required", "error": "Login required"}]
-    failures = [dict(entry(hours, "failed_before_publish"), execution_id=f"f{hours}") for hours in (3, 2, 1)]
-    health = compute(config(), posts(12) + failures, NOW)
-    assert [item["execution_id"] for item in health["evidence"]] == ["f1", "f2", "f3"]
 
 
 def test_history_entries_carry_their_execution_id():

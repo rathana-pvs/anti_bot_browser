@@ -101,6 +101,10 @@ class FacebookLiveTask:
         if p.hostname not in {'facebook.com', 'www.facebook.com'} or not p.path.startswith('/live/producer') or (expected.query and p.query != expected.query):
             self.live_input.human.navigate(producer_url)
         deadline = time.monotonic() + self.layouts.config['timeouts']['prepare']
+        # The optional preset has its own editor, review, Save and retention
+        # checks. Keep the total bounded below the service's 190-second limit.
+        if getattr(self, 'pinned_comment', None) is not None:
+            deadline += 45
         self.preparation_deadline = deadline
         clicked = set()
         details_written = False

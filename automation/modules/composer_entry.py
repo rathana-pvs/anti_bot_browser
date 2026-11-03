@@ -30,6 +30,7 @@ class ComposerEntry:
         self.task = task
         self.plans = {}
         self.completed = {}
+        self.replacement_attempted = set()
         self.timing = BehaviorTiming(task.behavior_session)
 
     def waiter(self, owner, deadline=None, surface_guard=None):
@@ -63,7 +64,10 @@ class ComposerEntry:
             return '' if confirmed else None
         return value
 
-    def enter(self, text, target, *, field='caption', empty_confirmed=False, deadline=None, surface_guard=None):
+    def enter(self, text, target, *, field='caption', empty_confirmed=False, deadline=None, surface_guard=None,
+              replace_existing=False, before_verify=None):
+        if replace_existing and (field != 'comment' or not callable(surface_guard)):
+            raise ValueError('Preset replacement requires a guarded comment editor')
         task = self.task
         key = (field, text)
         plan = self.plans.setdefault(key, None)
@@ -94,10 +98,10 @@ class ComposerEntry:
                 self.completed[key] = True
                 status = 'reused_existing_content'
                 return EntryResult(status, True, 'clipboard_exact')
-            if key in self.completed:
+            if key in self.completed or key in self.replacement_attempted:
                 status = 'previous_entry_changed'
                 return EntryResult(status)
-            if current is None or current != '':
+            if current is None or (current != '' and not replace_existing):
                 status = 'draft_unknown' if current is None else 'draft_conflict'
                 return EntryResult(status)
             if deadline is not None:
@@ -107,16 +111,28 @@ class ComposerEntry:
                     return EntryResult(status)
             if plan.method == 'paste':
                 waiter.checkpoint()
+                if replace_existing and current != '':
+                    # Only a verified Live preset may replace saved content.
+                    # The first read is enough; retain editor/focus guards.
+                    task.human.key_press('ctrl+a')
+                    waiter.checkpoint()
+                if replace_existing:
+                    self.replacement_attempted.add(key)
                 task.paste_text(text, expected_owner=owner)
                 waiter.pause(self.timing.sample(.2, .35, .6))
             else:
                 # The field is read back right below, so a corrected slip can never stay.
                 stats = task.human.type_text(text, wpm=plan.wpm, waiter=waiter, allow_typos=True)
+            if before_verify is not None:
+                waiter.checkpoint()
+                before_verify(waiter)
+                waiter.checkpoint()
             waiter.check()
             entered = self.read_field(waiter)
             if entered != text:
                 status = 'entry_unconfirmed'
-                return EntryResult(status)
+                interruption_reason = 'field_content_changed' if before_verify is not None else None
+                return EntryResult(status, interruption_reason=interruption_reason)
             self.completed[key] = True
             status = 'entered_verified'
             return EntryResult(status, True, 'clipboard_exact')
