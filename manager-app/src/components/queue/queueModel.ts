@@ -47,6 +47,7 @@ const formatClock = (seconds = 0) => `${Math.floor(seconds / 60)}:${String(Math.
 
 /** One plain-language line that explains the row without opening it. */
 export function describe(item: QueueExecutionItem): string {
+  if (item.status === 'skipped_auth_required') return item.error || 'Facebook requires login or verification before this account can post.';
   if (item.status === 'failed_after_publish') return 'Post was clicked but not found afterwards. Check before retrying.';
   if (UNCERTAIN_STATUSES.has(item.status)) return item.post_type === 'live'
     ? 'Broadcast outcome unknown. Confirm it ended.'

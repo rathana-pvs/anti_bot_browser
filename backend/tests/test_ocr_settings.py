@@ -16,9 +16,9 @@ def test_default_selection_and_persisted_choice_keep_active_engine_pinned(tmp_pa
         assert result['selected']=='paddleocr-v6'
         assert result['restart_required'] is True
         assert ResourceSettingsManager(path).ocr_engine=='paddleocr-v6'
-        assert manager.resource_mode=='low'
+        assert manager.resource_mode=='custom'
         assert json.loads(path.read_text())['other_setting']=='keep'
-        manager.update_resource_mode('medium')
+        manager.update_resource_mode('auto')
         assert json.loads(path.read_text())['ocr_engine']=='paddleocr-v6'
 
 

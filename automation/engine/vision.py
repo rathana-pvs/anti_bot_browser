@@ -38,6 +38,9 @@ NORMALIZED_REGIONS = {
     "modal_header_alerts": (0.18, 0.03, 0.82, 0.30),
     "reel_sidebar": (0.58, 0.10, 1.00, 1.00),
     "profile_post_stream": (0.12, 0.20, 0.88, 1.00),
+    "profile_reel_composer_primary": (0.50, 0.08, 1.00, 1.00),
+    # Full webpage fallback for composers shifted by another layout.
+    "profile_reel_composer": (0.00, 0.08, 1.00, 1.00),
     "composer_modal": (0.20, 0.15, 0.80, 0.85),
     "feed_composer": (0.20, 0.10, 0.80, 0.55),
     "browser_dialog": (0.20, 0.05, 0.80, 0.48),

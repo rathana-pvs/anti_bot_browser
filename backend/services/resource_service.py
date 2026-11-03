@@ -88,6 +88,16 @@ class ResourceSettingsManager:
                 with open(self.file_path, "r", encoding="utf-8") as f:
                     value = json.load(f)
                     if isinstance(value, dict):
+                        legacy = value.get('resource_mode')
+                        if legacy in RESOURCE_MODE_LIMITS:
+                            limits = RESOURCE_MODE_LIMITS[legacy]
+                            value.update(resource_mode='custom',
+                                         max_parallel=limits['max_total_automation_tasks'],
+                                         max_posts=limits['max_publishers'],
+                                         max_live=limits['max_publishers'])
+                            temporary = self.file_path.with_suffix('.migration.tmp')
+                            temporary.write_text(json.dumps(value, indent=2), encoding='utf-8')
+                            temporary.replace(self.file_path)
                         return value
             except Exception:
                 pass
@@ -102,7 +112,49 @@ class ResourceSettingsManager:
 
     @property
     def resource_mode(self) -> str:
-        return self._settings.get("resource_mode", "auto")
+        value = self._settings.get("resource_mode", "auto")
+        return value if value in ('auto', 'extreme', 'custom') else 'auto'
+
+    @property
+    def custom_limits(self) -> dict:
+        total = self.max_parallel or 6
+
+        def cap(key, default):
+            value = self._settings.get(key, default)
+            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 16:
+                value = default
+            return min(total, value)
+
+        return {'max_parallel': total, 'max_posts': cap('max_posts', 3),
+                'max_live': cap('max_live', 2),
+                'reserve_percent': self.reserve_percent}
+
+    def update_execution_settings(self, payload: dict) -> None:
+        """Validate the complete update before persisting any part of it."""
+        with self._lock:
+            mode = payload.get('mode', self.resource_mode)
+            if mode not in ('auto', 'extreme', 'custom'):
+                raise ValueError('Mode must be auto, extreme, or custom')
+            candidate = dict(self._settings, resource_mode=mode)
+            for key, lower, upper in [('max_parallel', 1, 16), ('max_posts', 1, 16),
+                                      ('max_live', 1, 16), ('reserve_percent', 0, 40)]:
+                if key not in payload:
+                    continue
+                value = payload[key]
+                if isinstance(value, bool) or not isinstance(value, int) or not lower <= value <= upper:
+                    raise ValueError(f'{key} must be between {lower} and {upper}')
+                candidate[key] = value
+            total = candidate.get('max_parallel', 6)
+            for key, default in [('max_posts', 3), ('max_live', 2)]:
+                value = candidate.get(key, min(total, default))
+                if value > total:
+                    if key in payload:
+                        raise ValueError(f'{key} cannot exceed maximum active accounts ({total})')
+                    value = total
+                candidate[key] = value
+            candidate['updated_at'] = datetime.now(timezone.utc).isoformat()
+            self._settings = candidate
+            self._save()
 
     @property
     def max_parallel(self) -> int | None:
@@ -163,26 +215,30 @@ class ResourceSettingsManager:
         return self.ocr_selection()
 
     def update_resource_mode(self, mode: str) -> dict:
-        mode = mode if mode in ("auto", "low", "medium", "high") else "auto"
-        with self._lock:
-            self._settings["resource_mode"] = mode
-            self._settings["updated_at"] = datetime.now(timezone.utc).isoformat()
-            self._save()
+        self.update_execution_settings({'mode': mode})
         return self.get_snapshot()
 
     def get_snapshot(self) -> dict:
-        res = resolve_resource_mode(self.resource_mode, TOTAL_MEMORY_GB, CPU_THREADS)
-        ocr_threads = recommended_ocr_threads(CPU_THREADS, res["limits"]["max_total_automation_tasks"])
+        custom = self.custom_limits
+        total = custom['max_parallel'] if self.resource_mode == 'custom' else 2
+        limits = {
+            'max_publishers': total if self.resource_mode == 'custom' else max(1, total // 2),
+            'max_post_publishers': min(total, custom['max_posts']) if self.resource_mode == 'custom' else max(1, total // 2),
+            'max_live_publishers': min(total, custom['max_live']) if self.resource_mode == 'custom' else max(1, total // 2),
+            'max_preparers': total, 'max_total_automation_tasks': total,
+            'max_active_profile_containers': total,
+        }
+        ocr_threads = recommended_ocr_threads(CPU_THREADS, total)
         return {
             "hardware": {
                 "cpu_threads": CPU_THREADS,
                 "total_memory_gb": TOTAL_MEMORY_GB,
             },
-            "selected_mode": res["selected"],
-            "effective_mode": res["effective"],
-            "recommended_mode": res["recommended"],
-            "supported": res["supported"],
-            "limits": res["limits"],
+            "selected_mode": self.resource_mode,
+            "effective_mode": self.resource_mode,
+            "recommended_mode": "auto",
+            "supported": True,
+            "limits": limits,
             "ocr": {
                 "threads": ocr_threads,
                 "runtime": OCR_RUNTIME,

@@ -18,6 +18,26 @@ const queueWith = (...executions) => ({
   daily_batches: [{ posts: [{ executions }] }],
 });
 
+test('Custom separates post and Live caps while sharing account capacity', () => {
+  const config = { ...DEFAULT_SCHEDULER_CONFIG, max_publishers: 4, max_post_publishers: 2,
+    max_live_publishers: 1, max_total_automation_tasks: 4 };
+  const live = { execution_id: 'live', profile_id: 'live', status: 'pending' };
+  const queue = { daily_batches: [{ posts: [{ type: 'live', executions: [live] }] }] };
+  assert.equal(claimExecutionLease(queue, live, {
+    leaseId: 'live-lease', ownerId: 'test', workload: 'live', config, nowMs: NOW,
+  }).claimed, true);
+  live.status = 'running';
+  assert.equal(canAcquireSchedulerSlot(queue, [], 'publisher', 'next-live', config, NOW, 'live').reason,
+    'live_capacity_reached');
+  assert.equal(canAcquireSchedulerSlot(queue, [], 'publisher', 'next-post', config, NOW).allowed, true);
+  assert.equal(canAcquireSchedulerSlot(queue, [], 'publisher', 'live', config, NOW).reason, 'profile_busy');
+  // Old persisted leases have no workload; infer it from the queued post.
+  delete live.scheduler_lease.workload;
+  const active = schedulerSnapshot(queue, [live.scheduler_lease], config, NOW).active;
+  assert.equal(active.live, 1);
+  assert.equal(active.posts, 0);
+});
+
 test('medium mode permits two publisher lanes but fences a third', () => {
   const medium = {
     ...DEFAULT_SCHEDULER_CONFIG,
@@ -93,7 +113,7 @@ test('publisher and preparer can coexist up to total capacity', () => {
 
   assert.equal(result.allowed, true);
   assert.deepEqual(schedulerSnapshot(queue, [], DEFAULT_SCHEDULER_CONFIG, NOW).active, {
-    publishers: 1, preparers: 0, total: 1,
+    publishers: 1, posts: 1, live: 0, preparers: 0, total: 1,
   });
 });
 
@@ -108,7 +128,7 @@ test('persisted preparing leases consume the preparer slot', () => {
   };
   const snapshot = schedulerSnapshot(queueWith(preparation), [], config, NOW);
 
-  assert.deepEqual(snapshot.active, { publishers: 0, preparers: 1, total: 1 });
+  assert.deepEqual(snapshot.active, { publishers: 0, posts: 0, live: 0, preparers: 1, total: 1 });
   assert.equal(
     canAcquireSchedulerSlot(queueWith(preparation), [], 'preparer', 'profile_002', config, NOW).reason,
     'preparer_capacity_reached',

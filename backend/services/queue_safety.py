@@ -14,6 +14,29 @@ PRE_PUBLISH_STAGES = {
 }
 
 
+def repair_identity_verification_skip(execution: dict) -> bool:
+    """Classify only a completed local attempt with confirmed Facebook rejection.
+
+    Keep its original publish-click history and evidence. A timeout, dropped
+    connection, cloud-owned attempt or generic rejection is never made skippable.
+    """
+    if (execution.get("status") not in {"uncertain", "needs_review"}
+            or not execution.get("ended_at") or execution.get("scheduler_lease")
+            or execution.get("cloud_attempt_id")):
+        return False
+    from backend.services.account_health import requires_identity_verification, IDENTITY_VERIFICATION_ERROR
+    if not requires_identity_verification(execution):
+        return False
+    now = datetime.now(timezone.utc).isoformat()
+    execution.update(status="skipped_auth_required", stage="skipped_auth_required",
+                     error=IDENTITY_VERIFICATION_ERROR, stage_updated_at=now)
+    execution.setdefault("stage_history", []).append({
+        "stage": "skipped_auth_required", "timestamp": now,
+        "reason": "facebook_identity_verification_required",
+    })
+    return True
+
+
 def is_preparation_attempt(execution: dict) -> bool:
     return bool((execution.get('scheduler_lease') or {}).get('kind') == 'preparer'
                 and execution.get('preparation_mode') in {'brief', 'extended'})

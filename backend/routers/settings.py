@@ -13,17 +13,12 @@ def get_resource_mode():
 
 @router.put("/resource-mode")
 def update_resource_mode(payload: dict = Body(...)):
-    if "mode" in payload:
-        settings_manager.update_resource_mode(payload.get("mode", "auto"))
-    if "max_parallel" in payload or "reserve_percent" in payload:
-        try:
-            settings_manager.update_adaptive_limits(
-                max_parallel=payload.get("max_parallel"),
-                reserve_percent=payload.get("reserve_percent"),
-                clear_max="max_parallel" in payload and payload["max_parallel"] is None,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        settings_manager.update_execution_settings(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    from backend.services import adaptive_runtime
+    adaptive_runtime.tick()
     snapshot = resource_mode_snapshot()
     snapshot["runtime"]["ocr_worker"] = shared_ocr_worker_snapshot()
     return snapshot

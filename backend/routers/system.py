@@ -3,7 +3,7 @@ import os
 import psutil
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from backend.config import DATA_DIR, PROFILES_DIR, CPU_THREADS, ROOT_DIR
+from backend.config import DATA_DIR, PROFILES_DIR, CPU_THREADS, ROOT_DIR, BACKEND_DIR
 from backend.scheduler.background import scheduler
 from backend.services import container_lifecycle
 from backend.services.queue_service import load_posting_queue
@@ -101,11 +101,15 @@ async def update_maintenance(request: UpdateMaintenance):
 
 
 def read_build_version() -> str:
-    try:
-        version = (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip()
-        return version or "unknown"
-    except Exception:
-        return "unknown"
+    # Dev code and persistent user data can belong to different releases.
+    for root in (BACKEND_DIR.parent, ROOT_DIR):
+        try:
+            version = (root / "VERSION").read_text(encoding="utf-8").strip()
+            if version:
+                return version
+        except OSError:
+            continue
+    return "unknown"
 
 
 @router.get("/runtime-version")

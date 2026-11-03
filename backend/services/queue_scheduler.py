@@ -79,6 +79,7 @@ def list_queue_leases(queue: dict | None, now_ms: float | None = None) -> list:
                 if execution.get("status") in ("running", "preparing") and is_lease_active(execution.get("scheduler_lease"), now_ms):
                     l_copy = dict(execution["scheduler_lease"])
                     l_copy["execution_id"] = execution.get("execution_id")
+                    l_copy['workload'] = 'live' if post.get('type') == 'live' else 'post'
                     leases.append(l_copy)
     return leases
 
@@ -97,17 +98,21 @@ def scheduler_snapshot(
     all_leases = list_queue_leases(queue, now_ms) + (additional_leases or [])
     for lease in all_leases:
         if is_lease_active(lease, now_ms):
-            unique[lease["lease_id"]] = lease
+            unique[lease["lease_id"]] = {**unique.get(lease['lease_id'], {}), **lease}
 
     leases = list(unique.values())
     publishers = len([l for l in leases if l.get("kind") == "publisher"])
     preparers = len([l for l in leases if l.get("kind") == "preparer"])
+    live = sum(l.get('kind') == 'publisher' and l.get('workload') == 'live' for l in leases)
+    posts = publishers - live
 
     return {
         "config": dict(config),
-        "active": {"publishers": publishers, "preparers": preparers, "total": len(leases)},
+        "active": {"publishers": publishers, "posts": posts, "live": live, "preparers": preparers, "total": len(leases)},
         "available": {
             "publishers": max(0, config["max_publishers"] - publishers),
+            'posts': max(0, config.get('max_post_publishers', config['max_publishers']) - posts),
+            'live': max(0, config.get('max_live_publishers', config['max_publishers']) - live),
             "preparers": max(0, config["max_preparers"] - preparers),
             "total": max(0, config["max_total_automation_tasks"] - len(leases)),
         },
@@ -121,6 +126,7 @@ def can_acquire_scheduler_slot(
     profile_id: str,
     config: dict | None = None,
     now_ms: float | None = None,
+    workload: str = 'post',
 ) -> dict:
     if kind not in ("publisher", "preparer"):
         return {"allowed": False, "reason": f"invalid_slot_kind:{kind}"}
@@ -136,6 +142,10 @@ def can_acquire_scheduler_slot(
         return {"allowed": False, "reason": "total_capacity_reached", "snapshot": snapshot}
     if kind == "publisher" and snapshot["active"]["publishers"] >= config["max_publishers"]:
         return {"allowed": False, "reason": "publisher_capacity_reached", "snapshot": snapshot}
+    workload_key = 'live' if workload == 'live' else 'posts'
+    limit_key = 'max_live_publishers' if workload == 'live' else 'max_post_publishers'
+    if kind == 'publisher' and snapshot['active'][workload_key] >= config.get(limit_key, config['max_publishers']):
+        return {'allowed': False, 'reason': f'{workload_key}_capacity_reached', 'snapshot': snapshot}
     if kind == "preparer" and snapshot["active"]["preparers"] >= config["max_preparers"]:
         return {"allowed": False, "reason": "preparer_capacity_reached", "snapshot": snapshot}
 
@@ -150,6 +160,7 @@ def claim_execution_lease(
     config: dict | None = None,
     additional_leases: list | None = None,
     now_ms: float | None = None,
+    workload: str = 'post',
 ) -> dict:
     if config is None:
         config = DEFAULT_SCHEDULER_CONFIG
@@ -161,7 +172,7 @@ def claim_execution_lease(
         return {"claimed": False, "reason": f"execution_not_runnable:{status}"}
 
     availability = can_acquire_scheduler_slot(
-        queue, additional_leases, kind, execution.get("profile_id"), config, now_ms
+        queue, additional_leases, kind, execution.get("profile_id"), config, now_ms, workload=workload
     )
     if not availability["allowed"]:
         return {"claimed": False, **availability}
@@ -173,6 +184,7 @@ def claim_execution_lease(
         "lease_id": lease_id,
         "owner_id": owner_id,
         "kind": kind,
+        'workload': workload,
         "profile_id": execution.get("profile_id"),
         "claimed_at": claimed_at,
         "heartbeat_at": claimed_at,

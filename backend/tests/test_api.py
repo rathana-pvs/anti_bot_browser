@@ -46,10 +46,11 @@ def test_settings_resource_mode(client):
     assert "limits" in data
 
     # Test PUT
-    put_res = client.put("/api/settings/resource-mode", json={"mode": "low"})
+    put_res = client.put("/api/settings/resource-mode", json={"mode": "custom", "max_parallel": 2,
+                                                          "max_posts": 1, "max_live": 1})
     assert put_res.status_code == 200
     put_data = put_res.json()
-    assert put_data["selected_mode"] == "low"
+    assert put_data["selected_mode"] == "custom"
 
     # Reset to auto
     client.put("/api/settings/resource-mode", json={"mode": "auto"})

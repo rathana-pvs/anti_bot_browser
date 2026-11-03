@@ -38,6 +38,10 @@ Instead of relying on fragile, obfuscated CSS class names (`x1i10hfl xjbqb8w`) o
 * Measurements include total and stage duration, navigation/upload/readiness/verification timing, OCR latency and candidate counts, locator tiers and fallback reasons, semantic-provider latency, and available screen/locale/theme context.
 * The queue dashboard calculates observed outcome rates plus median and p95 execution/OCR latency. It shows an empty baseline until measured executions exist; no performance target is presented as achieved without local runs.
 
+For a backend stall, start dev with `MANAGER_DEBUG_LOOP_WATCHDOG=1 npm run tauri:dev`
+from `manager-app`. If the event loop stops progressing for ten seconds, the
+backend log records thread stack locations without local variable values.
+
 ---
 
 ## 📊 System Architecture
@@ -90,19 +94,21 @@ and multiline text use full paste. Typing and pasting are never mixed. Clipboard
 failures stop entry rather than falling back to typing. Entry checks existing
 drafts, reads back content through the clipboard, and stops on window focus
 loss or uncertainty. Pointer movement alone does not interrupt entry. X11 cannot reliably detect all manual keyboard
-intervention; avoid concurrent manual input while an attempt owns the profile. Live preset pinned comments are always pasted.
+intervention; avoid concurrent manual input while an attempt owns the profile. Live comments are always pasted after Live confirmation.
 Live uses a separate adapter without field-content logs. Failed browser checks save
-redacted screenshots of verified post-details dialogs, plus control positions,
-confidence scores and form-check results. Background credentials are masked. If a
-dialog cannot be verified, only recognized controls and the last confirmed dialog
-are retained. Dialog screenshots may include the supplied title and caption;
-arbitrary OCR text and clipboard payloads are discarded.
+full browser screenshots, plus control positions, confidence scores and form-check
+results. Screenshots are neither masked nor cropped, including when the layout
+cannot be recognized. They may include visible stream credentials, incoming video,
+titles and captions. Arbitrary OCR text and clipboard payloads are not copied to JSON.
 Different title/caption drafts or unconfirmed fields stop preparation for review.
-In the verified Live preset pinned-comment editor, the supplied comment replaces
-the saved preset and is read back before Save. The saved preview is verified with
-OCR; the editor is reopened only if that preview cannot confirm the full comment.
-If a preset editor lacks both readable content and a recognized empty placeholder,
-preparation stops rather than assuming it is blank.
+Live preparation no longer edits preset pinned comments. With a supplied comment,
+the flow is: confirm Live, End Live, post the comment on the ended video, confirm
+the visible comment, stop the container, then mark success. The browser stays
+open for comment entry after the sender stops. A matching comment already visible
+is accepted without reposting. Unconfirmed comments or failed container cleanup
+remain for review. Pinning is manual; existing Facebook presets are unchanged.
+Jobs without a comment retain their normal playback duration. End and comment
+checks never automatically start another broadcast or repeat a submission.
 
 In the batch creator, enable **Generate opening hook** on a Photo or Reel row.
 Supply a caption or description, optional audience/language/tone, and words to
@@ -134,7 +140,7 @@ Music is built in and works offline. Rendering never publishes. See
 
 The **Studio Center → Facebook Live** tab broadcasts uploaded videos without a camera. Save streaming
 settings in Edit profile, select videos and profiles, use Automatic playback or choose Manual loop/duration
-settings, enter each video’s title, caption and optional preset pinned comment, and start now or schedule. Track progress and stop streams in Live queue.
+settings, enter each video’s title, caption and optional comment during Live, and start now or schedule. Track progress and stop streams in Live queue.
 This local feature uses a template-driven Live Producer task and a separate FFmpeg
 streaming service. Choose the broadcast destination in Facebook; the app fills and saves the supplied
 title and caption before streaming. See [Live setup and limits](docs/live-video.md) for pilot results and limits.
@@ -274,6 +280,10 @@ python bootstrap_ocr_models.py --engine all
 ```
 Paddle GPU setup uses a separate environment under `data/python-runtime` so its
 CUDA 12 cuDNN libraries do not overwrite PyTorch/EasyOCR's CUDA 13 libraries.
+Setup selects the Paddle CUDA 12.9 build for Blackwell GPUs (compute capability
+10.0 or newer, including RTX 50 series), and CUDA 12.6 for older NVIDIA GPUs.
+It verifies a real CUDA/cuDNN convolution before enabling the isolated runtime;
+CPU fallback keeps the verification error in `data/paddle_runtime.json`.
 The backend probes and starts the shared Paddle OCR worker with that interpreter;
 automation processes retain their normal environment and local CPU fallback.
 Setup downloads pinned Paddle models and EasyOCR weights once; normal inference
@@ -429,21 +439,34 @@ alone is not publication evidence. Actual publication evidence still requires
 uncertain-outcome review.
 
 Resource Mode is configured from the Posting Queue dashboard and persisted in
-`data/manager_settings.json`. Auto selects the lowest tier supported by both RAM
-and CPU: Low uses 1 publisher + 1 preparer (2 containers), Medium uses 2 + 2
-(4 containers), and High uses 3 + 3 (6 containers). New container starts pause
-at 80% RAM until usage falls below 70%, pause at 85% sustained CPU, and are
-spaced by at least 10 seconds. Mode changes affect only new claims and never
-interrupt active tasks.
+`data/manager_settings.json`:
+
+- **Auto** starts conservatively and grows after 120 seconds of comfortable CPU,
+  memory and pressure readings while its account or publisher capacity is in use.
+  It leaves desktop headroom and backs off new claims under pressure.
+- **Extreme** grows after 10 comfortable seconds and allows all admitted accounts
+  to publish or stream. It targets higher utilization while retaining CPU, memory,
+  GPU-memory, disk-space, profile-lock and publication-verification guards.
+- **Custom** sets maximum active accounts, parallel posts (Reels, images, etc.),
+  parallel Live broadcasts, and an additional resource reserve. Post and Live caps
+  share the total account cap; preparation also consumes that total. For example,
+  six accounts can accommodate three posts, two Lives and one preparation job.
+
+Every mode has a hard ceiling of 16 accounts and a memory-based forecast that can
+lower the effective limit. Profile container starts are always at least 10 seconds
+apart; busy or pressured machines can delay them further. These are concurrency
+ceilings, not throughput guarantees. Lowering a limit does not cancel active jobs
+or end Live broadcasts; new work waits. Legacy Low/Medium/High selections migrate
+to Custom with their previous account caps (2/4/6) and publisher caps (1/2/3) for
+both posts and Live. Explicit custom settings persist across mode changes.
 
 Accounts publishing the same batch post may run concurrently within the selected
-mode's publisher limit (Low: 1, Medium: 2, High: 3). Each account holds at most
-one automation lease and advances through its iterations independently. After
-its current task finishes, its container closes and its iteration delay must
-finish before preparation or publishing starts for its next post. Other accounts
-can continue while it waits; uncertain outcomes hold that account's later posts
-for review. Container admission continues
-to enforce memory, CPU, container-count, and start-spacing limits.
+limits. Each account holds at most one automation lease and advances through its
+iterations independently. After its current task finishes, its container closes
+and its iteration delay must finish before its next job. Other accounts can
+continue while it waits; uncertain outcomes hold that account's later posts for
+review. The local cloud worker and desktop use the same scheduler and locks;
+these settings do not change the cloud protocol.
 
 Lease timing remains configurable when needed:
 

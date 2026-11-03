@@ -30,6 +30,10 @@ export interface AutomationTaskState {
   result?: any;
   error?: string | null;
   evidence_dir?: string | null;
+  comment_status?: 'attempted' | 'confirmed' | 'needs_review';
+  comment_error_code?: string | null;
+  end_after_comment?: boolean;
+  completion_reason?: 'comment_verified' | null;
   execution_id?: string;
   source?: 'queue' | string;
 }
@@ -46,6 +50,10 @@ export interface RunAutomationParams {
 }
 
 export interface QueueExecutionItem {
+  comment_status?: 'attempted' | 'confirmed' | 'needs_review';
+  comment_error_code?: string | null;
+  end_after_comment?: boolean;
+  completion_reason?: 'comment_verified' | null;
   network_recovery?: {
     state: string;
     started_at: string;
@@ -232,6 +240,8 @@ export interface QueueDataResponse {
     batch_owner_id?: string | null;
     config: {
       max_publishers: number;
+      max_post_publishers: number;
+      max_live_publishers: number;
       max_preparers: number;
       max_total_automation_tasks: number;
       max_active_profile_containers?: number;
@@ -294,7 +304,7 @@ export interface QueueDataResponse {
   executions: QueueExecutionItem[];
 }
 
-export type ResourceMode = 'auto' | 'low' | 'medium' | 'high';
+export type ResourceMode = 'auto' | 'extreme' | 'custom';
 export type OcrEngine = 'paddleocr-v5' | 'paddleocr-v6' | 'easyocr';
 
 export interface ResourceModeSettings {
@@ -305,10 +315,12 @@ export interface ResourceModeSettings {
     options: { value: OcrEngine; label: string }[];
   };
   selected_mode: ResourceMode;
-  effective_mode: Exclude<ResourceMode, 'auto'>;
-  recommended_mode: Exclude<ResourceMode, 'auto'>;
+  effective_mode: ResourceMode;
+  recommended_mode: ResourceMode;
   limits: {
     max_publishers: number;
+    max_post_publishers: number;
+    max_live_publishers: number;
     max_preparers: number;
     max_total_automation_tasks: number;
     max_active_profile_containers: number;
@@ -327,7 +339,7 @@ export interface ResourceModeSettings {
       fallback_reason: string | null;
     };
   };
-  supported_modes: Record<'low' | 'medium' | 'high', boolean>;
+  supported_modes: Record<ResourceMode, boolean>;
   runtime: {
     memory_used_percent: number;
     sustained_cpu_percent: number;
@@ -344,6 +356,7 @@ export interface ResourceModeSettings {
   };
   adaptive?: {
     enabled: boolean;
+    custom: { max_parallel: number; max_posts: number; max_live: number; reserve_percent: number };
     max_parallel: number | null;
     reserve_percent: number;
     decision: {
@@ -361,7 +374,9 @@ export interface ResourceModeSettings {
 }
 
 export interface AdaptiveLimitsUpdate {
-  max_parallel?: number | null;
+  max_parallel?: number;
+  max_posts?: number;
+  max_live?: number;
   reserve_percent?: number;
 }
 

@@ -48,6 +48,14 @@ logger = logging.getLogger("automat.lifecycle")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    debug_watchdog = None
+    if os.environ.get('MANAGER_DEBUG_LOOP_WATCHDOG') == '1':
+        import faulthandler
+        async def trace_blocked_loop():
+            while True:
+                faulthandler.dump_traceback_later(10, repeat=True)
+                await asyncio.sleep(1)
+        debug_watchdog = asyncio.create_task(trace_blocked_loop())
     with exclusive_backend():
         session_path = None
         try:
@@ -74,6 +82,9 @@ async def lifespan(app: FastAPI):
             session_path = publish_session()
             yield
         finally:
+            if debug_watchdog is not None:
+                debug_watchdog.cancel()
+                faulthandler.cancel_dump_traceback_later()
             await asyncio.to_thread(reel_creator.get_service().stop)
             await worker_service.stop()
             # Shutdown

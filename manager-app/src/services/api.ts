@@ -662,7 +662,7 @@ export async function updateResourceMode(
   });
   if (!res.ok) {
     const error = await res.json().catch(() => ({}));
-    throw new Error(error.error || 'Failed to update resource mode');
+    throw new Error(error.detail || error.error || 'Failed to update resource mode');
   }
   return res.json();
 }
@@ -734,6 +734,19 @@ export async function cancelNetworkRecovery(executionId: string): Promise<{ succ
 }
 
 export async function fetchExecutionEvidence(executionId: string, signal?: AbortSignal): Promise<string[]> {
+  return (await fetchExecutionEvidenceReport(executionId, signal)).images;
+}
+
+export interface EvidenceDiagnostics {
+  failure_code?: string;
+  cleanup_failure_code?: string;
+  failure_stage?: string;
+  encoder_failure_reason?: string;
+  encoder_exit_code?: number;
+  final_browser_state?: string;
+}
+
+export async function fetchExecutionEvidenceReport(executionId: string, signal?: AbortSignal): Promise<{ images: string[]; diagnostics?: EvidenceDiagnostics }> {
   return withRequestTimeout(async requestSignal => {
     const res = await fetch(`${API_BASE}/queue/execution/${encodeURIComponent(executionId)}/evidence`, { signal: requestSignal });
     if (!res.ok) throw await apiError(res, 'Failed to load evidence screenshots');
@@ -741,7 +754,7 @@ export async function fetchExecutionEvidence(executionId: string, signal?: Abort
     if (!Array.isArray(data.images) || !data.images.every((name: unknown) => typeof name === 'string')) {
       throw new Error('Invalid evidence response');
     }
-    return data.images;
+    return { images: data.images, diagnostics: data.diagnostics };
   }, signal);
 }
 

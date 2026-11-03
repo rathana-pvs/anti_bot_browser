@@ -223,8 +223,8 @@ def test_failed_preparation_keeps_screenshot_directory_and_logs(attempt, monkeyp
     monkeypatch.setattr(svc, '_delayed_dispatch', AsyncMock())
     monkeypatch.setattr(svc, 'stop_profile_container_after_report', AsyncMock())
     proc = SimpleNamespace(
-        stdout=SimpleNamespace(readline=AsyncMock(side_effect=[json.dumps(result).encode(), b''])),
-        stderr=SimpleNamespace(readline=AsyncMock(return_value=b'')),
+        stdout=SimpleNamespace(read=AsyncMock(side_effect=[json.dumps(result).encode(), b''])),
+        stderr=SimpleNamespace(read=AsyncMock(return_value=b'')),
         wait=AsyncMock(return_value=1),
     )
     monkeypatch.setattr(svc.asyncio, 'create_subprocess_exec', AsyncMock(return_value=proc))

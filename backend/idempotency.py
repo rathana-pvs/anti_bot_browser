@@ -119,6 +119,11 @@ class IdempotencyMiddleware:
         body_parts: list[bytes] = []
         while True:
             message = await receive()
+            if message['type'] == 'http.disconnect':
+                # Uvicorn immediately returns disconnect again on subsequent
+                # reads. Continuing here spins without yielding and freezes all
+                # requests, scheduler heartbeats and subprocess timeouts.
+                return
             if message["type"] != "http.request":
                 continue
             body_parts.append(message.get("body", b""))
@@ -147,7 +152,9 @@ class IdempotencyMiddleware:
         async def replay_receive() -> Message:
             nonlocal delivered
             if delivered:
-                return {"type": "http.request", "body": b"", "more_body": False}
+                # The buffered body is delivered once. Downstream middleware
+                # must then observe the actual connection/disconnect stream.
+                return await receive()
             delivered = True
             return {"type": "http.request", "body": body, "more_body": False}
 

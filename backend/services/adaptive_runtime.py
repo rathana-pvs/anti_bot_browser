@@ -2,9 +2,8 @@
 
 Every few seconds this samples the host, decides, and writes the signal file
 that running automation reads before its safe steps. The decision only
-changes behavior when the resource mode is Automatic; in a fixed mode it is
-still computed and shown as what Automatic would do, and the signal stays
-neutral.
+applies Auto, Extreme, or Custom policy. It delays admission or safe steps;
+it never cancels active publication verification or ends a Live broadcast.
 """
 
 import json
@@ -25,7 +24,7 @@ _sample: dict | None = None
 
 
 def adaptive_enabled() -> bool:
-    return settings_manager.resource_mode == "auto"
+    return settings_manager.resource_mode in ('auto', 'extreme', 'custom')
 
 
 def _running_leases() -> list:
@@ -35,8 +34,10 @@ def _running_leases() -> list:
 
 def tick() -> Decision:
     global _decision, _sample
-    controller.configure(max_parallel=settings_manager.max_parallel,
-                         reserve_percent=settings_manager.reserve_percent)
+    custom = settings_manager.custom_limits
+    controller.configure(max_parallel=custom['max_parallel'] if settings_manager.resource_mode == 'custom' else None,
+                         reserve_percent=custom['reserve_percent'] if settings_manager.resource_mode == 'custom' else 10,
+                         mode=settings_manager.resource_mode)
     _sample = host_pressure.sample(
         cpu_percent=docker_service.sustained_cpu_percent(),
         gpu_percent=docker_service.get_current_gpu_percent(),
@@ -45,14 +46,17 @@ def tick() -> Decision:
     )
     leases = _running_leases()
     since_last_start = time.time() * 1000 - docker_service.last_queue_container_start_at
-    _decision = controller.decide(_sample, running_jobs=len(leases), since_last_start_ms=since_last_start)
-    publishers = sum(1 for lease in leases if lease.get("kind") == "publisher")
+    publishers = sum(1 for lease in leases if lease.get("kind") == "publisher" and lease.get('workload') != 'live')
+    all_publishers = sum(lease.get('kind') == 'publisher' for lease in leases)
+    publisher_limit = controller.limit if settings_manager.resource_mode == 'extreme' else max(1, controller.limit // 2)
+    _decision = controller.decide(_sample, running_jobs=len(leases), since_last_start_ms=since_last_start,
+                                  demand=all_publishers >= publisher_limit)
     signal = NEUTRAL_SIGNAL
     if adaptive_enabled():
         signal = {
             "hold": _decision.hold,
             "elastic_scale": _decision.elastic_scale,
-            "publish_slots_full": publishers >= _decision.max_publishers,
+            "publish_slots_full": publishers >= min(_decision.limit, custom['max_posts']) if settings_manager.resource_mode == 'custom' else publishers >= _decision.max_publishers,
             "reason": _decision.reason,
         }
     _write_signal({**signal, "updated_at": time.time()})
@@ -109,4 +113,5 @@ def admission() -> dict:
 def snapshot() -> dict:
     decision = current_decision()
     return {"enabled": adaptive_enabled(), "decision": decision.summary(), "sample": _sample,
-            "max_parallel": settings_manager.max_parallel, "reserve_percent": settings_manager.reserve_percent}
+            "max_parallel": settings_manager.max_parallel, "reserve_percent": settings_manager.reserve_percent,
+            "custom": settings_manager.custom_limits}

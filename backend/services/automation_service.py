@@ -49,6 +49,7 @@ from backend.services.queue_safety import (
     has_publication_evidence,
     is_preparation_attempt,
     repair_interrupted_warming,
+    repair_identity_verification_skip,
 )
 from backend.services.profile_pipeline import (
     ordered_due_executions,
@@ -104,6 +105,25 @@ def resolve_brain_pin(brain_id: str, requested_version: str | None = None) -> di
         "digest": version.get("digest"),
         "brain_api_version": version.get("brain_api_version"),
     }
+
+async def _iter_process_lines(stream):
+    """Read runner JSON/log lines without StreamReader.readline's 64 KiB cap.
+
+    Chunked reads keep draining the pipe even when a final telemetry result is
+    larger than asyncio's stream buffer. Preserve full lines for JSON parsing.
+    """
+    pending = bytearray()
+    while chunk := await stream.read(64 * 1024):
+        pending.extend(chunk)
+        start = 0
+        while (end := pending.find(b"\n", start)) != -1:
+            yield bytes(pending[start:end + 1])
+            start = end + 1
+        if start:
+            del pending[:start]
+    if pending:
+        yield bytes(pending)
+
 
 # In-memory tasks registry
 active_automation_tasks: dict[str, dict] = {}
@@ -521,10 +541,7 @@ async def _run_manual_subprocess(profile_id: str, args: list[str], task_record: 
         task_record["process"] = proc
 
         async def read_stdout():
-            while True:
-                line_b = await proc.stdout.readline()
-                if not line_b:
-                    break
+            async for line_b in _iter_process_lines(proc.stdout):
                 line = line_b.decode("utf-8", errors="replace").strip()
                 if not line:
                     continue
@@ -542,10 +559,7 @@ async def _run_manual_subprocess(profile_id: str, args: list[str], task_record: 
                     task_record["logs"].pop(0)
 
         async def read_stderr():
-            while True:
-                line_b = await proc.stderr.readline()
-                if not line_b:
-                    break
+            async for line_b in _iter_process_lines(proc.stderr):
                 line = line_b.decode("utf-8", errors="replace").strip()
                 if not line:
                     continue
@@ -691,6 +705,7 @@ def claim_queue_execution(execution_id: str, kind: str = "publisher") -> dict:
             kind=kind,
             config=get_scheduler_config(),
             additional_leases=active_in_memory_scheduler_leases(),
+            workload='live' if target_post.get('type') == 'live' else 'post',
         )
         if not claim["claimed"]:
             err = RuntimeError(f"Scheduler could not claim execution: {claim['reason']}")
@@ -826,10 +841,7 @@ async def _execute_queue_preparation_inner(execution_id: str):
 
     async def read_out():
         nonlocal preparation_committed
-        while True:
-            line_b = await proc.stdout.readline()
-            if not line_b:
-                break
+        async for line_b in _iter_process_lines(proc.stdout):
             line = line_b.decode("utf-8", errors="replace").strip()
             if not line:
                 continue
@@ -853,10 +865,7 @@ async def _execute_queue_preparation_inner(execution_id: str):
                 persist_queue_execution_stage(execution_id, stage, stage_match.group(1), lease_id)
 
     async def read_err():
-        while True:
-            line_b = await proc.stderr.readline()
-            if not line_b:
-                break
+        async for line_b in _iter_process_lines(proc.stderr):
             line = line_b.decode("utf-8", errors="replace").strip()
             if not line:
                 continue
@@ -1162,10 +1171,7 @@ async def _execute_queue_item_inner(execution_id: str, scheduler_kind: str = "pu
     task_record["process"] = proc
 
     async def read_out():
-        while True:
-            line_b = await proc.stdout.readline()
-            if not line_b:
-                break
+        async for line_b in _iter_process_lines(proc.stdout):
             line = line_b.decode("utf-8", errors="replace").strip()
             if not line:
                 continue
@@ -1190,10 +1196,7 @@ async def _execute_queue_item_inner(execution_id: str, scheduler_kind: str = "pu
                 persist_queue_execution_stage(execution_id, stage_match.group(3), stage_match.group(1), lease_id)
 
     async def read_err():
-        while True:
-            line_b = await proc.stderr.readline()
-            if not line_b:
-                break
+        async for line_b in _iter_process_lines(proc.stderr):
             line = line_b.decode("utf-8", errors="replace").strip()
             if not line:
                 continue
@@ -1280,6 +1283,8 @@ async def _execute_queue_item_inner(execution_id: str, scheduler_kind: str = "pu
         ex["logs"] = [l["message"] for l in task_record["logs"]]
         network_recovery.refresh_recovery(ex, target_post.get("type"), time.time())
         release_execution_lease(ex, lease_id)
+        if repair_identity_verification_skip(ex):
+            task_record["status"] = ex["status"]
         save_posting_queue(updated_queue)
 
         cleanup = None
@@ -1434,10 +1439,7 @@ async def _execute_queue_comment_retry_inner(execution_id: str, start_admission_
     task_record["process"] = proc
 
     async def read_out():
-        while True:
-            line_b = await proc.stdout.readline()
-            if not line_b:
-                break
+        async for line_b in _iter_process_lines(proc.stdout):
             line = line_b.decode("utf-8", errors="replace").strip()
             if not line:
                 continue
@@ -1453,10 +1455,7 @@ async def _execute_queue_comment_retry_inner(execution_id: str, start_admission_
             task_record["logs"].append(normalize_stored_log(line, profile_id))
 
     async def read_err():
-        while True:
-            line_b = await proc.stderr.readline()
-            if not line_b:
-                break
+        async for line_b in _iter_process_lines(proc.stderr):
             line = line_b.decode("utf-8", errors="replace").strip()
             if not line:
                 continue
@@ -1560,6 +1559,8 @@ def recover_stale_queue_executions(reason: str = "expired_scheduler_lease"):
         for batch in queue.get("daily_batches", []):
             for post in batch.get("posts", []):
                 for execution in post.get("executions", []):
+                    if repair_identity_verification_skip(execution):
+                        modified = True
                     if post.get("type") == "warming" and repair_interrupted_warming(execution):
                         modified = True
                     if execution.get("comment_retry_status") == "running" and execution.get("execution_id") not in live_comment_retries:
@@ -1684,7 +1685,7 @@ def heartbeat_scheduler_leases():
 _is_dispatching = False
 
 
-def _reserve_dispatch_slot(reservations: dict, kind: str, profile_id: str, config: dict) -> bool:
+def _reserve_dispatch_slot(reservations: dict, kind: str, profile_id: str, config: dict, workload: str = 'post') -> bool:
     """Reserve capacity inside one dispatcher pass before async claims can run."""
     if profile_id in reservations["profiles"]:
         return False
@@ -1694,9 +1695,15 @@ def _reserve_dispatch_slot(reservations: dict, kind: str, profile_id: str, confi
     limit_key = "max_publishers" if kind == "publisher" else "max_preparers"
     if reservations[key] >= config[limit_key]:
         return False
+    work_key = 'live' if workload == 'live' else 'posts'
+    work_limit = 'max_live_publishers' if workload == 'live' else 'max_post_publishers'
+    if kind == 'publisher' and reservations.get(work_key, 0) >= config.get(work_limit, config['max_publishers']):
+        return False
     reservations["profiles"].add(profile_id)
     reservations["total"] += 1
     reservations[key] += 1
+    if kind == 'publisher':
+        reservations[work_key] = reservations.get(work_key, 0) + 1
     return True
 
 
@@ -1759,6 +1766,8 @@ async def dispatch_pending_queue():
             "publishers": initial_slots["publishers"],
             "preparers": initial_slots["preparers"],
             "total": initial_slots["total"],
+            'posts': initial_slots.get('posts', initial_slots['publishers']),
+            'live': initial_slots.get('live', 0),
         }
 
         from backend.services import auto_warming
@@ -1772,6 +1781,9 @@ async def dispatch_pending_queue():
             auto_warming.yield_for_post(load_posting_queue(), post_match["execution"])
 
         for execution in due_executions:
+            # A queue can contain many due profiles. Let browser results,
+            # heartbeats, timeouts and HTTP requests run between candidates.
+            await asyncio.sleep(0)
             exec_id = execution["execution_id"]
             current_q = load_posting_queue()
             match = find_queue_execution(current_q, exec_id)
@@ -1815,34 +1827,40 @@ async def dispatch_pending_queue():
             if needs_prep and count_buffered_preparations(current_q, exec_id) >= scheduler_cfg["max_preparers"]:
                 continue
 
-            if get_container_status(pid) != "running" and count_running_profile_containers() >= scheduler_cfg["max_active_profile_containers"]:
+            container_running = await asyncio.to_thread(get_container_status, pid) == 'running'
+            if not container_running and await asyncio.to_thread(count_running_profile_containers) >= scheduler_cfg["max_active_profile_containers"]:
                 if not auto_visit:
                     make_room(match)
                 continue
 
             slot_kind = "preparer" if (needs_prep or standalone_warming) else "publisher"
+            workload = 'live' if match['post'].get('type') == 'live' else 'post'
             availability = can_acquire_scheduler_slot(
-                current_q, active_in_memory_scheduler_leases(), slot_kind, pid, scheduler_cfg
+                current_q, active_in_memory_scheduler_leases(), slot_kind, pid, scheduler_cfg, workload=workload
             )
             if not availability["allowed"]:
                 if not auto_visit:
                     make_room(match)
                 continue
 
-            if not _reserve_dispatch_slot(reservations, slot_kind, pid, scheduler_cfg):
+            if not _reserve_dispatch_slot(reservations, slot_kind, pid, scheduler_cfg, workload=workload):
                 if not auto_visit:
                     make_room(match)
                 continue
 
-            if get_container_status(pid) != "running":
-                admission = claim_container_start_admission()
+            if not container_running:
+                admission = await asyncio.to_thread(claim_container_start_admission)
                 if not admission["allowed"]:
                     reservations["profiles"].discard(pid)
                     reservations["total"] -= 1
                     reservations["publishers" if slot_kind == "publisher" else "preparers"] -= 1
+                    if slot_kind == 'publisher':
+                        reservations['live' if workload == 'live' else 'posts'] -= 1
                     if admission.get("reason") == "container_start_spacing":
                         from backend.services.adaptive_runtime import current_start_spacing_ms
-                        asyncio.create_task(_delayed_dispatch(current_start_spacing_ms() + 100))
+                        spacing_ms = current_start_spacing_ms()
+                        cooldown_retry_ms = (spacing_ms if cooldown_retry_ms is None
+                                             else min(cooldown_retry_ms, spacing_ms))
                     continue
 
             print(f"[Queue Dispatcher] Claiming {slot_kind} slot for {exec_id} on profile {pid}...")

@@ -31,13 +31,23 @@ if kind in ('audio', 'muted'):
     subprocess.run(['ffmpeg', '-v', 'error', '-i', '/work/silent.mp4', '-f', 'lavfi', '-i',
         'sine=frequency=440:sample_rate=44100', '-t', '1.2', '-c:v', 'copy', '-c:a', 'aac', '-y', video], check=True)
 duration = 2.4 if kind == 'loop' else 1.0 if kind == 'limited' else 1.2
+if kind == 'session_playback': duration = 20
 args = [sys.executable, '-u', '/work/live_encoder.py', '--video', video, '--duration', str(duration),
         '--startup-timeout', '6' if kind != 'timeout' else '1',
         '--pidfile', '/work/live.pid', '--control', '/work/play']
-if kind == 'loop': args += ['--loop']
+if kind in ('session_startup', 'session_playback'):
+    args += ['--max-session-seconds', '3' if kind == 'session_startup' else '4']
+if kind in ('loop', 'session_playback'): args += ['--loop']
 if kind == 'audio': args += ['--has-audio']
+server = None
+destination = '/work/out.flv'
+if kind == 'rtmp':
+    destination = 'rtmp://127.0.0.1:1935/live/local-test'
+    server = subprocess.Popen(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-listen', '1',
+        '-i', destination, '-c', 'copy', '/work/out.flv'], stderr=subprocess.DEVNULL)
+    time.sleep(.5)
 p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-p.stdin.write('/work/out.flv\n'); p.stdin.flush(); p.stdin.close()
+p.stdin.write(destination+'\n'); p.stdin.flush(); p.stdin.close()
 lines = []
 started = threading.Event()
 def receive():
@@ -46,7 +56,14 @@ def receive():
         if line.strip() == 'phase=startup': started.set()
 t = threading.Thread(target=receive); t.start()
 assert started.wait(5)
-if kind == 'timeout':
+if kind in ('session_startup', 'session_playback'):
+    if kind == 'session_playback':
+        time.sleep(.3)
+        Path('/work/play').touch()
+    began = time.monotonic()
+    assert p.wait(timeout=8) != 0
+    assert time.monotonic() - began < 6
+elif kind == 'timeout':
     assert p.wait(timeout=10) != 0
 elif kind == 'stop':
     time.sleep(1)
@@ -58,9 +75,16 @@ else:
     Path('/work/play').touch()
     assert p.wait(timeout=15) == 0
 t.join(timeout=2)
+if server is not None:
+    server.wait(timeout=5)
 assert not Path('/work/live.pid').exists()
 assert not Path('/work/play').exists()
-if kind in ('stop', 'timeout'):
+if kind in ('session_startup', 'session_playback'):
+    assert 'phase=limit_reached' in lines
+    diagnostic = json.loads(Path('/work/live.pid.diagnostic.json').read_text())
+    assert diagnostic['failure_reason'] == 'live_duration_limit'
+    assert ('phase=playback' in lines) == (kind == 'session_playback')
+elif kind in ('stop', 'timeout'):
     assert 'phase=playback' not in lines
 else:
     assert lines.count('phase=playback') == 1 and 'phase=complete' in lines
@@ -87,7 +111,7 @@ print('Verified', kind)
 '''
 
 
-@pytest.mark.parametrize('kind', ['once', 'loop', 'audio', 'muted', 'limited', 'stop', 'timeout'])
+@pytest.mark.parametrize('kind', ['once', 'loop', 'audio', 'muted', 'limited', 'stop', 'timeout', 'rtmp', 'session_startup', 'session_playback'])
 def test_continuous_connection_restarts_full_clip_and_is_bounded(tmp_path, kind):
     shutil.copyfile(Path(__file__).resolve().parents[2] / 'automation/live_encoder.py', tmp_path / 'live_encoder.py')
     (tmp_path / 'check.py').write_text(CHECK)

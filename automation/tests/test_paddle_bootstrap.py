@@ -19,6 +19,7 @@ def test_requires_one_matching_distribution(monkeypatch, device, state, expected
 
 
 def test_gpu_install_downloads_before_removing_cpu(monkeypatch):
+    monkeypatch.setattr(bootstrap, "select_gpu_index", lambda: bootstrap.BLACKWELL_GPU_INDEX)
     commands = []
     def run(command, **kwargs):
         commands.append(command)
@@ -27,13 +28,14 @@ def test_gpu_install_downloads_before_removing_cpu(monkeypatch):
             (bootstrap.Path(directory)/'paddlepaddle_gpu.whl').touch()
     monkeypatch.setattr(bootstrap.subprocess, 'run', run)
     bootstrap.install('cuda')
-    assert 'download' in commands[0] and bootstrap.GPU_INDEX in commands[0]
+    assert 'download' in commands[0] and bootstrap.BLACKWELL_GPU_INDEX in commands[0]
     assert 'uninstall' in commands[1]
     assert commands[1][-2:] == ['paddlepaddle', 'paddlepaddle-gpu']
     assert 'install' in commands[2]
 
 
 def test_failed_download_keeps_existing_runtime(monkeypatch):
+    monkeypatch.setattr(bootstrap, "select_gpu_index", lambda: bootstrap.GPU_INDEX)
     run = Mock(side_effect=subprocess.CalledProcessError(1, 'pip'))
     monkeypatch.setattr(bootstrap.subprocess, 'run', run)
     with pytest.raises(subprocess.CalledProcessError):
@@ -92,3 +94,23 @@ def test_removes_copied_framework_libraries_not_paddle_dependencies(monkeypatch)
     command = run.call_args.args[0]
     assert all(name in command for name in names[:4])
     assert 'paddlepaddle' not in command and 'numpy' not in command
+
+
+@pytest.mark.parametrize('capabilities,index', [
+    ('12.0\n', bootstrap.BLACKWELL_GPU_INDEX),
+    ('10.0\n', bootstrap.BLACKWELL_GPU_INDEX),
+    ('8.9\n12.0\n', bootstrap.BLACKWELL_GPU_INDEX),
+    ('8.6\n', bootstrap.GPU_INDEX),
+    ('9.0\n', bootstrap.GPU_INDEX),
+    ('N/A\n', bootstrap.GPU_INDEX),
+])
+def test_selects_cuda_wheel_for_gpu_architecture(monkeypatch, capabilities, index):
+    monkeypatch.setattr(bootstrap, 'nvidia_smi', lambda: '/usr/bin/nvidia-smi')
+    monkeypatch.setattr(bootstrap.subprocess, 'check_output', lambda *a, **k: capabilities)
+    assert bootstrap.select_gpu_index() == index
+
+
+def test_probe_preserves_loader_error_when_process_has_no_json(monkeypatch):
+    monkeypatch.setattr(bootstrap.subprocess, 'run', lambda *a, **k:
+                        subprocess.CompletedProcess([], 1, '', 'missing CUDA library'))
+    assert 'missing CUDA library' in bootstrap.probe_runtime()['error']

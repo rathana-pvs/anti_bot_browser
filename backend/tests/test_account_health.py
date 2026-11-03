@@ -31,6 +31,19 @@ def test_an_account_without_finished_sessions_is_new():
     assert health["daily_limit"] == 0
 
 
+@pytest.mark.parametrize('code', ['account_locked', 'identity_verification_required'])
+@pytest.mark.parametrize('status', ['skipped_auth_required', 'needs_review'])
+def test_live_account_restriction_skip_marks_attention(tmp_path, monkeypatch, code, status):
+    monkeypatch.setattr(account_health, 'HISTORY_FILE', tmp_path / 'history.json')
+    execution = dict(profile_id='profile_001', execution_id='blocked_live',
+                     status=status, ended_at=NOW.isoformat(),
+                     error=account_health.ACCOUNT_BLOCK_ERRORS[code])
+    history = sync_history({'daily_batches':[{'posts':[{'type':'live','executions':[execution]}]}]}, NOW)
+    health = compute(config(), account_health.entries_for(history, 'profile_001'), NOW)
+    assert health['stage'] == 'attention'
+    assert ('locked' if code == 'account_locked' else 'identity verification') in health['reason']
+
+
 def test_young_or_thin_history_is_warming_up_and_long_history_is_ready():
     assert compute(config(days_old=10), posts(3), NOW)["stage"] == "warming_up"
     assert compute(config(days_old=60), posts(4), NOW)["stage"] == "warming_up"
@@ -168,3 +181,92 @@ def test_the_last_finished_visit_is_reported():
     visits = [entry(5, "completed", "warming"), entry(2, "completed", "warming"), entry(1, "failed_before_publish", "warming")]
     assert compute(config(), posts(3) + visits, NOW)["last_visit_at"] == visits[1]["at"]
     assert compute(config(), posts(3), NOW)["last_visit_at"] is None
+
+
+def test_publishing_identity_restriction_needs_attention_even_after_warming():
+    restriction = dict(entry(5, 'uncertain', error='reel_publish_rejected'),
+                       attention_reason='identity_verification_required', execution_id='blocked')
+    history = posts(12) + [restriction, entry(1, 'completed', kind='warming')]
+    health = compute(config(), history, NOW)
+    assert health['stage'] == 'attention'
+    assert 'identity verification' in health['reason']
+    assert health['evidence'][0]['execution_id'] == 'blocked'
+    # A later successful publication confirms the publishing restriction ended.
+    assert compute(config(), history + [entry(.5)], NOW)['stage'] != 'attention'
+
+
+def test_identity_restriction_is_read_from_matching_attempt_and_survives_queue_clear(tmp_path, monkeypatch):
+    monkeypatch.setattr(account_health, 'PROFILES_DIR', tmp_path / 'profiles')
+    monkeypatch.setattr(account_health, 'HISTORY_FILE', tmp_path / 'history.json')
+    run = tmp_path / 'profiles/profile_001/automation_evidence/run'
+    run.mkdir(parents=True)
+    (run / 'attempt.json').write_text(json.dumps({'execution_id': 'e1', 'lease_id': 'lease1'}))
+    (run / '15_reel_publication_verification.json').write_text(json.dumps({
+        'label': 'reel_publication_verification', 'state': 'error_dialog', 'signals': ['confirm your identity'],
+    }))
+    execution = {'profile_id': 'profile_001', 'execution_id': 'e1', 'status': 'uncertain',
+                 'ended_at': NOW.isoformat(), 'error': 'reel_publish_rejected',
+                 'evidence_dir': str(run), 'last_scheduler_lease': {'lease_id': 'lease1'}}
+    before = json.loads(json.dumps(execution))
+    history = sync_history(queue(execution), NOW)
+    assert execution == before  # Publication status is never rewritten by account health.
+    assert history['profile_001']['e1']['attention_reason'] == 'identity_verification_required'
+    assert sync_history({'daily_batches': []}, NOW) == history
+    assert compute(config(), account_health.entries_for(history, 'profile_001'), NOW)['stage'] == 'attention'
+
+
+@pytest.mark.parametrize('case', ['generic_error', 'wrong_attempt', 'outside_profile'])
+def test_generic_rejection_or_unmatched_evidence_does_not_mark_attention(tmp_path, monkeypatch, case):
+    monkeypatch.setattr(account_health, 'PROFILES_DIR', tmp_path / 'profiles')
+    monkeypatch.setattr(account_health, 'HISTORY_FILE', tmp_path / 'history.json')
+    run = tmp_path / ('outside' if case == 'outside_profile' else 'profiles/profile_001/automation_evidence/run')
+    run.mkdir(parents=True)
+    (run / 'attempt.json').write_text(json.dumps({'execution_id': 'other' if case == 'wrong_attempt' else 'e1', 'lease_id': 'lease1'}))
+    (run / '15_reel_publication_verification.json').write_text(json.dumps({
+        'label': 'reel_publication_verification', 'state': 'error_dialog',
+        'signals': ['something went wrong'] if case == 'generic_error' else ['confirm your identity'],
+    }))
+    execution = {'profile_id': 'profile_001', 'execution_id': 'e1', 'status': 'uncertain',
+                 'ended_at': NOW.isoformat(), 'error': 'reel_publish_rejected',
+                 'evidence_dir': str(run), 'last_scheduler_lease': {'lease_id': 'lease1'}}
+    record = sync_history(queue(execution), NOW)['profile_001']['e1']
+    assert 'attention_reason' not in record
+
+
+def test_verified_identity_restriction_becomes_skip_without_erasing_publish_history(tmp_path, monkeypatch):
+    from backend.services.queue_safety import repair_identity_verification_skip
+    monkeypatch.setattr(account_health, 'PROFILES_DIR', tmp_path / 'profiles')
+    run = tmp_path / 'profiles/profile_001/automation_evidence/skip-run'
+    run.mkdir(parents=True)
+    (run / 'attempt.json').write_text(json.dumps({'execution_id': 'blocked', 'lease_id': 'lease1'}))
+    (run / '15_reel_publication_verification.json').write_text(json.dumps({
+        'label': 'reel_publication_verification', 'state': 'error_dialog', 'signals': ['confirm your identity'],
+    }))
+    execution = {'profile_id': 'profile_001', 'execution_id': 'blocked', 'status': 'uncertain',
+                 'ended_at': NOW.isoformat(), 'error': 'reel_publish_rejected',
+                 'evidence_dir': str(run), 'last_scheduler_lease': {'lease_id': 'lease1'},
+                 'stage_history': [{'stage': 'publish_clicked'}]}
+    assert repair_identity_verification_skip(execution)
+    assert execution['status'] == 'skipped_auth_required'
+    assert execution['stage_history'][0]['stage'] == 'publish_clicked'
+    assert execution['evidence_dir'] == str(run)
+    assert not repair_identity_verification_skip(execution)
+    record = account_health._entry(execution, 'reel')
+    assert record['attention_reason'] == 'identity_verification_required'
+
+
+@pytest.mark.parametrize('overrides', [
+    {'error': 'reel_publish_loading_timeout'},
+    {'scheduler_lease': {'lease_id': 'active'}},
+    {'cloud_attempt_id': 'remote-attempt'},
+    {'ended_at': None},
+    {'status': 'published'},
+    {'error': 'reel_publish_rejected', 'evidence_dir': None},
+])
+def test_skip_repair_does_not_release_unverified_or_active_attempts(overrides):
+    from backend.services.queue_safety import repair_identity_verification_skip
+    execution = {'status': 'uncertain', 'ended_at': NOW.isoformat(),
+                 'error': account_health.IDENTITY_VERIFICATION_ERROR, **overrides}
+    before = dict(execution)
+    assert not repair_identity_verification_skip(execution)
+    assert execution == before

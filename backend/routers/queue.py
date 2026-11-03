@@ -1,4 +1,5 @@
 from automation.warming_options import normalize_warming_options
+from automation.live_encoder import ENCODER_FAILURE_REASONS
 
 import asyncio
 import json
@@ -21,7 +22,6 @@ from backend.services.queue_service import (
 )
 from backend.services.queue_safety import (
     is_execution_deletion_locked,
-    batch_contains_unresolved_execution,
     validate_facebook_permalink,
     apply_verified_permalink_backfill,
     apply_comment_evidence_backfill,
@@ -106,6 +106,7 @@ def get_queue():
                     "base_caption": post.get("base_caption"),
                     "title": post.get("title"),
                     "pinned_comment": post.get("pinned_comment"),
+                    "end_after_comment": post.get("end_after_comment", False),
                     "first_comment": post.get("first_comment"),
                     "scrolls": post.get("scrolls"),
                     "warming_options": post.get("warming_options"),
@@ -170,33 +171,19 @@ async def create_batch(payload: dict = Body(...)):
     if any(post.get("type") == "live" for post in posts):
         from backend.services import live_service
         try:
-            destinations = {}
+            if len(set(target_profiles)) != len(target_profiles):
+                raise ValueError('Select each profile only once for a Live batch')
             for pid in target_profiles:
-                settings = live_service.validate_settings(live_service.read_json(live_service.settings_path(pid)))
-                destination = settings['server_url'] + settings['stream_key']
-                destinations.setdefault(destination, []).append(pid)
-            duplicate_groups = [ids for ids in destinations.values() if len(ids) > 1]
-            if duplicate_groups:
-                groups = []
-                for ids in duplicate_groups:
-                    labels = []
-                    for pid in ids:
-                        try:
-                            config = live_service.read_json(live_service.profile_path(pid) / 'config.json')
-                            name = config.get('name')
-                        except (OSError, ValueError, AttributeError):
-                            name = None
-                        labels.append(f'{name} ({pid})' if name else pid)
-                    groups.append(', '.join(labels))
-                raise ValueError('Selected profiles must have different Facebook stream keys. '
-                                 'Profiles sharing a key: ' + '; '.join(groups) +
-                                 '. Update their Live settings or select only one profile from each group.')
+                live_service.launch_settings(pid)
+            # The actual copied destination is locked at execution time. Cached
+            # keys cannot identify the destination of a newly prepared broadcast.
             for post in posts:
                 if post.get("type") == "live":
                     post.update(live_service.validate_playback(post.get("loop", False), post.get("max_duration_seconds"), post.get("muted", False), post.get("playback_mode", "auto")))
                     live_service.resolve_video(post.get("media_file"))
                     details = live_service.validate_details(post.get("title", ""), post.get("base_caption", ""), post.get("pinned_comment"))
                     post.update(title=details["title"], base_caption=details["caption"], pinned_comment=details.get("pinned_comment"), ai_spin=False)
+                    post['end_after_comment'] = live_service.validate_end_after_comment(post.get('end_after_comment', False), details.get('pinned_comment'))
                     if post.get("first_comment"):
                         raise ValueError("First comments are not supported for Live")
         except (ValueError, FileNotFoundError) as error:
@@ -211,12 +198,12 @@ async def create_batch(payload: dict = Body(...)):
     legacy_stagger = schedule_window.get("profile_stagger_minutes")
     if raw_stagger is not None:
         try:
-            stagger_seconds = max(0, int(raw_stagger))
+            stagger_seconds = max(10, int(raw_stagger))
         except ValueError:
             stagger_seconds = 60
     elif legacy_stagger is not None:
         try:
-            stagger_seconds = max(0, int(legacy_stagger)) * 60
+            stagger_seconds = max(10, int(legacy_stagger) * 60)
         except ValueError:
             stagger_seconds = 60
     else:
@@ -340,7 +327,7 @@ async def create_batch(payload: dict = Body(...)):
             "first_comment": post.get("first_comment"),
             "scrolls": max(1, int(post.get("scrolls", 4))),
             "warming_options": post.get("warming_options"),
-            **({"title": post.get("title", ""), "pinned_comment": post.get("pinned_comment"), "loop": post.get("loop", False), "muted": post.get("muted", False), "max_duration_seconds": post.get("max_duration_seconds"), "playback_mode": post.get("playback_mode", "auto")} if post.get("type") == "live" else {}),
+            **({"title": post.get("title", ""), "pinned_comment": post.get("pinned_comment"), "end_after_comment": post.get("end_after_comment", False), "loop": post.get("loop", False), "muted": post.get("muted", False), "max_duration_seconds": post.get("max_duration_seconds"), "playback_mode": post.get("playback_mode", "auto")} if post.get("type") == "live" else {}),
             "ai_spin": post.get("ai_spin") is not False,
             "executions": executions,
         })
@@ -517,21 +504,18 @@ async def append_batch_posts(batch_id: str, payload: dict = Body(...)):
 
 @router.delete("/batch/{batch_id}")
 def delete_batch(batch_id: str):
-    queue = load_posting_queue()
-    batches = queue.get("daily_batches", [])
-    target_batch = next((b for b in batches if b.get("batch_id") == batch_id), None)
-    if not target_batch:
-        raise HTTPException(status_code=404, detail="Batch not found")
-
-    if batch_contains_unresolved_execution(target_batch):
-        raise HTTPException(
-            status_code=409,
-            detail="Cannot delete a batch containing active, uncertain, or needs-review executions. Stop safely or resolve every ambiguous outcome first.",
-        )
-
-    queue["daily_batches"] = [b for b in batches if b.get("batch_id") != batch_id]
-    save_posting_queue(queue)
-    return {"success": True, "message": f"Batch {batch_id} removed"}
+    def remove():
+        queue = load_posting_queue()
+        batches = queue.get("daily_batches", [])
+        if not any(b.get("batch_id") == batch_id for b in batches):
+            raise HTTPException(status_code=404, detail="Batch not found")
+        # Explicit deletion removes queue history regardless of outcome. It
+        # never resolves publication, retries work or releases profile locks.
+        queue["daily_batches"] = [b for b in batches if b.get("batch_id") != batch_id]
+        if not save_posting_queue(queue):
+            raise HTTPException(status_code=500, detail="Could not save batch deletion")
+        return {"success": True, "message": f"Batch {batch_id} removed"}
+    return with_queue_claim_lock(remove)
 
 @router.delete("/execution/{execution_id}")
 def delete_execution(execution_id: str):
@@ -753,14 +737,15 @@ async def run_execution_now(execution_id: str):
             raise HTTPException(status_code=409, detail="All preparation buffers are currently occupied.")
 
     pid = target_exec["profile_id"]
-    if get_container_status(pid) != "running" and count_running_profile_containers() >= scheduler_cfg["max_active_profile_containers"]:
+    container_running = await asyncio.to_thread(get_container_status, pid) == 'running'
+    if not container_running and await asyncio.to_thread(count_running_profile_containers) >= scheduler_cfg["max_active_profile_containers"]:
         if is_manual_retry:
             deferred_reason = "waiting for a profile-container slot"
         else:
             raise HTTPException(status_code=409, detail="The active profile-container limit has been reached.")
 
-    if get_container_status(pid) != "running" and deferred_reason is None:
-        admission = claim_container_start_admission()
+    if not container_running and deferred_reason is None:
+        admission = await asyncio.to_thread(claim_container_start_admission)
         if not admission["allowed"]:
             if is_manual_retry:
                 deferred_reason = f"waiting for container admission ({admission['reason']})"
@@ -901,7 +886,34 @@ def list_execution_evidence(execution_id: str):
         path.name for path in directory.glob("*.png")
         if path.is_file() and not path.is_symlink()
     )
-    return {"images": images}
+    response = {"images": images}
+    diagnostic_file = directory / 'diagnostics.json'
+    if diagnostic_file.is_file() and not diagnostic_file.is_symlink() and diagnostic_file.stat().st_size <= 16384:
+        try:
+            diagnostic = json.loads(diagnostic_file.read_text())
+            # Only fixed diagnostic codes and a numeric exit code leave this endpoint.
+            safe = {}
+            stage = diagnostic.get('failure_stage')
+            if stage in {'preparing', 'stream_start_intent', 'sending', 'starting', 'live', 'ending', 'commenting', 'stopping'}:
+                safe['failure_stage'] = stage
+            for key in ('failure_code', 'cleanup_failure_code'):
+                code = diagnostic.get(key)
+                if code in {'task_cancelled', 'action_timeout', 'workflow_error', 'unexpected_error',
+                            'TypeError', 'KeyError', 'AttributeError', 'OSError'}:
+                    safe[key] = code
+            reason = diagnostic.get('encoder_failure_reason')
+            if reason in ENCODER_FAILURE_REASONS:
+                safe['encoder_failure_reason'] = reason
+            code = diagnostic.get('encoder_exit_code')
+            if type(code) is int:
+                safe['encoder_exit_code'] = code
+            state = diagnostic.get('final_browser_state')
+            if state in {'live', 'ended', 'unconfirmed'}:
+                safe['final_browser_state'] = state
+            response['diagnostics'] = safe
+        except (OSError, ValueError, AttributeError, TypeError):
+            pass
+    return response
 
 
 @router.get("/execution/{execution_id}/evidence/{filename}")

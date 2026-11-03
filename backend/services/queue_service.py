@@ -91,8 +91,11 @@ def _atomic_json_write(path: Path, data: dict) -> None:
     )
     tmp_path = Path(tmp_name)
     try:
+        # Queue telemetry can reach many MB. dumps uses the fast encoder and a
+        # single write; pretty-printing through dump emits millions of chunks
+        # while blocking scheduler/result processing on every queue update.
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+            f.write(json.dumps(data, separators=(',', ':')))
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, path)

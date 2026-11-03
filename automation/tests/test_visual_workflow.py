@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -1719,6 +1719,84 @@ class ReelProfileActionTests(unittest.TestCase):
         ])
 
         self.assertEqual(task._find_profile_reel_action(), (1401, 401))
+
+    def test_fb24_right_edge_action_is_not_clipped(self):
+        task = self.make_task([])
+        task.vision.get_pixel_region.side_effect = VisionEngine.get_pixel_region
+
+        def read(screen, region, **kwargs):
+            x, y, width, height = region
+            # FB24's Reel label extends beyond the old x=1690 crop.
+            label = "Reel" if x + width >= 1702 else "Re"
+            return [
+                {"text": "What's on your mind?", "center": (1227, 953)},
+                {"text": "Photo/video", "center": (1444, 1020)},
+                {"text": label, "center": (1684, 1020)},
+            ]
+
+        task.vision.read_text.side_effect = read
+        self.assertEqual(task._find_profile_reel_action(), (1684, 1020))
+
+    def test_reel_search_covers_entire_webpage(self):
+        region = VisionEngine.get_pixel_region((1080, 1920, 3), "profile_reel_composer")
+        self.assertEqual(region, (0, 86, 1920, 994))
+
+    def test_primary_region_success_skips_full_page_ocr(self):
+        task = self.make_task([
+            {"text": "Photo/video", "center": (1444, 1020)},
+            {"text": "Reel", "center": (1684, 1020)},
+        ])
+        task.vision.get_pixel_region.side_effect = VisionEngine.get_pixel_region
+        self.assertEqual(task._find_profile_reel_action(), (1684, 1020))
+        self.assertEqual(task.vision.read_text.call_count, 1)
+        self.assertEqual(task.vision.read_text.call_args.kwargs['region'], (960, 86, 960, 994))
+
+    def test_full_page_fallback_finds_left_shifted_composer(self):
+        task = self.make_task([])
+        task.vision.get_pixel_region.side_effect = VisionEngine.get_pixel_region
+        task.vision.read_text.side_effect = [
+            [{"text": "Reels", "center": (1000, 300)}],
+            [{"text": "Photo/video", "center": (500, 600)},
+             {"text": "Reel", "center": (750, 600)}],
+        ]
+        self.assertEqual(task._find_profile_reel_action(), (750, 600))
+        self.assertEqual(task.vision.read_text.call_count, 2)
+        self.assertTrue(task._profile_reel_composer_visible)
+
+    def test_visible_composer_is_not_scrolled_away_when_ocr_misses_reel(self):
+        task = self.make_task([])
+        task.human = Mock()
+        task.log = Mock()
+        task._fail = Mock(return_value=False)
+        task._profile_reel_composer_visible = True
+        task._find_profile_reel_action = Mock(return_value=None)
+
+        def wait(locate, **kwargs):
+            for _ in range(8):
+                self.assertIsNone(locate())
+            return "timeout", None, None
+
+        task._wait_for_target = wait
+        task._step_open_reel_entry()
+        task.human.scroll.assert_not_called()
+
+    def test_missing_composer_search_has_bounded_scrolls(self):
+        task = self.make_task([])
+        task.human = Mock()
+        task.log = Mock()
+        task._fail = Mock(return_value=False)
+        task._profile_reel_composer_visible = False
+        task._find_profile_reel_action = Mock(return_value=None)
+
+        def wait(locate, **kwargs):
+            for _ in range(8):
+                self.assertIsNone(locate())
+            return "timeout", None, None
+
+        task._wait_for_target = wait
+        with patch("tasks.facebook_reel.time.sleep"):
+            task._step_open_reel_entry()
+        self.assertEqual(task.human.scroll.call_count, 3)
 
 
 class PublicationVerificationTests(unittest.TestCase):

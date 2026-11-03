@@ -63,9 +63,9 @@ class LiveInput:
         deadline = getattr(self.task, 'preparation_deadline', None)
         return (deadline if deadline is not None else time.monotonic() + 120) - 20
 
-    def enter(self, text, target, *, field, empty_check, surface_guard, replace_existing=False):
+    def enter(self, text, target, *, field, empty_check, surface_guard, replace_existing=False, deadline=None):
         field_label = {'live_title': 'title', 'live_caption': 'caption', 'comment': 'pinned comment'}.get(field, 'text')
-        deadline = self.deadline()
+        deadline = self.deadline() if deadline is None else deadline
         review_started = False
         def review(waiter):
             nonlocal review_started
@@ -89,13 +89,13 @@ class LiveInput:
                                + '). Nothing was saved or published.')
         return result
 
-    def before_save(self):
+    def before_save(self, *, deadline=None):
         try:
             self.check_owner(self.composer_entry.last_owner)
         except Exception:
             raise RuntimeError('Live input ownership was lost before Save.') from None
         # Entry stops early to reserve time for Save and retention checks.
         # Save itself may use that reserve, up to the preparation deadline.
-        deadline = getattr(self.task, 'preparation_deadline', None)
+        deadline = getattr(self.task, 'preparation_deadline', None) if deadline is None else deadline
         if deadline is not None and time.monotonic() >= deadline:
             raise RuntimeError('Live preparation deadline was reached before Save.')

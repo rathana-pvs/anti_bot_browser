@@ -103,7 +103,10 @@ class QueueAdapter:
     def capacity(self):
         from backend.services.automation_service import current_scheduler_snapshot
         snapshot = current_scheduler_snapshot()
-        return {'active': snapshot['active'], 'available': snapshot['available'],
+        # Keep protocol v1's aggregate counters; post/Live admission is local.
+        counters = ('publishers', 'preparers', 'total')
+        return {'active': {key: snapshot['active'][key] for key in counters},
+                'available': {key: snapshot['available'][key] for key in counters},
                 'limits': {key: snapshot['config'][key] for key in
                            ('max_publishers', 'max_preparers', 'max_total_automation_tasks')}}
 

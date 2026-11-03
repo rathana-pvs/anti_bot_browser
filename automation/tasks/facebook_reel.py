@@ -19,6 +19,7 @@ from engine.telemetry import timed_telemetry_step
 from engine.runtime_paths import automation_dir
 from engine.text_matcher import OcrTextMatcher
 from engine.vision import VisionEngine
+from modules.meta_feed_promotion import dismiss_meta_feed_promotion
 from modules.publication_result_verifier import ReelPublicationResultVerifier
 from modules.reel_top_post import first_header_region, retry_unreadable_header, profile_feed_is_loading
 from modules.reel_post_click_verifier import ReelPostClickVerifier
@@ -346,60 +347,64 @@ class FacebookReelTask(BaseTask):
             started = time.perf_counter()
             screen = self.client.screenshot()
             height, width = screen.shape[:2]
-            region = self.vision.get_pixel_region(screen.shape, "profile_post_stream")
-            candidates = self.vision.read_text(screen, region=region, min_confidence=0.20)
+            self._profile_reel_composer_visible = False
+            for region_name in ("profile_reel_composer_primary", "profile_reel_composer"):
+                region = self.vision.get_pixel_region(screen.shape, region_name)
+                candidates = self.vision.read_text(screen, region=region, min_confidence=0.20)
 
-            prompts = [
-                item for item in candidates
-                if self._is_profile_composer_prompt(item["text"])
-            ]
-            photo_actions = [
-                item for item in candidates
-                if self._normalized_ocr_text(item["text"])
-                in {"photo video", "photos videos", "photo lvideo", "photo ivideo"}
-            ]
-            reel_actions = [
-                item for item in candidates
-                if self._normalized_ocr_text(item["text"]) in {"reel", "create reel"}
-            ]
+                prompts = [
+                    item for item in candidates
+                    if self._is_profile_composer_prompt(item["text"])
+                ]
+                photo_actions = [
+                    item for item in candidates
+                    if self._normalized_ocr_text(item["text"])
+                    in {"photo video", "photos videos", "photo lvideo", "photo ivideo"}
+                ]
+                reel_actions = [
+                    item for item in candidates
+                    if self._normalized_ocr_text(item["text"]) in {"reel", "create reel"}
+                ]
 
-            accepted = []
-            for reel in reel_actions:
-                rx, ry = reel["center"]
+                self._profile_reel_composer_visible |= bool(prompts or photo_actions)
+                accepted = []
+                for reel in reel_actions:
+                    rx, ry = reel["center"]
 
-                # Normal profile composer layout: the action row is shortly
-                # below the caption prompt and extends to its right.
-                for prompt in prompts:
-                    px, py = prompt["center"]
-                    if (
-                        0.018 * height <= ry - py <= 0.15 * height
-                        and -0.04 * width <= rx - px <= 0.38 * width
-                    ):
-                        accepted.append((abs((ry - py) - 0.055 * height), reel))
-                        break
-                else:
-                    # OCR may miss the grey prompt.  Photo/video is a strong
-                    # secondary anchor because it shares the same action row.
-                    for photo in photo_actions:
-                        phx, phy = photo["center"]
-                        if abs(ry - phy) <= 0.035 * height and 0 < rx - phx <= 0.30 * width:
-                            accepted.append((abs(ry - phy), reel))
+                    # Normal profile composer layout: the action row is shortly
+                    # below the caption prompt and extends to its right.
+                    for prompt in prompts:
+                        px, py = prompt["center"]
+                        if (
+                            0.018 * height <= ry - py <= 0.15 * height
+                            and -0.04 * width <= rx - px <= 0.38 * width
+                        ):
+                            accepted.append((abs((ry - py) - 0.055 * height), reel))
                             break
+                    else:
+                        # OCR may miss the grey prompt.  Photo/video is a strong
+                        # secondary anchor because it shares the same action row.
+                        for photo in photo_actions:
+                            phx, phy = photo["center"]
+                            if abs(ry - phy) <= 0.035 * height and 0 < rx - phx <= 0.30 * width:
+                                accepted.append((abs(ry - phy), reel))
+                                break
 
-            accepted.sort(key=lambda value: (value[0], -value[1].get("confidence", 0.0)))
-            match = accepted[0][1] if accepted else None
-            self.record_locator_telemetry(
-                "profile_reel_composer_action",
-                "composer_anchored_ocr",
-                "profile_post_stream",
-                (time.perf_counter() - started) * 1000.0,
-                bool(match),
-                confidence=match.get("confidence") if match else None,
-                fallback_reason=None if match else "no_composer_anchored_reel_action",
-            )
-            if match:
-                self.remember_reversible_click_bounds(match["center"], match.get("bounds"))
-            return match["center"] if match else None
+                accepted.sort(key=lambda value: (value[0], -value[1].get("confidence", 0.0)))
+                match = accepted[0][1] if accepted else None
+                self.record_locator_telemetry(
+                    "profile_reel_composer_action",
+                    "composer_anchored_ocr",
+                    region_name,
+                    (time.perf_counter() - started) * 1000.0,
+                    bool(match),
+                    confidence=match.get("confidence") if match else None,
+                    fallback_reason=None if match else "no_composer_anchored_reel_action",
+                )
+                if match:
+                    self.remember_reversible_click_bounds(match["center"], match.get("bounds"))
+                    return match["center"]
+            return None
 
         return self.vision.find_stable(locate, attempts=2, tolerance_px=8.0)
 
@@ -1518,6 +1523,9 @@ class FacebookReelTask(BaseTask):
             min_confidence=.55)
         region, seen = first_header_region(items, width, height)
         self._reel_posts_toolbar_seen = seen
+        if dismiss_meta_feed_promotion(self, screen, items, region):
+            self.latest_reel_timestamp_check = {'accepted': False, 'reason': 'meta_feed_promotion_present'}
+            return False
         if region is None:
             if profile_feed_is_loading(screen):
                 self.latest_reel_timestamp_check = {'accepted': False, 'reason': 'profile_feed_loading'}
@@ -1569,6 +1577,9 @@ class FacebookReelTask(BaseTask):
                 self.log("INFO", f"Latest Reel found in the profile feed on scan {scan}/{max_scans}.")
                 return True, last_screen
             check = getattr(self, 'latest_reel_timestamp_check', None) or {}
+            if check.get('reason') == 'meta_feed_promotion_present':
+                time.sleep(0.8)
+                continue  # Re-capture after closing; do not scroll past the first post.
             if getattr(self, '_reel_top_post_found', False) or check.get('reason') == 'profile_feed_loading':
                 if check.get('reason') == 'profile_feed_loading':
                     # Keep the detected loading feed/card fixed while it renders.
@@ -1663,11 +1674,22 @@ class FacebookReelTask(BaseTask):
 
     def _step_open_reel_entry(self):
         self.log("STEP", "Locating Reel button on profile page...")
+        # Start from a known position; reused profile pages can retain scroll.
+        self.human.key_press("ctrl+home", check=False)
+        scrolls = 0
+
         def locate_reel_button():
+            nonlocal scrolls
             target = self._find_profile_reel_action()
             if target:
                 return target
-            self.human.scroll("down", notches=2)
+            # Hold a visible composer still while OCR/the page settles. Repeated
+            # blind scrolling used to move its action row out of the viewport.
+            if getattr(self, "_profile_reel_composer_visible", False) or scrolls >= 3:
+                return None
+            self.human.move_to(1150, 500)
+            self.human.scroll("down", notches=1)
+            scrolls += 1
             time.sleep(0.8)
             return self._find_profile_reel_action()
 

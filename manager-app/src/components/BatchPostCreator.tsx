@@ -59,6 +59,7 @@ interface DraftPostRow {
   preview_url?: string;
   title?: string;
   pinned_comment?: string;
+  end_after_comment?: boolean;
   caption: string;
   first_comment: string;
   hook?: HookDraft;
@@ -91,7 +92,10 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
   });
   const [playbackMode, setPlaybackMode] = useState<LivePlaybackMode>(() => localStorage.getItem(storageKey('playback_mode')) === 'manual' ? 'manual' : 'auto');
   const [loopVideo, setLoopVideo] = useState(() => localStorage.getItem(storageKey('loop')) === 'true');
-  const [durationMinutes, setDurationMinutes] = useState(() => localStorage.getItem(storageKey('duration_minutes')) || '');
+  const [durationMinutes, setDurationMinutes] = useState(() => {
+    const saved = localStorage.getItem(storageKey('duration_minutes')) || '';
+    return Number(saved) > 2 ? '2' : saved;
+  });
   const [muted, setMuted] = useState(() => localStorage.getItem(storageKey('muted')) === 'true');
 
   // Campaign Name with inline editing
@@ -130,7 +134,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
     const saved = localStorage.getItem(storageKey('stagger_seconds'));
     if (saved !== null) {
       const parsed = parseInt(saved, 10);
-      return Number.isNaN(parsed) ? 60 : Math.max(0, parsed);
+      return Number.isNaN(parsed) ? 60 : Math.max(10, parsed);
     }
     return 60;
   });
@@ -416,8 +420,8 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
     if (posts.length === 0) list.push(liveMode ? 'Add at least one video.' : 'Add at least one post.');
     if (posts.some(p => p.type === 'live' && (!(p.title || '').trim() || !p.caption.trim()))) list.push('Enter a title and caption for each Live video.');
     if (posts.some(p => p.type === 'live' && !p.media_file)) list.push('Attach a video to every Live item.');
-    if (liveMode && playbackMode === 'manual' && ((loopVideo && !durationMinutes) || (durationMinutes !== '' && (!Number.isInteger(Number(durationMinutes)) || Number(durationMinutes) < 1 || Number(durationMinutes) > 240)))) {
-      list.push('Set a duration between 1 and 240 minutes. Loop needs a duration.');
+    if (liveMode && playbackMode === 'manual' && ((loopVideo && !durationMinutes) || (durationMinutes !== '' && (!Number.isInteger(Number(durationMinutes)) || Number(durationMinutes) < 1 || Number(durationMinutes) > 2)))) {
+      list.push('Set a duration between 1 and 2 minutes. Loop needs a duration.');
     }
     if (posts.some(p => !p.caption.trim() && !p.media_file)) list.push('Each post needs a photo, video, or caption.');
     if (posts.some(p => !hookIsApproved(p.caption, p.media_file, p.type, p.hook))) list.push('Preview and approve each caption hook, or keep the original caption.');
@@ -450,7 +454,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
           ? [{ type: 'warming', media_file: '', base_caption: '', scrolls: 4, warming_options: warmingOptions, ai_spin: false }]
           : posts.map((p) => ({
             type: p.type,
-            ...(p.type === 'live' ? {title: (p.title || '').trim(), pinned_comment: (p.pinned_comment || '').trim(), playback_mode: playbackMode, loop: playbackMode === 'manual' && loopVideo, muted, max_duration_seconds: playbackMode === 'manual' && durationMinutes ? Number(durationMinutes) * 60 : undefined} : {}),
+            ...(p.type === 'live' ? {title: (p.title || '').trim(), pinned_comment: (p.pinned_comment || '').trim(), end_after_comment: Boolean(p.pinned_comment?.trim()), playback_mode: playbackMode, loop: playbackMode === 'manual' && loopVideo, muted, max_duration_seconds: playbackMode === 'manual' && durationMinutes ? Number(durationMinutes) * 60 : undefined} : {}),
             media_file: p.media_file,
             base_caption: p.caption,
             ...(p.hook?.enabled ? { hook_approval: p.hook.approval } : {}),
@@ -697,11 +701,11 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                         onChange={e => handleUpdateRow(post.id, {caption: e.target.value})} placeholder="Live caption"
                         className="w-full px-3 py-2 text-xs rounded-lg bg-zinc-950 border border-zinc-800 text-white focus:outline-none focus:border-rose-500 resize-none" />
                       <details className="text-xs text-zinc-400">
-                        <summary className="cursor-pointer">Pinned comment (optional)</summary>
-                        <textarea aria-label="Preset pinned comment" value={post.pinned_comment || ''} maxLength={1000} rows={2}
-                          onChange={e => handleUpdateRow(post.id, {pinned_comment: e.target.value})} placeholder="Comment to pin when Live starts"
+                        <summary className="cursor-pointer">Comment after Live (optional)</summary>
+                        <textarea aria-label="Comment after Live" value={post.pinned_comment || ''} maxLength={1000} rows={2}
+                          onChange={e => handleUpdateRow(post.id, {pinned_comment: e.target.value, ...(!e.target.value.trim() ? {end_after_comment: false} : {})})} placeholder="Comment to post after Live ends"
                           className="mt-2 w-full px-3 py-2 rounded-lg bg-zinc-950 border border-zinc-800 text-white focus:outline-none focus:border-rose-500 resize-none" />
-                        <p className="mt-1 text-[11px] text-zinc-500">Leave blank to disable the preset for this Live.</p>
+                        <p className="mt-1 text-[11px] text-zinc-500">Live ends first, then the comment is posted and checked. The container closes before the job succeeds.</p>
                       </details>
                       <p className="text-xs text-zinc-500">Added to Facebook before streaming. Choose the broadcast destination in Live Producer.</p>
                     </div> : <div className="flex-1 space-y-2">
@@ -836,8 +840,8 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                 <div className="space-y-3 pt-3 text-xs">
                   <label className="block">
                     <span className="block text-zinc-400 mb-1">Seconds between accounts starting</span>
-                    <input type="number" min={0} max={3600} step={10} value={staggerSeconds}
-                      onChange={(e) => { const val = parseInt(e.target.value, 10); setStaggerSeconds(Number.isNaN(val) ? 60 : Math.max(0, val)); }}
+                    <input type="number" min={10} max={3600} step={10} value={staggerSeconds}
+                      onChange={(e) => { const val = parseInt(e.target.value, 10); setStaggerSeconds(Number.isNaN(val) ? 60 : Math.max(10, val)); }}
                       className="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-white focus:outline-none focus:border-blue-500" />
                   </label>
                   <label className="block">

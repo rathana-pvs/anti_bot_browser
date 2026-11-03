@@ -69,7 +69,7 @@ export function listQueueLeases(queue, nowMs = Date.now()) {
     for (const post of batch.posts || []) {
       for (const execution of post.executions || []) {
         if (['running', 'preparing'].includes(execution.status) && isLeaseActive(execution.scheduler_lease, nowMs)) {
-          leases.push({ ...execution.scheduler_lease, execution_id: execution.execution_id });
+          leases.push({ ...execution.scheduler_lease, execution_id: execution.execution_id, workload: post.type === 'live' ? 'live' : 'post' });
         }
       }
     }
@@ -80,16 +80,20 @@ export function listQueueLeases(queue, nowMs = Date.now()) {
 export function schedulerSnapshot(queue, additionalLeases = [], config = DEFAULT_SCHEDULER_CONFIG, nowMs = Date.now()) {
   const unique = new Map();
   for (const lease of [...listQueueLeases(queue, nowMs), ...additionalLeases]) {
-    if (isLeaseActive(lease, nowMs)) unique.set(lease.lease_id, lease);
+    if (isLeaseActive(lease, nowMs)) unique.set(lease.lease_id, { ...unique.get(lease.lease_id), ...lease });
   }
   const leases = [...unique.values()];
   const publishers = leases.filter((lease) => lease.kind === 'publisher').length;
   const preparers = leases.filter((lease) => lease.kind === 'preparer').length;
+  const live = leases.filter(lease => lease.kind === 'publisher' && lease.workload === 'live').length;
+  const posts = publishers - live;
   return {
     config: { ...config },
-    active: { publishers, preparers, total: leases.length },
+    active: { publishers, posts, live, preparers, total: leases.length },
     available: {
       publishers: Math.max(0, config.max_publishers - publishers),
+      posts: Math.max(0, (config.max_post_publishers ?? config.max_publishers) - posts),
+      live: Math.max(0, (config.max_live_publishers ?? config.max_publishers) - live),
       preparers: Math.max(0, config.max_preparers - preparers),
       total: Math.max(0, config.max_total_automation_tasks - leases.length),
     },
@@ -104,6 +108,7 @@ export function canAcquireSchedulerSlot(
   profileId,
   config = DEFAULT_SCHEDULER_CONFIG,
   nowMs = Date.now(),
+  workload = 'post',
 ) {
   if (!['publisher', 'preparer'].includes(kind)) {
     return { allowed: false, reason: `invalid_slot_kind:${kind}` };
@@ -118,6 +123,11 @@ export function canAcquireSchedulerSlot(
   if (kind === 'publisher' && snapshot.active.publishers >= config.max_publishers) {
     return { allowed: false, reason: 'publisher_capacity_reached', snapshot };
   }
+  const workKey = workload === 'live' ? 'live' : 'posts';
+  const workLimit = workload === 'live' ? 'max_live_publishers' : 'max_post_publishers';
+  if (kind === 'publisher' && snapshot.active[workKey] >= (config[workLimit] ?? config.max_publishers)) {
+    return { allowed: false, reason: `${workKey}_capacity_reached`, snapshot };
+  }
   if (kind === 'preparer' && snapshot.active.preparers >= config.max_preparers) {
     return { allowed: false, reason: 'preparer_capacity_reached', snapshot };
   }
@@ -127,13 +137,13 @@ export function canAcquireSchedulerSlot(
 export function claimExecutionLease(
   queue,
   execution,
-  { leaseId, ownerId, kind = 'publisher', config = DEFAULT_SCHEDULER_CONFIG, additionalLeases = [], nowMs = Date.now() },
+  { leaseId, ownerId, kind = 'publisher', workload = 'post', config = DEFAULT_SCHEDULER_CONFIG, additionalLeases = [], nowMs = Date.now() },
 ) {
   if (!execution || !RUNNABLE_STATUSES.has(execution.status)) {
     return { claimed: false, reason: `execution_not_runnable:${execution?.status || 'missing'}` };
   }
   const availability = canAcquireSchedulerSlot(
-    queue, additionalLeases, kind, execution.profile_id, config, nowMs,
+    queue, additionalLeases, kind, execution.profile_id, config, nowMs, workload,
   );
   if (!availability.allowed) return { claimed: false, ...availability };
   const claimedAt = new Date(nowMs).toISOString();
@@ -141,6 +151,7 @@ export function claimExecutionLease(
     lease_id: leaseId,
     owner_id: ownerId,
     kind,
+    workload,
     profile_id: execution.profile_id,
     claimed_at: claimedAt,
     heartbeat_at: claimedAt,

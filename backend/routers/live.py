@@ -20,6 +20,7 @@ class Start(BaseModel):
     title: str = Field(default='', max_length=255)
     caption: str = Field(default='', max_length=5000)
     pinned_comment: str | None = Field(default=None, max_length=1000)
+    end_after_comment: bool = False
     loop: bool = False
     muted: bool = False
     max_duration_seconds: int | None = Field(default=None, ge=1, le=live.MAX_VIDEO_SECONDS)
@@ -58,7 +59,7 @@ async def status(profile_id: str):
 @router.post('/start')
 async def start(profile_id: str, payload: Start):
     try:
-        return await live.start_live(profile_id, payload.filename, payload.loop, payload.max_duration_seconds, payload.muted, payload.title, payload.caption, payload.pinned_comment, payload.playback_mode)
+        return await live.start_live(profile_id, payload.filename, payload.loop, payload.max_duration_seconds, payload.muted, payload.title, payload.caption, payload.pinned_comment, payload.playback_mode, end_after_comment=payload.end_after_comment)
     except FileNotFoundError as error:
         raise HTTPException(404, str(error)) from None
     except ValueError as error:

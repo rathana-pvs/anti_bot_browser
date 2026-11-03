@@ -46,10 +46,10 @@ def test_queue_worker_reaches_container_startup(monkeypatch, worker, post_type, 
     monkeypatch.setattr(svc, "ensure_profile_container_ready", ready)
     status = "published" if post_type == "photo" and worker == "item" else "completed"
     proc = SimpleNamespace(
-        stdout=SimpleNamespace(readline=AsyncMock(side_effect=[
+        stdout=SimpleNamespace(read=AsyncMock(side_effect=[
             ('{"status": "' + status + '", "success": true}\n').encode(), b"",
         ])),
-        stderr=SimpleNamespace(readline=AsyncMock(return_value=b"")),
+        stderr=SimpleNamespace(read=AsyncMock(return_value=b"")),
         wait=AsyncMock(return_value=0),
     )
     spawn = AsyncMock(return_value=proc)

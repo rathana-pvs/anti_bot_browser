@@ -269,7 +269,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
   };
 
   const removeBatch = async (batch: DailyBatch) => {
-    if (!await showConfirm(`Remove “${batch.name}” and everything still waiting in it?`, { title: 'Remove batch', confirmLabel: 'Remove batch', variant: 'danger' })) return;
+    if (!await showConfirm(`Remove “${batch.name}” and all its queue records?`, { title: 'Remove batch', confirmLabel: 'Remove batch', variant: 'danger' })) return;
     try {
       await deleteBatch(batch.batch_id);
       setBatchFilter(null);
@@ -283,6 +283,10 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
     watch: (item) => onWatchProfile?.(item.profile_id),
   };
   const drawerActions: DrawerActions = {
+    openProfile: onOpenAccount ? (item) => {
+      setSelectedId(null);
+      onOpenAccount(item.profile_id);
+    } : undefined,
     runNow, retryComment, stopLive: stopLiveItem, cancelRecovery, addPermalink, resolve, remove, preview,
     report: (item) => setReport({ open: true, item }),
     openImage: (url, label) => setLightbox({ url, type: 'photo', name: label }),
