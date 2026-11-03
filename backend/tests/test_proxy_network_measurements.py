@@ -9,6 +9,30 @@ NETWORK = {'mode': 'pool', 'proxy_host': 'proxy.example.test', 'proxy_port': 808
            'proxy_type': 'http', 'proxy_user': 'sample-user', 'proxy_pass': 'sample-pass'}
 
 
+@pytest.mark.parametrize('original', [None, '', '/opt/system-libs'])
+def test_frozen_curl_restores_system_library_environment(monkeypatch, original):
+    monkeypatch.setattr(service.sys, 'frozen', True, raising=False)
+    monkeypatch.setattr(service.sys, 'platform', 'linux')
+    monkeypatch.setenv('LD_LIBRARY_PATH', '/tmp/_MEI-test')
+    monkeypatch.setenv('PROXY_TEST_PRESERVED', 'yes')
+    monkeypatch.delenv('LD_LIBRARY_PATH_ORIG', raising=False)
+    if original is not None:
+        monkeypatch.setenv('LD_LIBRARY_PATH_ORIG', original)
+    calls = stub(monkeypatch, '200 5000000 2')
+    assert service.check_proxy_speed(NETWORK, 'download')['success']
+    env = calls[0][1]['env']
+    assert env.get('LD_LIBRARY_PATH') == (original or None)
+    assert 'LD_LIBRARY_PATH_ORIG' not in env
+    assert env['PROXY_TEST_PRESERVED'] == 'yes'
+    assert service.os.environ['LD_LIBRARY_PATH'] == '/tmp/_MEI-test'
+
+
+def test_source_curl_preserves_library_environment(monkeypatch):
+    monkeypatch.setattr(service.sys, 'frozen', False, raising=False)
+    monkeypatch.setenv('LD_LIBRARY_PATH', '/opt/custom-libs')
+    assert service._curl_environment()['LD_LIBRARY_PATH'] == '/opt/custom-libs'
+
+
 def stub(monkeypatch, output, returncode=0):
     calls = []
     def run(argv, **kwargs):

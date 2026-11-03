@@ -1,3 +1,15 @@
+# Version 1.2.2
+
+- Fix proxy download/upload speed checks failing in the packaged Linux app when
+  its bundled OpenSSL conflicts with the system curl libraries. Facebook
+  connection and proxy location checks use the same corrected environment.
+- Proxy timeouts and provider failures can still occur; this update fixes the
+  library conflict that prevented the checks from running.
+
+**Linux only.** After installing, run **Settings → Setup and repair → Install /
+update runtime** when prompted. Existing profiles, sessions and settings remain
+in persistent app storage.
+
 # Version 1.2.1
 
 - Export a complete batch support ZIP from Posting Queue → Batch → Export batch

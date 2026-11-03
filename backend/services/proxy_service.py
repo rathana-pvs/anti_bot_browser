@@ -6,6 +6,7 @@ import time
 import socket
 import ipaddress
 import subprocess
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -266,6 +267,18 @@ def delete_proxies(proxy_ids: list[str]) -> dict:
             save_proxy_pool(kept, raise_errors=True)
         return {"deleted_ids": deleted, "blocked_ids": blocked, "missing_ids": sorted(wanted - found)}
 
+def _curl_environment() -> dict[str, str]:
+    """Keep PyInstaller's bundled OpenSSL out of the system curl process."""
+    env = os.environ.copy()
+    if getattr(sys, "frozen", False) and sys.platform.startswith("linux"):
+        original = env.pop("LD_LIBRARY_PATH_ORIG", None)
+        if original:
+            env["LD_LIBRARY_PATH"] = original
+        else:
+            env.pop("LD_LIBRARY_PATH", None)
+    return env
+
+
 def _curl_config_value(value: str) -> str:
     if "\n" in value or "\r" in value:
         raise ValueError("Proxy credentials contain unsupported line breaks")
@@ -297,7 +310,7 @@ def check_facebook_response(network: dict) -> dict:
                                          "max-time = 15", 'write-out = "%{http_code} %{time_starttransfer}"']
     try:
         result = subprocess.run(["curl", "--disable", "--config", "-"], input="\n".join(lines) + "\n",
-                                capture_output=True, text=True, timeout=18, check=False)
+                                capture_output=True, text=True, timeout=18, check=False, env=_curl_environment())
     except subprocess.TimeoutExpired:
         return {"success": False, "response_ms": None, "http_status": None, "error": "Facebook connection timed out"}
     except OSError:
@@ -343,7 +356,7 @@ def check_proxy_speed(network: dict, direction: str, *, sample_bytes: int | None
         failure = {"success": False, "mbps": None, "bytes": 0, "provider": "Cloudflare"}
         try:
             result = subprocess.run(["curl", "--disable", "--config", "-"], input="\n".join(lines) + "\n",
-                                    capture_output=True, text=True, timeout=23, check=False)
+                                    capture_output=True, text=True, timeout=23, check=False, env=_curl_environment())
         except subprocess.TimeoutExpired:
             return {**failure, "error": f"{direction.capitalize()} test timed out"}
         except OSError:
@@ -403,6 +416,7 @@ def lookup_proxy_geography(proxy: dict) -> dict:
         text=True,
         timeout=18,
         check=False,
+        env=_curl_environment(),
     )
     if result.returncode != 0:
         raise RuntimeError("Proxy geolocation request failed")
