@@ -322,7 +322,7 @@ def account_timezones(serial: str) -> list[dict]:
     return accounts
 
 
-def set_timezone(serial: str, zone: str) -> dict:
+def set_timezone(serial: str, zone: str, client: AdbClient | None = None) -> dict:
     """Set the phone's single timezone, refusing one that any account on it does not match."""
     validate_serial(serial)
     zone = validate_timezone(zone)
@@ -334,10 +334,10 @@ def set_timezone(serial: str, zone: str) -> dict:
     if conflicts:
         names = ", ".join(f"{account['name']} ({account['timezone']})" for account in conflicts)
         raise ValueError(f"Other accounts on this phone need a different time: {names}.")
-    client = _client()
+    client = client or _client()
     client.set_timezone(serial, zone)
     state = client.timezone_state(serial)
-    if state["zone"] != zone:
+    if state["zone"] != zone or state["auto"] is not False:
         raise AdbError(f"The phone kept {state['zone'] or 'its timezone'} instead of {zone}.")
     return state
 
@@ -386,7 +386,12 @@ def switch_and_wait(client: AdbClient, serial: str, user_id: int) -> dict:
     deadline = time.monotonic() + SWITCH_READY_TIMEOUT_S
     while True:
         state = user_readiness(client, serial, user_id)
-        if state["ready"] or time.monotonic() >= deadline:
+        if state["ready"]:
+            if user_id != CONTROL_USER_ID:
+                # Opening live view also switches users, without running account setup first.
+                complete_android_user_setup(client, serial, user_id)
+            return state
+        if time.monotonic() >= deadline:
             return state
         if state["current_user"] == user_id and state["running"]:
             if state["screen_awake"] is False:
@@ -401,6 +406,11 @@ def switch_user(serial: str, user_id: int) -> dict:
     client = _client()
     if user_id not in {user.user_id for user in client.users(serial)}:
         raise DeviceNotFound("This Android user does not exist on the phone")
+    link = _profile_for(linked_profiles(), serial, user_id, client.user_serials(serial).get(user_id))
+    if link:
+        from backend.services import android_network
+        opened = android_network.open_account(link["profile_id"])
+        return {**opened["switch"], "ready": opened["ready"], "reason": opened["reason"]}
     with phone_lock(serial):
         return switch_and_wait(client, serial, user_id)
 
@@ -479,8 +489,25 @@ def _android_profile(profile_id: str, name: str, group: str, serial: str, user: 
     }
 
 
+def complete_android_user_setup(client: AdbClient, serial: str, user_id: int) -> None:
+    """Skip a secondary user's welcome wizard, including one already on screen."""
+    if user_id == CONTROL_USER_ID:
+        raise AdbError("The phone owner's setup cannot be skipped by account setup.")
+    client.put_setting(serial, "secure", "user_setup_complete", "1", user_id)
+    if client.setting(serial, "secure", "user_setup_complete", user_id) != "1":
+        raise AdbError("Android did not keep the setup-complete flag.")
+    if client.current_user(serial) != user_id:
+        return
+    focus = client.focused_window(serial) or ""
+    package = focus.split("/", 1)[0]
+    if package in ("com.google.android.setupwizard", "com.android.setupwizard"):
+        # The flag prevents future welcome screens but does not close an existing activity.
+        client.shell(serial, "am", "force-stop", "--user", str(user_id), package)
+        client.shell(serial, "input", "keyevent", "3")
+
+
 def create_android_user(serial: str, name: str) -> dict:
-    """Creates a new Android user to hold one account, then rescans the phone."""
+    """Creates an account user, skips its Android welcome wizard, and rescans the phone."""
     from backend.services import android_ownership  # imports this module
     validate_serial(serial)
     name = name.strip()
@@ -496,6 +523,15 @@ def create_android_user(serial: str, name: str) -> dict:
     user = next((row for row in scan["last_scan"]["users"] if row["user_id"] == user_id), None)
     if not user:
         raise AdbError("The new Android user did not appear on the phone.")
+    if user_id == CONTROL_USER_ID:
+        raise AdbError("The phone returned its control user instead of a new Android user.")
+    try:
+        # Only the newly created user: leave the owner's setup and device-wide provisioning alone.
+        complete_android_user_setup(client, serial, user_id)
+    except AdbError as exc:
+        # Creation already succeeded and the scan saved it. Do not encourage creating a duplicate.
+        raise AdbError(f"Android user {user_id} was created, but its welcome setup could not be skipped. "
+                       f"Use the existing user and finish its setup on the phone. {exc}") from exc
     return user
 
 

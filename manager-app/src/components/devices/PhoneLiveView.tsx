@@ -5,6 +5,8 @@ import { deviceLiveUrl } from '../../services/devices';
 import { Alert } from '../ui/Alert';
 import { Button } from '../ui/Button';
 import { IconButton } from '../ui/IconButton';
+import { Spinner } from '../ui/Spinner';
+import { h264DecoderConfig, h264Frame } from './phoneVideo';
 
 type ViewState = { kind: 'idle' } | { kind: 'connecting'; message: string } | { kind: 'live' } | { kind: 'error'; message: string };
 
@@ -18,19 +20,6 @@ const KEYCODES: Record<string, number> = {
 const CONFIG_FLAG = 1n << 63n;
 const KEY_FRAME_FLAG = 1n << 62n;
 const PTS_MASK = KEY_FRAME_FLAG - 1n;
-
-/** `avc1.PPCCLL` from the SPS in an Annex B config packet. */
-function h264Codec(config: Uint8Array): string | null {
-  for (let i = 0; i + 4 < config.length; i++) {
-    const startCode = config[i] === 0 && config[i + 1] === 0 && (config[i + 2] === 1 || (config[i + 2] === 0 && config[i + 3] === 1));
-    if (!startCode) continue;
-    const nal = i + (config[i + 2] === 1 ? 3 : 4);
-    if ((config[nal] & 0x1f) === 7 && nal + 3 < config.length) {
-      return `avc1.${[1, 2, 3].map(offset => config[nal + offset].toString(16).padStart(2, '0')).join('')}`;
-    }
-  }
-  return null;
-}
 
 export function PhoneLiveView({ runtime }: { runtime: AndroidRuntime }) {
   const [state, setState] = useState<ViewState>({ kind: 'idle' });
@@ -61,16 +50,16 @@ export function PhoneLiveView({ runtime }: { runtime: AndroidRuntime }) {
       return;
     }
     setState({ kind: 'connecting', message: 'Connecting…' });
-    let pendingConfig: Uint8Array | null = null;
-    let lastConfig: Uint8Array | null = null;
+    let lastConfig: VideoDecoderConfig | null = null;
     let lastKeyFrame: { data: Uint8Array; timestamp: number } | null = null;
-    let configuredCodec = '';
     let waitingForKeyFrame = true;
+    let receivedFrame = false;
     // The web view may pick a hardware decoder that refuses the stream; the software ones decode it.
     let acceleration: HardwareAcceleration = 'no-preference';
     const fail = (message: string) => { setState({ kind: 'error', message }); stop(); };
 
     const draw = (frame: VideoFrame) => {
+      if (socketRef.current !== socket) { frame.close(); return; }
       const canvas = canvasRef.current;
       if (canvas) {
         if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
@@ -79,18 +68,22 @@ export function PhoneLiveView({ runtime }: { runtime: AndroidRuntime }) {
           setSize({ width: frame.displayWidth, height: frame.displayHeight });
         }
         canvas.getContext('2d')?.drawImage(frame, 0, 0);
+        if (!receivedFrame) {
+          receivedFrame = true;
+          setState({ kind: 'live' });
+        }
       }
       frame.close();
     };
-    const configure = (codec: string) => decoder.configure({ codec, optimizeForLatency: true, hardwareAcceleration: acceleration });
+    const configure = (config: VideoDecoderConfig) => decoder.configure({ ...config, hardwareAcceleration: acceleration });
     const decodeFailed = (error: DOMException) => {
-      if (acceleration !== 'prefer-software' && configuredCodec && socketRef.current === socket) {
+      if (socketRef.current !== socket) return;
+      if (acceleration !== 'prefer-software' && lastConfig) {
         // A decoder that failed is closed: start a software one and resume at the next key frame.
         acceleration = 'prefer-software';
         decoder = new VideoDecoder({ output: draw, error: decodeFailed });
         decoderRef.current = decoder;
-        configure(configuredCodec);
-        pendingConfig = lastConfig;
+        configure(lastConfig);
         waitingForKeyFrame = true;
         // A still screen sends no frames: show the last picture now and ask the phone for a new key frame.
         if (lastKeyFrame) decoder.decode(new EncodedVideoChunk({ type: 'key', ...lastKeyFrame }));
@@ -109,54 +102,52 @@ export function PhoneLiveView({ runtime }: { runtime: AndroidRuntime }) {
     // Handle messages strictly in order: configuring the decoder is async.
     let queue = Promise.resolve();
     const handle = async (event: MessageEvent) => {
+      if (socketRef.current !== socket) return;
       if (typeof event.data === 'string') {
         const message = JSON.parse(event.data) as { type: string; message?: string; width?: number; height?: number };
         if (message.type === 'status') setState({ kind: 'connecting', message: message.message ?? 'Connecting…' });
         if (message.type === 'error') fail(message.message ?? 'The phone screen stopped.');
-        if (message.type === 'meta') setState({ kind: 'live' });
+        if (message.type === 'meta') setState({ kind: 'connecting', message: 'Waiting for the phone’s video…' });
         return;
       }
       const view = new DataView(event.data as ArrayBuffer);
       const flags = view.getBigUint64(0);
       const payload = new Uint8Array(event.data as ArrayBuffer, 12, view.getUint32(8));
       if (flags & CONFIG_FLAG) {
-        pendingConfig = payload.slice();
-        lastConfig = pendingConfig;
-        const codec = h264Codec(pendingConfig);
-        if (!codec) return fail('The phone sent a video format this view doesn’t understand.');
-        if (codec !== configuredCodec) {
-          const support = await VideoDecoder.isConfigSupported({ codec, optimizeForLatency: true });
-          if (!support.supported) return fail(`This app’s web view can’t decode the phone’s video (${codec}).`);
-          if (decoder.state === 'closed') return;
-          configure(codec);
-          configuredCodec = codec;
-          waitingForKeyFrame = true;
-        }
+        const config = h264DecoderConfig(payload);
+        const support = await VideoDecoder.isConfigSupported({ ...config, hardwareAcceleration: acceleration });
+        if (socketRef.current !== socket || decoder.state === 'closed') return;
+        if (!support.supported) return fail(`This app’s web view can’t decode the phone’s video (${config.codec}).`);
+        // A reset/rotation may change SPS/PPS while the codec string remains the same.
+        lastConfig = config;
+        lastKeyFrame = null;
+        configure(config);
+        waitingForKeyFrame = true;
         return;
       }
       const key = (flags & KEY_FRAME_FLAG) !== 0n;
-      if (waitingForKeyFrame && !key) return;
+      if (!lastConfig || (waitingForKeyFrame && !key)) return;
       waitingForKeyFrame = false;
-      let data: Uint8Array = payload;
-      if (pendingConfig) {
-        // Config travels with the next frame, as scrcpy's own client does.
-        data = new Uint8Array(pendingConfig.length + payload.length);
-        data.set(pendingConfig);
-        data.set(payload, pendingConfig.length);
-        pendingConfig = null;
-      }
+      const data = h264Frame(payload);
       if (key) lastKeyFrame = { data: data.slice(), timestamp: Number(flags & PTS_MASK) };
       if (decoder.state === 'configured') {
         decoder.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: Number(flags & PTS_MASK), data }));
       }
     };
-    socket.onmessage = (event) => { queue = queue.then(() => handle(event)); };
-    socket.onerror = () => fail('Couldn’t connect to the phone screen. Check that the local service is running.');
-    socket.onclose = () => setState(current => current.kind === 'live' || current.kind === 'connecting'
-      ? { kind: 'error', message: 'The phone screen disconnected.' } : current);
+    socket.onmessage = (event) => {
+      queue = queue.then(() => handle(event)).catch(error => {
+        if (socketRef.current === socket) fail(`The phone’s video couldn’t be decoded (${error instanceof Error ? error.message : String(error)}).`);
+      });
+    };
+    socket.onerror = () => { if (socketRef.current === socket) fail('Couldn’t connect to the phone screen. Check that the local service is running.'); };
+    socket.onclose = () => {
+      if (socketRef.current === socket) setState(current => current.kind === 'live' || current.kind === 'connecting'
+        ? { kind: 'error', message: 'The phone screen disconnected.' } : current);
+    };
   };
 
   const touch = (event: PointerEvent<HTMLCanvasElement>, action: 0 | 1 | 2) => {
+    if (state.kind !== 'live') return;
     const canvas = canvasRef.current;
     if (!canvas || !canvas.width) return;
     const rect = canvas.getBoundingClientRect();
@@ -168,6 +159,7 @@ export function PhoneLiveView({ runtime }: { runtime: AndroidRuntime }) {
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLCanvasElement>) => {
+    if (state.kind !== 'live') return;
     if (event.ctrlKey || event.metaKey || event.altKey) return;
     if (KEYCODES[event.key] !== undefined) send({ type: 'key', keycode: KEYCODES[event.key] });
     else if (event.key.length === 1) send({ type: 'text', text: event.key });
@@ -194,23 +186,29 @@ export function PhoneLiveView({ runtime }: { runtime: AndroidRuntime }) {
   return <div className="flex min-h-0 flex-1 flex-col items-center gap-3 p-4">
     <div className="flex w-full max-w-md items-center gap-2 text-xs">
       <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-zinc-400" role="status">
-        <span className={state.kind === 'live' ? 'h-1.5 w-1.5 rounded-full bg-emerald-400' : 'h-1.5 w-1.5 rounded-full bg-amber-400'} />
+        {state.kind === 'connecting' ? <Spinner className="shrink-0 text-blue-400" label="Connecting to phone" />
+          : <span className={state.kind === 'live' ? 'h-1.5 w-1.5 rounded-full bg-emerald-400' : 'h-1.5 w-1.5 rounded-full bg-amber-400'} />}
         {state.kind === 'live' ? `Live · ${userName}` : state.message}
       </span>
       {state.kind === 'error' && <Button size="sm" onClick={start}>Reconnect</Button>}
       <IconButton aria-label="Close phone screen" onClick={() => { stop(); setSize(null); setState({ kind: 'idle' }); }}><X className="h-4 w-4" /></IconButton>
     </div>
     <div className="flex min-h-0 flex-1 items-center justify-center">
-      <div className="h-full rounded-[2rem] border-4 border-zinc-800 bg-black p-1.5 shadow-xl"
+      <div className="relative h-full rounded-[2rem] border-4 border-zinc-800 bg-black p-1.5 shadow-xl"
         style={{ aspectRatio: size ? `${size.width} / ${size.height}` : '9 / 20' }}>
-        <canvas ref={canvasRef} tabIndex={0} aria-label={`Screen of ${userName}’s phone. Click to tap, type to enter text.`}
+        {state.kind === 'connecting' && <div aria-hidden="true" className="absolute inset-1.5 z-10 flex flex-col items-center justify-center gap-4 rounded-[1.6rem] bg-zinc-950/95 p-6 text-center">
+          <Spinner className="h-9 w-9 text-blue-400" />
+          <p className="text-sm font-medium text-zinc-200">{state.message}</p>
+          <p className="text-xs text-zinc-500">Opening {userName}’s phone screen</p>
+        </div>}
+        <canvas ref={canvasRef} tabIndex={state.kind === 'live' ? 0 : -1} aria-busy={state.kind === 'connecting'} aria-label={`Screen of ${userName}’s phone. Click to tap, type to enter text.`}
           className="h-full w-full touch-none rounded-[1.6rem] bg-zinc-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
           onPointerDown={(event) => { if (event.button !== 0) return; pointerDown.current = true; event.currentTarget.setPointerCapture(event.pointerId); event.currentTarget.focus(); touch(event, 0); }}
           onPointerMove={(event) => { if (pointerDown.current) touch(event, 2); }}
           onPointerUp={(event) => { if (!pointerDown.current) return; pointerDown.current = false; touch(event, 1); }}
           onPointerCancel={(event) => { if (!pointerDown.current) return; pointerDown.current = false; touch(event, 1); }}
           onKeyDown={onKeyDown}
-          onPaste={(event) => { const text = event.clipboardData.getData('text'); if (text) send({ type: 'text', text: text.slice(0, 100) }); event.preventDefault(); }} />
+          onPaste={(event) => { const text = event.clipboardData.getData('text'); if (state.kind === 'live' && text) send({ type: 'text', text: text.slice(0, 100) }); event.preventDefault(); }} />
       </div>
     </div>
     <div className="flex items-center gap-6" role="toolbar" aria-label="Phone buttons">

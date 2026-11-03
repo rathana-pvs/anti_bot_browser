@@ -109,6 +109,7 @@ def _android_user(ctx: _Context) -> None:
         raise StepFailed("This Android user was removed and created again; it is not this account's user any more.")
     if not next(user.running for user in ctx.client.users(ctx.serial) if user.user_id == ctx.user_id):
         ctx.client.start_user(ctx.serial, ctx.user_id)
+    android_devices.complete_android_user_setup(ctx.client, ctx.serial, ctx.user_id)
 
 
 def _companion_app(ctx: _Context) -> None:

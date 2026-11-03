@@ -96,6 +96,9 @@ class FakePhone:
     def current_user(self, serial):
         return self.current
 
+    def focused_window(self, serial):
+        return "com.google.android.apps.nexuslauncher/.NexusLauncherActivity"
+
     def switch_user(self, serial, user_id):
         self.current = user_id
 
@@ -244,6 +247,7 @@ def test_setup_runs_every_step_then_waits_for_the_login(phone):
     assert (11, FACEBOOK) in phone.packages and phone.settings[(11, "secure", "location_mode")] == "0"
     assert (11, FACEBOOK, "android.permission.READ_MEDIA_IMAGES") in phone.granted
     assert phone.settings[(11, "system", "screen_off_timeout")] == "900000"
+    assert phone.settings[(11, "secure", "user_setup_complete")] == "1"
     assert android_ownership.role_of(json.loads(phone.files[android_ownership.PHONE_FILE])) == "primary"
     assert android_setup.confirm_login("profile_020")["state"] == "done"
     assert phone.get_ready_runs == ["profile_020"]  # Facebook's first screens, in the background

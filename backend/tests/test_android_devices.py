@@ -1,11 +1,12 @@
 import json
+from unittest.mock import Mock, call
 
 import pytest
 from fastapi import HTTPException
 
 from backend.models.profile import ProfileUpdateRequest
 from backend.routers import devices, profiles
-from backend.services import adb_client, android_devices, docker_service, proxy_service
+from backend.services import adb_client, android_devices, android_network, android_ownership, docker_service, proxy_service
 from backend.services.adb_client import AdbError, AndroidUser
 
 
@@ -136,6 +137,22 @@ class FakeAdb:
         self.dismissed = 0
         self.users_list = adb_client.parse_users(USERS_OUTPUT)
         self.serials = adb_client.parse_user_serials(DUMPSYS_USER)
+        self.settings = {}
+        self.focus = "com.google.android.apps.nexuslauncher/.NexusLauncherActivity"
+        self.shell_calls = []
+
+    def setting(self, serial, namespace, key, user_id=None):
+        return self.settings.get((user_id, namespace, key))
+
+    def put_setting(self, serial, namespace, key, value, user_id=None):
+        self.settings[(user_id, namespace, key)] = value
+
+    def focused_window(self, serial):
+        return self.focus
+
+    def shell(self, *args):
+        self.shell_calls.append(args)
+        return ""
 
     def devices(self):
         return adb_client.parse_devices(DEVICES_OUTPUT)
@@ -253,6 +270,76 @@ def test_list_devices_registers_authorized_phones_with_health(phone):
     assert "0123456789ABCDEF" not in stored
 
 
+@pytest.mark.parametrize("saved", ["1", "0", None, "denied"])
+def test_new_user_skips_only_its_own_welcome_setup_and_verifies_the_flag(phone, monkeypatch, saved):
+    serial = "R58M12345ABC"
+    writes = []
+    monkeypatch.setattr(android_ownership, "ensure_primary", lambda *args: None)
+
+    def create_user(device_serial, name):
+        assert (device_serial, name) == (serial, "New account")
+        phone.users_list.append(AndroidUser(12, name, 0x410, False))
+        phone.serials[12] = 14
+        return 12
+
+    def put_setting(*args):
+        writes.append(args)
+        if saved == "denied":
+            raise AdbError("Permission denied")
+
+    def setting(*args):
+        assert args == (serial, "secure", "user_setup_complete", 12)
+        return saved
+
+    monkeypatch.setattr(phone, "create_user", create_user, raising=False)
+    monkeypatch.setattr(phone, "put_setting", put_setting, raising=False)
+    monkeypatch.setattr(phone, "setting", setting, raising=False)
+    if saved == "1":
+        result = android_devices.create_android_user(serial, " New account ")
+        assert result["user_id"] == 12
+    else:
+        with pytest.raises(AdbError, match="user 12 was created.*Use the existing user"):
+            android_devices.create_android_user(serial, " New account ")
+    assert writes == [(serial, "secure", "user_setup_complete", "1", 12)]
+    assert phone.switched == []
+    stored = json.loads(android_devices.DEVICES_FILE.read_text())
+    assert any(user["user_id"] == 12 for user in stored["devices"][serial]["last_scan"]["users"])
+
+
+@pytest.mark.parametrize("focus,close", [
+    ("com.google.android.setupwizard/.user.UserWarningActivity", True),
+    ("com.android.setupwizard/.SetupWizardActivity", True),
+    ("com.facebook.katana/.LoginActivity", False),
+    (None, False),
+])
+def test_existing_user_setup_closes_only_a_visible_welcome_wizard(focus, close):
+    client = Mock(spec=adb_client.AdbClient)
+    client.setting.return_value = "1"
+    client.current_user.return_value = 10
+    client.focused_window.return_value = focus
+    android_devices.complete_android_user_setup(client, "PIXEL", 10)
+    client.put_setting.assert_called_once_with("PIXEL", "secure", "user_setup_complete", "1", 10)
+    if close:
+        assert client.shell.call_args_list == [
+            call("PIXEL", "am", "force-stop", "--user", "10", focus.split("/")[0]),
+            call("PIXEL", "input", "keyevent", "3"),
+        ]
+    else:
+        client.shell.assert_not_called()
+
+
+def test_setup_skip_never_changes_owner_or_another_users_screen():
+    client = Mock(spec=adb_client.AdbClient)
+    with pytest.raises(AdbError, match="owner"):
+        android_devices.complete_android_user_setup(client, "PIXEL", 0)
+    client.put_setting.assert_not_called()
+    client.setting.return_value = "1"
+    client.current_user.return_value = 0
+    android_devices.complete_android_user_setup(client, "PIXEL", 11)
+    client.focused_window.assert_not_called()
+    client.shell.assert_not_called()
+
+
 def test_list_devices_reports_missing_adb(phone, monkeypatch):
     class Missing(FakeAdb):
         def devices(self):
@@ -334,9 +421,48 @@ def test_switch_user_waits_until_user_is_running_awake_and_unlocked(phone):
                       "lock_screen_showing": False, "ready": True, "reason": None}
     assert phone.switched == [11]
     assert (phone.woken, phone.dismissed) == (1, 1)
+    assert phone.settings[(11, "secure", "user_setup_complete")] == "1"
     with pytest.raises(HTTPException) as error:
         devices.switch_user("R58M12345ABC", devices.SwitchUserRequest(user_id=42))
     assert error.value.status_code == 404
+
+
+def test_opening_a_users_screen_clears_its_existing_welcome_wizard(phone):
+    phone.focus = "com.google.android.setupwizard/.user.UserWarningActivity"
+    result = android_devices.switch_user("R58M12345ABC", 11)
+    assert result["ready"] is True
+    assert phone.shell_calls == [
+        ("R58M12345ABC", "am", "force-stop", "--user", "11", "com.google.android.setupwizard"),
+        ("R58M12345ABC", "input", "keyevent", "3"),
+    ]
+
+
+def test_opening_owner_screen_leaves_its_setup_untouched(phone):
+    result = android_devices.switch_user("R58M12345ABC", 0)
+    assert result["ready"] is True
+    assert phone.settings == {}
+    assert phone.shell_calls == []
+
+
+def test_manager_switch_uses_account_opening_for_a_linked_user(phone, monkeypatch):
+    android_devices.scan_device("R58M12345ABC")
+    profile = android_devices.import_user("R58M12345ABC", 11, "Account")
+    opened = {"switch": {"current_user": 11, "ready": True, "reason": None},
+              "ready": False, "reason": "Proxy did not verify"}
+    safe_open = Mock(return_value=opened)
+    monkeypatch.setattr(android_network, "open_account", safe_open)
+    result = android_devices.switch_user("R58M12345ABC", 11)
+    safe_open.assert_called_once_with(profile["id"])
+    assert result["ready"] is False and result["reason"] == "Proxy did not verify"
+    assert phone.switched == []
+
+
+def test_focused_window_ignores_null_focus_from_another_display():
+    client = adb_client.AdbClient()
+    client.shell = Mock(return_value=("  mCurrentFocus=null\n"
+                                    "  mCurrentFocus=Window{123 u11 com.google.android.setupwizard/.user.UserWarningActivity}\n"))
+    assert client.focused_window("PIXEL") == "com.google.android.setupwizard/.user.UserWarningActivity"
+    assert "-m1" not in client.shell.call_args.args[1]
 
 
 def test_switch_user_reports_secure_lock_screen_instead_of_claiming_ready(phone, monkeypatch):

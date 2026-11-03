@@ -73,8 +73,8 @@ export interface OpenAccountResult {
   network: AndroidNetwork | { status: 'no_proxy'; reason: null } | null;
 }
 
-/** Shows the account's Android user and verifies its proxy; with one account at a time, also stops the
- *  phone's other users and sets the phone's time. Takes up to about two minutes. */
+/** Shows the account's Android user, matches its proxy timezone and verifies its proxy.
+ *  With one account at a time, also stops the phone's other users. Takes up to about two minutes. */
 export async function openAccountOnPhone(profileId: string): Promise<OpenAccountResult> {
   const res = await fetch(`${API_BASE}/devices/accounts/${encodeURIComponent(profileId)}/open`, { method: 'POST' });
   if (!res.ok) throw await networkError(res, 'Failed to open the account on the phone');

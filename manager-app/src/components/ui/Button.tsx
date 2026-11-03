@@ -1,5 +1,6 @@
 import { ButtonHTMLAttributes, forwardRef } from 'react';
 import { cn } from './cn';
+import { Spinner } from './Spinner';
 
 export type ButtonVariant = 'primary' | 'secondary' | 'outline' | 'ghost' | 'danger';
 export type ButtonSize = 'sm' | 'md' | 'lg' | 'icon';
@@ -32,5 +33,9 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
     className={cn(
       'inline-flex items-center justify-center gap-2 rounded-control font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 disabled:cursor-not-allowed disabled:opacity-50',
       variants[variant], sizes[size], className,
-    )} {...props}>{children}</button>;
+      loading && '[&>svg]:hidden',
+    )} {...props}>
+    {loading && <span aria-hidden="true" className="inline-flex shrink-0"><Spinner /></span>}
+    {children}
+  </button>;
 });

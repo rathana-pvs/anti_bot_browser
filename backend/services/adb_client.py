@@ -386,7 +386,8 @@ class AdbClient:
             raise AdbError((result.stderr or result.stdout).decode("utf-8", "replace").strip() or "content write failed")
 
     def focused_window(self, serial: str) -> str | None:
-        return parse_focused_window(self.shell(serial, "dumpsys window | grep -m1 mCurrentFocus; true"))
+        # Android can report a null focus on one display before the active display's window.
+        return parse_focused_window(self.shell(serial, "dumpsys window | grep mCurrentFocus; true"))
 
     def start_user(self, serial: str, user_id: int) -> None:
         self.shell(serial, "am", "start-user", "-w", str(int(user_id)), timeout=60)

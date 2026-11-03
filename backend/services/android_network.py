@@ -117,13 +117,15 @@ def verify(profile_id: str) -> dict:
 def open_account(profile_id: str, job: bool = False) -> dict:
     """Shows the account's Android user on screen and checks its proxy before anything uses it.
 
-    With one account at a time (the phone's default), the phone's other users are stopped, so no
-    other account runs in the background, and the phone's time is set to this account's proxy.
+    The phone's time is set to this account's proxy. With one account at a time (the default),
+    the phone's other users are stopped so no other account runs on the wrong time.
     The target is switched to first because Android cannot stop the user on screen. `job` is set by
     the queued job that holds the phone.
     """
     _, runtime, proxy = _account(profile_id)
     serial, user_id = runtime["device_serial"], runtime["android_user_id"]
+    if proxy and not proxy.get("timezone"):
+        raise ValueError("This account's proxy timezone is unknown. Check its location on the Proxies page first.")
     isolate = android_devices.one_account_at_a_time(serial)
     client = _client()
     stopped: list[int] = []
@@ -141,13 +143,13 @@ def open_account(profile_id: str, job: bool = False) -> dict:
                 if user.running and user.user_id not in (CONTROL_USER_ID, user_id):
                     client.stop_user(serial, user.user_id)
                     stopped.append(user.user_id)
-            zone = (proxy or {}).get("timezone")
-            if zone:
-                phone = client.timezone_state(serial)
-                same = phone["zone"] and android_devices.utc_offset(phone["zone"]) == android_devices.utc_offset(zone)
-                if not same or phone["auto"]:
-                    client.set_timezone(serial, zone)
-                    zone_set = zone
+        zone = (proxy or {}).get("timezone")
+        if zone:
+            phone = client.timezone_state(serial)
+            if phone["zone"] != zone or phone["auto"] is not False:
+                # The timezone belongs to the phone, so side-by-side accounts must agree.
+                android_devices.set_timezone(serial, zone, client=client)
+                zone_set = zone
         network = _verify_until_ready(profile_id) if proxy else {"status": "no_proxy", "reason": None}
     ready = network["status"] in ("verified", "no_proxy")
     return {"ready": ready, "reason": None if ready else network.get("reason"), "switch": switch,

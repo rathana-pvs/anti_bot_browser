@@ -14,6 +14,7 @@ import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { EmptyState } from '../ui/EmptyState';
 import { IconButton } from '../ui/IconButton';
+import { Spinner } from '../ui/Spinner';
 import { useAppDialog } from '../ui/AppDialogProvider';
 import { cn } from '../ui/cn';
 import { STATUS_LABEL, STATUS_TONE, isAndroid } from '../accounts/accountModel';
@@ -205,7 +206,7 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
     setSwitching(user.user_id);
     try {
       // An account's user opens through the safe path: other users stop, time is set, proxy verified.
-      if (user.profile_id && device.one_account_at_a_time !== false) {
+      if (user.profile_id) {
         const opened = await openAccountOnPhone(user.profile_id);
         if (opened.ready) showToast(`${user.profile_name ?? user.name} is on screen with its proxy verified`, 'success');
         else await showAlert(`${opened.reason ?? 'The phone didn’t confirm it.'} Don’t use Facebook on this account until this is fixed.`,
@@ -612,7 +613,17 @@ function UsersTable({ device, switching, onSwitch, onImport, onAdopt, onOpenAcco
       description={device.state === 'device' ? 'Scan the phone to list its Android users.' : 'Connect the phone, then scan it to list its Android users.'} /></div>;
   }
   const online = device.state === 'device';
+  const switchingUser = scan.users.find(user => user.user_id === switching);
   return <div className="p-4">
+    {switchingUser && <div role="status" className="mb-3 flex items-center gap-3 rounded-control border border-blue-500/20 bg-blue-500/10 px-3 py-2.5 text-xs text-blue-200">
+      <Spinner label="Switching Android user" className="shrink-0" />
+      <div>
+        <p className="font-medium">Switching to {switchingUser.profile_name || switchingUser.name}…</p>
+        <p className="mt-0.5 text-[11px] text-blue-200/70">{switchingUser.profile_id
+          ? 'Opening the account and checking its proxy and timezone. This may take a moment.'
+          : 'Waiting for the phone to show this user.'}</p>
+      </div>
+    </div>}
     <div className="overflow-x-auto rounded-control border border-zinc-800">
       <table className="w-full min-w-[36rem] text-left text-xs">
         <thead className="bg-zinc-900/60 text-[11px] text-zinc-500">
@@ -642,8 +653,8 @@ function UsersTable({ device, switching, onSwitch, onImport, onAdopt, onOpenAcco
                     : <Button size="sm" variant="outline" onClick={() => onImport(user)}>Create account</Button>}
             </td>
             <td className="px-3 py-2.5 text-right">
-              {!user.current && <Button size="sm" variant="ghost" disabled={!online || switching !== null} loading={switching === user.user_id}
-                onClick={() => onSwitch(user)}>Show on screen</Button>}
+              {(!user.current || switching === user.user_id) && <Button size="sm" variant="ghost" disabled={!online || switching !== null} loading={switching === user.user_id}
+                onClick={() => onSwitch(user)}>{switching === user.user_id ? 'Switching…' : 'Show on screen'}</Button>}
             </td>
           </tr>)}
         </tbody>

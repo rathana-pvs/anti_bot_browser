@@ -39,6 +39,7 @@ def account(tmp_path, monkeypatch):
     pool = tmp_path / "pool.json"
     pool.write_text(json.dumps([PROXY]))
     monkeypatch.setattr(android_network, "PROFILES_DIR", root)
+    monkeypatch.setattr(android_devices, "PROFILES_DIR", root)
     monkeypatch.setattr(proxy_service, "PROXY_POOL_FILE", pool)
     phone = FakePhone()
     monkeypatch.setattr(android_network, "_client", lambda: phone)
@@ -103,6 +104,16 @@ class FakeTwoUserPhone(FakePhone):
         self.zone, self.auto = "America/New_York", False
         self.stopped = []
         self.dns_ready_after = 0
+        self.settings = {}
+
+    def setting(self, serial, namespace, key, user_id=None):
+        return self.settings.get((user_id, namespace, key))
+
+    def put_setting(self, serial, namespace, key, value, user_id=None):
+        self.settings[(user_id, namespace, key)] = value
+
+    def focused_window(self, serial):
+        return "com.google.android.apps.nexuslauncher/.NexusLauncherActivity"
 
     def users(self, serial):
         return [adb_client.AndroidUser(uid, str(uid), 0, uid in self.running) for uid in (0, 11, 12)]
@@ -154,6 +165,9 @@ def two_users(account, tmp_path, monkeypatch):
     monkeypatch.setattr(android_devices, "DEVICES_FILE", tmp_path / "devices.json")
     monkeypatch.setattr(android_devices, "SWITCH_POLL_S", 0)
     monkeypatch.setattr(android_network, "OPEN_RETRY_S", 0)
+    pool = proxy_service.load_proxy_pool()
+    pool[0]["timezone"] = "America/Los_Angeles"
+    proxy_service.PROXY_POOL_FILE.write_text(json.dumps(pool))
     return phone
 
 
@@ -174,10 +188,50 @@ def test_open_account_stops_other_users_sets_time_and_verifies(two_users, accoun
     assert two_users.switcher is False
 
 
-def test_open_account_side_by_side_leaves_other_users_and_time(two_users, account):
+def test_open_account_side_by_side_matches_proxy_time_without_stopping_other_users(two_users, account):
     android_devices._save_store({"devices": {"PIXEL": {"serial": "PIXEL", "label": "Pixel", "one_account_at_a_time": False}}})
     result = android_network.open_account("profile_020")
-    assert result["ready"] is True and two_users.stopped == [] and result["timezone_set"] is None
+    assert result["ready"] is True and two_users.stopped == []
+    assert result["timezone_set"] == "America/Los_Angeles" and two_users.zone == "America/Los_Angeles"
+
+
+def test_open_account_uses_exact_proxy_zone_even_when_offsets_match(two_users):
+    two_users.zone, two_users.auto = "America/Vancouver", False
+    result = android_network.open_account("profile_020")
+    assert result["timezone_set"] == "America/Los_Angeles"
+    assert two_users.zone == "America/Los_Angeles" and two_users.auto is False
+
+
+def test_open_account_does_not_rewrite_matching_manual_timezone(two_users, monkeypatch):
+    two_users.zone, two_users.auto = "America/Los_Angeles", False
+    def unexpected(*args):
+        raise AssertionError("Matching manual timezone should not be rewritten")
+    monkeypatch.setattr(two_users, "set_timezone", unexpected)
+    assert android_network.open_account("profile_020")["timezone_set"] is None
+
+
+def test_open_account_refuses_unapplied_timezone(two_users, monkeypatch):
+    monkeypatch.setattr(two_users, "set_timezone", lambda *args: None)
+    with pytest.raises(adb_client.AdbError, match="phone kept"):
+        android_network.open_account("profile_020")
+    assert all(method != "check" for *_, method in two_users.calls)
+
+
+def test_open_account_refuses_unknown_proxy_timezone(two_users):
+    pool = proxy_service.load_proxy_pool()
+    pool[0].pop("timezone")
+    proxy_service.PROXY_POOL_FILE.write_text(json.dumps(pool))
+    with pytest.raises(ValueError, match="timezone is unknown"):
+        android_network.open_account("profile_020")
+    assert two_users.current == 12
+
+
+def test_side_by_side_conflicting_proxy_timezones_are_rejected(two_users, monkeypatch):
+    android_devices._save_store({"devices": {"PIXEL": {"one_account_at_a_time": False}}})
+    monkeypatch.setattr(android_devices, "account_timezones", lambda serial: [
+        {"name": "Other account", "timezone": "Asia/Phnom_Penh"}])
+    with pytest.raises(ValueError, match="Other accounts.*different time"):
+        android_network.open_account("profile_020")
     assert two_users.zone == "America/New_York"
 
 
