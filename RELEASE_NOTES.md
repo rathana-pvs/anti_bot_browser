@@ -1,3 +1,26 @@
+# Version 1.2.3
+
+- Support both centered and left-editor image-post composer layouts, with
+  caption readback and the existing publication checks.
+- Improve Live preparation, automatic copying of the current broadcast key,
+  startup/ending checks, and cleanup. Broadcast senders now have a hard
+  120-second limit, with ending started at 100 seconds.
+- When a Live comment is supplied, confirm Live, end the broadcast, then post
+  and verify the comment. A recent-profile-post fallback handles ended pages
+  without a comment input. Unconfirmed comments remain for review.
+- Retain fuller Live screenshots and diagnostic evidence for successful
+  comments and failed checks. Review screenshots before sharing: they may show
+  stream credentials and account content.
+- Add Auto, Extreme and Custom resource modes, including separate post and Live
+  concurrency limits within a shared account limit. Existing Low/Medium/High
+  settings migrate to equivalent Custom limits.
+- Improve account-health warnings, OCR recovery, queue controls and handling of
+  Facebook feed notices.
+
+**Linux only.** After installing, run **Settings → Setup and repair → Install /
+update runtime** when prompted. Existing profiles, sessions and settings remain
+in persistent app storage.
+
 # Version 1.2.2
 
 - Fix proxy download/upload speed checks failing in the packaged Linux app when
