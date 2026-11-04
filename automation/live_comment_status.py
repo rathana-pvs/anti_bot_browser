@@ -9,6 +9,7 @@ COMMENT_CODES = frozenset({
     'entry_focus_changed', 'entry_clipboard_failed', 'entry_draft_conflict', 'entry_draft_unknown',
     'entry_composer_unconfirmed', 'entry_unverified', 'submit_guard_failed',
     'submission_unconfirmed', 'action_timeout', 'startup_budget_insufficient', 'comment_failed',
+    'profile_post_not_recent', 'profile_post_not_found', 'profile_input_missing',
 })
 
 

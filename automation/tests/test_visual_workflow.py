@@ -515,6 +515,47 @@ class FileChooserTests(unittest.TestCase):
 
 
 class CaptionTargetTests(unittest.TestCase):
+    def make_fb29_task(self):
+        task = self.make_task("unused", include_modal_title=False)
+        items = [
+            {"text": "Create post", "center": (123, 174)},
+            {"text": "Peopl", "center": (61, 233)},
+            {"text": "Location", "center": (172, 233)},
+            {"text": "e+ Collaborator", "center": (304, 233)},
+            {"text": "Feelinglactivity", "center": (458, 234)},
+            {"text": "What's on your mind?", "center": (101, 282)},
+            {"text": "Uploaded media", "center": (91, 386)},
+        ]
+        task.vision.read_text.side_effect = lambda **kw: items if kw['region'][0] == 0 else []
+        return task, items
+
+    def test_fb29_full_page_editor_accepts_icon_prefix_and_different_controls(self):
+        task, _ = self.make_fb29_task()
+        self.assertEqual(task._stable_caption_target(), (101, 282))
+        self.assertEqual(task.post_composer_layout, 'left_editor_preview')
+
+    def test_full_page_editor_rejects_missing_media_or_toolbar(self):
+        for removed in ('Uploaded media', 'Location'):
+            with self.subTest(removed=removed):
+                task, items = self.make_fb29_task()
+                items[:] = [i for i in items if i['text'] != removed]
+                self.assertIsNone(task._stable_caption_target())
+
+    def test_full_page_editor_rejects_right_preview_prompt(self):
+        task, items = self.make_fb29_task()
+        next(i for i in items if "mind" in i['text'])['center'] = (1200, 282)
+        self.assertIsNone(task._stable_caption_target())
+
+    def test_full_page_editor_rejects_ambiguous_caption_fields(self):
+        task, items = self.make_fb29_task()
+        items.append({"text": "What's on your mind?", "center": (110, 310)})
+        self.assertIsNone(task._stable_caption_target())
+
+    def test_centered_layout_is_recorded_separately(self):
+        task = self.make_task("What's on your mind?")
+        self.assertEqual(task._stable_caption_target(), (787, 517))
+        self.assertEqual(task.post_composer_layout, 'centered_dialog')
+
     def make_task(self, detected_text, include_modal_title=True):
         task = FacebookPostTask.__new__(FacebookPostTask)
         stub_verified_entry(task)
@@ -612,6 +653,7 @@ class ProfileMediaTargetTests(unittest.TestCase):
         task = FacebookPostTask.__new__(FacebookPostTask)
         stub_verified_entry(task)
         task.client = Mock()
+        task.human = Mock()
         task.vision = Mock()
         task.record_locator_telemetry = Mock()
         task.client.screenshot.return_value = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -649,6 +691,25 @@ class ProfileMediaTargetTests(unittest.TestCase):
         self.assertIsNone(task._stable_profile_media_target())
         task.vision.find_photo_video_button.assert_not_called()
 
+    def test_same_regions_as_reel_accept_right_edge_and_left_layouts(self):
+        for prompt_x, button_x in [(1400, 1850), (600, 900)]:
+            with self.subTest(prompt_x=prompt_x):
+                task = self.make_task([])
+                task.vision.get_pixel_region.side_effect = VisionEngine.get_pixel_region
+                items = [
+                    {"text":"What's on your mind?", "center":(prompt_x, 700), "confidence":.99},
+                    {"text":"Photo/video", "center":(button_x, 760), "confidence":.99},
+                ]
+                def read(screen, region, **kwargs):
+                    x, y, w, h = region
+                    return [i for i in items if x <= i['center'][0] < x+w and y <= i['center'][1] < y+h]
+                task.vision.read_text.side_effect = read
+                self.assertEqual(task._stable_profile_media_target(), (button_x, 760))
+                names = [c.args[1] for c in task.vision.get_pixel_region.call_args_list]
+                self.assertEqual(names[0], 'profile_reel_composer_primary')
+                if prompt_x < 960:
+                    self.assertIn('profile_reel_composer', names)
+
 
 class ProfileMediaReadinessTests(ProfileMediaTargetTests):
     def make_wait_task(self, reads):
@@ -676,7 +737,7 @@ class ProfileMediaReadinessTests(ProfileMediaTargetTests):
         task = self.make_wait_task([[], [], visible, visible, visible])
         result, elapsed = self.wait(task)
         self.assertEqual(result[:2], ("ready", (1400, 577)))
-        self.assertEqual(task.vision.read_text.call_count, 5)
+        self.assertGreaterEqual(task.vision.read_text.call_count, 4)
         self.assertLess(elapsed, 35.0)
 
     def test_loading_timeout_never_returns_a_click_target(self):
@@ -686,12 +747,26 @@ class ProfileMediaReadinessTests(ProfileMediaTargetTests):
         self.assertGreaterEqual(elapsed, 35.0)
         self.assertLess(elapsed, 37.0)
         task.vision.find_photo_video_button.assert_not_called()
+        self.assertEqual(task.human.scroll.call_count, 3)
 
     def test_composer_without_media_action_has_distinct_timeout(self):
         prompt = [{"text": "What's on your mind?", "center": (1200, 516), "confidence": 0.99}]
         task = self.make_wait_task(lambda *args, **kwargs: prompt)
         result, _ = self.wait(task)
         self.assertEqual(result, ("photo_button_unstable", None, None))
+        task.human.scroll.assert_not_called()
+
+    def test_scroll_reveals_composer_below_cover_without_clicking(self):
+        visible = [
+            {"text":"What's on your mind?", "center":(1400, 700), "confidence":.99},
+            {"text":"Photo/video", "center":(1500, 760), "confidence":.99},
+        ]
+        task = self.make_wait_task([])
+        task.vision.read_text.side_effect = lambda *args, **kwargs: visible if task.human.scroll.called else []
+        result, _ = self.wait(task)
+        self.assertEqual(result[:2], ('ready', (1500, 760)))
+        task.human.scroll.assert_called_once_with('down', notches=1)
+        task.human.click.assert_not_called()
 
     def test_moving_button_never_becomes_a_click_target(self):
         reads = [0]

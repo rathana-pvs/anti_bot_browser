@@ -365,6 +365,7 @@ def test_control_capture_excludes_video_and_key_panels(task):
     regions = [call.kwargs['region'] for call in task.vision.read_text.call_args_list]
     assert len(regions) == 3
     assert all(x + width <= 1200 * .22 + 1 for x, y, width, height in regions)
+    task.client.get_current_url.assert_not_called()  # No focus/clipboard changes inside capture.
 
 
 def test_workflow_run_returns_only_safe_metadata(task):

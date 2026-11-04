@@ -14,6 +14,7 @@ from engine.telemetry import timed_telemetry_step
 from engine.runtime_paths import automation_dir
 from engine.text_matcher import OcrTextMatcher
 from modules.publication_result_verifier import ImagePublicationResultVerifier
+from modules.post_composer_layouts import PostComposerLayouts
 from .base_task import BaseTask
 
 
@@ -225,77 +226,83 @@ class FacebookPostTask(BaseTask):
                 return None
             started = time.perf_counter()
             screen = self.client.screenshot()
-            stream_region = self.vision.get_pixel_region(
-                screen.shape,
-                "profile_post_stream",
-            )
-            candidates = self.vision.read_text(
-                screen,
-                region=stream_region,
-                min_confidence=0.20,
-            )
-            prompts = [
-                item for item in candidates
-                if self._is_caption_prompt(item["text"])
-            ]
-            if prompts:
-                self._profile_composer_seen = True
-            labels = [
-                item for item in candidates
-                if self._is_photo_video_label(item["text"])
-            ]
-
-            match = None
-            prompt = None
-            for candidate_prompt in prompts:
-                px, py = candidate_prompt["center"]
-                anchored = [
-                    item for item in labels
-                    if 20 <= item["center"][1] - py <= 150
-                    and abs(item["center"][0] - px) <= 600
+            self._profile_photo_composer_visible = False
+            # Use exactly the same primary and fallback regions as Reel entry.
+            for region_name in ("profile_reel_composer_primary", "profile_reel_composer"):
+                stream_region = self.vision.get_pixel_region(
+                    screen.shape,
+                    region_name,
+                )
+                candidates = self.vision.read_text(
+                    screen,
+                    region=stream_region,
+                    min_confidence=0.20,
+                )
+                prompts = [
+                    item for item in candidates
+                    if self._is_caption_prompt(item["text"])
                 ]
-                if anchored:
-                    prompt = candidate_prompt
-                    match = min(
-                        anchored,
-                        key=lambda item: (
-                            item["center"][1] - py,
-                            abs(item["center"][0] - px),
-                        ),
-                    )
-                    break
+                if prompts:
+                    self._profile_composer_seen = True
+                labels = [
+                    item for item in candidates
+                    if self._is_photo_video_label(item["text"])
+                ]
 
-            target = match["center"] if match else None
-            tier = "composer_anchored_ocr"
+                self._profile_photo_composer_visible |= bool(prompts or labels)
 
-            # OCR can miss the label even when the icon remains clear. Restrict
-            # visual matching to the narrow action-row band under the confirmed
-            # composer prompt; never search the cover-photo portion of the page.
-            if target is None and prompts:
-                height = screen.shape[0]
-                prompt = max(prompts, key=lambda item: item["center"][1])
-                px, py = prompt["center"]
-                x1 = max(stream_region[0], px - 500)
-                x2 = min(stream_region[0] + stream_region[2], px + 350)
-                y1 = max(stream_region[1], py + 20)
-                y2 = min(height, py + 150)
-                if x2 > x1 and y2 > y1:
-                    target = self.vision.find_photo_video_button(
-                        screen=screen,
-                        region=(x1, y1, x2 - x1, y2 - y1),
-                    )
-                    tier = "composer_anchored_visual"
+                match = None
+                prompt = None
+                for candidate_prompt in prompts:
+                    px, py = candidate_prompt["center"]
+                    anchored = [
+                        item for item in labels
+                        if 20 <= item["center"][1] - py <= 150
+                        and abs(item["center"][0] - px) <= 600
+                    ]
+                    if anchored:
+                        prompt = candidate_prompt
+                        match = min(
+                            anchored,
+                            key=lambda item: (
+                                item["center"][1] - py,
+                                abs(item["center"][0] - px),
+                            ),
+                        )
+                        break
 
-            self.record_locator_telemetry(
-                "profile_photo_video_action",
-                tier,
-                "profile_post_stream",
-                (time.perf_counter() - started) * 1000.0,
-                bool(target),
-                confidence=match.get("confidence") if match else None,
-                fallback_reason=None if target else "composer_anchored_action_missing",
-            )
-            return target
+                target = match["center"] if match else None
+                tier = "composer_anchored_ocr"
+
+                # OCR can miss the label even when the icon remains clear. Restrict
+                # visual matching to the narrow action-row band under the confirmed
+                # composer prompt; never search the cover-photo portion of the page.
+                if target is None and prompts:
+                    height = screen.shape[0]
+                    prompt = max(prompts, key=lambda item: item["center"][1])
+                    px, py = prompt["center"]
+                    x1 = max(stream_region[0], px - 500)
+                    x2 = min(stream_region[0] + stream_region[2], px + 350)
+                    y1 = max(stream_region[1], py + 20)
+                    y2 = min(height, py + 150)
+                    if x2 > x1 and y2 > y1:
+                        target = self.vision.find_photo_video_button(
+                            screen=screen,
+                            region=(x1, y1, x2 - x1, y2 - y1),
+                        )
+                        tier = "composer_anchored_visual"
+
+                self.record_locator_telemetry(
+                    "profile_photo_video_action",
+                    tier,
+                    region_name,
+                    (time.perf_counter() - started) * 1000.0,
+                    bool(target),
+                    confidence=match.get("confidence") if match else None,
+                    fallback_reason=None if target else "composer_anchored_action_missing",
+                )
+                if target:
+                    return target
 
         return self.vision.find_stable(locate, attempts=2, tolerance_px=8.0)
 
@@ -305,6 +312,7 @@ class FacebookPostTask(BaseTask):
         deadline = time.monotonic() + timeout
         self._profile_composer_seen = False
         local_misses = 0
+        scrolls = 0
         while time.monotonic() < deadline:
             target = self._stable_profile_media_target(deadline=deadline)
             if target and time.monotonic() < deadline:
@@ -316,6 +324,16 @@ class FacebookPostTask(BaseTask):
                 observation = self.recognizer.observe(screen)
             if observation.state == ScreenState.ERROR_DIALOG:
                 return "error", None, screen
+            if (not getattr(self, '_profile_photo_composer_visible', False)
+                    and scrolls < 3 and time.monotonic() < deadline):
+                # Match Reel entry: reveal a composer below a tall cover, but
+                # hold it still once its prompt/action row is visible.
+                height, width = screen.shape[:2]
+                self.human.move_to(int(.6 * width), int(.5 * height))
+                self.human.scroll('down', notches=1)
+                scrolls += 1
+                time.sleep(min(.8, max(0, deadline - time.monotonic())))
+                continue
             remaining = deadline - time.monotonic()
             if remaining > 0:
                 time.sleep(min(2.0, remaining))
@@ -455,95 +473,30 @@ class FacebookPostTask(BaseTask):
             return semantic_pos
         return None
 
-    def _sidebar_caption_target(self, screen):
-        """Recognize the left-pane Create post layout without using its preview."""
-        height, width = screen.shape[:2]
-        region = (0, int(height * .13), int(width * .38), int(height * .32))
-        items = self.vision.read_text(screen, region=region, min_confidence=.20)
-        titles = [i for i in items if self._is_supporting_phrase('Create post', i['text'])]
-        prompts = [i for i in items if self._is_caption_prompt(i['text'])]
-        media = [i for i in items if self._is_supporting_phrase('Uploaded media', i['text'])]
-        controls = [i for i in items if i['text'].casefold().strip() in {'people', 'location', 'fundraiser'}]
-        for title in titles:
-            tx, ty = title['center']
-            for prompt in prompts:
-                px, py = prompt['center']
-                # The audience controls and Uploaded media heading bracket the
-                # actual empty editor. Feed prompts and the right preview fail
-                # these checks even if they contain the same words.
-                if (0 <= tx < region[2] and 0 <= px < region[2]
-                        and 20 < py - ty < height * .22
-                        and len({i['text'].casefold().strip() for i in controls
-                                 if ty < i['center'][1] < py}) >= 2
-                        and any(0 < i['center'][1] - py < height * .18 for i in media)):
-                    return prompt['center']
-        return None
-
     def _stable_caption_target(self):
-        """Locate the caption prompt inside a visually confirmed composer modal."""
+        """Resolve a supported layout before clicking its caption editor."""
+        layouts = PostComposerLayouts(
+            self.vision, self._is_caption_prompt, self._is_supporting_phrase,
+        )
+
         def locate():
             started = time.perf_counter()
-            screen = self.client.screenshot()
-            region = self.vision.get_pixel_region(
-                screen.shape,
-                "composer_modal",
-            )
-            candidates = self.vision.read_text(
-                screen=screen,
-                region=region,
-                min_confidence=0.20,
-            )
-            title_target = None
-            caption_target = None
-            for item in candidates:
-                normalized = re.sub(r"[^a-z0-9]+", " ", item["text"].casefold()).strip()
-                words = set(normalized.split())
-                if (
-                    len(words) <= 4
-                    and self._is_supporting_phrase("Create post", normalized)
-                ):
-                    title_target = item
-                    continue
-                # Requiring the full phrase inside the modal caption region is
-                # strict enough to reject the neighboring AI-label control.
-                if self._is_caption_prompt(item["text"]):
-                    caption_target = item
-                if (
-                    self._is_supporting_phrase("Write something", normalized)
-                    or self._is_supporting_phrase("Create a public post", normalized)
-                ):
-                    caption_target = item
-
-            # Before any caption is entered, Facebook's Next button is disabled
-            # and gray. Confirm the modal using its title instead of requiring an
-            # enabled blue action. The vertical ordering rejects the identical
-            # prompt that remains visible in the dimmed feed behind the modal.
-            found = bool(
-                title_target
-                and caption_target
-                and title_target["center"][1] < caption_target["center"][1]
-            )
-            sidebar_target = None if found else self._sidebar_caption_target(screen)
+            match = layouts.detect(self.client.screenshot())
+            if match:
+                self.post_composer_layout = match.layout_id
             self.record_locator_telemetry(
                 "composer_caption_prompt",
-                "sidebar_title_controls_and_media" if sidebar_target else "modal_title_plus_ocr",
-                "composer_modal",
+                match.layout_id if match else "post_layout_detection",
+                match.region if match else "post_composer_layouts",
                 (time.perf_counter() - started) * 1000.0,
-                found or sidebar_target is not None,
-                confidence=caption_target.get("confidence") if found else None,
-                fallback_reason=None if found or sidebar_target else "modal_title_or_caption_missing",
+                match is not None,
+                confidence=match.confidence if match else None,
+                fallback_reason=None if match else "supported_layout_not_confirmed",
             )
-            return caption_target["center"] if found else sidebar_target
+            return match.target if match else None
 
-        # OCR can occasionally miss the low-contrast placeholder for one frame
-        # while Facebook finishes rendering the attached-media preview. Keep the
-        # click gated on two matching coordinates, but tolerate one intervening
-        # miss instead of discarding otherwise consistent visual evidence.
         return self.vision.find_stable(
-            locate,
-            attempts=2,
-            tolerance_px=16.0,
-            max_intermittent_misses=1,
+            locate, attempts=2, tolerance_px=16.0, max_intermittent_misses=1,
         )
 
     @timed_telemetry_step("media_processing")
@@ -824,8 +777,9 @@ class FacebookPostTask(BaseTask):
         caption_target = self._stable_caption_target()
         self.log_decision(
             "Enter caption",
-            "What's on your mind text inside the modal caption region",
-            f"target={caption_target}" if caption_target else "no caption input target",
+            "caption field in the centered dialog or left-editor/preview layout",
+            f"layout={getattr(self, 'post_composer_layout', 'unknown')}, target={caption_target}"
+            if caption_target else "no caption input target",
             "click and enter caption" if caption_target else "stop without typing",
         )
         if not caption_target:

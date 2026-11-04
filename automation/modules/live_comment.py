@@ -2,6 +2,7 @@
 import time
 from modules.live_producer import label
 from live_comment_status import COMMENT_TOTAL_SECONDS, COMMENT_VERIFY_SECONDS, COMMENT_CODES, LiveCommentFailure
+from modules.live_profile_comment import LiveProfileComment
 
 
 class LiveComment:
@@ -12,8 +13,11 @@ class LiveComment:
     def __init__(self, task, after_end=False):
         self.task = task
         self.after_end = after_end
+        self.profile = None
 
     def observe(self):
+        if self.profile is not None:
+            return self.profile.observe()
         frame = self.task.capture('inspect')
         if not self.after_end and not self.task.layouts.permits(frame, 'verify_publication', state='live'):
             raise LiveCommentFailure('live_not_confirmed')
@@ -26,9 +30,10 @@ class LiveComment:
         self.task.observe_failure_evidence(image, items, 'live_comment')
         return items
 
-    @classmethod
-    def inputs(cls, items):
-        return [item for item in items if label(item) in cls.PLACEHOLDERS
+    def inputs(self, items):
+        if self.profile is not None:
+            return self.profile.inputs(items)
+        return [item for item in items if label(item) in self.PLACEHOLDERS
                 or label(item).startswith('write a comment as ')]
 
     @staticmethod
@@ -51,6 +56,10 @@ class LiveComment:
         deadline = time.monotonic() + COMMENT_TOTAL_SECONDS
         items = self.observe()
         targets = self.inputs(items)
+        if not targets and self.after_end:
+            self.profile = LiveProfileComment(self.task)
+            items, target = self.profile.find(deadline)
+            targets = [target]
         if len(targets) != 1:
             raise LiveCommentFailure('input_missing')
         target = targets[0]
@@ -64,8 +73,9 @@ class LiveComment:
             raise LiveCommentFailure('input_changed')
 
         def empty():
-            return any(self.task.same(target, item) and label(item).startswith('write a ')
-                       and ' as ' not in label(item) for item in self.inputs(self.observe()))
+            return any(self.task.same(target, item) and (self.profile is not None or
+                       (label(item).startswith('write a ') and ' as ' not in label(item)))
+                       for item in self.inputs(self.observe()))
 
         try:
             self.task.live_input.enter(text, target, field='comment', empty_check=empty,
@@ -102,7 +112,11 @@ class LiveComment:
                 return True
         return False
 
-    @staticmethod
-    def posted_items(items, target):
+    def posted_items(self, items, target):
+        # A profile includes the post's caption as well as its comments. Never
+        # mistake a URL in that caption for an already submitted comment.
+        minimum_y = (target['bounds'][1] - self.profile.height * .20
+                     if self.profile is not None else 0)
         return [item for item in items if item['bounds'][3] < target['bounds'][1]-16
-                and item['bounds'][0] >= target['bounds'][0]-96]
+                and item['bounds'][0] >= target['bounds'][0]-96
+                and item['bounds'][1] >= minimum_y]

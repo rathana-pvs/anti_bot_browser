@@ -57,15 +57,18 @@ class FacebookLiveTask:
                       else 'ended' if self.layouts.permits(frame, 'verify_publication', state='ended')
                       else 'unconfirmed')
 
-    def capture(self, action):
+    def reject_checkpoint(self, action):
         image = self.client.screenshot()
         h, w = image.shape[:2]
-        url = urlsplit(self.client.get_current_url() or '')
-        if url.hostname in {'facebook.com', 'www.facebook.com'} and url.path.startswith('/checkpoint/'):
-            items = self.vision.read_text(image, region=(int(.3*w), int(.2*h), int(.4*w), int(.6*h)), min_confidence=.65)
-            code = 'account_locked' if (phrase(items, 'locked your account') or phrase(items, 'unlock your account')) else 'account_checkpoint'
-            self.observe_failure_evidence(image, [], action, {'account_block': code})
-            raise LiveAccountBlocked(code)
+        items = self.vision.read_text(image, region=(int(.3*w), int(.2*h), int(.4*w), int(.6*h)), min_confidence=.65)
+        code = 'account_locked' if (phrase(items, 'locked your account') or phrase(items, 'unlock your account')) else 'account_checkpoint'
+        self.observe_failure_evidence(image, [], action, {'account_block': code})
+        raise LiveAccountBlocked(code)
+
+    def capture(self, action):
+        # Screenshots/guards stay passive while a comment editor owns focus.
+        image = self.client.screenshot()
+        h, w = image.shape[:2]
         names = ['sidebar', 'footer']
         if action == 'prepare':
             names += ['setup_left', 'setup_center', 'details', 'home']
@@ -99,6 +102,9 @@ class FacebookLiveTask:
                 and phrase(restriction, 'before you can publish as this page')):
             self.observe_failure_evidence(image, [], action, {'account_block': 'identity_verification_required'})
             raise LiveAccountBlocked('identity_verification_required')
+        if phrase(restriction, 'locked your account') and phrase(restriction, 'steps to get you back on facebook'):
+            self.observe_failure_evidence(image, [], action, {'account_block':'account_locked'})
+            raise LiveAccountBlocked('account_locked')
         self.observe_failure_evidence(image, [item for items in regions.values() for item in items], action,
                                       {'template_id': frame.template_id})
         self.template_id = frame.template_id
@@ -330,8 +336,9 @@ class FacebookLiveTask:
         if action != 'prepare':
             url = urlsplit(self.client.get_current_url() or '')
             if url.hostname in {'facebook.com', 'www.facebook.com'} and url.path.startswith('/checkpoint/'):
-                self.capture(action)  # Retain the checkpoint frame and fixed reason.
-            if url.hostname not in {'facebook.com', 'www.facebook.com'} or not url.path.startswith('/live/producer'):
+                self.reject_checkpoint(action)
+            if (url.hostname not in {'facebook.com', 'www.facebook.com'}
+                    or (action != 'finish' and not url.path.startswith('/live/producer'))):
                 raise RuntimeError('Keep Facebook Live Producer open while broadcasting')
         if action == 'inspect':
             self.inspect()

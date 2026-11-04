@@ -37,6 +37,15 @@ including wrapped URLs, once its delivery notice (such as `Posting…` or
 `Sending…`) has cleared. A matching optimistic bubble or failed delivery notice
 does not confirm success. An existing matching comment is awaited without
 reposting if delivery is still pending.
+If the ended Producer page has no comment input, the helper opens the profile
+and uses the Reel first-post header/timestamp parser. Only the newest card with
+a readable timestamp no older than three minutes is accepted; no title or
+caption comparison is required. The first-post comment field is then located
+with the shared Reel locator and bounded scrolling. An old/unreadable header
+stops the fallback, and it never switches surfaces or submits again after a
+comment submission has started. Successful evidence is the full profile frame
+showing the confirmed comment. Timeline entries record the fallback and recent
+post/input detection. Comment guards never read the address bar while typing.
 No restored placeholder or final ended-page banner is required. Only after the
 comment is confirmed and the container stops is the job marked successful.
 After confirmation and evidence capture, an optional finish step randomly closes
