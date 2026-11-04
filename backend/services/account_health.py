@@ -10,12 +10,15 @@ Every finished queue execution is copied into it once, keyed by its id.
 
 import json
 import threading
+from functools import lru_cache
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from backend.config import DATA_DIR, PROFILES_DIR
 from backend.services import account_hold
 from backend.services.profile_service import atomic_write_json
+from automation.live_account_status import ACCOUNT_BLOCK_ERRORS
 
 HISTORY_FILE = DATA_DIR / "account_history.json"
 HISTORY_DAYS = 120
@@ -29,7 +32,6 @@ WARMING_UP_DAYS = 21
 READY_MIN_POSTS = 10
 DAILY_POST_LIMITS = {"new": 0, "warming_up": 2, "ready": 4}
 PUSHBACK_REST_HOURS = 72
-FAILURE_STREAK = 3
 
 SUCCESS_STATUSES = {"published", "completed"}
 FAILURE_STATUSES = {"failed", "failed_before_publish", "skipped_session_unverified"}
@@ -61,6 +63,50 @@ def _load_history() -> dict:
     return profiles if isinstance(profiles, dict) else {}
 
 
+@lru_cache(maxsize=512)
+def _identity_restriction_evidence(profiles_dir: str, profile_id: str, evidence_dir: str,
+                                   execution_id: str, lease_id: str) -> bool:
+    """Read a confirmed publishing restriction from this attempt's local evidence.
+
+    Generic publish_rejected errors are not enough: network and UI failures
+    must stay job-level problems. Keep the detected restriction in history.
+    """
+    try:
+        parent = (Path(profiles_dir) / profile_id / "automation_evidence").resolve()
+        directory = Path(evidence_dir).resolve()
+        if directory == parent or not directory.is_relative_to(parent):
+            return False
+        attempt = json.loads((directory / "attempt.json").read_text(encoding="utf-8"))
+        if attempt.get("execution_id") != execution_id or not lease_id or attempt.get("lease_id") != lease_id:
+            return False
+        for path in directory.glob("*_publication_verification.json"):
+            if not path.resolve().is_relative_to(directory) or path.stat().st_size > 64 * 1024:
+                continue
+            metadata = json.loads(path.read_text(encoding="utf-8"))
+            if (metadata.get("label") in {"publication_verification", "reel_publication_verification"}
+                    and metadata.get("state") == "error_dialog"
+                    and isinstance(metadata.get("signals"), list)
+                    and any(signal in {"confirm your identity", "verify your account"}
+                            for signal in metadata["signals"] if isinstance(signal, str))):
+                return True
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    return False
+
+
+IDENTITY_VERIFICATION_ERROR = "Facebook requires identity verification before this Page can publish. Open the Facebook app on your phone and follow its instructions."
+
+
+def requires_identity_verification(execution: dict) -> bool:
+    if execution.get("error") == IDENTITY_VERIFICATION_ERROR:
+        return True
+    lease = execution.get("scheduler_lease") or execution.get("last_scheduler_lease") or {}
+    return bool(execution.get("error") in {"publish_rejected", "reel_publish_rejected"}
+                and execution.get("evidence_dir")
+                and _identity_restriction_evidence(str(PROFILES_DIR), execution.get("profile_id", ""),
+                    str(execution["evidence_dir"]), execution.get("execution_id", ""), lease.get("lease_id", "")))
+
+
 def _entry(execution: dict, kind: str) -> dict | None:
     status = execution.get("status")
     if status not in RECORDED_STATUSES:
@@ -70,6 +116,10 @@ def _entry(execution: dict, kind: str) -> dict | None:
     if at is None:
         return None
     entry = {"at": at, "kind": kind or "post", "status": status, "error": (execution.get("error") or "")[:200]}
+    if requires_identity_verification(execution):
+        entry["attention_reason"] = "identity_verification_required"
+    elif execution.get('error') == ACCOUNT_BLOCK_ERRORS['account_locked']:
+        entry['attention_reason'] = 'account_locked'
     if execution.get("facebook_identity") in ("page", "personal"):
         entry["identity"] = execution["facebook_identity"]
     return entry
@@ -90,6 +140,10 @@ def sync_history(queue: dict, now: datetime | None = None) -> dict:
                     if not (profile_id and execution_id and entry):
                         continue
                     entries = history.setdefault(profile_id, {})
+                    previous = entries.get(execution_id) or {}
+                    if (previous.get("attention_reason") and previous.get("at") == entry["at"]
+                            and previous.get("status") == entry["status"]):
+                        entry.setdefault("attention_reason", previous["attention_reason"])
                     if entries.get(execution_id) != entry:
                         entries[execution_id] = entry
                         changed = True
@@ -172,10 +226,22 @@ def compute(config: dict, entries: list[dict], now: datetime | None = None) -> d
                       reason=f"On hold{': ' + note if note else ''}. Nothing automatic runs on it.")
         return result
 
+    restriction = next((entry for entry in reversed(entries)
+                        if entry.get("attention_reason") in {"identity_verification_required", "account_locked"}), None)
+    last_publication = posts[-1]["at"] if posts else ""
+    if restriction and restriction["at"] > last_publication:
+        reason = (ACCOUNT_BLOCK_ERRORS['account_locked'] if restriction['attention_reason'] == 'account_locked'
+                  else "Facebook requires identity verification before this Page can publish. Complete the verification requested by Facebook.")
+        result.update(stage="attention", reason=reason,
+                      evidence=_evidence(restriction))
+        return result
+
     last_success = successes[-1]["at"] if successes else ""
     checkpoint = next((entry for entry in reversed(entries) if entry["status"] == "skipped_auth_required"), None)
     if checkpoint and checkpoint["at"] > last_success:
-        result.update(stage="attention", reason="Facebook asked to log in or verify this account.",
+        reason = (ACCOUNT_BLOCK_ERRORS['account_locked'] if checkpoint.get('error') == ACCOUNT_BLOCK_ERRORS['account_locked']
+                  else "Facebook asked to log in or verify this account.")
+        result.update(stage="attention", reason=reason,
                       evidence=_evidence(checkpoint))
         return result
     # Pages post as the Page; a session that showed the personal profile
@@ -186,12 +252,6 @@ def compute(config: dict, entries: list[dict], now: datetime | None = None) -> d
                       reason="Facebook was showing the personal profile instead of the Page. Switch back to the Page in the browser.",
                       evidence=_evidence(identified))
         return result
-    recent = entries[-FAILURE_STREAK:]
-    if len(recent) == FAILURE_STREAK and all(entry["status"] in FAILURE_STATUSES for entry in recent):
-        result.update(stage="attention", reason=f"The last {FAILURE_STREAK} sessions failed before posting.",
-                      evidence=_evidence(*reversed(recent)))
-        return result
-
     window = account_hold.restart(config, now)
     if window:
         visited = account_hold.visited_since(entries, window["since"])

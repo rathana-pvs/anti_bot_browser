@@ -1,6 +1,7 @@
 """Batch workers use mode capacity and each account's iteration delay."""
 
 import asyncio
+import threading
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -71,6 +72,40 @@ def test_existing_publisher_uses_one_medium_slot(monkeypatch):
     executions[0]["status"] = "running"
     asyncio.run(dispatch())
     assert dispatched == ["exec-1"]
+
+
+def test_slow_docker_checks_do_not_block_heartbeat_or_requests(monkeypatch):
+    _, _, dispatch = setup_dispatch(monkeypatch, 'low')
+    entered, release = threading.Event(), threading.Event()
+    def slow_status(_):
+        entered.set()
+        release.wait(2)
+        return 'running'
+    monkeypatch.setattr(automation, 'get_container_status', slow_status)
+    async def scenario():
+        task = asyncio.create_task(dispatch())
+        try:
+            assert await asyncio.to_thread(entered.wait, 1)
+            # This coroutine represents HTTP/heartbeat work while Docker is
+            # still blocked. The old synchronous scan cannot reach this point.
+            assert not task.done()
+            assert not release.is_set()
+        finally:
+            release.set()
+            await task
+    asyncio.run(scenario())
+
+
+def test_spacing_deferral_schedules_one_retry_for_many_waiting_profiles(monkeypatch):
+    from backend.services import adaptive_runtime
+    _, dispatched, dispatch = setup_dispatch(monkeypatch, 'high', 'stopped',
+        lambda: {'allowed': False, 'reason': 'container_start_spacing'})
+    retry = AsyncMock()
+    monkeypatch.setattr(automation, '_delayed_dispatch', retry)
+    monkeypatch.setattr(adaptive_runtime, 'current_start_spacing_ms', lambda: 10000)
+    asyncio.run(dispatch())
+    assert not dispatched
+    retry.assert_awaited_once_with(10100)
 
 
 @pytest.mark.parametrize("reason", ["memory_pressure", "cpu_pressure"])

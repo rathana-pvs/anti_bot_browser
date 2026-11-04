@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,7 +20,6 @@ from backend.config import (
 from backend.services.resource_service import (
     settings_manager,
     recommended_ocr_threads,
-    resolve_resource_mode,
     resource_admission_decision,
 )
 from backend.services.profile_service import atomic_write_json, environment_differences, utc_now
@@ -239,11 +239,12 @@ def count_running_profile_containers() -> int:
 memory_admission_paused = False
 last_queue_container_start_at = 0.0
 CONTAINER_START_SPACING_MS = 10000
+container_admission_lock = threading.Lock()
 
 def get_scheduler_config() -> dict:
     mode_snapshot = settings_manager.get_snapshot()
     limits = mode_snapshot["limits"]
-    if settings_manager.resource_mode == "auto":
+    if settings_manager.resource_mode in ('auto', 'extreme', 'custom'):
         from backend.services import adaptive_runtime
         decision = adaptive_runtime.current_decision()
         limits = {
@@ -252,8 +253,18 @@ def get_scheduler_config() -> dict:
             "max_total_automation_tasks": decision.limit,
             "max_active_profile_containers": decision.max_containers,
         }
+        if settings_manager.resource_mode == 'custom':
+            custom = settings_manager.custom_limits
+            limits.update(max_publishers=decision.limit,
+                          max_post_publishers=min(decision.limit, custom['max_posts']),
+                          max_live_publishers=min(decision.limit, custom['max_live']))
+        else:
+            limits.update(max_post_publishers=decision.max_publishers,
+                          max_live_publishers=decision.max_publishers)
     return {
         "max_publishers": limits["max_publishers"],
+        "max_post_publishers": limits.get('max_post_publishers', limits['max_publishers']),
+        "max_live_publishers": limits.get('max_live_publishers', limits['max_publishers']),
         "max_preparers": limits["max_preparers"],
         "max_total_automation_tasks": limits["max_total_automation_tasks"],
         "max_active_profile_containers": limits["max_active_profile_containers"],
@@ -296,8 +307,8 @@ def resource_mode_snapshot() -> dict:
     return {
         "ocr_engine": settings_manager.ocr_selection(),
         "selected_mode": settings_manager.resource_mode,
-        "effective_mode": resolve_resource_mode(settings_manager.resource_mode, TOTAL_MEMORY_GB, CPU_THREADS)["effective"],
-        "recommended_mode": resolve_resource_mode(settings_manager.resource_mode, TOTAL_MEMORY_GB, CPU_THREADS)["recommended"],
+        "effective_mode": settings_manager.resource_mode,
+        "recommended_mode": 'auto',
         "limits": {
             **scheduler_cfg,
             "ocr_threads_per_worker": recommended_ocr_threads(CPU_THREADS, scheduler_cfg["max_total_automation_tasks"]),
@@ -309,9 +320,7 @@ def resource_mode_snapshot() -> dict:
             "ocr": OCR_RUNTIME,
         },
         "supported_modes": {
-            "low": resolve_resource_mode("low", TOTAL_MEMORY_GB, CPU_THREADS)["supported"],
-            "medium": resolve_resource_mode("medium", TOTAL_MEMORY_GB, CPU_THREADS)["supported"],
-            "high": resolve_resource_mode("high", TOTAL_MEMORY_GB, CPU_THREADS)["supported"],
+            'auto': True, 'extreme': True, 'custom': True,
         },
         "runtime": {
             "memory_used_percent": round(mem_used_pct, 1),
@@ -325,12 +334,21 @@ def resource_mode_snapshot() -> dict:
     }
 
 def claim_container_start_admission() -> dict:
+    # API requests may arrive on different threads; checking spacing and
+    # reserving the next start must be one operation.
+    with container_admission_lock:
+        return _claim_container_start_admission()
+
+
+def _claim_container_start_admission() -> dict:
     global last_queue_container_start_at
     from backend.services.storage_housekeeping import disk_too_low
     # A publish that runs out of disk midway can leave its outcome unknown.
     if disk_too_low():
         return {"allowed": False, "reason": "low_disk_space"}
     snapshot = resource_mode_snapshot()
+    if snapshot['runtime']['active_profile_containers'] >= snapshot['limits']['max_active_profile_containers']:
+        return {'allowed': False, 'reason': 'container_capacity_reached'}
     if snapshot["runtime"]["admission_allowed"]:
         last_queue_container_start_at = time.time() * 1000
         return {"allowed": True, "reason": "admission_granted"}

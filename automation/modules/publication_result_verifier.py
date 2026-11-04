@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 from engine.runtime_paths import profiles_dir
+from .meta_feed_promotion import dismiss_meta_feed_promotion
 from .post_timestamp import parse_header_timestamp
 from .reel_top_post import first_header_region, retry_unreadable_header
 
@@ -92,6 +93,9 @@ class ImagePublicationResultVerifier:
         items = self.task.vision.read_text(screen, min_confidence=0.18)
         region, seen = first_header_region(items, width, height)
         self._toolbar_seen = self._toolbar_seen or seen
+        if dismiss_meta_feed_promotion(self.task, screen, items, region):
+            self._record_check(reason="meta_feed_promotion_present")
+            return False
         if region is None:
             self._record_check(reason="first_post_not_visible", toolbar_seen=self._toolbar_seen)
             return False
@@ -162,6 +166,9 @@ class ImagePublicationResultVerifier:
             screen = self.task.client.screenshot()
             if self._post_visible(screen):
                 return True, screen
+            if self.last_check.get("reason") == "meta_feed_promotion_present":
+                time.sleep(0.8)
+                continue
             if self._top_post_found:
                 return False, screen
             if scan < self.max_scans:

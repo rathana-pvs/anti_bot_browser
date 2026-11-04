@@ -15,6 +15,50 @@ ROOT = Path(__file__).resolve().parents[2] / 'automation'
 URL = 'https://www.facebook.com/live/producer/'
 
 
+@pytest.mark.parametrize('red,timer', [(True,True), (False,True), (True,False)])
+def test_full_screen_dashboard_requires_live_header_and_enabled_end(task, red, timer):
+    screen = image()
+    screen[155:185, 1070:1175] = (0, 0, 255) if red else (100, 100, 100)
+    end = item('End live video', x=1120, y=170)
+    header = [item('Live 2:05', x=80, y=165)] if timer else [item('Dashboard', x=80, y=165)]
+    frame = task.layouts.observe(screen, {'live_header':header, 'live_header_end':[end]})
+    assert task.layouts.permits(frame, 'verify_publication', state='live') == (red and timer)
+    if red and timer:
+        assert task.layouts.controls(frame, 'end_live') == [end]
+
+
+@pytest.mark.parametrize('found', [False, True])
+def test_optional_finish_only_clicks_recognized_header_logo(task, found):
+    task.client.screenshot.return_value = np.zeros((1080, 1920, 3), dtype=np.uint8)
+    task.vision.find_template.return_value = (30, 120) if found else None
+    task.client.get_current_url.side_effect = [URL, 'https://www.facebook.com/']
+    task.on_event = Mock()
+    result = task.run('finish', URL)
+    assert result['state'] == 'finished'
+    assert result['finish_outcome'] == ('warmed' if found else 'logo_missing')
+    header = task.vision.find_template.call_args.args[0]
+    assert header.shape == (237, 384, 3)
+    if found:
+        task.live_input.human.click.assert_called_once_with(30, 120)
+        task.live_input.human.move_to.assert_called_once()
+        task.live_input.human.scroll.assert_called_once()
+        assert task.live_input.human.scroll.call_args.args == ('down',)
+        assert 1 <= task.live_input.human.scroll.call_args.kwargs['notches'] <= 3
+        assert task.on_event.call_args_list == [call('optional_finish_news_feed_opened'),
+            call('optional_finish_warming_started'), call('optional_finish_warming_completed')]
+    else:
+        task.live_input.human.click.assert_not_called()
+        task.live_input.human.scroll.assert_not_called()
+    task.live_input.enter.assert_not_called()
+
+
+def test_optional_warming_skips_when_logo_does_not_open_feed(task):
+    task.client.screenshot.return_value = np.zeros((1080, 1920, 3), dtype=np.uint8)
+    task.vision.find_template.return_value = (30, 120)
+    assert task.run('finish', URL)['finish_outcome'] == 'feed_not_ready'
+    task.live_input.human.scroll.assert_not_called()
+
+
 def item(text, x=100, y=200, confidence=.95):
     return {'text': text, 'center': (x, y), 'bounds': (x-30, y-8, x+30, y+8), 'confidence': confidence}
 
@@ -166,6 +210,26 @@ def test_end_requires_real_ended_confirmation_and_one_end_click(task):
     assert task.click.call_count == 1
 
 
+def test_end_accepts_ended_notice_without_extra_footer_confirmation(task):
+    frame = task.layouts.observe(image(), {'sidebar': [item('Your live video has ended')]})
+    assert frame.template_id is None
+    task.capture = lambda _: frame
+    task.end()
+    assert task.state == 'ended'
+    task.click.assert_not_called()
+
+
+def test_end_click_does_not_require_reconfirming_live_notice(task):
+    frame = task.layouts.observe(image((60, 60, 220)), {
+        'footer': [item('End live video', x=120, y=935)]})
+    assert frame.template_id is None
+    task.capture = lambda _: frame
+    task.vision.read_text.return_value = []
+    with pytest.raises(RuntimeError, match='did not confirm'):
+        task.end()
+    assert task.click.call_count == 1
+
+
 @pytest.mark.parametrize('panel', ['left', 'center'])
 def test_prepare_recognizes_configured_setup_layouts(task, panel):
     frame = task.layouts.observe(image(), {
@@ -213,6 +277,7 @@ def test_prepare_opens_home_using_clear_welcome_heading(task):
     task.capture = lambda _: next(screens)
     task.prepare(URL)
     task.click.assert_called_once_with(button)
+    task.live_input.human.scroll.assert_not_called()
 
 
 def test_prepare_ignores_go_live_heading_and_clicks_lower_setup_button(task):
@@ -225,6 +290,38 @@ def test_prepare_ignores_go_live_heading_and_clicks_lower_setup_button(task):
     task.prepare(URL)
     task.click.assert_called_once_with(button)
     assert task.publish_clicked is False
+
+
+def test_prepare_scrolls_home_to_reveal_setup_button(task):
+    hidden = task.layouts.observe(image(), {
+        'sidebar': [item('Home')],
+        'home': [item('Welcome back, Jimbo!'), item('Go live'), item('Create a live video ad')],
+    })
+    button = item('Set up live video', x=900, y=740)
+    revealed = task.layouts.observe(image(), {
+        'sidebar': [item('Home')],
+        'home': [item('Go live'), item('Create a live video ad'), button],
+    })
+    assert hidden.template_id is None
+    assert revealed.template_id == 'producer_home'
+    screens = iter([hidden, revealed, revealed, ready(task)])
+    task.capture = lambda _: next(screens)
+    task.prepare(URL)
+    task.live_input.human.scroll.assert_called_once_with('down', notches=2)
+    task.click.assert_called_once_with(button)
+    assert task.state == 'prepared'
+
+
+def test_prepare_home_scrolling_is_bounded_and_never_clicks_go_live_card(task):
+    hidden = task.layouts.observe(image(), {
+        'sidebar': [item('Home')],
+        'home': [item('Welcome back, Jimbo!'), item('Go live')],
+    })
+    task.capture = lambda _: hidden
+    with pytest.raises(RuntimeError, match='Prepare this account'):
+        task.prepare(URL)
+    assert task.live_input.human.scroll.call_count == 3
+    task.click.assert_not_called()
 
 
 def test_prepare_selects_source_card_above_label(task):
@@ -243,6 +340,7 @@ def test_prepare_refuses_active_or_ended_broadcast(task):
         with pytest.raises(RuntimeError):
             task.prepare(URL)
     task.click.assert_not_called()
+    task.live_input.human.scroll.assert_not_called()
 
 
 def test_live_notice_without_dashboard_and_red_end_control_is_unknown(task):
@@ -267,6 +365,7 @@ def test_control_capture_excludes_video_and_key_panels(task):
     regions = [call.kwargs['region'] for call in task.vision.read_text.call_args_list]
     assert len(regions) == 3
     assert all(x + width <= 1200 * .22 + 1 for x, y, width, height in regions)
+    task.client.get_current_url.assert_not_called()  # No focus/clipboard changes inside capture.
 
 
 def test_workflow_run_returns_only_safe_metadata(task):
@@ -546,6 +645,102 @@ def test_focused_footer_text_still_requires_enabled_button_and_producer_state(ta
     assert task.vision.read_text.call_args.kwargs['region'] == (126, 940, 66, 50)
 
 
+@pytest.mark.parametrize('text', ['q go live', 'qgo live', 'O Go live', 'Go live'])
+def test_camera_icon_ocr_prefix_still_recognizes_enabled_go_live(task, text):
+    frame = task.layouts.observe(image((255, 100, 8)), {
+        'sidebar': [item('Create live video')], 'footer': [item(text, y=935)]})
+    assert frame.template_id == 'broadcast_ready'
+    assert task.layouts.permits(frame, 'request_publish', target='go_live')
+
+
+@pytest.mark.parametrize('text', ['two go live', 'go live video', 'go', 'ago live now soon'])
+def test_other_footer_text_is_not_go_live(task, text):
+    frame = task.layouts.observe(image((255, 100, 8)), {
+        'sidebar': [item('Create live video')], 'footer': [item(text, y=935)]})
+    assert frame.template_id is None
+
+
+def test_camera_icon_prefix_still_requires_enabled_button(task):
+    frame = task.layouts.observe(image(), {
+        'sidebar': [item('Create live video')], 'footer': [item('q go live', y=935)]})
+    assert frame.template_id is None
+
+
+def test_prefixed_footer_match_skips_focused_read_to_avoid_duplicate_control(task):
+    task.client.screenshot.return_value = image((255, 100, 8))
+    task.vision.read_text.side_effect = [[item('Create live video')], [item('o go live', y=935)]]
+    frame = task.capture('start')
+    assert frame.template_id == 'broadcast_ready'
+    assert task.vision.read_text.call_count == 2
+
+
+def tag_game_screen(enabled=True, heading=True):
+    result = image()
+    if enabled:
+        result[480:520, 620:760] = (255, 100, 8)
+    items = [item('Tag game', x=500, y=500), item('Go live', x=690, y=500)]
+    if heading:
+        items.append(item('Tag a game', x=600, y=300))
+    return result, items
+
+
+def dialog_frame(task):
+    return task.layouts.observe(tag_game_screen()[0], {'sidebar': [item('Create live video')], 'footer': []})
+
+
+def test_start_confirms_tag_game_dialog_once_after_its_own_click(task):
+    button, dialog, screen = ready(task), dialog_frame(task), tag_game_screen()
+    screens = iter([button, button, dialog, active(task)])
+    task.capture = lambda _: next(screens)
+    task.client.screenshot.return_value = screen[0]
+    task.vision.read_text.return_value = screen[1]
+    events = []
+    task.on_event = events.append
+    task.start()
+    assert task.state == 'live'
+    assert [c.args[0]['center'] for c in task.click.call_args_list] == [(100, 935), (690, 500)]
+    assert events == ['go_live_requested', 'go_live_click_sent', 'go_live_dialog_requested', 'go_live_dialog_click_sent']
+
+
+def test_tag_game_dialog_is_never_clicked_without_this_runs_go_live_click(task):
+    screen = tag_game_screen()
+    task.capture = lambda _: dialog_frame(task)
+    task.vision.read_text.return_value = screen[1]
+    with pytest.raises(RuntimeError, match='did not confirm'):
+        task.start()
+    task.click.assert_not_called()
+    task.vision.read_text.assert_not_called()
+
+
+def test_unconfirmed_tag_game_dialog_click_is_not_repeated(task):
+    button, dialog, screen = ready(task), dialog_frame(task), tag_game_screen()
+    frames = iter([button, button])
+    task.capture = lambda _: next(frames, dialog)
+    task.client.screenshot.return_value = screen[0]
+    task.vision.read_text.return_value = screen[1]
+    with pytest.raises(RuntimeError, match='did not confirm'):
+        task.start()
+    assert task.click.call_count == 2
+
+
+@pytest.mark.parametrize('enabled,heading', [(False, True), (True, False)])
+def test_dialog_requires_tag_game_heading_and_enabled_button(task, enabled, heading):
+    screen, items = tag_game_screen(enabled, heading)
+    task.client.screenshot.return_value = screen
+    task.vision.read_text.return_value = items
+    assert task.confirm_go_live_dialog(screen) is False
+    task.click.assert_not_called()
+
+
+def test_dialog_button_must_stay_on_fresh_screen(task):
+    screen, items = tag_game_screen()
+    moved = [item('Tag a game', x=600, y=300), item('Go live', x=690, y=600)]
+    task.client.screenshot.return_value = screen
+    task.vision.read_text.side_effect = [items, moved]
+    assert task.confirm_go_live_dialog(screen) is False
+    task.click.assert_not_called()
+
+
 def test_end_iive_ocr_variant_confirms_only_with_live_dashboard_notice_and_red_control(task):
     frame = active(task)
     frame.regions['footer'][0]['text'] = 'End Iive video'
@@ -648,16 +843,32 @@ def test_preset_clipboard_mismatch_blocks_save(task):
     task.click.assert_not_called()
 
 
-def test_prepare_applies_comment_before_returning_prepared(task,monkeypatch):
+def test_prepare_does_not_open_preset_comment_editor(task,monkeypatch):
     frame = ready(task)
     module = Mock()
     module.set.return_value = frame
-    monkeypatch.setattr('tasks.facebook_live.LivePinnedComment',lambda _:module)
+    monkeypatch.setattr('tasks.facebook_live.LiveComment',lambda _, **kwargs:module)
     task.pinned_comment = 'Pinned message'
     task.capture = lambda _:frame
     task.prepare(URL)
-    module.set.assert_called_once_with(frame,'Pinned message')
+    module.set.assert_not_called()
     assert task.state == 'prepared'
+
+
+@pytest.mark.parametrize('comment,seconds', [(None, 120), ('', 120), ('Pinned message', 120)])
+def test_prepare_reserves_bounded_time_for_optional_preset(task, monkeypatch, comment, seconds):
+    frame = ready(task)
+    module = Mock()
+    module.set.return_value = frame
+    monkeypatch.setattr('tasks.facebook_live.LiveComment', lambda _, **kwargs: module)
+    monkeypatch.setattr('tasks.facebook_live.time.monotonic', lambda: 100)
+    task.pinned_comment = comment
+    task.capture = lambda _: frame
+    task.prepare(URL)
+    assert task.preparation_deadline == 100 + seconds
+    assert seconds < 190
+    assert task.state == 'prepared'
+    module.set.assert_not_called()
 
 
 def test_preset_edit_accepts_enabled_blue_text_link_but_rejects_dim_text():
@@ -794,7 +1005,10 @@ def test_preset_empty_check_requires_editor_and_explicit_placeholder(task):
     assert module.empty_body_visible() is True
 
 
-def test_preset_uses_shared_paste_policy_before_save(task):
+@pytest.mark.parametrize('preview_confirmed,retained', [
+    (True, None), (False, 'https://example.com'), (False, 'Old saved comment'),
+])
+def test_preset_uses_shared_paste_policy_before_save(task, preview_confirmed, retained):
     from modules.live_pinned_comment import LivePinnedComment
     module = LivePinnedComment(task)
     module.set_enabled = Mock()
@@ -808,8 +1022,127 @@ def test_preset_uses_shared_paste_policy_before_save(task):
     observations = iter([(screen, editor), (screen, editor), (screen, [])])
     module.read_editor = lambda: next(observations)
     module.restore_setup = Mock(return_value=ready(task))
-    task.live_input.composer_entry.read_field.return_value = 'https://example.com'
-    assert module.set(ready(task), 'https://example.com').template_id == 'broadcast_ready'
+    module.preview_matches = Mock(return_value=preview_confirmed)
+    task.live_input.composer_entry.read_field.return_value = retained
+    if preview_confirmed or retained == 'https://example.com':
+        assert module.set(ready(task), 'https://example.com').template_id == 'broadcast_ready'
+    else:
+        with pytest.raises(RuntimeError, match='did not retain'):
+            module.set(ready(task), 'https://example.com')
+        module.restore_setup.assert_not_called()
     assert task.live_input.enter.call_args.kwargs['field'] == 'comment'
+    assert task.live_input.enter.call_args.kwargs['replace_existing'] is True
     task.live_input.before_save.assert_called_once()
+    module.preview_matches.assert_called_once_with('https://example.com')
+    assert module.open_editor.call_count == (1 if preview_confirmed else 2)
+    assert task.live_input.composer_entry.read_field.call_count == (0 if preview_confirmed else 1)
     assert not any(command.args[0][1] == 'type' for command in task.client.exec_cmd.call_args_list)
+
+
+def test_matching_saved_preset_does_not_save_or_reopen_again(task):
+    from modules.composer_entry import EntryResult
+    from modules.live_pinned_comment import LivePinnedComment
+    module = LivePinnedComment(task)
+    module.set_enabled = Mock()
+    module.open_editor = Mock()
+    module.focus_body = Mock(return_value=item('body'))
+    module.restore_setup = Mock(return_value=ready(task))
+    task.live_input.enter.side_effect = None
+    task.live_input.enter.return_value = EntryResult('reused_existing_content', True, 'clipboard_exact')
+    assert module.set(ready(task), 'Already saved').template_id == 'broadcast_ready'
+    module.open_editor.assert_called_once()
+    task.live_input.before_save.assert_not_called()
+    task.live_input.composer_entry.read_field.assert_not_called()
+    task.live_input.human.key_press.assert_called_once_with('Escape', clear_modifiers=True)
+    task.click.assert_not_called()
+
+
+def preset_preview(task, lines):
+    from modules.live_pinned_comment import LivePinnedComment
+    module = LivePinnedComment(task)
+    items = [item('Preset pinned comment', x=1280, y=680),
+             item('Preview', x=1190, y=790), item('Pinned comment', x=1260, y=820),
+             item('News Page', x=1290, y=850)]
+    items += [item(line, x=1350, y=880 + index * 25) for index, line in enumerate(lines)]
+    items += [item('Edit', x=1380, y=990)]
+    module.read_right = Mock(return_value=(np.zeros((1080, 1920, 3), dtype=np.uint8), items))
+    module.toggle = Mock(return_value={'enabled': True})
+    return module, items
+
+
+@pytest.mark.parametrize('lines,comment', [
+    (['US military carries out limited strikes'], 'US military carries out limited strikes'),
+    (['First line', 'Second line'], 'First line\nSecond line'),
+    (['Hello', 'ខ្មែរ'], 'Hello ខ្មែរ'),
+    (['https://example.com/very-', 'long-path?a=1'], 'https://example.com/very-long-path?a=1'),
+    (['https:/example.com/path'], 'https://example.com/path'),
+])
+def test_complete_saved_preview_confirms_without_clipboard(task, lines, comment):
+    module, _ = preset_preview(task, lines)
+    assert module.preview_matches(comment) is True
+    task.live_input.composer_entry.read_field.assert_not_called()
+    task.click.assert_not_called()
+
+
+@pytest.mark.parametrize('lines,comment', [
+    (['Old comment'], 'New comment'),
+    (['New comment...'], 'New comment with more words'),
+    (['New comment…'], 'New comment with more words'),
+    (['New comment', 'Additional saved text'], 'New comment'),
+    ([], 'New comment'),
+    (['https://example.com/old'], 'https://example.com/new'),
+    (['http://example.com/path'], 'https://example.com/path'),
+])
+def test_incomplete_or_different_preview_requires_editor_fallback(task, lines, comment):
+    module, _ = preset_preview(task, lines)
+    assert module.preview_matches(comment) is False
+
+
+@pytest.mark.parametrize('problem', ['low_confidence', 'missing_edit', 'clipped_edit', 'duplicate_heading', 'disabled'])
+def test_unconfirmed_preview_layout_requires_editor_fallback(task, problem):
+    module, items = preset_preview(task, ['New comment'])
+    if problem == 'low_confidence':
+        items[-2]['confidence'] = .6
+    elif problem == 'missing_edit':
+        items.pop()
+    elif problem == 'clipped_edit':
+        items[-1]['bounds'] = (1300, 1060, 1400, 1080)
+    elif problem == 'duplicate_heading':
+        items.append(item('Preset pinned comment', x=1280, y=600))
+    else:
+        module.toggle.return_value = {'enabled': False}
+    assert module.preview_matches('New comment') is False
+
+
+def test_matching_text_elsewhere_on_page_does_not_confirm_preview(task):
+    module, items = preset_preview(task, ['Different comment'])
+    items.append(item('Requested comment', x=1280, y=300))
+    assert module.preview_matches('Requested comment') is False
+def test_live_checkpoint_is_skipped_with_evidence_without_clicking(task):
+    from live_account_status import LiveAccountBlocked
+    task.client.get_current_url.return_value = 'https://www.facebook.com/checkpoint/123'
+    task.client.screenshot.return_value = image()
+    task.vision.read_text.return_value = [item('We locked your account')]
+    task.observe_failure_evidence = Mock()
+    with pytest.raises(LiveAccountBlocked) as error:
+        task.run('comment', URL, pinned_comment='hello')
+    assert error.value.account_block == 'account_locked'
+    task.observe_failure_evidence.assert_called_once()
+    task.live_input.human.click.assert_not_called()
+
+
+@pytest.mark.parametrize('restricted', [False, True])
+def test_live_page_identity_dialog_requires_specific_publish_restriction(task, restricted):
+    from live_account_status import LiveAccountBlocked
+    task.client.screenshot.return_value = image()
+    text = [item('Confirm your identity')]
+    if restricted:
+        text += [item('before you can publish as this Page')]
+    task.vision.read_text.return_value = text
+    if restricted:
+        with pytest.raises(LiveAccountBlocked) as error:
+            task.capture('inspect')
+        assert error.value.account_block == 'identity_verification_required'
+    else:
+        task.capture('inspect')
+    task.live_input.human.click.assert_not_called()

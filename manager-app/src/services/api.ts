@@ -587,6 +587,7 @@ export async function cancelAllQueuePosts(batchId?: string): Promise<{ success: 
 
 export interface SupportBundleOptions {
   executionId?: string;
+  batchId?: string;
   description?: string;
   includeEvidence?: boolean;
   includeContent?: boolean;
@@ -595,6 +596,7 @@ export interface SupportBundleOptions {
 export async function downloadSupportBundle(options: SupportBundleOptions = {}): Promise<string> {
   const endpoint = options.executionId
     ? `${API_BASE}/support/execution/${encodeURIComponent(options.executionId)}`
+    : options.batchId ? `${API_BASE}/support/batch/${encodeURIComponent(options.batchId)}`
     : `${API_BASE}/support/export`;
   const res = await fetch(endpoint, {
     method: 'POST',
@@ -607,7 +609,7 @@ export async function downloadSupportBundle(options: SupportBundleOptions = {}):
   });
   if (!res.ok) {
     const error = await res.json().catch(() => ({}));
-    throw new Error(error.error || 'Failed to create support bundle');
+    throw new Error(error.detail || error.error || 'Failed to create support bundle');
   }
 
   const disposition = res.headers.get('Content-Disposition') || '';
@@ -660,7 +662,7 @@ export async function updateResourceMode(
   });
   if (!res.ok) {
     const error = await res.json().catch(() => ({}));
-    throw new Error(error.error || 'Failed to update resource mode');
+    throw new Error(error.detail || error.error || 'Failed to update resource mode');
   }
   return res.json();
 }
@@ -732,6 +734,19 @@ export async function cancelNetworkRecovery(executionId: string): Promise<{ succ
 }
 
 export async function fetchExecutionEvidence(executionId: string, signal?: AbortSignal): Promise<string[]> {
+  return (await fetchExecutionEvidenceReport(executionId, signal)).images;
+}
+
+export interface EvidenceDiagnostics {
+  failure_code?: string;
+  cleanup_failure_code?: string;
+  failure_stage?: string;
+  encoder_failure_reason?: string;
+  encoder_exit_code?: number;
+  final_browser_state?: string;
+}
+
+export async function fetchExecutionEvidenceReport(executionId: string, signal?: AbortSignal): Promise<{ images: string[]; diagnostics?: EvidenceDiagnostics }> {
   return withRequestTimeout(async requestSignal => {
     const res = await fetch(`${API_BASE}/queue/execution/${encodeURIComponent(executionId)}/evidence`, { signal: requestSignal });
     if (!res.ok) throw await apiError(res, 'Failed to load evidence screenshots');
@@ -739,7 +754,7 @@ export async function fetchExecutionEvidence(executionId: string, signal?: Abort
     if (!Array.isArray(data.images) || !data.images.every((name: unknown) => typeof name === 'string')) {
       throw new Error('Invalid evidence response');
     }
-    return data.images;
+    return { images: data.images, diagnostics: data.diagnostics };
   }, signal);
 }
 

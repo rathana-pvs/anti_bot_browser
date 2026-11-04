@@ -7,13 +7,15 @@ export interface LiveSettings {
 }
 export interface LiveSession {
   profile_id: string;
-  status: 'idle' | 'running' | 'completed' | 'failed' | 'stopped' | 'needs_review';
+  status: 'idle' | 'running' | 'completed' | 'failed' | 'stopped' | 'needs_review' | 'skipped_auth_required';
   stage: string;
   queue_execution_id?: string;
   filename?: string;
   duration_seconds?: number;
   elapsed_seconds?: number;
   broadcast_confirmed?: boolean;
+  end_after_comment?: boolean;
+  completion_reason?: 'comment_verified';
   playback_mode?: 'auto' | 'manual';
   playback_started_at?: string;
   startup_elapsed_seconds?: number;
@@ -36,8 +38,8 @@ async function request<T>(profileId: string, action: string, method = 'GET', bod
   return result;
 }
 export const fetchLiveSettings = (id: string) => request<LiveSettings>(id, 'settings');
-export const saveLiveSettings = (id: string, value: {server_url: string; producer_url: string; stream_key: string}) => request<LiveSettings>(id, 'settings', 'PUT', value);
+export const saveLiveSettings = (id: string, value: {server_url: string; producer_url: string; stream_key?: string}) => request<LiveSettings>(id, 'settings', 'PUT', value);
 export const fetchLiveStatus = (id: string) => request<LiveSession>(id, 'status');
-export const startLive = (id: string, filename: string, title: string, caption: string, pinned_comment = '', playback: {playback_mode: 'auto' | 'manual'; loop: boolean; max_duration_seconds?: number; muted: boolean} = {playback_mode: 'auto', loop: false, muted: false}) => request<LiveSession>(id, 'start', 'POST', {filename, title, caption, pinned_comment, ...playback});
+export const startLive = (id: string, filename: string, title: string, caption: string, pinned_comment = '', playback: {playback_mode: 'auto' | 'manual'; loop: boolean; max_duration_seconds?: number; muted: boolean; end_after_comment?: boolean} = {playback_mode: 'auto', loop: false, muted: false}) => request<LiveSession>(id, 'start', 'POST', {filename, title, caption, pinned_comment, ...playback});
 export const stopLive = (id: string, executionId?: string) => request(id, executionId ? `stop?execution_id=${encodeURIComponent(executionId)}` : 'stop', 'POST');
 export const reviewLive = (id: string) => request<LiveSession>(id, 'review', 'POST', {confirmed_ended: true});

@@ -1,37 +1,108 @@
 # Facebook Live from an uploaded video
 
 Implemented locally on the **Studio Center → Facebook Live** tab with its own broadcast queue. Choose a saved video or upload an
-MP4, MOV, or WebM, save the Facebook server URL and key in **Edit profile**, and start a broadcast batch on **Studio Center → Facebook Live → New broadcast**.
+MP4, MOV, or WebM, save the Facebook server and Live Producer URLs in **Edit profile**, and start a broadcast batch on **Studio Center → Facebook Live → New broadcast**.
 No camera, virtual camera, or OBS installation is needed.
+
+All broadcasts have a hard 120-second sender limit, counted from streaming
+startup (not confirmation). At 100 seconds the service starts ending the existing
+broadcast. An independent timer inside the container kills both encoder and
+relay at 120 seconds even if the desktop is unresponsive. Source videos and old
+jobs with longer duration settings are clipped to this limit. Preparation before
+streaming and the comment after End are separate from the broadcast limit.
+Both the usual sidebar dashboard and the full-screen dashboard's Live header
+and top-right End live video control are supported. On startup errors, cleanup
+ends a positively observed Live broadcast once before closing the container;
+unknown Facebook outcomes remain for review.
 
 ## Human-mode text entry
 
 Automated Live title/caption entry shares the Photo/Reel policy: eligible captions
 under 100 whitespace-separated words choose whole typing or whole paste; links,
-100+ words, Unicode, and multiline text always use paste. Preset pinned comments
-always use paste. The adapter uses profile pacing, checks existing field contents,
-reads back entered text, and applies bounded review pauses before Save. It never
-falls back to typing after a clipboard failure or clears a conflicting draft.
+100+ words, Unicode, and multiline text always use paste. Live comments always use
+paste. Input checks existing drafts, reads back entered text and stops on focus
+loss or clipboard failure. Conflicting title/caption drafts stop preparation.
 
-The existing preparation deadline still applies, with time reserved for Save and
-retention checks. Insufficient entry time, unknown/changed drafts, focus loss, or
-unconfirmed empty pinned-comment fields require operator review before streaming.
-Only supported English field layouts are recognized. Existing saved-details
-handling remains unchanged. Go live, End live, FFmpeg startup/playback, and broadcast
-duration are independent of input pacing.
+Preparation fills only the title and caption within its 120-second budget.
+When a comment is supplied, the flow is **confirm Live → End Live → post comment
+→ confirm comment → stop container → success**. This also applies to older queued
+jobs with the legacy `end_after_comment` flag. There is no opt-in checkbox.
 
-Failed Live browser checks now retain a redacted PNG and JSON under the profile's
+After Facebook confirms Live, the app sends End, including Facebook's final End
+button when a confirmation dialog appears, and stops the sender. It keeps the
+browser/container open and posts the comment once on the ended video's page.
+The comment has its own 75-second budget; streaming startup deadlines no longer
+limit it. A visible matching comment outside the draft input is sufficient,
+including wrapped URLs, once its delivery notice (such as `Posting…` or
+`Sending…`) has cleared. A matching optimistic bubble or failed delivery notice
+does not confirm success. An existing matching comment is awaited without
+reposting if delivery is still pending.
+If the ended Producer page has no comment input, the helper opens the profile
+and uses the Reel first-post header/timestamp parser. Only the newest card with
+a readable timestamp no older than three minutes is accepted; no title or
+caption comparison is required. The first-post comment field is then located
+with the shared Reel locator and bounded scrolling. An old/unreadable header
+stops the fallback, and it never switches surfaces or submits again after a
+comment submission has started. Successful evidence is the full profile frame
+showing the confirmed comment. Timeline entries record the fallback and recent
+post/input detection. Comment guards never read the address bar while typing.
+No restored placeholder or final ended-page banner is required. Only after the
+comment is confirmed and the container stops is the job marked successful.
+After confirmation and evidence capture, an optional finish step randomly closes
+immediately, pauses for 2–5 seconds, or clicks a recognized Facebook header logo
+and performs brief warming on News Feed: pointer movement, 1–3 downward scroll
+notches and a 2–4 second reading pause. Warming only starts after the browser URL
+confirms News Feed opened. The timeline records feed opening and warming start
+and completion. Navigation and warming together are
+bounded to 12 seconds; missing controls, timeouts, cancellation and other errors
+in this optional step do not change the confirmed result or cause another comment.
+Container cleanup still runs afterward. This step does not post, react or edit.
+The timeline records the selected action, pause duration, and completion,
+skipping, timeout or failure. Optional errors use fixed diagnostic reasons and
+explicitly retain Live success; failures to write these logs are also ignored.
+
+A failed or unconfirmed comment remains for review without automatically retrying
+it or starting another broadcast. Failed container cleanup also prevents success.
+Facebook account checkpoints and explicit Page identity-verification dialogs
+stop the attempt with `skipped_auth_required` and mark the account Needs attention.
+The full restriction screenshot remains attached. A broadcast whose ending is
+still unknown retains review status; a detected restriction never triggers a repost.
+Blank comments keep the normal full-video playback flow. The legacy
+`pinned_comment` field stores this text; comments are not pinned automatically and
+Facebook's existing preset pinned-comment settings are unchanged.
+
+On November 3, 2026 the FB05 source-code pilot verified the direct-copy key flow:
+the sender used a key different from the legacy saved key, Facebook confirmed
+Live, the full 60-second playback completed with encoder exit code 0, and Facebook
+confirmed the broadcast ended. No copied key was saved. The comment remained
+unconfirmed and was flagged for review without interrupting playback; its real
+submission flow is not yet verified on Facebook. The timing fix was subsequently
+verified with real Chrome, X11 paste/Enter and OCR in a network-disabled fixture,
+plus a slow-observation regression using the actual entry/review controller.
+No additional Facebook broadcast was started for this fix.
+
+
+Failed Live browser checks retain a full browser PNG and JSON under the profile's
 `automation_evidence` directory, linked from the queue item's evidence viewer.
-Verified post-details dialogs are visible, including supplied title/caption text;
-the credential-bearing background is masked. A modal requires a rectangular
-boundary containing its heading and Save control. Unrecognized frames retain only
-control labels, alongside the last confirmed dialog if available.
-Pinned-comment failures retain the right post/settings column after a verified
-setup frame, with the left and center credential panels masked.
+Screenshots are saved without masking or cropping, even when no controls or
+layout can be recognized. Visible stream credentials, video, titles and captions
+are included as shown in the browser. Existing masked screenshots are unchanged.
 JSON includes control positions/confidence and form-check counts, without raw OCR,
 stream keys or clipboard payloads. The last observed frame is used so
 diagnostics do not move the mouse or repeat an action. Successful observations
-remain in memory. Evidence-write failures preserve the original Live error.
+remain in memory during ordinary preparation/start/end actions. A confirmed
+comment saves the exact full frame used to recognize the posted comment, linked
+to the queue attempt before container cleanup. Evidence-write failures do not
+retry the comment or change its confirmed outcome. Read-only final
+inspections save a full frame even when the state is unconfirmed. After a
+failed or cancelled browser action, the service attempts one bounded read-only
+inspection before container cleanup if no browser evidence was returned. It never
+navigates or clicks to collect that frame. Encoder failures also retain fixed,
+allowlisted diagnostic codes and the exit code, without raw FFmpeg output.
+When no browser observation is available (including container startup failures),
+a metadata-only report records the failure stage and explicitly says that no
+screenshot was available. The queue evidence viewer displays these diagnostics.
+Evidence-write failures preserve the original Live error.
 Offline tests validate the new input paths; a real Live input pilot has
 not been performed. The profile_004 session inspected during this change reported
 completed/broadcast_ended, but its stopped container and lack of screenshots did
@@ -41,9 +112,9 @@ not establish the current editor layout.
 
 1. Start the profile and sign into the intended Facebook account/Page.
 2. In that profile's browser, prepare the broadcast in Facebook Live Producer.
-   Choose its destination and **Streaming software**. Enable a persistent stream key if Facebook offers one.
-3. In **Edit profile → Facebook Live**, copy the server
-   URL and stream key. Optionally save the prepared Live Producer URL. Save settings.
+   Choose its destination and **Streaming software**.
+3. In **Edit profile → Facebook Live**, save the server URL and prepared Live Producer URL.
+   The app copies the current broadcast key automatically before sending video.
 4. Keep the prepared Live Producer page open. On **Studio Center → Facebook Live → New broadcast**,
    upload videos, enter a title and caption for each video, select configured profiles, choose playback and click **Start Live**. The app starts the profile if needed and checks the prepared setup.
 5. Status progresses through preparing, sending video, waiting for Facebook,
@@ -53,7 +124,7 @@ not establish the current editor layout.
 The video is sent at real-time speed as 720p H.264/AAC. **Automatic** is the default
 for new batches and the direct profile Live control. FFprobe determines each source
 video's length. Startup repeats the source until Facebook Live is visually confirmed;
-the sender then restarts the source at the beginning and plays its full length once.
+the sender then restarts the source at the beginning within the session limit.
 It ends the existing broadcast and verifies Facebook's ended state before completion.
 The one RTMPS output connection stays open across startup and playback. Viewers may
 see startup footage before the complete playback begins; exact public duration is
@@ -64,17 +135,17 @@ use the same confirmed startup. Manual once ends at the source length or shorter
 limit; Manual loop repeats until its required limit. Duration and video progress
 start with playback after confirmation, separately from startup. Audio can remain
 original or be muted in either mode. Silent files receive a silent AAC track.
-Limits are 1–240 minutes in the UI and four hours in the service. Startup has a
-separate 190-second sender deadline; it never repeats indefinitely. Older saved
-queue rows without a mode retain their manual loop/duration choices and gain the
-same startup handling.
+The UI accepts 1–2 minutes. Startup and playback together have a hard 120-second
+sender limit; shutdown begins at 100 seconds to leave time for Facebook's End
+action. Older queue rows keep their playback choices but obey this same cap.
 
 `automation/live_encoder.py` runs two bounded source phases into one continuous
 FFmpeg relay inside the profile container. MPEG-TS discontinuities are remapped by
 the relay to monotonic FLV timestamps. The service only signals playback after
 confirmed Live, waits for the sender acknowledgement, and keeps startup and
 playback progress distinct. Stop, sender failure or lost confirmation never creates
-or retries a Facebook broadcast. Keys remain in stdin and inside the container.
+or retries a Facebook broadcast. The prepared key crosses only a private local
+helper pipe, then goes through stdin to the container; it never enters public state.
 Encoding uses two CPU threads and follows the profile's network route and limits.
 
 **Current limits:** The visual integration supports English desktop Live Producer
@@ -103,6 +174,8 @@ The browser workflow follows Reel's package and template structure:
   replacing installed versions or its catalog.
 - `automation/modules/live_producer.py`: signals observed by the host and routing
   through the shared `ComposerTemplateRegistry` and `ComposerTemplateDetector`.
+  On Producer Home, preparation scrolls the main content down at most three times
+  when Set up live video is below the viewport, then detects the button afresh.
   Templates cover Producer home, source selection, left/center streaming setup,
   ready to broadcast, Live dashboard and ended broadcast.
 - `automation/live_browser.py`: a small CLI adapter used by the streaming service.
@@ -127,19 +200,19 @@ without a duplicate setup scan. On October 9, 2026 the complete preparation
 flow was verified in the affected Facebook profile: both supplied fields matched
 native Copy, Save was confirmed, and the task returned prepared without ingest
 or a Go Live click.
-The preset-comment helper is `automation/modules/live_pinned_comment.py`; it uses fresh
-label, switch-color and enabled-control observations with transient native Copy checks.
-On October 9, 2026 this helper saved a comment in an unpublished draft, reopened
-the editor and verified the exact text, then restored the global preset disabled.
+The during-Live comment helper is `automation/modules/live_comment.py`; it verifies
+an active dashboard and guarded native text input before a single submission.
+The older `live_pinned_comment.py` helper remains for historical regression tests
+and is no longer called during broadcast preparation.
 It never clicks Go Live. Titles allow 255 characters and captions 5,000. Older jobs without either
 field continue to require manually prepared details. Live confirmation requires the dashboard, its Live notice and a
 red end-broadcast control together. Ended confirmation handles a wrapped heading
 plus the ended/return-home footer. Start/end OCR reads only the narrow left sidebar
 and footer, keeping incoming video captions outside publication controls.
 
-This task deliberately avoids upload tasks' full-screen evidence capture because
-Live Producer displays stream credentials. Its templates never execute shell code,
-receive stream keys or control FFmpeg. The streaming service retains profile locks,
+Live evidence now captures the full browser screen, including any visible stream
+credentials. Its templates never execute shell code,
+receive stream keys or control FFmpeg. The local helper alone reads the key; it is never added to template context. The streaming service retains profile locks,
 leases, playback duration, stop handling and uncertain-publication recovery.
 
 ## Batch broadcasts
@@ -156,11 +229,10 @@ Live jobs use the existing publisher, profile/container limits, schedules and ba
 iteration order. They skip passive feed preparation. Each job applies the saved batch playback options
 and retains its slot until cleanup completes. Each Live row has its own title and
 caption, shared across that row’s selected profiles and preserved across scheduling
-and retries. Live captions are used verbatim without AI spinning. An optional **Pinned comment** is configured in Facebook’s preset editor before ingest,
-then saved and reopened to verify the value. It accepts up to 1,000 characters and is
-shared across the row’s selected profiles. Facebook retains this preset across broadcasts;
-new jobs with a blank comment explicitly disable it. Legacy jobs without this field
-leave the existing Facebook preset unchanged. Normal first comments are not supported for Live. Prepare each broadcast before its job runs,
+and retries. Live captions are used verbatim without AI spinning. An optional
+**Comment during Live** accepts up to 1,000 characters and is shared across the
+row's profiles. It is posted once after Live confirmation; pinning is manual.
+Comment review is separate from the broadcast outcome. Prepare each broadcast before its job runs,
 including a new prepared page for later videos on the same profile.
 
 Interrupted broadcasts retain **Review & Resolve** in the queue for their historical outcome.
@@ -182,10 +254,16 @@ Appending Live rows to an existing batch is not supported yet; create a new batc
   durable profile-container ownership lock as desktop and cloud automation.
   Reservations remain active during startup and cleanup. Live has a bounded
   four-hour-plus-cleanup deadline rather than the default 30-minute task deadline.
-- `data/live/<profile>/settings.json`: stream key and URLs, atomically written with
-  mode 0600 in a private directory. These files are git-ignored. Keys are stored
-  locally as plaintext protected by filesystem permissions; this is not OS-vault
-  encryption. Settings GET returns only `key_saved`, never the key.
+- `data/live/<profile>/settings.json`: saved server and Producer URLs, atomically
+  written with mode 0600 in a private directory. Legacy saved keys are ignored for
+  execution. Preparation uses the verified stream-key Copy control twice and
+  requires exact matching values. Missing, changed or ambiguous reads stop before
+  ingest; no cached-key fallback is permitted. The copied key stays in current-run
+  memory and is not saved to disk, logs, evidence, queue or API responses.
+- The actual destination is excluded with a local cross-process file lock held
+  through sender/container cleanup. The filename is a digest, never a raw key.
+  Duplicate-destination protection therefore uses the current copied key rather
+  than old cached configuration.
 - The key is sent through stdin to the container wrapper, not in host command
   arguments. It is necessarily available to FFmpeg inside its container. Raw
   encoder stderr/OCR output is not exposed in status, logs or evidence.
@@ -207,8 +285,9 @@ Appending Live rows to an existing batch is not supported yet; create a new batc
 All endpoints are under `/api/profiles/{profile_id}/live` and inherit the desktop
 session middleware. `GET /settings`, `PUT /settings`, `GET /status`,
 `POST /start` (`filename`, optional `playback_mode` defaulting to `auto`, `loop`, `muted`, `max_duration_seconds`), `POST /stop`, and `POST /review`
-(`confirmed_ended: true`). A blank key during settings update preserves a saved
-key. Profile IDs, media paths and Facebook RTMPS destinations are validated.
+(`confirmed_ended: true`). Legacy key fields remain accepted for compatibility,
+but execution always uses the freshly copied key. Profile IDs, media paths and
+Facebook RTMPS destinations are validated.
 
 ## Cloud impact
 

@@ -15,7 +15,7 @@ DEFAULT_CONTAINER_MB = 1500.0
 MIN_CONTAINER_MB = 800.0
 CALM_SECONDS_BEFORE_GROWING = 120.0
 ABSOLUTE_MAX_PARALLEL = 16
-START_SPACING_MS = {"calm": 8000, "busy": 20000, "pressure": 30000}
+START_SPACING_MS = {"calm": 10000, "busy": 20000, "pressure": 30000}
 ELASTIC_SCALE = {"calm": 1.0, "busy": 0.75, "pressure": 0.5}
 
 
@@ -59,14 +59,23 @@ class AdaptiveController:
         self.calm_since = None
         self.container_mb = DEFAULT_CONTAINER_MB
         self.last: Decision | None = None
+        self.mode = 'auto'
 
-    def configure(self, *, max_parallel: int | None, reserve_percent: int) -> None:
+    def configure(self, *, max_parallel: int | None, reserve_percent: int, mode: str = 'auto') -> None:
+        if mode != self.mode:
+            self.limit = 2
+            self.calm_since = None
+        self.mode = mode
         self.max_parallel = max_parallel
         self.reserve_percent = reserve_percent
 
     # Targets leave the user's reserve free on top of the usual headroom.
     def _targets(self) -> dict:
         reserve = max(0, min(40, int(self.reserve_percent)))
+        if self.mode == 'extreme':
+            return {'memory': 85, 'cpu': 90}
+        if self.mode == 'custom':
+            return {'memory': 90 - reserve, 'cpu': 95 - reserve}
         return {"memory": 75 - reserve, "cpu": 70 - reserve}
 
     def _learn_container_memory(self, containers: dict) -> None:
@@ -98,12 +107,12 @@ class AdaptiveController:
 
         memory, cpu = sample["memory_percent"], sample["cpu_percent"]
         gpu_memory = sample.get("gpu_memory_percent") or 0.0
-        severe = memory >= targets["memory"] + 15 or pressure("memory") >= 20 or pressure("memory", "full") >= 5
+        severe = memory >= min(90, targets["memory"] + 15) or pressure("memory") >= 20 or pressure("memory", "full") >= 5
         if severe:
             return "pressure", f"memory is under pressure ({memory:.0f}% used)", True
         if memory >= targets["memory"] + 10 or pressure("memory") >= 10:
             return "pressure", f"memory {memory:.0f}% is above its {targets['memory']}% target", False
-        if cpu >= targets["cpu"] + 20 or pressure("cpu") >= 40 or pressure("io") >= 30:
+        if cpu >= min(95, targets["cpu"] + 20) or pressure("cpu") >= 40 or pressure("io") >= 30:
             return "pressure", f"the machine is overloaded (CPU {cpu:.0f}%)", False
         if gpu_memory >= 92:
             return "pressure", f"GPU memory {gpu_memory:.0f}% is nearly full", False
@@ -113,7 +122,7 @@ class AdaptiveController:
             return "busy", f"CPU {cpu:.0f}% or waiting time is above target", False
         return "calm", "resources available", False
 
-    def decide(self, sample: dict, *, running_jobs: int, since_last_start_ms: float = math.inf) -> Decision:
+    def decide(self, sample: dict, *, running_jobs: int, since_last_start_ms: float = math.inf, demand: bool = False) -> Decision:
         now = self.clock()
         self._learn_container_memory(sample.get("containers") or {})
         ceiling = self._ceiling(sample)
@@ -121,6 +130,9 @@ class AdaptiveController:
         targets = self._targets()
         predicted = (sample["memory_total_mb"] - sample["memory_available_mb"] + self.container_mb) \
             / max(1, sample["memory_total_mb"]) * 100
+
+        if self.mode == 'custom':
+            self.limit = ceiling
 
         if state == "pressure":
             # Shrink fast: never below one job, never above what is running.
@@ -130,12 +142,13 @@ class AdaptiveController:
             self.calm_since = None
         else:
             self.calm_since = self.calm_since if self.calm_since is not None else now
-            grow = (now - self.calm_since >= CALM_SECONDS_BEFORE_GROWING
-                    and running_jobs >= self.limit and predicted < targets["memory"])
+            calm_seconds = 10.0 if self.mode == 'extreme' else CALM_SECONDS_BEFORE_GROWING
+            grow = (now - self.calm_since >= calm_seconds
+                    and (running_jobs >= self.limit or demand) and predicted < targets["memory"])
             if grow and self.limit < ceiling:
                 self.limit += 1
                 self.calm_since = now
-                reason = f"calm for {CALM_SECONDS_BEFORE_GROWING:.0f}s; allowing {self.limit} parallel jobs"
+                reason = f"calm for {calm_seconds:.0f}s; allowing {self.limit} parallel jobs"
         self.limit = min(self.limit, ceiling)
 
         spacing = START_SPACING_MS[state]
@@ -146,6 +159,8 @@ class AdaptiveController:
         elif state != "pressure" and since_last_start_ms < spacing:
             reason = "spacing container starts"
         publishers, preparers, containers = split_limit(self.limit)
+        if self.mode == 'extreme':
+            publishers = preparers = self.limit
         self.last = Decision(
             state=state, limit=self.limit, max_publishers=publishers, max_preparers=preparers,
             max_containers=containers, ceiling=ceiling, start_spacing_ms=spacing, room_for_one=room_for_one,

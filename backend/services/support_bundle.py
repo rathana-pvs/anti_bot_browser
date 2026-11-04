@@ -2,11 +2,11 @@ import re
 from datetime import datetime, timezone
 
 ALWAYS_REDACT_KEY = re.compile(
-    r"(password|passwd|proxy_pass|proxy_user|cookie|authorization|access[_-]?token|refresh[_-]?token|secret|email)",
+    r"(password|passwd|proxy_pass|proxy_user|cookie|authorization|access[_-]?token|refresh[_-]?token|stream[_-]?key|secret|email)",
     re.IGNORECASE,
 )
 CONTENT_KEY = re.compile(
-    r"^(base_caption|spun_caption|caption|first_comment|comment_link)$",
+    r"^(base_caption|spun_caption|caption|title|pinned_comment|first_comment|comment_link)$",
     re.IGNORECASE,
 )
 
@@ -20,8 +20,9 @@ def sanitize_diagnostic_string(value: str, options: dict | None = None) -> str:
 
     sanitized = re.sub(r"://[^\s/@:]+:[^\s/@]+@", "://[REDACTED_CREDENTIALS]@", sanitized)
     sanitized = re.sub(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED_TOKEN]", sanitized, flags=re.IGNORECASE)
+    sanitized = re.sub(r"rtmps?://[^\s\"'<>]+", "[REDACTED_STREAM_URL]", sanitized, flags=re.IGNORECASE)
     sanitized = re.sub(
-        r"\b(password|passwd|proxy_pass|proxy_user|access_token|refresh_token|token|secret)\s*[:=]\s*[^\s,;]+",
+        r"\b(password|passwd|proxy_pass|proxy_user|access_token|refresh_token|stream_key|token|secret)\s*[:=]\s*[^\s,;]+",
         r"\1=[REDACTED]",
         sanitized,
         flags=re.IGNORECASE,
@@ -103,7 +104,21 @@ def build_execution_diagnostic(match: dict, options: dict | None = None) -> dict
         },
     }
 
+    for field in (
+        "stage_updated_at", "last_active_stage", "published_at", "recovered_at",
+        "review_status", "review_note", "reviewed_at", "network_recovery",
+        "preparation_completed_at", "permalink_note", "permalink_source",
+        "post_url_verified_at", "first_comment_note", "first_comment_source",
+        "first_comment_verified_at", "first_comment_retry_count", "comment_retry_status",
+        "comment_retry_started_at", "comment_retry_ended_at", "broadcast_confirmed",
+        "duration_seconds", "warming_surface", "warming_duration_seconds", "warming_scroll_actions",
+    ):
+        if field in execution:
+            report["execution"][field] = execution[field]
+
     if options.get("includeContent"):
+        report["execution"]["title"] = post.get("title", "")
+        report["execution"]["pinned_comment"] = post.get("pinned_comment")
         report["execution"]["base_caption"] = post.get("base_caption", "")
         report["execution"]["spun_caption"] = execution.get("spun_caption", "")
         report["execution"]["first_comment"] = post.get("first_comment")

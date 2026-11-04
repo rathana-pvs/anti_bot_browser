@@ -29,7 +29,7 @@ export function AccountOverview({ profile, proxies, devices, activity, onOpenQue
   const network = networkSignal(profile, proxies);
   const android = isAndroid(profile);
   const { health } = useAccountHealth();
-  const stage = stageView(profile, health[profile.id], activity);
+  const stage = stageView(profile, health[profile.id]);
   const upcoming = activity.recent.filter(item => ['pending', 'ready'].includes(item.status))
     .sort((a, b) => (new Date(a.scheduled_at).getTime() || 0) - (new Date(b.scheduled_at).getTime() || 0)).slice(0, 5);
   return <div className="mx-auto grid max-w-5xl gap-4 text-xs lg:grid-cols-2">

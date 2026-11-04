@@ -67,3 +67,18 @@ def export_global_support(
         )
     except Exception as err:
         raise HTTPException(status_code=500, detail=str(err))
+
+
+@router.post("/batch/{batch_id}")
+def export_batch_support(batch_id: str, background_tasks: BackgroundTasks, payload: dict = Body(None)):
+    payload = payload or {}
+    queue = load_posting_queue()
+    if not any(batch.get("batch_id") == batch_id for batch in queue.get("daily_batches", [])):
+        raise HTTPException(status_code=404, detail="Batch not found")
+    archive_path, filename, temp_root = create_support_archive(
+        queue=queue, batch_id=batch_id, description=str(payload.get("description") or ""),
+        include_content=payload.get("include_content") is True,
+        include_evidence=payload.get("include_evidence") is True,
+    )
+    background_tasks.add_task(cleanup_temp_dir, temp_root)
+    return FileResponse(path=str(archive_path), filename=filename, media_type="application/zip")

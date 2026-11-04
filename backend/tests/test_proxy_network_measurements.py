@@ -9,6 +9,30 @@ NETWORK = {'mode': 'pool', 'proxy_host': 'proxy.example.test', 'proxy_port': 808
            'proxy_type': 'http', 'proxy_user': 'sample-user', 'proxy_pass': 'sample-pass'}
 
 
+@pytest.mark.parametrize('original', [None, '', '/opt/system-libs'])
+def test_frozen_curl_restores_system_library_environment(monkeypatch, original):
+    monkeypatch.setattr(service.sys, 'frozen', True, raising=False)
+    monkeypatch.setattr(service.sys, 'platform', 'linux')
+    monkeypatch.setenv('LD_LIBRARY_PATH', '/tmp/_MEI-test')
+    monkeypatch.setenv('PROXY_TEST_PRESERVED', 'yes')
+    monkeypatch.delenv('LD_LIBRARY_PATH_ORIG', raising=False)
+    if original is not None:
+        monkeypatch.setenv('LD_LIBRARY_PATH_ORIG', original)
+    calls = stub(monkeypatch, '200 5000000 2')
+    assert service.check_proxy_speed(NETWORK, 'download')['success']
+    env = calls[0][1]['env']
+    assert env.get('LD_LIBRARY_PATH') == (original or None)
+    assert 'LD_LIBRARY_PATH_ORIG' not in env
+    assert env['PROXY_TEST_PRESERVED'] == 'yes'
+    assert service.os.environ['LD_LIBRARY_PATH'] == '/tmp/_MEI-test'
+
+
+def test_source_curl_preserves_library_environment(monkeypatch):
+    monkeypatch.setattr(service.sys, 'frozen', False, raising=False)
+    monkeypatch.setenv('LD_LIBRARY_PATH', '/opt/custom-libs')
+    assert service._curl_environment()['LD_LIBRARY_PATH'] == '/opt/custom-libs'
+
+
 def stub(monkeypatch, output, returncode=0):
     calls = []
     def run(argv, **kwargs):
@@ -117,3 +141,32 @@ def test_route_uses_saved_profile_network(tmp_path, monkeypatch, kind):
     monkeypatch.setattr(profiles,'check_facebook_response' if kind == 'facebook' else 'check_proxy_speed',check)
     result = profiles.check_profile_facebook_response('profile_001') if kind == 'facebook' else profiles.check_profile_proxy_speed('profile_001',kind)
     assert result['success'] and result['last_checked']
+
+
+@pytest.mark.parametrize('original', [None, '/opt/system-libs', ''])
+@pytest.mark.parametrize('kind', ['download', 'upload', 'facebook', 'geography'])
+def test_frozen_curl_uses_system_libraries(monkeypatch, original, kind):
+    monkeypatch.setattr(service.sys, 'frozen', True, raising=False)
+    monkeypatch.setenv('LD_LIBRARY_PATH', '/tmp/_MEI-test')
+    if original is None:
+        monkeypatch.delenv('LD_LIBRARY_PATH_ORIG', raising=False)
+    else:
+        monkeypatch.setenv('LD_LIBRARY_PATH_ORIG', original)
+    calls = stub(monkeypatch, '{"success":true,"ip":"1.1.1.1","timezone":{"id":"UTC"}}' if kind == 'geography' else '200 5000000 2')
+    if kind == 'geography':
+        service.lookup_proxy_geography({'host': 'proxy.example.test', 'port': 8080})
+    elif kind == 'facebook':
+        service.check_facebook_response(NETWORK)
+    else:
+        service.check_proxy_speed(NETWORK, kind)
+    # Empty original paths are removed so bundled libraries cannot leak into curl.
+    assert calls[0][1]['env'].get('LD_LIBRARY_PATH') == (original or None)
+    assert service.os.environ['LD_LIBRARY_PATH'] == '/tmp/_MEI-test'
+
+
+def test_dev_curl_preserves_library_path(monkeypatch):
+    monkeypatch.setattr(service.sys, 'frozen', False, raising=False)
+    monkeypatch.setenv('LD_LIBRARY_PATH', '/opt/dev-libs')
+    calls = stub(monkeypatch, '200 5000000 2')
+    assert service.check_proxy_speed(NETWORK, 'download')['success']
+    assert calls[0][1]['env']['LD_LIBRARY_PATH'] == '/opt/dev-libs'

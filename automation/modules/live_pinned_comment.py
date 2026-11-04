@@ -1,5 +1,7 @@
 """Guarded, reversible Live Producer preset comment setup; never publishes."""
 import time
+import re
+import unicodedata
 import cv2
 import numpy as np
 from modules.live_producer import label, phrase, enabled_color
@@ -186,6 +188,53 @@ class LivePinnedComment:
                         'add a comment', 'write a pinned comment', 'write your pinned comment here'}
         return self.is_editor(items) and any(label(item) in placeholders for item in items)
 
+    def preview_matches(self, comment):
+        """Confirm the complete saved preview; uncertain OCR falls back to the editor."""
+        image, items = self.read_right()
+        anchors = [self.find(items, {name}) for name in
+                   ('preset pinned comment', 'preview', 'pinned comment', 'edit')]
+        if any(len(matches) != 1 for matches in anchors):
+            return False
+        heading, preview, pinned, edit = (matches[0] for matches in anchors)
+        switch = self.toggle(image, items)
+        if (not switch or not switch['enabled']
+                or not heading['center'][1] < preview['center'][1] < pinned['center'][1] < edit['center'][1]
+                or edit['bounds'][3] >= image.shape[0] - 3):
+            return False
+        # Only the bubble below the pinned label and above Edit is relevant.
+        # This excludes the Live title/caption and the preset's help text.
+        bubble = [i for i in items if i['bounds'][1] > pinned['bounds'][3]
+                  and i['bounds'][3] < edit['bounds'][1]
+                  and i['bounds'][0] >= pinned['bounds'][0] - 20]
+        if not bubble or any(i.get('confidence', 0) < .90 for i in bubble):
+            return False
+        rows = []
+        for item in sorted(bubble, key=lambda i: (i['center'][1], i['center'][0])):
+            height = item['bounds'][3] - item['bounds'][1]
+            if rows and abs(item['center'][1] - rows[-1][0]['center'][1]) <= .6 * height:
+                rows[-1].append(item)
+            else:
+                rows.append([item])
+        # Facebook puts the account name on the first row of the bubble.
+        if len(rows) < 2:
+            return False
+        lines = [' '.join(i['text'] for i in sorted(row, key=lambda i: i['center'][0])) for row in rows[1:]]
+        if any('…' in line or '...' in line for line in lines):
+            return False
+        normalize = lambda text: ' '.join(unicodedata.normalize('NFC', text).split())
+        expected = normalize(comment)
+        if normalize(' '.join(lines)) == expected:
+            return True
+        # A single URL/word can wrap without an actual space in its saved text.
+        if len(expected.split()) != 1:
+            return False
+        candidate = normalize(''.join(lines))
+        if expected.startswith(('https://', 'http://')):
+            # OCR can merge the adjacent scheme slashes. Keep the full host,
+            # path and query exact; never use fuzzy matching for link targets.
+            candidate = re.sub(r'^(https?):/(?!/)', r'\1://', candidate)
+        return candidate == expected
+
     def restore_setup(self):
         _, items = self.read_right()
         headings = self.find(items,{'preset pinned comment'})
@@ -213,9 +262,15 @@ class LivePinnedComment:
         if desired:
             self.open_editor()
             target = self.focus_body(click=False)
-            self.task.live_input.enter(comment, target, field='comment',
-                                       empty_check=self.empty_body_visible,
-                                       surface_guard=lambda: self.is_editor(self.read_editor()[1]))
+            entry = self.task.live_input.enter(comment, target, field='comment',
+                                              empty_check=self.empty_body_visible,
+                                              surface_guard=lambda: self.is_editor(self.read_editor()[1]),
+                                              replace_existing=True)
+            if entry.status == 'reused_existing_content':
+                # A freshly opened saved preset already matches. No Save or
+                # second editor visit is needed when nothing was changed.
+                self.task.live_input.human.key_press('Escape', clear_modifiers=True)
+                return self.restore_setup()
             image,items = self.read_editor()
             fresh_image,fresh_items = self.read_editor()
             buttons,matches = self.find(items,{'save'}),self.find(fresh_items,{'save'})
@@ -233,7 +288,9 @@ class LivePinnedComment:
                 time.sleep(.5)
             else:
                 raise RuntimeError('Facebook did not confirm the pinned comment was saved.')
-            # Reopen and compare the saved value rather than trusting typing alone.
+            if self.preview_matches(comment):
+                return self.restore_setup()
+            # Hidden, truncated or uncertain previews get one exact clipboard check.
             self.open_editor()
             self.focus_body()
             owner = self.task.client.input_owner()

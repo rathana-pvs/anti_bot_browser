@@ -14,7 +14,24 @@ from engine.runtime_paths import runtime_root
 
 VERSION = '3.2.2'
 GPU_INDEX = 'https://www.paddlepaddle.org.cn/packages/stable/cu126/'
+BLACKWELL_GPU_INDEX = 'https://www.paddlepaddle.org.cn/packages/stable/cu129/'
 STATUS_FILE = runtime_root() / 'data/paddle_runtime.json'
+
+
+def select_gpu_index():
+    """Blackwell needs the CUDA 12.9 wheel; retain 12.6 for older GPUs."""
+    executable = nvidia_smi()
+    if executable:
+        try:
+            output = subprocess.check_output(
+                [executable, '--query-gpu=compute_cap', '--format=csv,noheader'],
+                text=True, stderr=subprocess.DEVNULL, timeout=10)
+            capabilities = [float(line.strip()) for line in output.splitlines() if line.strip()]
+            if any(capability >= 10.0 for capability in capabilities):
+                return BLACKWELL_GPU_INDEX
+        except (subprocess.SubprocessError, OSError, ValueError):
+            pass
+    return GPU_INDEX
 
 
 def probe_runtime():
@@ -45,7 +62,10 @@ except Exception as exc:
     try:
         result = subprocess.run([sys.executable, '-c', probe], capture_output=True,
                                 text=True, timeout=120, check=False)
-        return json.loads(result.stdout.strip().splitlines()[-1])
+        lines = result.stdout.strip().splitlines()
+        if not lines:
+            return {'error': f'Paddle probe exited {result.returncode}: {result.stderr.strip()[-2000:]}'}
+        return json.loads(lines[-1])
     except (subprocess.SubprocessError, OSError, ValueError, IndexError) as exc:
         return {'error': type(exc).__name__}
 
@@ -61,11 +81,12 @@ def ready(device):
 
 def install(device):
     package = 'paddlepaddle-gpu' if device == 'cuda' else 'paddlepaddle'
+    index = select_gpu_index() if device == 'cuda' else None
     with tempfile.TemporaryDirectory(prefix='paddle-runtime-') as directory:
         command = [sys.executable, '-m', 'pip', 'download', '--no-deps', '--dest', directory,
                    f'{package}=={VERSION}']
         if device == 'cuda':
-            command.extend(['--index-url', GPU_INDEX])
+            command.extend(['--index-url', index])
         # Keep the old runtime intact until a replacement wheel is available.
         subprocess.run(command, check=True)
         wheels = list(Path(directory).glob('*.whl'))
@@ -76,7 +97,7 @@ def install(device):
                         'paddlepaddle', 'paddlepaddle-gpu'], check=True)
         command = [sys.executable, '-m', 'pip', 'install', str(wheels[0])]
         if device == 'cuda':
-            command.extend(['--index-url', GPU_INDEX])
+            command.extend(['--index-url', index])
         subprocess.run(command, check=True)
 
 
@@ -95,7 +116,7 @@ def configure_current_environment():
                 print(f'Installing PaddlePaddle {VERSION} {device} runtime...', flush=True)
                 install(device)
             if not ready(device):
-                raise RuntimeError(f'Paddle {device} runtime verification failed')
+                raise RuntimeError(f'Paddle {device} runtime verification failed: {json.dumps(probe_runtime())}')
             write_status(device, desired == 'cuda', reason)
             print(f'PaddlePaddle {VERSION} {device} runtime is ready.', flush=True)
             return 0
@@ -103,7 +124,7 @@ def configure_current_environment():
             if device == 'cpu':
                 print(f'ERROR: Paddle CPU runtime could not be verified: {exc}', file=sys.stderr)
                 return 1
-            reason = 'CUDA installation or verification failed; using the CPU fallback.'
+            reason = f'CUDA installation or verification failed: {exc}; using the CPU fallback.'
             print(f'WARNING: {reason} ({type(exc).__name__})', file=sys.stderr)
     return 1
 

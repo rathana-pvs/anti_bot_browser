@@ -30,6 +30,38 @@ def test_lists_only_png_screenshots_in_order(evidence):
     assert queue_router.list_execution_evidence("exec-1") == {"images": ["01_composer.png", "02_post_clicked.png"]}
 
 
+def test_live_diagnostics_expose_only_fixed_codes(evidence):
+    _, run = evidence
+    (run / 'diagnostics.json').write_text(json.dumps({
+        'encoder_exit_code': 1, 'encoder_failure_reason': 'invalid_stream_key',
+        'failure_stage': 'starting', 'failure_code': 'task_cancelled', 'final_browser_state': 'unconfirmed',
+        'stderr': 'FB-SECRET', 'stream_key': 'FB-SECRET',
+    }))
+    response = queue_router.list_execution_evidence('exec-1')
+    assert response['diagnostics'] == {
+        'encoder_exit_code': 1, 'encoder_failure_reason': 'invalid_stream_key',
+        'failure_stage': 'starting', 'failure_code': 'task_cancelled', 'final_browser_state': 'unconfirmed',
+    }
+    assert 'FB-SECRET' not in json.dumps(response)
+
+
+@pytest.mark.parametrize('payload', ['[]', '{broken', '{"encoder_failure_reason":"FB-SECRET"}', '{"failure_code":"FB-SECRET"}'])
+def test_invalid_live_diagnostics_do_not_break_screenshots(evidence, payload):
+    _, run = evidence
+    (run / 'diagnostics.json').write_text(payload)
+    response = queue_router.list_execution_evidence('exec-1')
+    assert len(response['images']) == 2
+    assert 'FB-SECRET' not in json.dumps(response)
+
+
+def test_symlinked_diagnostics_are_not_read(evidence, tmp_path):
+    _, run = evidence
+    outside = tmp_path / 'private.json'
+    outside.write_text('{"encoder_failure_reason":"invalid_stream_key"}')
+    (run / 'diagnostics.json').symlink_to(outside)
+    assert 'diagnostics' not in queue_router.list_execution_evidence('exec-1')
+
+
 def test_serves_a_screenshot(evidence):
     response = queue_router.get_execution_evidence_image("exec-1", "02_post_clicked.png")
     assert response.media_type == "image/png"

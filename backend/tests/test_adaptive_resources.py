@@ -113,7 +113,8 @@ def test_idle_containers_never_lower_the_estimate_below_the_floor():
 def test_spacing_blocks_until_it_has_passed():
     controller = AdaptiveController()
     assert controller.decide(sample(), running_jobs=0, since_last_start_ms=3000).admit is False
-    assert controller.decide(sample(), running_jobs=0, since_last_start_ms=9000).admit is True
+    assert controller.decide(sample(), running_jobs=0, since_last_start_ms=9000).admit is False
+    assert controller.decide(sample(), running_jobs=0, since_last_start_ms=10000).admit is True
 
 
 def test_psi_and_docker_sizes_are_parsed(tmp_path):

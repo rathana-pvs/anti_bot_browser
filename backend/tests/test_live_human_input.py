@@ -9,7 +9,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'automation'))
 from engine.behavior_timing import InteractionWait
 from engine.behavior_timing import EntryInterrupted
-from modules.composer_entry import EntryResult
 from modules.live_input import LiveInput
 
 
@@ -71,9 +70,96 @@ def adapter(monkeypatch):
     return value
 
 
-def enter(adapter, text, field='live_caption', empty=True, surface=True):
+def enter(adapter, text, field='live_caption', empty=True, surface=True, replace_existing=False):
     return adapter.enter(text, {'center': (20, 30)}, field=field,
-                         empty_check=lambda: empty, surface_guard=lambda: surface)
+                         empty_check=lambda: empty, surface_guard=lambda: surface,
+                         replace_existing=replace_existing)
+
+
+def test_live_preset_replaces_old_saved_comment_with_one_verified_paste(adapter):
+    old, new = 'https://example.com/old', 'New pinned comment\nខ្មែរ 😀'
+    adapter.client.value = old
+    assert enter(adapter, new, 'comment', empty=False, replace_existing=True).verified
+    assert adapter.client.value == new
+    assert adapter.client.commands.count('key ctrl+v') == 1
+    assert adapter.client.commands.count('key ctrl+c') == 2  # Existing text, then final text after review.
+    assert adapter.client.typed == []
+    assert 'key BackSpace' not in adapter.client.commands
+    assert old not in repr(adapter.events) and new not in repr(adapter.events)
+
+
+@pytest.mark.parametrize('field', ['live_title', 'live_caption'])
+def test_preset_replacement_cannot_be_enabled_for_live_details(adapter, field):
+    adapter.client.value = 'Operator draft'
+    with pytest.raises(ValueError, match='guarded comment editor'):
+        enter(adapter, 'Requested text', field, replace_existing=True)
+    assert adapter.client.value == 'Operator draft'
+    adapter.human.click.assert_not_called()
+
+
+def test_live_preset_replacement_requires_confirmed_editor(adapter):
+    adapter.client.value = 'Saved comment'
+    with pytest.raises(RuntimeError, match='composer_unconfirmed'):
+        enter(adapter, 'New comment', 'comment', surface=False, replace_existing=True)
+    assert adapter.client.value == 'Saved comment'
+    assert 'key ctrl+v' not in adapter.client.commands
+
+
+def test_live_preset_replacement_does_not_guess_an_empty_field(adapter):
+    with pytest.raises(RuntimeError, match='draft_unknown'):
+        enter(adapter, 'New comment', 'comment', empty=False, replace_existing=True)
+    assert 'key ctrl+v' not in adapter.client.commands
+
+
+def test_live_preset_focus_lost_during_read_is_not_overwritten(adapter):
+    adapter.client.value = 'Saved comment'
+    original = adapter.client.read_clipboard
+    reads = []
+    def read():
+        value = original()
+        reads.append(value)
+        if len(reads) == 1:
+            adapter.client.owner = ('other-window', '10,20')
+        return value
+    adapter.client.read_clipboard = read
+    with pytest.raises(RuntimeError, match='input_ownership_lost'):
+        enter(adapter, 'New comment', 'comment', replace_existing=True)
+    assert adapter.client.value == 'Saved comment'
+    assert 'key ctrl+v' not in adapter.client.commands
+
+
+def test_live_preset_partial_replacement_is_not_retried(adapter):
+    adapter.client.value = 'Saved comment'
+    def partial(text, **kwargs):
+        adapter.client.value = 'Partial new comment'
+    adapter.paste_text = Mock(side_effect=partial)
+    with pytest.raises(RuntimeError, match='field_content_changed'):
+        enter(adapter, 'New comment', 'comment', replace_existing=True)
+    with pytest.raises(RuntimeError, match='previous_entry_changed'):
+        enter(adapter, 'New comment', 'comment', replace_existing=True)
+    adapter.paste_text.assert_called_once()
+
+
+def test_live_preset_clipboard_failure_preserves_saved_comment(adapter):
+    adapter.client.value = 'Saved comment'
+    original = adapter.client.write_clipboard
+    def write(text):
+        if not text.startswith('entry-probe-'):
+            raise RuntimeError('Clipboard unavailable')
+        original(text)
+    adapter.client.write_clipboard = write
+    with pytest.raises(RuntimeError, match='clipboard_failed'):
+        enter(adapter, 'New comment', 'comment', replace_existing=True)
+    assert adapter.client.value == 'Saved comment'
+    assert 'key ctrl+v' not in adapter.client.commands
+    assert adapter.client.typed == []
+
+
+def test_live_preset_replacement_readback_must_survive_review(adapter):
+    adapter.client.value = 'Saved comment'
+    adapter.review.review = Mock(side_effect=lambda *args: setattr(adapter.client, 'value', 'Changed after paste'))
+    with pytest.raises(RuntimeError, match='field_content_changed'):
+        enter(adapter, 'New comment', 'comment', replace_existing=True)
 
 
 @pytest.mark.parametrize('draw,method', [(.1, 'type'), (.9, 'paste')])
@@ -83,6 +169,7 @@ def test_short_live_title_and_caption_use_one_complete_method(adapter, draw, met
         assert enter(adapter, text).verified
     assert adapter.client.value == text
     assert bool(adapter.client.typed) == (method == 'type')
+    assert adapter.client.commands.count('key ctrl+c') == 2
     assert ('key ctrl+v' in adapter.client.commands) == (method == 'paste')
     adapter.client.screenshot.assert_not_called()
     assert text not in repr(adapter.events)
@@ -149,6 +236,20 @@ def test_live_focus_loss_blocks_save(adapter):
     with pytest.raises(RuntimeError, match='before Save'): adapter.before_save()
 
 
+def test_live_save_can_use_time_reserved_after_text_entry(adapter):
+    adapter.composer_entry.last_owner = adapter.client.owner
+    adapter.task.preparation_deadline = time.monotonic() + 10
+    assert adapter.deadline() < time.monotonic()
+    adapter.before_save()
+
+
+def test_live_save_reports_expired_preparation_budget(adapter):
+    adapter.composer_entry.last_owner = adapter.client.owner
+    adapter.task.preparation_deadline = time.monotonic() - 1
+    with pytest.raises(RuntimeError, match='preparation deadline was reached before Save'):
+        adapter.before_save()
+
+
 def test_live_cancellation_never_refocuses(adapter):
     adapter.task.input_cancelled = True
     with pytest.raises(RuntimeError, match='cancelled'): enter(adapter, 'Caption')
@@ -164,8 +265,6 @@ def test_live_telemetry_allowlist_drops_content_and_secrets(adapter):
 
 @pytest.mark.parametrize('reason', ['focus_changed', 'deadline_exceeded', 'composer_unconfirmed'])
 def test_live_review_error_identifies_field_and_safe_reason(adapter, reason):
-    adapter.composer_entry.enter = Mock(return_value=EntryResult('entered_verified', True))
-    adapter.composer_entry.last_owner = adapter.client.owner
     adapter.review.review = Mock(side_effect=EntryInterrupted('PRIVATE field contents', reason))
     with pytest.raises(RuntimeError, match='caption review was interrupted \\(' + reason + '\\)') as error:
         enter(adapter, 'PRIVATE caption')
@@ -173,9 +272,7 @@ def test_live_review_error_identifies_field_and_safe_reason(adapter, reason):
 
 
 def test_live_review_reports_changed_content_without_exposing_it(adapter):
-    adapter.composer_entry.enter = Mock(return_value=EntryResult('entered_verified', True))
-    adapter.composer_entry.last_owner = adapter.client.owner
-    adapter.composer_entry.read_field = Mock(return_value='PRIVATE changed draft')
+    adapter.review.review = Mock(side_effect=lambda *args: setattr(adapter.client, 'value', 'PRIVATE changed draft'))
     with pytest.raises(RuntimeError, match='field_content_changed') as error:
         enter(adapter, 'Requested caption')
     assert 'PRIVATE' not in str(error.value)

@@ -1,3 +1,55 @@
+# Version 1.2.3
+
+- Support both centered and left-editor image-post composer layouts, with
+  caption readback and the existing publication checks.
+- Improve Live preparation, automatic copying of the current broadcast key,
+  startup/ending checks, and cleanup. Broadcast senders now have a hard
+  120-second limit, with ending started at 100 seconds.
+- When a Live comment is supplied, confirm Live, end the broadcast, then post
+  and verify the comment. A recent-profile-post fallback handles ended pages
+  without a comment input. Unconfirmed comments remain for review.
+- Retain fuller Live screenshots and diagnostic evidence for successful
+  comments and failed checks. Review screenshots before sharing: they may show
+  stream credentials and account content.
+- Add Auto, Extreme and Custom resource modes, including separate post and Live
+  concurrency limits within a shared account limit. Existing Low/Medium/High
+  settings migrate to equivalent Custom limits.
+- Improve account-health warnings, OCR recovery, queue controls and handling of
+  Facebook feed notices.
+
+**Linux only.** After installing, run **Settings → Setup and repair → Install /
+update runtime** when prompted. Existing profiles, sessions and settings remain
+in persistent app storage.
+
+# Version 1.2.2
+
+- Fix proxy download/upload speed checks failing in the packaged Linux app when
+  its bundled OpenSSL conflicts with the system curl libraries. Facebook
+  connection and proxy location checks use the same corrected environment.
+- Proxy timeouts and provider failures can still occur; this update fixes the
+  library conflict that prevented the checks from running.
+
+**Linux only.** After installing, run **Settings → Setup and repair → Install /
+update runtime** when prompted. Existing profiles, sessions and settings remain
+in persistent app storage.
+
+# Version 1.2.1
+
+- Export a complete batch support ZIP from Posting Queue → Batch → Export batch
+  report ZIP. Includes all outcomes, including successful posts, errors, skipped
+  items, and items needing review, with per-item logs, stage history and telemetry.
+- Optionally include post content and available evidence screenshots. The report
+  includes a readable summary, structured JSON and interpretation instructions
+  for support. Browser profiles and session directories are excluded; diagnostic
+  credentials and stream keys are redacted.
+- Live setup warnings identify the account names and IDs sharing a Facebook
+  stream key, making duplicate destinations easier to correct.
+- Keep local Android signing credentials and device identity files out of Git.
+
+**Linux only.** After installing, run **Settings → Setup and repair → Install /
+update runtime** when prompted. Existing profiles, sessions and settings remain
+in persistent app storage.
+
 # Version 1.2.0
 
 **Linux only.** Windows and WSL are no longer supported: there is no Windows

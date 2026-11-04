@@ -14,6 +14,11 @@ def label(item):
     return re.sub(r'\s+', ' ', re.sub(r'[^a-z0-9 ]', '', item['text'].lower())).strip()
 
 
+def control_label(item):
+    """Footer label without the camera icon OCR can read as one leading character."""
+    return re.sub(r'^[a-z0-9] ?(?=go live)', '', label(item).replace('iive', 'live'))
+
+
 def phrase(items, text):
     """Match one label or nearby wrapped lines in the same control region."""
     if any(text in label(i) for i in items):
@@ -96,7 +101,9 @@ class LiveProducerTemplates:
 
     def controls(self, frame, target):
         items = frame.regions.get('footer', [])
-        return [i for i in items if label(i).replace('iive', 'live') in self.labels(target) and i.get('confidence', 0) >= .55]
+        if target == 'end_live':
+            items = items + frame.regions.get('live_header_end', [])
+        return [i for i in items if control_label(i) in self.labels(target) and i.get('confidence', 0) >= .55]
 
     def observe(self, image, regions):
         sidebar, footer = regions.get('sidebar', []), regions.get('footer', [])
@@ -108,6 +115,9 @@ class LiveProducerTemplates:
         starts, ends = self.controls(frame, 'go_live'), self.controls(frame, 'end_live')
         signal['go_live_enabled'] = float(len(starts) == 1 and enabled_color(image, starts[0]))
         signal['end_control'] = float(len(ends) == 1 and enabled_color(image, ends[0], 'red'))
+        header = regions.get('live_header', [])
+        if signal['end_control'] and any(re.fullmatch(r'live(?: \d{1,2} ?\d{2})?', label(i)) for i in header):
+            signal['active_surface'] = signal['live_notice'] = 1.0
         for name in ('left', 'center'):
             items = regions.get('setup_' + name, [])
             signal[name + '_setup'] = float(self.has(items, 'setup_heading') and self.has(items, 'stream_key'))
@@ -123,9 +133,10 @@ class LiveProducerTemplates:
         home = regions.get('home', [])
         signal['setup_control'] = float(any(label(i) in self.labels('open_setup') for i in home))
         # A scrolled Home page can hide its Welcome heading above the OCR region.
-        # Require the fixed Home sidebar and both history tabs beside Set up.
-        scrolled_home = (signal['setup_control'] and phrase(home, 'past live videos')
-                         and phrase(home, 'live now')
+        # Require the fixed Home sidebar plus the history tabs or setup cards.
+        scrolled_home = (signal['setup_control'] and (
+                         (phrase(home, 'past live videos') and phrase(home, 'live now'))
+                         or (phrase(home, 'go live') and phrase(home, 'create a live video ad')))
                          and any(label(i) == 'home' and i.get('confidence', 0) >= .8 for i in sidebar))
         signal['home_surface'] = float(self.has(home, 'home_surface') or scrolled_home)
         result = self.detector.detect(self.templates.values(), [TemplateObservation(signal)])

@@ -5,6 +5,7 @@ import json
 import math
 import os
 import re
+import random
 import tempfile
 import time
 import uuid
@@ -12,6 +13,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 from automation.engine.live_brain import resolve_live_brain
+from automation.live_encoder import ENCODER_FAILURE_REASONS
+from automation.live_comment_status import COMMENT_CODES, COMMENT_ACTION_SECONDS
+from automation.live_account_status import ACCOUNT_BLOCK_ERRORS
 
 from backend.config import DATA_DIR, PROFILES_DIR, SHARED_MEDIA_DIR, AUTOMATION_PYTHON, AUTOMATION_RUNNER, ROOT_DIR, MANAGER_INSTANCE_ID
 from backend.services import automation_service as automation, container_lifecycle as lifecycle
@@ -19,7 +23,9 @@ from backend.services.android_devices import ensure_not_android
 
 LIVE_DIR = DATA_DIR / 'live'
 MAX_VIDEO_SECONDS = 4 * 60 * 60
-ACTIVE_STAGES = {'preparing', 'stream_start_intent', 'sending', 'starting', 'live', 'ending', 'stopping'}
+LIVE_SESSION_LIMIT_SECONDS = 120
+LIVE_END_RESERVE_SECONDS = 20
+ACTIVE_STAGES = {'preparing', 'stream_start_intent', 'sending', 'starting', 'live', 'ending', 'commenting', 'stopping'}
 CONTROLS = {}
 
 
@@ -59,7 +65,35 @@ def read_json(path):
     return json.loads(path.read_text()) if path.exists() else {}
 
 
-def validate_settings(value):
+def launch_settings(profile_id):
+    # Stored keys are legacy configuration and must never be a sender fallback.
+    return validate_settings({**read_json(settings_path(profile_id)), 'stream_key': ''}, require_key=False)
+
+
+def acquire_stream_destination(settings):
+    """Exclude competing senders after the actual prepared key is known."""
+    digest = hashlib.sha256((settings['server_url'] + settings['stream_key']).encode()).hexdigest()
+    root = LIVE_DIR / 'destination_locks'
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    stream = (root / (digest + '.lock')).open('a+b')
+    os.chmod(stream.name, 0o600)
+    try:
+        if os.name == 'nt':
+            import msvcrt
+            if not stream.tell():
+                stream.write(b'\0'); stream.flush()
+            stream.seek(0)
+            msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return stream
+    except OSError:
+        stream.close()
+        raise RuntimeError('Another local sender owns this Facebook broadcast; no video was sent') from None
+
+
+def validate_settings(value, *, require_key=True):
     url = str(value.get('server_url', '')).strip()
     parsed = urlsplit(url)
     if (parsed.scheme != 'rtmps' or parsed.hostname != 'live-api-s.facebook.com'
@@ -67,7 +101,7 @@ def validate_settings(value):
             or parsed.username or parsed.password or parsed.query or parsed.fragment):
         raise ValueError('Use the Facebook RTMPS server URL ending in /rtmp/')
     key = str(value.get('stream_key', '')).strip()
-    if not re.fullmatch(r'[A-Za-z0-9_-]{10,512}', key):
+    if (key or require_key) and not re.fullmatch(r'[A-Za-z0-9_-]{10,512}', key):
         raise ValueError('Enter a valid Facebook stream key')
     producer = str(value.get('producer_url') or '').strip() or 'https://www.facebook.com/live/producer/'
     p = urlsplit(producer)
@@ -111,6 +145,16 @@ def validate_playback(loop=False, max_duration_seconds=None, muted=False, playba
     return result
 
 
+def validate_end_after_comment(enabled, comment):
+    if not isinstance(enabled, bool):
+        raise ValueError('End after comment must be true or false')
+    if enabled and (not isinstance(comment, str) or not comment.strip()):
+        raise ValueError('Enter a Live comment before enabling End Live after comment succeeds')
+    # A supplied comment is the completion target, including older queued jobs
+    # whose optional end-after-comment flag was saved as false.
+    return isinstance(comment, str) and bool(comment.strip())
+
+
 def settings_path(profile_id):
     profile_path(profile_id)
     return LIVE_DIR / profile_id / 'settings.json'
@@ -129,7 +173,7 @@ def save_settings(profile_id, value):
         raise RuntimeError('Stop the current broadcast before changing settings')
     previous = read_json(path)
     # Empty password input preserves a previously saved key; GET never returns it.
-    settings = validate_settings({**value, 'stream_key': value.get('stream_key') or previous.get('stream_key', '')})
+    settings = validate_settings({**value, 'stream_key': value.get('stream_key') or previous.get('stream_key', '')}, require_key=False)
     private_write(path, settings)
     return get_settings(profile_id)
 
@@ -144,9 +188,16 @@ def get_status(profile_id):
     if not saved:
         return {'profile_id': profile_id, 'task': 'live', 'status': 'idle', 'stage': 'idle', 'logs': []}
     if profile_id not in CONTROLS and saved.get('stage') in ACTIVE_STAGES:
-        # Crash/disconnect never authorizes restarting a broadcast.
-        saved.update(status='needs_review', stage='needs_review', ended_at=now(),
-                     error='The worker interrupted this session. Check Facebook and end any active broadcast before clearing it.')
+        # stream_start_intent is durably recorded before sending any bytes.
+        # A setup-only interruption must not become an unresolved broadcast and
+        # lock a queue attempt already recovered as failed_before_publish.
+        if saved.get('stage') == 'preparing' and not saved.get('broadcast_confirmed'):
+            saved.update(status='failed', stage='failed', ended_at=now(),
+                         error='Live setup was interrupted before streaming began')
+        else:
+            # Once ingest might have started, a crash never authorizes replay.
+            saved.update(status='needs_review', stage='needs_review', ended_at=now(),
+                         error='The worker interrupted this session. Check Facebook and end any active broadcast before clearing it.')
         private_write(state_path(profile_id), saved)
     return saved
 
@@ -181,15 +232,15 @@ def update(record, stage=None, **fields):
     record['last_activity_at'] = now()
     # Store only public fields; never serialize processes, keys, or settings.
     public = {k: record[k] for k in ('profile_id', 'task', 'session_id', 'status', 'stage', 'started_at',
-              'ended_at', 'filename', 'duration_seconds', 'elapsed_seconds', 'error', 'logs', 'broadcast_confirmed', 'queue_execution_id', 'loop', 'max_duration_seconds', 'muted', 'brain', 'browser_template', 'browser_state', 'encoder_exit_code', 'final_browser_state', 'playback_mode', 'source_duration_seconds', 'startup_elapsed_seconds', 'playback_started_at', 'evidence_dir') if k in record}
+              'ended_at', 'filename', 'duration_seconds', 'elapsed_seconds', 'error', 'logs', 'broadcast_confirmed', 'queue_execution_id', 'loop', 'max_duration_seconds', 'muted', 'brain', 'browser_template', 'browser_state', 'encoder_exit_code', 'final_browser_state', 'playback_mode', 'source_duration_seconds', 'startup_elapsed_seconds', 'playback_started_at', 'evidence_dir', 'comment_status', 'comment_error_code', 'end_after_comment', 'completion_reason') if k in record}
     private_write(state_path(record['profile_id']), public)
     if record.get('queue_execution_id'):
         sync_queue(record)
     return public
 
 
-def live_event(record, event):
-    record.setdefault('logs', []).append({'timestamp': now(), 'event': event, 'level': 'STEP', 'message': event.replace('_', ' ').capitalize()})
+def live_event(record, event, *, message=None):
+    record.setdefault('logs', []).append({'timestamp': now(), 'event': event, 'level': 'STEP', 'message': message or event.replace('_', ' ').capitalize()})
     update(record)
 
 
@@ -197,11 +248,24 @@ def sync_queue(record, finalize=False):
     def persist():
         queue = automation.load_posting_queue()
         match = automation.find_queue_execution(queue, record['queue_execution_id'])
-        lease = record.get('scheduler_lease') or {}
-        if not match or (match['execution'].get('scheduler_lease') or {}).get('lease_id') != lease.get('lease_id'):
+        if not match:
             raise RuntimeError('Live queue ownership lost; check Facebook')
         execution = match['execution']
-        for key in ('elapsed_seconds', 'duration_seconds', 'broadcast_confirmed', 'error', 'session_id', 'brain', 'browser_template', 'browser_state', 'logs', 'encoder_exit_code', 'final_browser_state', 'playback_mode', 'source_duration_seconds', 'startup_elapsed_seconds', 'playback_started_at', 'evidence_dir'):
+        lease = record.get('scheduler_lease') or {}
+        lease_id = lease.get('lease_id')
+        current = (execution.get('scheduler_lease') or {}).get('lease_id')
+        # A confirmed terminal success must still be recorded if a delayed
+        # heartbeat let the scheduler reclaim this attempt's own lease during the
+        # long End/comment/verify/finish tail, as long as no other owner has
+        # taken over: a new owner holds a different lease, never an absent one.
+        # This records an outcome that already happened; it never republishes.
+        confirmed_success = (finalize and record.get('status') in ('completed', 'stopped')
+                             and record.get('broadcast_confirmed'))
+        reclaimed_by_self = (current is None and lease_id is not None
+                             and (execution.get('last_scheduler_lease') or {}).get('lease_id') == lease_id)
+        if current != lease_id and not (confirmed_success and reclaimed_by_self):
+            raise RuntimeError('Live queue ownership lost; check Facebook')
+        for key in ('elapsed_seconds', 'duration_seconds', 'broadcast_confirmed', 'error', 'session_id', 'brain', 'browser_template', 'browser_state', 'logs', 'encoder_exit_code', 'final_browser_state', 'playback_mode', 'source_duration_seconds', 'startup_elapsed_seconds', 'playback_started_at', 'evidence_dir', 'comment_status', 'comment_error_code', 'end_after_comment', 'completion_reason'):
             if key in record:
                 execution[key] = record[key]
         stage = record.get('stage')
@@ -211,9 +275,16 @@ def sync_queue(record, finalize=False):
         execution['stage_updated_at'] = now()
         # Retain the slot until the encoder and container have both stopped.
         execution['status'] = 'running'
+        # A progress write is proof of liveness. Renew this attempt's own lease
+        # so the TTL cannot lapse mid-tail and let the scheduler reclaim an
+        # attempt that is still running. Only ever extends a lease we hold.
+        if not finalize and current == lease_id and lease_id is not None:
+            if automation.refresh_execution_lease(execution, lease_id, automation.get_scheduler_config()):
+                record['scheduler_lease'] = dict(execution['scheduler_lease'])
         if finalize:
             status = record['status']
             execution['status'] = ('completed' if status in ('completed', 'stopped') and record.get('broadcast_confirmed')
+                                   else 'skipped_auth_required' if status == 'skipped_auth_required'
                                    else 'needs_review' if status == 'needs_review' else 'failed_before_publish')
             execution['ended_at'] = record.get('ended_at')
             execution['automation_container_owned'] = False
@@ -241,8 +312,9 @@ async def execute_queue_live(claim):
                           session_id=prior.get('session_id', record['session_id']), logs=prior.get('logs', []))
             sync_queue(record, finalize=True)
             return {'success': False, 'status': 'needs_review'}
-        settings = validate_settings(read_json(settings_path(profile_id)))
+        settings = launch_settings(profile_id)
         record.update(validate_details(post.get('title', ''), post.get('base_caption', ''), post.get('pinned_comment')))
+        record['end_after_comment'] = validate_end_after_comment(post.get('end_after_comment', False), post.get('pinned_comment'))
         record.update(validate_playback(post.get('loop', False), post.get('max_duration_seconds'), post.get('muted', False), post.get('playback_mode')))
         video = resolve_video(record['filename'])
         archive_previous_session(profile_id)
@@ -270,13 +342,15 @@ async def command(*args, timeout=30):
             await proc.wait()
 
 
-async def browser_action(profile_id, action, producer_url, stop_event):
+async def browser_action(profile_id, action, producer_url, stop_event, *, prepared_settings=None):
     helper = AUTOMATION_RUNNER.parent / 'live_browser.py'
     record = automation.active_automation_tasks.get(profile_id, {})
     pin = record.get('brain')
     if not pin or not record.get('brain_package'):
         raise RuntimeError('Live browser workflow was not pinned before execution')
-    details = validate_details(record.get('title', ''), record.get('caption', ''), record.get('pinned_comment')) if action == 'prepare' else {}
+    details = validate_details(record.get('title', ''), record.get('caption', ''), record.get('pinned_comment')) if action in {'prepare', 'comment'} else {}
+    if action == 'comment':
+        details['comment_after_end'] = record.get('end_before_comment') is True
     worker_env = automation.automation_worker_env()
     worker_env['AUTOMATION_BEHAVIOR_RUN_ID'] = str(record.get('session_id') or profile_id)
     proc = await asyncio.create_subprocess_exec(str(AUTOMATION_PYTHON), str(helper), '--profile', profile_id,
@@ -295,9 +369,25 @@ async def browser_action(profile_id, action, producer_url, stop_event):
                 raise RuntimeError('Facebook Live verification failed') from None
             if not isinstance(message, dict):
                 raise RuntimeError('Facebook Live verification failed')
-            if message.get('event') in {'go_live_requested', 'go_live_click_sent', 'end_live_requested', 'end_live_click_sent',
-                                        'end_confirmation_requested', 'end_confirmation_click_sent'}:
+            if action == 'finish' and message.get('event') in {
+                    'optional_finish_news_feed_opened', 'optional_finish_warming_started',
+                    'optional_finish_warming_completed'}:
                 live_event(record, message['event'])
+            if message.get('event') in {'go_live_requested', 'go_live_click_sent', 'go_live_dialog_requested',
+                                        'go_live_dialog_click_sent', 'end_live_requested', 'end_live_click_sent',
+                                        'end_confirmation_requested', 'end_confirmation_click_sent',
+                                        'live_comment_submit_requested', 'live_comment_submit_sent',
+                                        'live_profile_comment_fallback_requested', 'live_profile_recent_post_verified',
+                                        'live_profile_comment_input_found'}:
+                live_event(record, message['event'])
+                if (action == 'end' and (record.get('comment_status') == 'confirmed'
+                                        or record.get('end_before_comment') is True)
+                        and message['event'] == 'end_confirmation_click_sent'):
+                    # End is submitted either before the comment or after a
+                    # confirmed comment. Do not wait for dashboard recognition.
+                    record['end_action_sent'] = True
+                    return {'success': True, 'state': 'ended', 'brain': pin,
+                            'end_action_only': True}
             elif 'success' in message:
                 result = message
         await proc.wait()
@@ -312,20 +402,39 @@ async def browser_action(profile_id, action, producer_url, stop_event):
         result = communication.result()
         if not isinstance(result, dict):
             raise RuntimeError('Facebook Live verification failed')
+        raw_evidence = result.get('evidence_dir')
+        if isinstance(raw_evidence, str):
+            directory = Path(raw_evidence).resolve()
+            expected = (PROFILES_DIR / profile_id / 'automation_evidence').resolve()
+            if directory.parent == expected and directory.is_dir():
+                update(record, evidence_dir=str(directory))
         if not result.get('success'):
-            raw_evidence = result.get('evidence_dir')
-            if isinstance(raw_evidence, str):
-                directory = Path(raw_evidence).resolve()
-                expected = (PROFILES_DIR / profile_id / 'automation_evidence').resolve()
-                if directory.parent == expected and directory.is_dir():
-                    update(record, evidence_dir=str(directory))
+            if result.get('account_block') in ACCOUNT_BLOCK_ERRORS:
+                record['account_block'] = result['account_block']
+                raise RuntimeError(ACCOUNT_BLOCK_ERRORS[result['account_block']])
+            if action == 'comment':
+                code = result.get('failure_code')
+                update(record, comment_error_code=code if code in COMMENT_CODES else 'comment_failed')
             raise RuntimeError(result.get('error') or 'Facebook Live verification failed')
-        expected_state = result.get('state') if action == 'inspect' else {'prepare': 'prepared', 'start': 'live', 'end': 'ended'}[action]
+        expected_state = result.get('state') if action == 'inspect' else {'prepare': 'prepared', 'start': 'live', 'end': 'ended', 'comment': 'commented', 'finish': 'finished'}[action]
         allowed_states = {'live', 'ended', 'unconfirmed'} if action == 'inspect' else {expected_state}
         if (expected_state not in allowed_states or result.get('state') != expected_state or result.get('brain') != pin):
             raise RuntimeError('Facebook Live returned an unverified browser workflow result')
-        update(record, browser_template=result.get('template_id'), browser_state=expected_state)
-        live_event(record, action + '_' + expected_state)
+        if action == 'prepare' and prepared_settings is not None:
+            key = result.get('prepared_stream_key')
+            if not isinstance(key, str) or not re.fullmatch(r'[A-Za-z0-9_-]{10,512}', key):
+                raise RuntimeError('The prepared Facebook stream key could not be verified; no video was sent')
+            # Current-attempt memory only. Never save the copied key to disk or
+            # put it in task state, queue, metadata, events or API responses.
+            prepared_settings['stream_key'] = key
+        action_only = action == 'end' and result.get('end_action_only') is True
+        if action != 'finish':
+            update(record, browser_template=result.get('template_id'),
+                   browser_state='unconfirmed' if action_only else expected_state)
+        if action == 'finish':
+            outcome = result.get('finish_outcome')
+            return outcome if outcome in {'logo_missing', 'feed_not_ready'} else expected_state
+        live_event(record, 'end_action_completed' if action_only else action + '_' + expected_state)
         return expected_state
     finally:
         stopped.cancel()
@@ -342,6 +451,7 @@ def encoder_command(profile_id, video, duration, has_audio, session_id, loop=Fal
     args = ['docker', 'exec', '-i', '-u', 'chromeuser', f'isolated_{profile_id}',
             'python3', '-u', '-c', script, '--video', video, '--duration', str(duration),
             '--pidfile', f'/tmp/live-{session_id}.pid', '--control', f'/tmp/live-{session_id}.play']
+    args += ['--max-session-seconds', str(LIVE_SESSION_LIMIT_SECONDS)]
     if loop:
         args.append('--loop')
     if has_audio:
@@ -349,18 +459,19 @@ def encoder_command(profile_id, video, duration, has_audio, session_id, loop=Fal
     return args
 
 
-async def start_live(profile_id, filename, loop=False, max_duration_seconds=None, muted=False, title='', caption='', pinned_comment=None, playback_mode=None):
+async def start_live(profile_id, filename, loop=False, max_duration_seconds=None, muted=False, title='', caption='', pinned_comment=None, playback_mode=None, end_after_comment=False):
     profile_path(profile_id)
     ensure_not_android(profile_id, 'Live video')
     details = validate_details(title, caption, pinned_comment)
+    details['end_after_comment'] = validate_end_after_comment(end_after_comment, pinned_comment)
     playback = validate_playback(loop, max_duration_seconds, muted, playback_mode)
     video = resolve_video(filename)
-    settings = validate_settings(read_json(settings_path(profile_id)))
+    settings = launch_settings(profile_id)
     if profile_id in CONTROLS or automation.is_task_process_active(automation.active_automation_tasks.get(profile_id)):
         raise RuntimeError('This profile already has an active task')
     cfg = automation.get_scheduler_config()
     check = automation.can_acquire_scheduler_slot(automation.load_posting_queue(),
-            automation.active_in_memory_scheduler_leases(), 'publisher', profile_id, cfg)
+            automation.active_in_memory_scheduler_leases(), 'publisher', profile_id, cfg, workload='live')
     if not check['allowed']:
         raise RuntimeError('Scheduler capacity unavailable: ' + check['reason'])
     if automation.get_container_status(profile_id) != 'running':
@@ -374,7 +485,7 @@ async def start_live(profile_id, filename, loop=False, max_duration_seconds=None
                   started_at=timestamp, ended_at=None, filename=filename, logs=[], error=None,
                   elapsed_seconds=0, broadcast_confirmed=False, process=None, lifecycle_active=True,
                   container_owner_token=token, last_activity_at=timestamp,
-                  scheduler_lease=dict(lease_id=session_id, owner_id=MANAGER_INSTANCE_ID, kind='publisher',
+                  scheduler_lease=dict(lease_id=session_id, owner_id=MANAGER_INSTANCE_ID, kind='publisher', workload='live',
                     profile_id=profile_id, claimed_at=timestamp, heartbeat_at=timestamp,
                     expires_at=datetime.fromtimestamp(time.time() + cfg['lease_ttl_ms']/1000, timezone.utc).isoformat()))
     record.update(playback, **details)
@@ -440,10 +551,156 @@ async def stop_encoder(record):
             await proc.wait()
 
 
+def failure_code(error):
+    if isinstance(error, asyncio.CancelledError):
+        return 'task_cancelled'
+    if isinstance(error, TimeoutError):
+        return 'action_timeout'
+    if isinstance(error, (ValueError, RuntimeError)):
+        return 'workflow_error'
+    if isinstance(error, (TypeError, KeyError, AttributeError, OSError)):
+        return type(error).__name__
+    return 'unexpected_error' if error is not None else None
+
+
+async def save_failure_diagnostics(record, failure_stage=None, error=None, cleanup_error=None):
+    """Persist allowlisted diagnostics before cleanup, even without a browser.
+
+    Never copy exception text, encoder stderr, settings or container logs here:
+    they can contain credentials. Evidence failure must preserve the Live error.
+    """
+    try:
+        reason = None
+        encoder_details = {}
+        if record.get('encoder_exit_code') not in (None, 0):
+            try:
+                raw = await command('docker', 'exec', '-u', 'chromeuser',
+                    f"isolated_{record['profile_id']}", 'cat',
+                    f"/tmp/live-{record['session_id']}.pid.diagnostic.json", timeout=5)
+                diagnostic = json.loads(raw)
+                candidate = diagnostic.get('failure_reason')
+                if candidate in ENCODER_FAILURE_REASONS:
+                    reason = candidate
+                component = diagnostic.get('failure_component')
+                if component in {'sender', 'relay'}:
+                    encoder_details['failure_component'] = component
+                for key in ('sender_exit_code', 'relay_exit_code'):
+                    if type(diagnostic.get(key)) is int:
+                        encoder_details[key] = diagnostic[key]
+            except Exception:
+                pass
+        root = (PROFILES_DIR / record['profile_id'] / 'automation_evidence').resolve()
+        directory = Path(record['evidence_dir']).resolve() if record.get('evidence_dir') else None
+        if directory is None or directory.parent != root or not directory.is_dir():
+            directory = root / (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S_%fZ') + '_live_failure')
+            private_write(directory / 'result.json', {
+                'run_id': directory.name, 'status': record['status'], 'finished_at': now(),
+                'screenshot_available': False,
+                'screenshot_unavailable_reason': 'no_browser_observation',
+            })
+        private_write(directory / 'diagnostics.json', {
+            'captured_at': now(), 'status': record['status'],
+            'failure_stage': failure_stage,
+            'failure_code': failure_code(error),
+            'cleanup_failure_code': failure_code(cleanup_error),
+            'encoder_exit_code': record.get('encoder_exit_code'),
+            'encoder_failure_reason': reason or ('unknown_encoder_failure'
+                if record.get('encoder_exit_code') not in (None, 0) else None),
+            'final_browser_state': record.get('final_browser_state'),
+            'stream_attempted': record.get('stage') == 'needs_review',
+            **encoder_details,
+        })
+        update(record, evidence_dir=str(directory))
+    except Exception:
+        pass
+
+
+async def optional_finish(record, settings, stop_event):
+    """Bounded idle/navigation after success; errors cannot change the outcome."""
+    if record.get('comment_status') != 'confirmed' or stop_event.is_set():
+        return
+    def log(event, message):
+        try:
+            live_event(record, 'optional_finish_' + event, message=message)
+        except Exception:
+            pass  # Even a log-write failure must not change publication success.
+    action = 'unknown'
+    try:
+        action = random.choice(('close', 'pause', 'news_feed'))
+        log(action + '_selected', 'Optional finish selected: ' + {'close': 'close immediately', 'pause': 'brief pause', 'news_feed': 'open News Feed'}[action])
+        if action == 'pause':
+            seconds = random.uniform(2, 5)
+            log('pause_started', f'Optional finish: waiting {seconds:.1f} seconds')
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=seconds)
+            except asyncio.TimeoutError:
+                pass
+            else:
+                log('pause_skipped', 'Optional pause interrupted; Live remains successful')
+                return
+        elif action == 'news_feed':
+            outcome = await asyncio.wait_for(browser_action(record['profile_id'], 'finish',
+                settings['producer_url'], stop_event), timeout=12)
+            if outcome == 'logo_missing':
+                log('news_feed_skipped', 'Optional News Feed action skipped: Facebook logo not found; Live remains successful')
+                return
+            if outcome == 'feed_not_ready':
+                log('warming_skipped', 'Optional warming skipped: News Feed did not open; Live remains successful')
+                return
+        log(action + '_completed', 'Optional finish completed: ' + {'close': 'close immediately', 'pause': 'brief pause', 'news_feed': 'opened News Feed and completed brief warming'}[action])
+    except (Exception, asyncio.CancelledError) as error:
+        reason = 'timed out' if isinstance(error, asyncio.TimeoutError) else 'cancelled' if isinstance(error, asyncio.CancelledError) else 'action error'
+        log(action + '_failed', f'Optional finish {action.replace("_", " ")}: {reason}; ignored, Live remains successful')
+
+
+async def comment_after_live(record, settings, stop_event):
+    if not (record.get('pinned_comment') or '').strip() or record.get('comment_status') or stop_event.is_set():
+        return
+    update(record, comment_status='attempted')
+    live_event(record, 'live_comment_requested')
+    try:
+        await asyncio.wait_for(browser_action(record['profile_id'], 'comment', settings['producer_url'], stop_event),
+                               COMMENT_ACTION_SECONDS)
+        update(record, comment_status='confirmed', comment_error_code=None)
+        live_event(record, 'live_comment_confirmed')
+    except Exception as error:
+        code = ('action_timeout' if isinstance(error, asyncio.TimeoutError)
+                else record.get('comment_error_code') or 'comment_failed')
+        update(record, comment_status='needs_review', comment_error_code=code)
+        live_event(record, 'live_comment_needs_review')
+
+
+async def end_broadcast(record, settings, stop_event):
+    """Finish the existing broadcast despite cancellation of its caller.
+
+    The helper has its own bounded action deadline. Keep ingest alive and
+    profile ownership held until it finishes; never issue another Go Live.
+    """
+    update(record, 'ending')
+    record['end_cleanup_attempted'] = True
+    ending = asyncio.create_task(browser_action(record['profile_id'], 'end',
+                                settings['producer_url'], asyncio.Event()))
+    while True:
+        try:
+            await asyncio.shield(ending)
+            break
+        except asyncio.CancelledError:
+            if ending.cancelled():
+                raise
+            stop_event.set()
+            live_event(record, 'end_cleanup_cancellation_deferred')
+    update(record, final_browser_state='unconfirmed' if record.get('end_action_sent') else 'ended')
+
+
 async def run_live(record, settings, video, stop_event):
     profile_id = record['profile_id']
     readers = []
     stream_attempted = False
+    browser_ready = False
+    inspected = False
+    destination_lock = None
+    completion_pending = False
+    limit_task = None
     try:
         # Pin one version for prepare/start/end. Changes in the catalog cannot
         # switch templates halfway through an irreversible broadcast.
@@ -451,6 +708,7 @@ async def run_live(record, settings, video, stop_event):
         record.update(brain=package.metadata(), brain_package=str(package.root))
         update(record, 'preparing')
         await automation.ensure_profile_container_ready(profile_id)
+        browser_ready = True
         if stop_event.is_set():
             raise RuntimeError('Live setup was stopped')
         raw = await command('docker', 'exec', '-u', 'chromeuser', f'isolated_{profile_id}', 'ffprobe',
@@ -465,14 +723,23 @@ async def run_live(record, settings, video, stop_event):
         playback = validate_playback(record.get('loop', False), record.get('max_duration_seconds'), record.get('muted', False), record.get('playback_mode'))
         if playback['max_duration_seconds'] is not None:
             duration = playback['max_duration_seconds'] if playback['loop'] else min(duration, playback['max_duration_seconds'])
+        duration = min(duration, LIVE_SESSION_LIMIT_SECONDS)
         has_audio = has_audio and not playback['muted']
         update(record, duration_seconds=duration, source_duration_seconds=float(metadata['format']['duration']))
-        await browser_action(profile_id, 'prepare', settings['producer_url'], stop_event)
+        await browser_action(profile_id, 'prepare', settings['producer_url'], stop_event, prepared_settings=settings)
         if stop_event.is_set():
             raise RuntimeError('Live setup was stopped')
+        if not re.fullmatch(r'[A-Za-z0-9_-]{10,512}', settings.get('stream_key', '')):
+            raise RuntimeError('The prepared Facebook stream key could not be verified; no video was sent')
+        destination_lock = acquire_stream_destination(settings)
         # Ingest itself may trigger configured Facebook automatic start. Persist before sending any bytes.
         update(record, 'stream_start_intent')
         stream_attempted = True
+        async def enforce_live_limit():
+            await asyncio.sleep(LIVE_SESSION_LIMIT_SECONDS - LIVE_END_RESERVE_SECONDS)
+            stop_event.set()
+            live_event(record, 'live_duration_limit_reached', message='Two-minute Live limit: ending the broadcast now')
+        limit_task = asyncio.create_task(enforce_live_limit())
         proc = await asyncio.create_subprocess_exec(*encoder_command(profile_id, video, duration, has_audio, record['session_id'], loop=playback['loop']),
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
         record['process'] = proc
@@ -522,15 +789,15 @@ async def run_live(record, settings, video, stop_event):
                 live_event(record, 'video_finished' if proc.returncode == 0 else 'encoder_failed')
             else:
                 live_event(record, 'stop_requested_before_confirmation')
-            await stop_encoder(record)
             try:
+                inspected = True
                 final_state = await asyncio.wait_for(
                     browser_action(profile_id, 'inspect', settings['producer_url'], asyncio.Event()), 30)
                 update(record, final_browser_state=final_state)
-                if final_state == 'live':
+                if final_state == 'live' and not record.get('end_cleanup_attempted'):
                     update(record, broadcast_confirmed=True)
-                    await browser_action(profile_id, 'end', settings['producer_url'], asyncio.Event())
-                    if finished not in done or proc.returncode == 0:
+                    await end_broadcast(record, settings, stop_event)
+                    if stop_event.is_set() or finished not in done or proc.returncode == 0:
                         update(record, 'ended', status='stopped' if stop_event.is_set() else 'completed', ended_at=now())
                         return
             except Exception:
@@ -540,6 +807,24 @@ async def run_live(record, settings, video, stop_event):
             raise RuntimeError(reason + '; check Facebook before retrying')
         await starting
         update(record, broadcast_confirmed=True)
+        if (record.get('pinned_comment') or '').strip() and not stop_event.is_set():
+            record['end_before_comment'] = True
+            update(record, 'ending')
+            live_event(record, 'ending_before_comment')
+            await end_broadcast(record, settings, stop_event)
+            await stop_encoder(record)
+            # Keep the browser/container open for the ended video's comment.
+            # Streaming is already stopped, so its startup budget no longer
+            # limits comment entry or verification.
+            update(record, 'commenting')
+            live_event(record, 'comment_after_end_requested')
+            await comment_after_live(record, settings, stop_event)
+            if record.get('comment_status') != 'confirmed':
+                raise RuntimeError('Live ended, but its comment was not confirmed; check the saved evidence before retrying the comment')
+            completion_pending = True
+            update(record, 'stopping', completion_reason='comment_verified_after_end')
+            await optional_finish(record, settings, stop_event)
+            return
         if not stop_event.is_set():
             # This only switches an already connected encoder. Never reconnect
             # or repeat Go Live after the durable publication boundary.
@@ -554,26 +839,62 @@ async def run_live(record, settings, video, stop_event):
         else:
             update(record, 'live')
         done, _ = await asyncio.wait([stopped, finished], timeout=duration + 60, return_when=asyncio.FIRST_COMPLETED)
-        if not done or (finished in done and proc.returncode != 0):
+        if not done or (finished in done and proc.returncode != 0 and not stop_event.is_set()):
             raise RuntimeError('The video stream disconnected; check Facebook before starting another broadcast')
         if finished in done:
             update(record, encoder_exit_code=proc.returncode)
             live_event(record, 'playback_completed')
         update(record, 'ending')
-        if stop_event.is_set():
-            await stop_encoder(record)
         # End the existing session only; never create/retry a broadcast during cleanup.
-        await browser_action(profile_id, 'end', settings['producer_url'], asyncio.Event())
+        await end_broadcast(record, settings, stop_event)
         update(record, 'ended', status='stopped' if stop_event.is_set() else 'completed', ended_at=now())
     except BaseException as error:
-        message = str(error) if isinstance(error, (ValueError, RuntimeError)) else 'Live session interrupted; check Facebook'
+        failure_stage = record.get('stage')
+        message = (str(error) if isinstance(error, (ValueError, RuntimeError)) else
+                   f'Live interrupted during {failure_stage or "setup"} ({failure_code(error)}); check Facebook')
+        encoder = record.get('process')
+        if encoder is not None and encoder.returncode is not None:
+            record['encoder_exit_code'] = encoder.returncode
+        # Reap every click-capable helper before inspecting, including when the
+        # service itself was cancelled while waiting for startup/playback.
+        for reader in readers:
+            if not reader.done():
+                reader.cancel()
+        await asyncio.gather(*readers, return_exceptions=True)
+        # Capture the existing page only; inspection never navigates or clicks.
+        cleanup_error = None
+        if browser_ready and not inspected:
+            try:
+                final_state = await asyncio.wait_for(
+                    browser_action(profile_id, 'inspect', settings['producer_url'], asyncio.Event()), 30)
+                update(record, final_browser_state=final_state)
+                # Cancellation before End began must still close an observed
+                # broadcast. An ordinary failed End is not blindly retried.
+                if final_state == 'live' and not record.get('end_cleanup_attempted'):
+                    await end_broadcast(record, settings, stop_event)
+                    final_state = 'ended'
+                if (isinstance(error, asyncio.CancelledError) and final_state == 'ended'
+                        and not record.get('end_before_comment')):
+                    update(record, 'ended', status='stopped', error=None, ended_at=now())
+                    return
+            except Exception as inspection_error:
+                cleanup_error = inspection_error
         try:
-            update(record, 'needs_review' if stream_attempted else 'failed',
-                   status='needs_review' if stream_attempted else ('stopped' if stop_event.is_set() else 'failed'),
+            blocked = record.get('account_block') in ACCOUNT_BLOCK_ERRORS
+            skip = blocked and (not record.get('broadcast_confirmed') or record.get('end_action_sent')
+                                or record.get('final_browser_state') == 'ended')
+            if blocked:
+                message = ACCOUNT_BLOCK_ERRORS[record['account_block']]
+            update(record, 'skipped_auth_required' if skip else 'needs_review' if stream_attempted else 'failed',
+                   status='skipped_auth_required' if skip else 'needs_review' if stream_attempted else ('stopped' if stop_event.is_set() else 'failed'),
                    error=message, ended_at=now())
         except RuntimeError:
             pass  # Local intent/review was saved; queue fencing must not prevent cleanup.
+        await save_failure_diagnostics(record, failure_stage, error, cleanup_error)
     finally:
+        if limit_task is not None:
+            limit_task.cancel()
+            await asyncio.gather(limit_task, return_exceptions=True)
         for reader in readers:
             if not reader.done():
                 reader.cancel()
@@ -586,9 +907,14 @@ async def run_live(record, settings, video, stop_event):
                 update(record, 'needs_review', status='needs_review', error='Container cleanup failed; stop the profile and check Facebook')
             except RuntimeError:
                 pass
+        else:
+            if completion_pending:
+                update(record, 'ended', status='completed', error=None, ended_at=now())
         try:
             if record.get('queue_execution_id'):
                 sync_queue(record, finalize=True)
         finally:
+            if destination_lock is not None:
+                destination_lock.close()
             record.update(process=None, lifecycle_active=False, scheduler_lease=None)
             CONTROLS.pop(profile_id, None)

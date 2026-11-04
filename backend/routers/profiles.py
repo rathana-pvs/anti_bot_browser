@@ -227,7 +227,7 @@ def list_profiles():
                 data["disk_usage"] = disk
             from backend.services import live_service
             try:
-                live_service.validate_settings(live_service.read_json(live_service.settings_path(profile_id)))
+                live_service.launch_settings(profile_id)
                 data["live"] = {"configured": True}
             except (ValueError, FileNotFoundError):
                 data["live"] = {"configured": False}

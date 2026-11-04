@@ -106,7 +106,7 @@ class FacebookStateRecognizer:
         matches = self._contains(blob, self.ERROR_TEXT)
         if matches:
             return StateObservation(ScreenState.ERROR_DIALOG, 0.98, matches, texts)
-        matches = self._contains(blob, self.LOGIN_TEXT)
+        matches = self._login_matches(blob)
         if matches:
             return StateObservation(ScreenState.LOGIN_REQUIRED, 0.97, matches, texts)
         return StateObservation(ScreenState.UNKNOWN, 0.0, text=texts)
@@ -169,6 +169,14 @@ class FacebookStateRecognizer:
     def _contains(text_blob: str, phrases: tuple[str, ...]) -> list[str]:
         return [phrase for phrase in phrases if phrase in text_blob]
 
+    @classmethod
+    def _login_matches(cls, text_blob: str) -> list[str]:
+        # Full-screen OCR joins unrelated labels. "Personal blog" followed by
+        # "Insights" contains the substring "log in", but no login words.
+        return [phrase for phrase in cls.LOGIN_TEXT
+                if re.search(r"\b" + r"\s+".join(re.escape(word) for word in phrase.split())
+                             + r"\b", text_blob, re.IGNORECASE)]
+
     def _meta_account_notice(self, blob: str, texts: list[str]) -> StateObservation | None:
         matches = self._contains(blob, self.META_ACCOUNT_NOTICE_TEXT)
         return StateObservation(ScreenState.UNKNOWN, 0.95, ["meta_account_notice", *matches], texts) if matches else None
@@ -194,7 +202,7 @@ class FacebookStateRecognizer:
         if matches:
             return StateObservation(ScreenState.ERROR_DIALOG, 0.98, matches, texts)
 
-        matches = self._contains(blob, self.LOGIN_TEXT)
+        matches = self._login_matches(blob)
         if matches:
             return StateObservation(ScreenState.LOGIN_REQUIRED, 0.97, matches, texts)
 
@@ -462,7 +470,7 @@ class FacebookStateRecognizer:
         matches = self._contains(blob, self.ERROR_TEXT)
         if matches:
             return StateObservation(ScreenState.ERROR_DIALOG, 0.98, matches, texts)
-        matches = self._contains(blob, self.LOGIN_TEXT)
+        matches = self._login_matches(blob)
         if matches:
             return StateObservation(ScreenState.LOGIN_REQUIRED, 0.97, matches, texts)
 

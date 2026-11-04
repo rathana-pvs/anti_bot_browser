@@ -45,7 +45,6 @@ export function ProfileSettings({ profile, onSave, proxies = [], groups = [] }: 
   const [resetKey, setResetKey] = useState(0);
   const [liveSettings, setLiveSettings] = useState<LiveSettings>(DEFAULT_LIVE);
   const [liveLoading, setLiveLoading] = useState(false);
-  const [liveKey, setLiveKey] = useState('');
   const [liveDirty, setLiveDirty] = useState(false);
   const [liveError, setLiveError] = useState('');
   const [name, setName] = useState('');
@@ -74,7 +73,7 @@ export function ProfileSettings({ profile, onSave, proxies = [], groups = [] }: 
   useEffect(() => {
     let disposed = false;
     setLiveSettings(DEFAULT_LIVE);
-    setLiveLoading(true); setLiveKey(''); setLiveDirty(false); setLiveError('');
+    setLiveLoading(true); setLiveDirty(false); setLiveError('');
     fetchLiveSettings(profile.id).then(value => { if (!disposed) setLiveSettings(value); })
       .catch(reason => { if (!disposed) setLiveError(reason.message || 'Couldn’t load Live settings'); })
       .finally(() => { if (!disposed) setLiveLoading(false); });
@@ -156,8 +155,8 @@ export function ProfileSettings({ profile, onSave, proxies = [], groups = [] }: 
       if (!confirmedEnvironment) return;
       setEnvironment(confirmedEnvironment);
       if (liveDirty) {
-        const savedLive = await saveLiveSettings(profile.id, { server_url: liveSettings.server_url, producer_url: liveSettings.producer_url, stream_key: liveKey });
-        setLiveSettings(savedLive); setLiveKey(''); setLiveDirty(false);
+        const savedLive = await saveLiveSettings(profile.id, { server_url: liveSettings.server_url, producer_url: liveSettings.producer_url });
+        setLiveSettings(savedLive); setLiveDirty(false);
       }
       await onSave(profile.id, {
         name: name.trim(), group: group.trim(), network, requested_environment: confirmedEnvironment, resources,
@@ -234,7 +233,7 @@ export function ProfileSettings({ profile, onSave, proxies = [], groups = [] }: 
           }}>{liveLoading ? 'Connecting…' : 'Retry'}</Button>
         </div>}
         <label className="block text-zinc-400">Server URL<input disabled={liveLoading || isSaving} value={liveSettings.server_url} onChange={e => { setLiveSettings({ ...liveSettings, server_url: e.target.value }); setLiveDirty(true); }} className={input} /></label>
-        <label className="block text-zinc-400">Stream key<input disabled={liveLoading || isSaving} type="password" autoComplete="new-password" value={liveKey} placeholder={liveSettings.key_saved ? 'Saved · leave blank to keep' : 'Paste the Facebook stream key'} onChange={e => { setLiveKey(e.target.value); setLiveDirty(true); }} className={input} /></label>
+        <p className="text-zinc-500">The stream key is copied and verified from the prepared Live Producer page before each broadcast. It is used for that broadcast without being saved.</p>
         <label className="block text-zinc-400">Live Producer URL<input disabled={liveLoading || isSaving} value={liveSettings.producer_url} onChange={e => { setLiveSettings({ ...liveSettings, producer_url: e.target.value }); setLiveDirty(true); }} placeholder="https://www.facebook.com/live/producer/" className={input} /></label>
         {liveLoading && <p className="text-zinc-500">Loading streaming settings…</p>}
       </Section>

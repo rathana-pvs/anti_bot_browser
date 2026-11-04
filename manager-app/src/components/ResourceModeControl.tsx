@@ -72,10 +72,10 @@ export const ResourceModeControl: React.FC = () => {
       <Select ariaLabel="Global resource mode" value={settings?.selected_mode || ''} placeholder="Resources…"
         disabled={!settings || saving} onValueChange={value => selectMode(value as ResourceMode)}
         className="min-h-7 w-32 border-zinc-700 px-2 py-1 text-[10px] focus:border-violet-500 focus:ring-violet-500/20"
-        options={(['auto', 'low', 'medium', 'high'] as ResourceMode[]).map(mode => ({
+        options={(['auto', 'extreme', 'custom'] as ResourceMode[]).map(mode => ({
           value: mode,
-          label: mode === 'auto' ? 'Automatic' : mode[0].toUpperCase() + mode.slice(1),
-          disabled: !settings || (mode !== 'auto' && !settings.supported_modes[mode as 'low' | 'medium' | 'high']),
+          label: mode === 'auto' ? 'Auto' : mode[0].toUpperCase() + mode.slice(1),
+          disabled: !settings,
         }))} />
       <Select ariaLabel="OCR engine" value={settings?.ocr_engine?.selected || ''}
         placeholder="OCR…" disabled={!settings?.ocr_engine || ocrLocked || saving}
@@ -86,13 +86,13 @@ export const ResourceModeControl: React.FC = () => {
         <span role="status" className="text-amber-400">Saved · Restart app/service to apply OCR</span>
       )}
       {ocrLocked && <span className="text-zinc-500">OCR set by launch configuration</span>}
-      {settings && <details className="relative">
+      {settings && <details className="w-full min-w-0">
         <summary className="flex cursor-pointer list-none items-center gap-2 rounded px-2 py-1.5 text-zinc-400 outline-none hover:bg-zinc-800 focus-visible:ring-2 focus-visible:ring-violet-500/40 [&::-webkit-details-marker]:hidden" aria-label="Resource details">
           <span><strong className="font-medium text-zinc-200">{settings.runtime.active_profile_containers}/{settings.limits.max_active_profile_containers}</strong> containers</span>
           <span className="hidden xl:inline">RAM {settings.runtime.memory_used_percent}% · CPU {settings.runtime.sustained_cpu_percent}%</span>
           <ChevronDown className="h-3 w-3" />
         </summary>
-        <div className="absolute right-0 top-full z-50 mt-2 w-64 space-y-3 rounded-xl border border-zinc-700 bg-zinc-950 p-4 text-xs shadow-xl">
+        <div className="mt-2 w-full min-w-0 space-y-3 rounded-xl border border-zinc-700 bg-zinc-950 p-4 text-xs">
           <div><p className="font-medium text-zinc-200">Global resources</p><p className="mt-1 text-zinc-500">{settings.hardware.total_memory_gb} GB · {settings.hardware.cpu_threads} threads</p></div>
           {adaptive?.enabled && <div className="space-y-2 border-b border-zinc-800 pb-3">
             <p className="text-zinc-300">
@@ -101,21 +101,38 @@ export const ResourceModeControl: React.FC = () => {
               </span>{' · '}{adaptive.decision.limit} of up to {adaptive.decision.ceiling} jobs
             </p>
             <p className="text-zinc-500">{adaptive.decision.hold ? 'Pausing running jobs at safe steps: ' : ''}{adaptive.decision.reason}</p>
-            <label className="flex items-center justify-between gap-2 text-zinc-400">Max parallel jobs
-              <Select ariaLabel="Maximum parallel jobs" value={adaptive.max_parallel ? String(adaptive.max_parallel) : 'none'} disabled={saving}
-                onValueChange={value => updateLimits({ max_parallel: value === 'none' ? null : Number(value) })}
-                className="min-h-7 w-24 border-zinc-700 px-2 py-1 text-[10px]"
-                options={[{ value: 'none', label: 'No limit' }, ...Array.from({ length: 16 }, (_, index) => ({ value: String(index + 1), label: String(index + 1) }))]} />
-            </label>
-            <label className="flex items-center justify-between gap-2 text-zinc-400">Keep free for me
-              <Select ariaLabel="Resources kept free" value={String(adaptive.reserve_percent)} disabled={saving}
+          </div>}
+          <p className="text-zinc-400">{settings.selected_mode === 'auto'
+            ? 'Auto balances parallel accounts with desktop headroom and grows gradually when resources stay comfortable.'
+            : settings.selected_mode === 'extreme'
+              ? 'Extreme grows faster and uses more resources, up to the resource forecast and a maximum of 16 accounts.'
+              : 'Custom uses your limits. Resource pressure can delay new work.'}</p>
+          {settings.selected_mode === 'custom' && adaptive?.custom && <div className="space-y-3 border-b border-zinc-800 pb-3">
+            {([
+              ['max_parallel', 'Maximum active accounts', 'Total accounts sharing posts, Live and preparation slots.'],
+              ['max_posts', 'Parallel posts (Reels, images, etc.)', 'Maximum accounts posting at the same time.'],
+              ['max_live', 'Parallel Live broadcasts', 'Maximum accounts streaming at the same time.'],
+            ] as const).map(([key, label, hint]) => <div key={key}>
+              <label className="flex items-center justify-between gap-2 text-zinc-300">{label}
+                <Select ariaLabel={label} value={String(adaptive.custom[key])} disabled={saving}
+                  onValueChange={value => updateLimits({ [key]: Number(value) })}
+                  className="min-h-7 w-16 shrink-0 border-zinc-700 px-2 py-1 text-[10px]"
+                  options={Array.from({ length: key === 'max_parallel' ? 16 : adaptive.custom.max_parallel }, (_, index) => ({ value: String(index + 1), label: String(index + 1) }))} />
+              </label>
+              <p className="mt-1 text-[11px] text-zinc-500">{hint}</p>
+            </div>)}
+            <label className="flex items-center justify-between gap-2 text-zinc-300">Resource reserve
+              <Select ariaLabel="Resource reserve" value={String(adaptive.custom.reserve_percent)} disabled={saving}
                 onValueChange={value => updateLimits({ reserve_percent: Number(value) })}
-                className="min-h-7 w-24 border-zinc-700 px-2 py-1 text-[10px]"
+                className="min-h-7 w-20 shrink-0 border-zinc-700 px-2 py-1 text-[10px]"
                 options={[0, 10, 20, 30, 40].map(value => ({ value: String(value), label: `${value}%` }))} />
             </label>
+            <p className="text-[11px] text-zinc-500">Posts and Live share the total account limit. The reserve leaves additional CPU and memory headroom.</p>
           </div>}
+          <p className="text-[11px] text-zinc-500">Profile starts are at least 10 seconds apart in every mode. Lowering limits lets active jobs finish; new jobs wait.</p>
           <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-zinc-400">
-            <dt>Publish slots</dt><dd className="text-right text-zinc-200">{settings.limits.max_publishers}</dd>
+            <dt>Post slots</dt><dd className="text-right text-zinc-200">{settings.limits.max_post_publishers}</dd>
+            <dt>Live slots</dt><dd className="text-right text-zinc-200">{settings.limits.max_live_publishers}</dd>
             <dt>Prepare slots</dt><dd className="text-right text-zinc-200">{settings.limits.max_preparers}</dd>
             <dt>Containers</dt><dd className="text-right text-zinc-200">{settings.runtime.active_profile_containers}/{settings.limits.max_active_profile_containers}</dd>
             <dt>RAM usage</dt><dd className="text-right text-zinc-200">{settings.runtime.memory_used_percent}%</dd>

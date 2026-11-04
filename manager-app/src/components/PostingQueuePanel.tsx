@@ -76,7 +76,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
   const [batchBusy, setBatchBusy] = useState(false);
   const [lightbox, setLightbox] = useState<LightboxMedia | null>(null);
   const [appendBatch, setAppendBatch] = useState<DailyBatch | null>(null);
-  const [report, setReport] = useState<{ open: boolean; item: QueueExecutionItem | null }>({ open: false, item: null });
+  const [report, setReport] = useState<{ open: boolean; item: QueueExecutionItem | null; batch?: DailyBatch }>({ open: false, item: null });
   const lastAttention = useRef(0);
   const menu = useContextMenu();
 
@@ -269,7 +269,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
   };
 
   const removeBatch = async (batch: DailyBatch) => {
-    if (!await showConfirm(`Remove “${batch.name}” and everything still waiting in it?`, { title: 'Remove batch', confirmLabel: 'Remove batch', variant: 'danger' })) return;
+    if (!await showConfirm(`Remove “${batch.name}” and all its queue records?`, { title: 'Remove batch', confirmLabel: 'Remove batch', variant: 'danger' })) return;
     try {
       await deleteBatch(batch.batch_id);
       setBatchFilter(null);
@@ -283,6 +283,10 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
     watch: (item) => onWatchProfile?.(item.profile_id),
   };
   const drawerActions: DrawerActions = {
+    openProfile: onOpenAccount ? (item) => {
+      setSelectedId(null);
+      onOpenAccount(item.profile_id);
+    } : undefined,
     runNow, retryComment, stopLive: stopLiveItem, cancelRecovery, addPermalink, resolve, remove, preview,
     report: (item) => setReport({ open: true, item }),
     openImage: (url, label) => setLightbox({ url, type: 'photo', name: label }),
@@ -299,6 +303,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
       menuItems.push({ label: 'Add posts to batch', icon: <Plus className="h-3.5 w-3.5" />, onSelect: () => setAppendBatch(activeBatch) });
     }
     menuItems.push(
+      { label: 'Export batch report ZIP', icon: <Download className="h-3.5 w-3.5" />, onSelect: () => setReport({ open: true, item: null, batch: activeBatch }) },
       { label: 'Stop and cancel batch', icon: <X className="h-3.5 w-3.5" />, danger: true, disabled: batchBusy || stats.active + stats.waiting + stats.recovering === 0, onSelect: () => stopAndCancel(activeBatch) },
       { label: 'Remove batch', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, onSelect: () => removeBatch(activeBatch) },
     );
@@ -416,7 +421,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
       )}
 
       {appendBatch && <AppendBatchPostsDialog batch={appendBatch} onClose={() => setAppendBatch(null)} onAppended={loadQueue} />}
-      <SupportReportDialog open={report.open} item={report.item} profileName={report.item ? profileName(report.item.profile_id) : undefined}
+      <SupportReportDialog open={report.open} item={report.item} batch={report.batch} profileName={report.item ? profileName(report.item.profile_id) : undefined}
         onClose={() => setReport({ open: false, item: null })}
         onSaved={(location) => { setReport({ open: false, item: null }); showToast(`Support ZIP saved to ${location}. Review it before sending.`, 'success'); }}
         onError={(message) => showToast(message, 'error')} />

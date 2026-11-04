@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  AlertTriangle, Bug, Check, ExternalLink, Eye, Link2, Lock, MessageCircle, Play, RotateCcw, Square, Trash2, X,
+  AlertTriangle, Bug, Check, ExternalLink, Eye, Link2, Lock, MessageCircle, Play, RotateCcw, Square, Trash2, UserRound, X,
 } from 'lucide-react';
 import { QueueExecutionItem } from '../../types/automation';
 import { Profile } from '../../types/profile';
@@ -15,6 +15,7 @@ import {
 } from './queueModel';
 
 export interface DrawerActions {
+  openProfile?: (item: QueueExecutionItem) => void;
   runNow: (item: QueueExecutionItem) => void;
   retryComment: (item: QueueExecutionItem) => void;
   stopLive: (item: QueueExecutionItem) => void;
@@ -57,6 +58,9 @@ export function QueueDetailDrawer({ item, profile, profileName, actions, onClose
       <div className="min-w-0 flex-1">
         <h3 className="truncate text-sm font-semibold text-zinc-100">{profileName} · {kindLabel(item)}</h3>
         <p className="mt-0.5 truncate text-xs text-zinc-500">{[item.batch_name, formatTime(item.published_at || item.scheduled_at)].filter(Boolean).join(' · ')}</p>
+        {profile && actions.openProfile && <Button size="sm" variant="outline" className="mt-3" onClick={() => actions.openProfile?.(item)}>
+          <UserRound className="h-3.5 w-3.5" />Go to profile
+        </Button>}
       </div>
       <IconButton aria-label="Close details" onClick={onClose} className="h-8 w-8"><X className="h-4 w-4" /></IconButton>
     </header>
@@ -68,6 +72,8 @@ export function QueueDetailDrawer({ item, profile, profileName, actions, onClose
       <section className={`rounded-xl border p-3 ${uncertain ? 'border-amber-800/70 bg-amber-950/20' : failed ? 'border-red-900/70 bg-red-950/20' : 'border-zinc-800 bg-zinc-900/40'}`}>
         <p className="font-semibold text-zinc-200">{statusLabel(item.status)}{item.stage && !['published', 'cancelled'].includes(item.status) ? ` · ${humanStage(item.stage)}` : ''}</p>
         <p className="mt-1 leading-relaxed text-zinc-400">{describe(item)}</p>
+        {item.comment_status === 'needs_review' && <p className="mt-2 text-amber-300">The Live comment needs review{item.comment_error_code ? ` (${item.comment_error_code.replace(/_/g, ' ')})` : ''}. Check Facebook before submitting it again.</p>}
+        {item.comment_status === 'confirmed' && <p className="mt-2 text-zinc-400">{item.completion_reason === 'comment_verified' ? 'Live ended after the comment was verified.' : 'Live comment confirmed.'}</p>}
         {item.error && !describe(item).includes(item.error) && <p className="mt-2 break-words text-red-300">{item.error}</p>}
         <NetworkRecoveryStatus recovery={item.network_recovery} details />
       </section>
