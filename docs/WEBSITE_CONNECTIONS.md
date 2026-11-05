@@ -54,16 +54,20 @@ article text, and a cover image. Schema field rules set the limits and additiona
 required website fields; Asian Dot uses a 160-character excerpt. Category, author, tags, source credit, slug,
 cover alt text, SEO title, and SEO description are available in article details.
 
-**Publish article & generate captions and links** publishes the article immediately,
+**Publish article & create links** publishes the article immediately,
 even when the Facebook work will be scheduled later. There is no website draft
 mode. New articles are not automatically marked Breaking or Featured. Existing
 articles retain those flags. Existing rich-text formatting is retained if the
 plain body text has not changed; edited body text is converted into paragraphs.
 
-Unique captions are off by default and use the Gemini key/model configured in Settings.
-They replace the supplied caption. The AI reads the title and the first 4,000 characters of
-the article. Preparing again for the same article text keeps the existing captions, including
-your edits, and only asks the AI about newly added accounts.
+**Unique caption for each account** and **Read more** are separate options, and each can be
+used without the other. **Generate captions** never contacts a website. It is off by default,
+uses the Gemini key/model configured in Settings, and replaces the supplied caption. The AI reads
+the article text when the post has one (from Reel Studio or the article form), otherwise the post's
+caption, up to the first 4,000 characters. Generating again for the same text keeps the existing
+captions, including your edits, and only asks the AI about newly added accounts. Without Read more,
+the post keeps its own first comment. With both on, generate the captions first, then
+**Publish article & create links**, so captions are reviewed before anything is published.
 Each generated hook has 10–30 whitespace-separated words, no links, and must pass
 length, numeric-claim, and similarity checks. Caption generation is text-only.
 Review factual accuracy and edit or regenerate individual hooks before scheduling.

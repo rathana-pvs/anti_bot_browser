@@ -229,6 +229,40 @@ def captions_for(request):
     return [known.get(profile, written.get(profile)) for profile in request.profiles]
 
 
+class PrepareCaptions(BaseModel):
+    """Unique captions on their own: no website is contacted and no link is made."""
+    model_config = ConfigDict(extra='forbid')
+    title: str = Field(default='', max_length=300)
+    content: str = Field(default='', max_length=120000)
+    caption: str = Field(default='', max_length=20000)
+    profiles: list[str] = Field(min_length=1, max_length=100)
+    post_type: str = Field(pattern='^(photo|reel|live)$')
+    media_file: str = Field(max_length=255)
+    known_captions: dict[str, str] = Field(default_factory=dict, max_length=100)
+    api_key: SecretStr = Field(default_factory=lambda: SecretStr(''))
+    model: str = Field(default='gemini-3.8-flash', pattern=r'^gemini-[a-zA-Z0-9.-]{1,80}$')
+
+
+def prepare_captions(request):
+    if len(set(request.profiles)) != len(request.profiles):
+        raise ValueError('Choose each account once.')
+    source = request.content.strip() or request.caption.strip()
+    if not source:
+        raise ValueError('Add a caption or article text first.')
+    title = request.title.strip() or source.splitlines()[0][:300]
+    prepared = Prepare(request_id=uuid.uuid4().hex, connection_id='0' * 32, article={'title': title, 'content': source},
+                       profiles=request.profiles, post_type=request.post_type, media_file=request.media_file,
+                       known_captions=request.known_captions, api_key=request.api_key, model=request.model)
+    captions = captions_for(prepared)
+    record = {'id': prepared.request_id, 'profiles': request.profiles, 'post_type': request.post_type,
+              'media_file': request.media_file, 'caption': '', 'unique_captions': True, 'article_input': prepared.article.model_dump(),
+              'captions': captions, 'destinations': {profile: {'caption': caption, 'link': ''} for profile, caption in zip(request.profiles, captions)},
+              'ready': True}
+    with LOCK:
+        write_preparation(prepared.request_id, fingerprint(prepared), record)
+    return record
+
+
 def article_json(article):
     return article.model_dump_json(exclude={'custom_fields'} if not article.custom_fields else set())
 
@@ -329,6 +363,7 @@ def snapshot_post(post, profiles):
         raise ValueError('Read more changed. Prepare and review it again.')
     variants = {}
     previous = []
+    published = record.get('article')  # captions prepared on their own have no article and no links
     for profile in profiles:
         destination = record['destinations'][profile]
         caption = selection.get('captions', {}).get(profile, destination['caption'])
@@ -340,11 +375,12 @@ def snapshot_post(post, profiles):
             if not 10 <= len(caption.split()) <= 30 or not valid_hook(caption, context, previous):
                 raise ValueError('Each Read more hook must be distinct and contain 10–30 words, without links or new numbers.')
         previous.append(caption)
-        variants[profile] = {'spun_caption': caption, 'first_comment': destination['link'] if post['type'] != 'live' else None,
-                             **({'pinned_comment': destination['link'], 'end_after_comment': True} if post['type'] == 'live' else {}),
-                             'website_article_url': record['article']['url'], 'website_preparation_id': record['id']}
+        variants[profile] = {'spun_caption': caption, 'website_preparation_id': record['id']}
+        if published:
+            variants[profile].update(first_comment=destination['link'] if post['type'] != 'live' else None, website_article_url=published['url'],
+                                     **({'pinned_comment': destination['link'], 'end_after_comment': True} if post['type'] == 'live' else {}))
     return {**post, 'destination_variants': variants, 'ai_spin': False,
-            **({'pinned_comment': next(iter(record['destinations'].values()))['link'], 'end_after_comment': True} if post['type'] == 'live' else {})}
+            **({'pinned_comment': next(iter(record['destinations'].values()))['link'], 'end_after_comment': True} if published and post['type'] == 'live' else {})}
 
 
 def execution_variant(post, profile):

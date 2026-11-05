@@ -246,3 +246,66 @@ def test_supplied_caption_only_matters_without_unique_captions(monkeypatch):
     post = web.snapshot_post({'type': 'reel', 'media_file': 'video.mp4', 'base_caption': 'Edited after preparing',
                               'read_more': {'preparation_id': record['id']}}, ['page-a', 'page-b'])
     assert web.execution_variant(post, 'page-a')['spun_caption'] == HOOKS[0]
+
+
+def captions_request(**changes):
+    return web.PrepareCaptions(**{'caption': 'Local residents discuss the council park proposal for shared public space.',
+                                  'profiles': ['page-a', 'page-b'], 'post_type': 'reel', 'media_file': 'video.mp4', **changes})
+
+
+def test_captions_alone_never_contact_a_website(monkeypatch):
+    monkeypatch.setattr(web, 'Website', Mock(side_effect=AssertionError('No website')))
+    monkeypatch.setattr(web, 'connection', Mock(side_effect=AssertionError('No connection')))
+    monkeypatch.setattr(web, 'generate_hooks', lambda value: HOOKS[:len(value.profiles)])
+    record = web.prepare_captions(captions_request())
+    assert record['ready'] and 'article' not in record
+    assert [record['destinations'][name] for name in ('page-a', 'page-b')] == [{'caption': HOOK, 'link': ''} for HOOK in HOOKS]
+    assert web.read_preparation(record['id'])[0]['captions'] == HOOKS
+
+
+def test_captions_prefer_the_article_and_need_some_text(monkeypatch):
+    seen = []
+    def generate(value):
+        seen.append(value.article.content)
+        return HOOKS
+    monkeypatch.setattr(web, 'generate_hooks', generate)
+    web.prepare_captions(captions_request(title='Park', content='The full article text about the park.'))
+    assert seen == ['The full article text about the park.']
+    with pytest.raises(ValueError, match='caption or article'):
+        web.prepare_captions(captions_request(caption='  '))
+
+
+def test_captions_alone_keep_known_captions_without_asking_the_ai(monkeypatch):
+    monkeypatch.setattr(web, 'generate_hooks', Mock(side_effect=AssertionError('No AI needed')))
+    record = web.prepare_captions(captions_request(known_captions={'page-a': HOOKS[0], 'page-b': HOOKS[1]}))
+    assert record['captions'] == HOOKS
+
+
+def test_captions_alone_reach_the_queue_with_the_posts_own_comment(monkeypatch):
+    monkeypatch.setattr(web, 'generate_hooks', lambda _: HOOKS)
+    record = web.prepare_captions(captions_request())
+    base = {'type': 'reel', 'media_file': 'video.mp4', 'base_caption': 'Edited later', 'first_comment': 'https://own.example/link',
+            'read_more': {'preparation_id': record['id']}}
+    post = web.snapshot_post(base, ['page-a', 'page-b'])
+    assert post['ai_spin'] is False and post['first_comment'] == 'https://own.example/link'
+    assert web.execution_variant(post, 'page-a') == {'spun_caption': HOOKS[0], 'website_preparation_id': record['id']}
+    with pytest.raises(ValueError, match='10–30'):
+        web.snapshot_post({**base, 'read_more': {'preparation_id': record['id'], 'captions': {'page-a': 'Too short'}}}, ['page-a', 'page-b'])
+    with pytest.raises(ValueError, match='changed'):
+        web.snapshot_post(base, ['page-a'])
+
+
+def test_live_captions_alone_keep_the_posts_pinned_comment(monkeypatch):
+    monkeypatch.setattr(web, 'generate_hooks', lambda _: HOOKS)
+    record = web.prepare_captions(captions_request(post_type='live'))
+    post = web.snapshot_post({'type': 'live', 'media_file': 'video.mp4', 'pinned_comment': 'Own comment', 'read_more': {'preparation_id': record['id']}}, ['page-a', 'page-b'])
+    assert post['pinned_comment'] == 'Own comment' and 'end_after_comment' not in post
+    assert 'pinned_comment' not in web.execution_variant(post, 'page-a')
+
+
+def test_regenerating_a_caption_works_without_a_website(monkeypatch):
+    monkeypatch.setattr(web, 'Website', Mock(side_effect=AssertionError('No website')))
+    monkeypatch.setattr(web, 'generate_hooks', lambda value: ['Neighbors examine the council proposal and how the changes could shape their local park.'])
+    record = web.prepare_captions(captions_request())
+    result = web.regenerate_hook(web.RegenerateHook(preparation_id=record['id'], profile_id='page-a', other_captions=[]))
+    assert 'Neighbors' in result['caption']

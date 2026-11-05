@@ -16,22 +16,43 @@ export interface ReadMoreDraft {
   enabled: boolean; connectionId: string; article: WebsiteArticle; uniqueCaptions: boolean;
   requestId?: string; requestFingerprint?: string; preparedFingerprint?: string;
   preparation?: WebsitePreparation; captions?: Record<string, string>;
-  /** The article text the saved captions were written from. */
+  /** The text the saved captions were written from. */
   captionSource?: string;
+  /** Unique captions prepared without a website, and what they were prepared for. */
+  captionsPreparationId?: string; captionsFor?: string;
 }
 export const emptyArticle = (): WebsiteArticle => ({ id: '', title: '', excerpt: '', content: '', cover_file: '', cover_id: '', alt: '', category: '', author: '', tags: '', credit: '', slug: '', seo_title: '', seo_description: '' });
 export function readMoreFingerprint(value: ReadMoreDraft, type: string, media: string, caption: string, profiles: string[]) {
   // Unique captions replace the supplied caption, so editing it changes nothing.
   return JSON.stringify([value.connectionId, value.article, value.uniqueCaptions, type, media, value.uniqueCaptions ? '' : caption, [...profiles].sort()]);
 }
-export const captionSourceOf = (article: WebsiteArticle) => JSON.stringify([article.title, article.content]);
+/** Captions are written from the article when there is one, otherwise from the post's caption. */
+export const captionSourceOf = (article: WebsiteArticle, caption: string) => JSON.stringify([article.title, article.content, article.content.trim() ? '' : caption]);
+export const captionsFingerprint = (value: ReadMoreDraft, type: string, media: string, caption: string, profiles: string[]) =>
+  JSON.stringify([captionSourceOf(value.article, caption), type, media, [...profiles].sort()]);
+export function captionsReady(value: ReadMoreDraft, type: string, media: string, caption: string, profiles: string[]) {
+  return Boolean(value.captionsPreparationId && value.captionsFor === captionsFingerprint(value, type, media, caption, profiles)
+    && profiles.every(id => value.captions?.[id]?.trim()));
+}
 /** Captions already written for this article, so preparing again only asks the AI about accounts that have none. */
-export function knownCaptions(value: ReadMoreDraft, profiles: string[]): Record<string, string> {
-  if (!value.uniqueCaptions || value.captionSource !== captionSourceOf(value.article)) return {};
+export function knownCaptions(value: ReadMoreDraft, caption: string, profiles: string[]): Record<string, string> {
+  if (!value.uniqueCaptions || value.captionSource !== captionSourceOf(value.article, caption)) return {};
   return Object.fromEntries(profiles.flatMap(id => value.captions?.[id] ? [[id, value.captions[id]]] : []));
 }
 export function readMoreReady(value: ReadMoreDraft | undefined, type: string, media: string, caption: string, profiles: string[]) {
-  return !value?.enabled || Boolean(value.preparation?.ready && value.preparedFingerprint === readMoreFingerprint(value, type, media, caption, profiles));
+  if (!value) return true;
+  if (value.enabled && value.uniqueCaptions && !captionsReady(value, type, media, caption, profiles)) return false;
+  if (value.enabled) return Boolean(value.preparation?.ready && value.preparedFingerprint === readMoreFingerprint(value, type, media, caption, profiles));
+  return !value.uniqueCaptions || captionsReady(value, type, media, caption, profiles);
+}
+/** Drafts saved when unique captions were on by default did not choose them; ones already prepared keep them. */
+export function savedReadMore(value?: ReadMoreDraft) {
+  return value?.uniqueCaptions && !value.captionsPreparationId && !value.preparation ? { ...value, uniqueCaptions: false } : value;
+}
+/** What the queue receives: the website preparation, or captions prepared on their own. */
+export function readMoreSelection(value?: ReadMoreDraft) {
+  const id = value?.enabled ? value.preparation?.id : value?.uniqueCaptions ? value.captionsPreparationId : undefined;
+  return id ? { read_more: { preparation_id: id, captions: value!.captions } } : {};
 }
 export async function websiteRequest<T>(path: string, body?: unknown, method = 'POST'): Promise<T> {
   const response = await fetch(`${API_BASE}/websites${path}`, body === undefined ? { method: 'GET' } : {

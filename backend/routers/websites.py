@@ -37,6 +37,11 @@ def prepare(request: service.Prepare):
     return checked(service.prepare, request)
 
 
+@router.post('/captions')
+def prepare_captions(request: service.PrepareCaptions):
+    return checked(service.prepare_captions, request)
+
+
 @router.post('/regenerate-hook')
 def regenerate_hook(request: service.RegenerateHook):
     return checked(service.regenerate_hook, request)

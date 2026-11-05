@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Checkbox } from './ui/Checkbox';
 import { Select } from './ui/Select';
 import { uploadMediaFiles } from '../services/api';
-import { captionSourceOf, emptyArticle, knownCaptions, readMoreFingerprint, readMoreReady, websiteRequest, openWebsiteManagement, WEBSITE_CONNECTIONS_CHANGED } from '../services/websites';
+import { captionsFingerprint, captionsReady, captionSourceOf, emptyArticle, knownCaptions, readMoreFingerprint, readMoreReady, websiteRequest, openWebsiteManagement, WEBSITE_CONNECTIONS_CHANGED } from '../services/websites';
 import type { ReadMoreDraft, WebsiteArticle, WebsiteConnection, WebsitePreparation } from '../services/websites';
 
 interface Catalog { articles: (WebsiteArticle & { status: string })[]; categories: { id: string; name: string }[]; authors: { id: string; name: string }[] }
@@ -22,6 +22,8 @@ export function ReadMorePanel({ value, onChange, type, media, caption, profiles,
   const fieldLimit = (name: string, fallback: number, cap: number) => Math.min(activeSchema?.fields[name]?.maxLength || fallback, cap);
   const fingerprint = readMoreFingerprint(draft, type, media, caption, ids);
   const latest = useRef(fingerprint); latest.current = fingerprint;
+  const captionsKey = captionsFingerprint(draft, type, media, caption, ids);
+  const latestCaptions = useRef(captionsKey); latestCaptions.current = captionsKey;
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
@@ -55,38 +57,66 @@ export function ReadMorePanel({ value, onChange, type, media, caption, profiles,
     try { await action(); } catch (error) { if (mounted.current) setMessage(error instanceof Error ? error.message : 'Website request failed.'); }
     finally { if (mounted.current) setBusy(false); }
   };
+  const geminiKeys = () => {
+    let keys: { gemini?: string; gemini_model?: string } = {};
+    try { keys = JSON.parse(localStorage.getItem('app_api_keys') || '{}'); } catch { /* Backend reports missing key. */ }
+    return { api_key: keys.gemini || '', model: keys.gemini_model || 'gemini-3.8-flash' };
+  };
+  const generateCaptions = () => run(async () => {
+    if (!profiles.length) throw new Error('Choose accounts first.');
+    const started = latestCaptions.current;
+    const known = knownCaptions(draft, caption, ids);
+    const result = await websiteRequest<WebsitePreparation>('/captions', {
+      title: draft.article.title, content: draft.article.content, caption, profiles: [...ids].sort(), post_type: type, media_file: media,
+      known_captions: known, ...geminiKeys(),
+    });
+    if (!mounted.current || latestCaptions.current !== started) return;
+    onChange({ ...draft, captionsPreparationId: result.id, captionsFor: started, captionSource: captionSourceOf(draft.article, caption),
+      captions: Object.fromEntries(ids.map(id => [id, known[id] ?? result.destinations[id].caption])) });
+    setMessage('Captions ready. Nothing was published. Review them below.');
+  });
   const prepare = () => run(async () => {
     if (!profiles.length) throw new Error('Choose accounts first.');
     if (!draft.connectionId) throw new Error('Connect and choose a website first.');
     const requestId = draft.requestFingerprint === fingerprint && draft.requestId ? draft.requestId : crypto.randomUUID().replace(/-/g, '');
     const next = { ...draft, requestId, requestFingerprint: fingerprint };
     onChange(next); // Retain request identity even if the website response is lost.
-    let keys: { gemini?: string; gemini_model?: string } = {};
-    try { keys = JSON.parse(localStorage.getItem('app_api_keys') || '{}'); } catch { /* Backend reports missing key. */ }
     const preparation = await websiteRequest<WebsitePreparation>('/prepare', {
       request_id: requestId, connection_id: draft.connectionId, article: draft.article,
       profiles: [...ids].sort(), post_type: type, media_file: media, caption: draft.uniqueCaptions ? '' : caption,
-      unique_captions: draft.uniqueCaptions, known_captions: knownCaptions(draft, ids), api_key: keys.gemini || '', model: keys.gemini_model || 'gemini-3.8-flash',
+      unique_captions: draft.uniqueCaptions, known_captions: knownCaptions(draft, caption, ids), ...geminiKeys(),
     });
     if (!mounted.current || latest.current !== fingerprint) return;
     const published = { ...next, article: { ...next.article, id: preparation.article.id } };
     onChange({ ...published, preparation, preparedFingerprint: readMoreFingerprint(published, type, media, caption, ids),
-      captionSource: draft.uniqueCaptions ? captionSourceOf(published.article) : undefined,
+      captionsFor: draft.uniqueCaptions ? captionsFingerprint(published, type, media, caption, ids) : draft.captionsFor,
+      captionSource: draft.uniqueCaptions ? captionSourceOf(published.article, caption) : undefined,
       captions: Object.fromEntries(Object.entries(preparation.destinations).map(([id, destination]) => [id, destination.caption])) });
-    setMessage('Article published. Review the captions and comment links below.');
+    setMessage('Article published. Review the comment links below.');
   });
   const regenerate = (profileId: string) => run(async () => {
-    const started = latest.current;
-    let keys: { gemini?: string; gemini_model?: string } = {};
-    try { keys = JSON.parse(localStorage.getItem('app_api_keys') || '{}'); } catch { /* Backend reports missing key. */ }
+    const started = latestCaptions.current;
     const result = await websiteRequest<{ caption: string }>('/regenerate-hook', {
-      preparation_id: draft.preparation!.id, profile_id: profileId,
-      other_captions: Object.values(draft.captions || {}), api_key: keys.gemini || '', model: keys.gemini_model || 'gemini-3.8-flash',
+      preparation_id: draft.captionsPreparationId, profile_id: profileId,
+      other_captions: Object.values(draft.captions || {}), ...geminiKeys(),
     });
-    if (mounted.current && latest.current === started) update({ captions: { ...draft.captions, [profileId]: result.caption } });
+    if (mounted.current && latestCaptions.current === started) update({ captions: { ...draft.captions, [profileId]: result.caption } });
   });
   const ready = readMoreReady(draft, type, media, caption, ids);
+  const haveCaptions = captionsReady(draft, type, media, caption, ids);
+  const someCaptions = Object.keys(knownCaptions(draft, caption, ids)).length > 0;
   return <fieldset disabled={disabled || busy} className="space-y-3 rounded-xl border border-zinc-700 p-3 text-xs">
+    <label className="flex items-center gap-2 text-zinc-200"><Checkbox checked={draft.uniqueCaptions} onCheckedChange={uniqueCaptions => update({ uniqueCaptions })} />Unique caption for each account · 10–30 words · replaces the caption above</label>
+    {draft.uniqueCaptions && <div className="space-y-2">
+      <p className="text-zinc-400">Written by AI from {draft.article.content.trim() ? 'the article text' : 'your caption'}. Nothing is published to a website.</p>
+      <button type="button" className={button} onClick={generateCaptions} disabled={!profiles.length || busy || haveCaptions}>{busy ? 'Working…' : someCaptions ? 'Generate captions for new accounts' : 'Generate captions'}</button>
+      {!profiles.length && <p className="text-amber-300">Choose accounts first.</p>}
+      {haveCaptions && profiles.map(profile => <div key={profile.id} className="space-y-1 rounded-lg bg-zinc-950 p-2">
+        <label className="block text-zinc-300">{profile.name}<textarea rows={2} className={cls} value={draft.captions?.[profile.id] ?? ''}
+          onChange={event => update({ captions: { ...draft.captions, [profile.id]: event.target.value } })} /></label>
+        <button type="button" className={button} onClick={() => regenerate(profile.id)}>Regenerate caption</button>
+      </div>)}
+    </div>}
     <label className="flex items-center gap-2 text-zinc-200"><Checkbox checked={draft.enabled} onCheckedChange={enabled => update({ enabled })} />Read more · website article</label>
     {draft.enabled && <>
       <div className="flex flex-wrap items-center gap-2">
@@ -129,19 +159,18 @@ export function ReadMorePanel({ value, onChange, type, media, caption, profiles,
               value={value == null ? '' : String(value)} onChange={event => change(field.type === 'number' ? event.target.value === '' ? null : Number(event.target.value) : event.target.value)} />}
         </label>;
       })}
-      <label className="flex items-center gap-2 text-zinc-200"><Checkbox checked={draft.uniqueCaptions} onCheckedChange={uniqueCaptions => update({ uniqueCaptions })} />Generate unique captions for every account · 10–30 words · replaces the caption above · uses more AI tokens</label>
       {!draft.uniqueCaptions && !caption.trim() && <p className="text-amber-300">No caption yet. Add one above, or every account posts without a caption.</p>}
-      <p className="text-zinc-400">Publishes the article immediately and creates a unique comment link for every account. {draft.uniqueCaptions ? 'Article text goes to your configured Gemini provider. ' : ''}{type === 'live' ? 'Live comments are posted after the broadcast ends.' : 'Links are posted in the first comment.'}</p>
-      <button type="button" className={button} onClick={prepare} disabled={!connections.some(connection => connection.id === draft.connectionId) || !profiles.length || busy || Boolean(draft.preparation && ready)}>{busy ? 'Preparing…' : 'Publish article & generate captions and links'}</button>
+      <p className="text-zinc-400">Publishes the article immediately and creates a unique comment link for every account. {type === 'live' ? 'Live comments are posted after the broadcast ends.' : 'Links are posted in the first comment.'}</p>
+      {draft.uniqueCaptions && !haveCaptions && <p className="text-amber-300">Generate the captions above first.</p>}
+      <button type="button" className={button} onClick={prepare} disabled={!connections.some(connection => connection.id === draft.connectionId) || !profiles.length || busy || Boolean(draft.preparation && ready) || (draft.uniqueCaptions && !haveCaptions)}>{busy ? 'Publishing…' : 'Publish article & create links'}</button>
       {draft.preparation && !ready && <p className="text-amber-300">Content or accounts changed. Prepare and review again before posting.</p>}
       {draft.preparation && ready && <div className="space-y-3">
         <a href={draft.preparation.article.url} target="_blank" rel="noreferrer" className="text-blue-300 underline">Open published article</a>
         {profiles.map(profile => {
           const destination = draft.preparation!.destinations[profile.id];
           return <div key={profile.id} className="space-y-1 rounded-lg bg-zinc-950 p-2">
-            <label className="block text-zinc-300">{profile.name}<textarea rows={2} className={cls} value={draft.captions?.[profile.id] ?? destination.caption}
-              onChange={event => update({ captions: { ...draft.captions, [profile.id]: event.target.value } })} /></label>
-            {draft.uniqueCaptions && <button type="button" className={button} onClick={() => regenerate(profile.id)}>Regenerate hook</button>}
+            {draft.uniqueCaptions ? <p className="text-zinc-300">{profile.name}</p> : <label className="block text-zinc-300">{profile.name}<textarea rows={2} className={cls} value={draft.captions?.[profile.id] ?? destination.caption}
+              onChange={event => update({ captions: { ...draft.captions, [profile.id]: event.target.value } })} /></label>}
             <a className="block break-all text-blue-300" href={destination.link} target="_blank" rel="noreferrer">{destination.link}</a>
           </div>;
         })}

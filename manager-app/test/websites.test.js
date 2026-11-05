@@ -8,26 +8,26 @@ const source = ts.transpileModule(readFileSync(new URL('../src/services/websites
 const web = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 const draft = () => ({ enabled: true, connectionId: 'site', article: web.emptyArticle(), uniqueCaptions: true });
 test('read more requires a reviewed preparation and ignores account ordering', () => {
-  const value = draft();
+  const value = { ...draft(), uniqueCaptions: false };
   assert.equal(web.readMoreReady(value, 'reel', 'movie.mp4', 'Caption', ['a', 'b']), false);
   value.preparation = { ready: true };
   value.preparedFingerprint = web.readMoreFingerprint(value, 'reel', 'movie.mp4', 'Caption', ['a', 'b']);
   assert.equal(web.readMoreReady(value, 'reel', 'movie.mp4', 'Caption', ['b', 'a']), true);
-  for (const args of [['photo', 'movie.mp4', 'Caption', ['a', 'b']], ['reel', 'changed.mp4', 'Caption', ['a', 'b']], ['reel', 'movie.mp4', 'Caption', ['a']]]) {
+  for (const args of [['photo', 'movie.mp4', 'Caption', ['a', 'b']], ['reel', 'changed.mp4', 'Caption', ['a', 'b']], ['reel', 'movie.mp4', 'Edited', ['a', 'b']], ['reel', 'movie.mp4', 'Caption', ['a']]]) {
     assert.equal(web.readMoreReady(value, ...args), false);
   }
   value.article.seo_title = 'Edited SEO';
   assert.equal(web.readMoreReady(value, 'reel', 'movie.mp4', 'Caption', ['a', 'b']), false);
 });
 test('reviewed caption edits preserve links while article and site changes invalidate preparation', () => {
-  const value = draft();
+  const value = { ...draft(), uniqueCaptions: false };
   value.preparation = { ready: true };
   value.preparedFingerprint = web.readMoreFingerprint(value, 'live', 'movie.mp4', 'Caption', ['a']);
   value.captions = { a: 'Edited hook' };
   assert.equal(web.readMoreReady(value, 'live', 'movie.mp4', 'Caption', ['a']), true);
   value.connectionId = 'other-site';
   assert.equal(web.readMoreReady(value, 'live', 'movie.mp4', 'Caption', ['a']), false);
-  assert.equal(web.readMoreReady({ ...value, enabled: false }, 'live', '', '', []), true);
+  assert.equal(web.readMoreReady({ ...value, enabled: false, uniqueCaptions: false }, 'live', '', '', []), true);
 });
 
 test('connection imports separate login secrets from reusable website configuration', () => {
@@ -63,15 +63,43 @@ test('management shortcuts and saved connection changes notify separate subscrib
 });
 test('the supplied caption only matters without unique captions', () => {
   const unique = draft(), shared = { ...draft(), uniqueCaptions: false };
-  for (const value of [unique, shared]) { value.preparation = { ready: true }; value.preparedFingerprint = web.readMoreFingerprint(value, 'reel', 'movie.mp4', 'Caption', ['a']); }
-  assert.equal(web.readMoreReady(unique, 'reel', 'movie.mp4', 'Edited', ['a']), true);
-  assert.equal(web.readMoreReady(shared, 'reel', 'movie.mp4', 'Edited', ['a']), false);
+  assert.equal(web.readMoreFingerprint(unique, 'reel', 'm', 'Caption', ['a']), web.readMoreFingerprint(unique, 'reel', 'm', 'Edited', ['a']));
+  assert.notEqual(web.readMoreFingerprint(shared, 'reel', 'm', 'Caption', ['a']), web.readMoreFingerprint(shared, 'reel', 'm', 'Edited', ['a']));
 });
-test('saved captions are reused only for the same article and selected accounts', () => {
+test('saved captions are reused only for the same text and selected accounts', () => {
   const value = { ...draft(), captions: { a: 'Hook A', gone: 'Hook gone' } };
-  value.captionSource = web.captionSourceOf(value.article);
-  assert.deepEqual(web.knownCaptions(value, ['a', 'new']), { a: 'Hook A' });
-  assert.deepEqual(web.knownCaptions({ ...value, uniqueCaptions: false }, ['a']), {});
-  assert.deepEqual(web.knownCaptions({ ...value, article: { ...value.article, content: 'Changed' } }, ['a']), {});
-  assert.deepEqual(web.knownCaptions({ ...value, captionSource: undefined }, ['a']), {});
+  value.captionSource = web.captionSourceOf(value.article, 'Caption');
+  assert.deepEqual(web.knownCaptions(value, 'Caption', ['a', 'new']), { a: 'Hook A' });
+  assert.deepEqual(web.knownCaptions(value, 'Edited', ['a']), {});
+  assert.deepEqual(web.knownCaptions({ ...value, uniqueCaptions: false }, 'Caption', ['a']), {});
+  assert.deepEqual(web.knownCaptions({ ...value, article: { ...value.article, content: 'Changed' } }, 'Caption', ['a']), {});
+});
+test('unique captions work without a website and block posting until generated', () => {
+  const value = { ...draft(), enabled: false };
+  assert.equal(web.readMoreReady(value, 'reel', 'm', 'Caption', ['a']), false);
+  assert.deepEqual(web.readMoreSelection(value), {});
+  value.captionsPreparationId = 'captions-1'; value.captions = { a: 'Hook A' };
+  value.captionsFor = web.captionsFingerprint(value, 'reel', 'm', 'Caption', ['a']);
+  assert.equal(web.readMoreReady(value, 'reel', 'm', 'Caption', ['a']), true);
+  assert.deepEqual(web.readMoreSelection(value), { read_more: { preparation_id: 'captions-1', captions: { a: 'Hook A' } } });
+  assert.equal(web.readMoreReady(value, 'reel', 'm', 'Caption', ['a', 'b']), false);
+  assert.equal(web.readMoreReady(value, 'reel', 'other', 'Caption', ['a']), false);
+});
+test('with Read more on, captions come first and the website preparation is what posts', () => {
+  const value = { ...draft(), preparation: { id: 'site-1', ready: true }, captionsPreparationId: 'captions-1', captions: { a: 'Hook A' } };
+  value.preparedFingerprint = web.readMoreFingerprint(value, 'reel', 'm', 'Caption', ['a']);
+  assert.equal(web.readMoreReady(value, 'reel', 'm', 'Caption', ['a']), false);
+  value.captionsFor = web.captionsFingerprint(value, 'reel', 'm', 'Caption', ['a']);
+  assert.equal(web.readMoreReady(value, 'reel', 'm', 'Caption', ['a']), true);
+  assert.equal(web.readMoreSelection(value).read_more.preparation_id, 'site-1');
+});
+test('nothing is sent to the queue when both options are off', () => {
+  assert.deepEqual(web.readMoreSelection({ ...draft(), enabled: false, uniqueCaptions: false }), {});
+  assert.deepEqual(web.readMoreSelection(undefined), {});
+});
+test('drafts saved under the old default do not start asking for unique captions', () => {
+  assert.equal(web.savedReadMore(draft()).uniqueCaptions, false);
+  assert.equal(web.savedReadMore({ ...draft(), captionsPreparationId: 'c' }).uniqueCaptions, true);
+  assert.equal(web.savedReadMore({ ...draft(), preparation: { ready: true } }).uniqueCaptions, true);
+  assert.equal(web.savedReadMore(undefined), undefined);
 });

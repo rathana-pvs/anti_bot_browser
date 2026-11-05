@@ -1,5 +1,5 @@
 import { ReadMorePanel } from './ReadMorePanel';
-import { readMoreReady, emptyArticle } from '../services/websites';
+import { readMoreReady, readMoreSelection, savedReadMore, emptyArticle } from '../services/websites';
 import type { ReadMoreDraft } from '../services/websites';
 import { CaptionHookEditor, HookDraft, hookIsApproved } from "./CaptionHookEditor";
 import { LivePlaybackSettings, LivePlaybackMode } from './LivePlaybackSettings';
@@ -172,7 +172,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
   const [posts, setPosts] = useState<DraftPostRow[]>(() => {
     try {
       const saved = localStorage.getItem(storageKey('draft_posts'));
-      if (saved) return JSON.parse(saved).filter((post: DraftPostRow) => liveMode ? post.type === 'live' : post.type !== 'live');
+      if (saved) return JSON.parse(saved).filter((post: DraftPostRow) => liveMode ? post.type === 'live' : post.type !== 'live').map((post: DraftPostRow) => ({ ...post, readMore: savedReadMore(post.readMore) }));
     } catch (_) {}
     return [];
   });
@@ -432,8 +432,8 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
       list.push('Set a duration between 1 and 2 minutes. Loop needs a duration.');
     }
     if (posts.some(p => !p.caption.trim() && !p.media_file)) list.push('Each post needs a photo, video, or caption.');
-    if (posts.some(p => p.readMore?.enabled && p.hook?.enabled)) list.push('Disable opening hook preparation when using Read more captions.');
-    if (posts.some(p => !readMoreReady(p.readMore, p.type, p.media_file, p.caption, selectedProfileIds))) list.push('Prepare and review Read more captions and links for every selected account.');
+    if (posts.some(p => (p.readMore?.enabled || p.readMore?.uniqueCaptions) && p.hook?.enabled)) list.push('Disable opening hook preparation when using unique or Read more captions.');
+    if (posts.some(p => !readMoreReady(p.readMore, p.type, p.media_file, p.caption, selectedProfileIds))) list.push('Generate unique captions and prepare Read more links for every selected account.');
     if (posts.some(p => !hookIsApproved(p.caption, p.media_file, p.type, p.hook))) list.push('Preview and approve each caption hook, or keep the original caption.');
     return list;
   }, [selectedProfileIds.join(','), warmupMode, liveMode, posts, playbackMode, loopVideo, durationMinutes]);
@@ -467,7 +467,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
             ...(p.type === 'live' ? {title: (p.title || '').trim(), pinned_comment: (p.pinned_comment || '').trim(), end_after_comment: Boolean(p.pinned_comment?.trim()), playback_mode: playbackMode, loop: playbackMode === 'manual' && loopVideo, muted, max_duration_seconds: playbackMode === 'manual' && durationMinutes ? Number(durationMinutes) * 60 : undefined} : {}),
             media_file: p.media_file,
             base_caption: p.caption,
-            ...(p.readMore?.enabled ? { read_more: { preparation_id: p.readMore.preparation!.id, captions: p.readMore.captions } } : {}),
+            ...readMoreSelection(p.readMore),
             ...(p.hook?.enabled ? { hook_approval: p.hook.approval } : {}),
             first_comment: p.type === 'live' ? undefined : p.first_comment.trim() || undefined,
             ai_spin: p.type === 'live' || p.hook?.enabled ? false : aiSpinAll,
