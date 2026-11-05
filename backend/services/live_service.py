@@ -22,6 +22,7 @@ from backend.services import automation_service as automation, container_lifecyc
 from backend.services.android_devices import ensure_not_android
 
 LIVE_DIR = DATA_DIR / 'live'
+DEFAULT_SERVER_URL = 'rtmps://live-api-s.facebook.com:443/rtmp/'
 MAX_VIDEO_SECONDS = 4 * 60 * 60
 LIVE_SESSION_LIMIT_SECONDS = 120
 LIVE_END_RESERVE_SECONDS = 20
@@ -66,8 +67,10 @@ def read_json(path):
 
 
 def launch_settings(profile_id):
+    ensure_not_android(profile_id, 'Live video')
     # Stored keys are legacy configuration and must never be a sender fallback.
-    return validate_settings({**read_json(settings_path(profile_id)), 'stream_key': ''}, require_key=False)
+    # The key is copied from Live Producer, so a new account needs no saved settings.
+    return validate_settings({'server_url': DEFAULT_SERVER_URL, **read_json(settings_path(profile_id)), 'stream_key': ''}, require_key=False)
 
 
 def acquire_stream_destination(settings):
@@ -162,7 +165,7 @@ def settings_path(profile_id):
 
 def get_settings(profile_id):
     settings = read_json(settings_path(profile_id))
-    return {'server_url': settings.get('server_url', 'rtmps://live-api-s.facebook.com:443/rtmp/'),
+    return {'server_url': settings.get('server_url', DEFAULT_SERVER_URL),
             'producer_url': settings.get('producer_url', 'https://www.facebook.com/live/producer/'),
             'key_saved': bool(settings.get('stream_key'))}
 
@@ -809,6 +812,8 @@ async def run_live(record, settings, video, stop_event):
         update(record, broadcast_confirmed=True)
         if (record.get('pinned_comment') or '').strip() and not stop_event.is_set():
             record['end_before_comment'] = True
+            # End is requested now, so the broadcast limit must not stop the comment.
+            limit_task.cancel()
             update(record, 'ending')
             live_event(record, 'ending_before_comment')
             await end_broadcast(record, settings, stop_event)

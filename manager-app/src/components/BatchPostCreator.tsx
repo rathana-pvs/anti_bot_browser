@@ -493,7 +493,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
   const selectedProfiles = profiles.filter(p => selectedProfileIds.includes(p.id));
   const busySelected = selectedProfiles.filter(p => busyProfileIds.includes(p.id));
   const erroredSelected = selectedProfiles.filter(p => p.status === 'error');
-  const liveSetupMissing = hasLive ? profiles.filter(p => !p.live?.configured) : [];
+  const liveSetupMissing = hasLive ? profiles.filter(p => !p.live?.configured && p.runtime?.kind !== 'android_user') : [];
   const stages = Object.fromEntries(profiles.map(p => [p.id, stageView(p, accountHealth[p.id])]));
   // Advice only: the user can keep any of these accounts.
   const stageWarnings = selectedProfiles.flatMap(p => {

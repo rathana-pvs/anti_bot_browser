@@ -79,7 +79,7 @@ export function GroupedProfileSelector({ profiles, selectedIds, onChange, busyPr
               <Checkbox id={`${selectorId}-profile-${p.id}`} disabled={blocked(p.id)} checked={selectedIds.includes(p.id)} onCheckedChange={() => toggle([p.id])} ariaLabel={`Select ${p.name}`} />
               <div className="min-w-0 flex-1"><div className="flex items-center gap-1.5 text-xs font-medium text-zinc-200">
                 <span className="truncate">{p.name}</span>{stages?.[p.id] && <StageBadge view={stages[p.id]} compact />}</div>
-                <div className="truncate text-[10px] text-zinc-500">{p.id} · {held.has(p.id) ? `On hold${p.account?.on_hold?.note ? `: ${p.account.on_hold.note}` : ''}` : disabledProfileIds.includes(p.id) ? 'Live setup required in Edit profile' : p.network?.proxy_host || 'Direct network'}</div></div>
+                <div className="truncate text-[10px] text-zinc-500">{p.id} · {held.has(p.id) ? `On hold${p.account?.on_hold?.note ? `: ${p.account.on_hold.note}` : ''}` : disabledProfileIds.includes(p.id) ? (p.runtime?.kind === 'android_user' ? 'Live runs on PC accounts only' : 'Check Live settings in Edit profile') : p.network?.proxy_host || 'Direct network'}</div></div>
               {busyProfileIds.includes(p.id) && <span className="flex shrink-0 items-center gap-1 text-[10px] text-amber-400"><Loader2 className="h-3 w-3 animate-spin" />Busy</span>}
               <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] uppercase ${p.status === 'running' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-zinc-900 text-zinc-500'}`}>{p.status}</span>
             </label>)}

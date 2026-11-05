@@ -162,15 +162,16 @@ def test_live_preset_replacement_readback_must_survive_review(adapter):
         enter(adapter, 'New comment', 'comment', replace_existing=True)
 
 
-@pytest.mark.parametrize('draw,method', [(.1, 'type'), (.9, 'paste')])
-def test_short_live_title_and_caption_use_one_complete_method(adapter, draw, method):
+@pytest.mark.parametrize('field', ['live_title', 'live_caption'])
+@pytest.mark.parametrize('draw', [.1, .9])
+def test_short_live_title_and_caption_always_paste(adapter, field, draw):
     text = 'A private supplied caption'
     with patch.object(adapter.behavior_session.stream('entry_strategy'), 'random', return_value=draw):
-        assert enter(adapter, text).verified
+        assert enter(adapter, text, field).verified
     assert adapter.client.value == text
-    assert bool(adapter.client.typed) == (method == 'type')
+    assert adapter.client.typed == []
     assert adapter.client.commands.count('key ctrl+c') == 2
-    assert ('key ctrl+v' in adapter.client.commands) == (method == 'paste')
+    assert 'key ctrl+v' in adapter.client.commands
     adapter.client.screenshot.assert_not_called()
     assert text not in repr(adapter.events)
     assert 'Return' not in repr(adapter.client.commands)

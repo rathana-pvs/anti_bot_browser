@@ -96,11 +96,18 @@ class LiveComment:
     def wait_for_delivery(self, items, target, text, deadline):
         while time.monotonic() < deadline:
             posted = self.posted_items(items, target)
-            if self.contains(posted, text) and not self.delivery_pending(posted):
+            # The text was pasted and Enter sent exactly once. Facebook shortens
+            # links on screen, so an emptied box is enough without a text match.
+            if not self.delivery_pending(posted) and (self.input_empty(items) or self.contains(posted, text)):
                 return
             time.sleep(.5)
             items = self.observe()
         raise LiveCommentFailure('submission_unconfirmed')
+
+    def input_empty(self, items):
+        return any(self.profile is not None or
+                   (label(item).startswith('write a ') and ' as ' not in label(item))
+                   for item in self.inputs(items))
 
     @staticmethod
     def delivery_pending(items):

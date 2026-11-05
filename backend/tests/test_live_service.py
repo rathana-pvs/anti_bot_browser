@@ -404,6 +404,43 @@ def test_start_timeout_or_error_ends_observed_broadcast(sandbox, monkeypatch, st
     asyncio.run(scenario())
 
 
+def test_broadcast_limit_does_not_interrupt_comment_after_end(sandbox, monkeypatch):
+    async def scenario():
+        encoder = FakeEncoder()
+        monkeypatch.setattr(live, 'LIVE_SESSION_LIMIT_SECONDS', .08)
+        monkeypatch.setattr(live, 'LIVE_END_RESERVE_SECONDS', .03)
+        async def ready(_):
+            lifecycle.mark_used(PROFILE, lifecycle.OWNER_TOKEN.get())
+        async def command(*args, **kwargs):
+            if 'ffprobe' in args:
+                return b'{"format":{"duration":"300"},"streams":[{"codec_type":"video"}]}'
+            encoder.finish()
+            return b''
+        async def browser(_, action, producer_url, stop_event, **kwargs):
+            if action == 'prepare': kwargs['prepared_settings']['stream_key'] = SETTINGS['stream_key']
+            if action == 'comment':
+                await asyncio.sleep(.15)  # Outlasts the limit that would have fired.
+                assert not stop_event.is_set()
+            return 'ended' if action == 'end' else None
+        async def cleanup(_):
+            encoder.finish()
+            return {'stopped':True}
+        monkeypatch.setattr(automation, 'ensure_profile_container_ready', ready)
+        monkeypatch.setattr(live, 'command', command)
+        monkeypatch.setattr(live, 'browser_action', browser)
+        monkeypatch.setattr(live.asyncio, 'create_subprocess_exec', AsyncMock(return_value=encoder))
+        monkeypatch.setattr(automation, '_stop_container_with_retries', cleanup)
+        await live.start_live(PROFILE, 'video.mp4', pinned_comment='comment')
+        for _ in range(200):
+            if PROFILE not in live.CONTROLS: break
+            await asyncio.sleep(.01)
+        saved = live.get_status(PROFILE)
+        assert saved['status'] == 'completed'
+        assert saved['comment_status'] == 'confirmed'
+        assert not any(x['event'] == 'live_duration_limit_reached' for x in saved['logs'])
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize('failure,expected', [('prepare', 'failed'), ('start', 'needs_review'), ('comment', 'needs_review'), ('end', 'needs_review'), (None, 'completed')])
 @pytest.mark.parametrize('loop,limit,muted', [(False, None, False), (True, 600, True), (False, 60, True)])
 def test_full_lifecycle_persists_boundary_and_never_retries(sandbox, monkeypatch, failure, expected, loop, limit, muted):
@@ -642,14 +679,29 @@ async def test_live_batch_rejects_invalid_media_and_unsupported_details(sandbox,
 
 
 @run_async_test
-async def test_live_batch_requires_configured_profiles(sandbox):
+async def test_live_batch_rejects_invalid_saved_settings(sandbox):
     from backend.routers import queue as queue_api
     from fastapi import HTTPException
-    live.settings_path(PROFILE).unlink()
+    live.private_write(live.settings_path(PROFILE), {**SETTINGS, 'server_url': 'rtmps://untrusted/rtmp/'})
     with pytest.raises(HTTPException) as error:
         await queue_api.create_batch({'target_profiles': [PROFILE],
             'posts': [{'type': 'live', 'media_file': 'video.mp4'}]})
     assert error.value.status_code == 400
+
+
+def test_live_needs_no_saved_settings_or_key(sandbox):
+    live.settings_path(PROFILE).unlink()
+    settings = live.launch_settings(PROFILE)
+    assert settings['server_url'] == live.DEFAULT_SERVER_URL
+    assert settings['producer_url'] == SETTINGS['producer_url']
+    assert settings['stream_key'] == ''
+
+
+def test_live_stays_unavailable_for_phone_profiles(sandbox, monkeypatch):
+    live.settings_path(PROFILE).unlink()
+    monkeypatch.setattr(android_devices, 'is_android_profile', lambda profile_id: True)
+    with pytest.raises(ValueError, match='Android'):
+        live.launch_settings(PROFILE)
 
 
 def queue_record(monkeypatch):

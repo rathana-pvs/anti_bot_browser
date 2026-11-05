@@ -91,9 +91,10 @@ export function browserNotes(profile: Profile): HealthSignal[] {
 export { networkSignal } from './networkSignal';
 
 export function liveSignal(profile: Profile): HealthSignal {
+  if (isAndroid(profile)) return { label: 'PC only', tone: 'muted', hint: 'Facebook Live runs on PC accounts only.' };
   return profile.live?.configured
-    ? { label: 'Ready', tone: 'ok', hint: 'A Facebook Live stream key is saved.' }
-    : { label: 'Not set up', tone: 'muted', hint: 'Add a stream key in Settings → Facebook Live.' };
+    ? { label: 'Ready', tone: 'ok', hint: 'The stream key is copied from Live Producer before each broadcast.' }
+    : { label: 'Check settings', tone: 'warn', hint: 'Fix the saved URLs in Settings → Facebook Live.' };
 }
 
 /** Open queue items that need the user, as clickable signals. */

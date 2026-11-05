@@ -17,10 +17,10 @@ unknown Facebook outcomes remain for review.
 
 ## Human-mode text entry
 
-Automated Live title/caption entry shares the Photo/Reel policy: eligible captions
-under 100 whitespace-separated words choose whole typing or whole paste; links,
-100+ words, Unicode, and multiline text always use paste. Live comments always use
-paste. Input checks existing drafts, reads back entered text and stops on focus
+Automated Live titles, captions and comments always use paste, so typing cannot use
+up the 120-second preparation budget. Photo and Reel captions keep their own policy
+of whole typing or whole paste.
+Input checks existing drafts, reads back entered text and stops on focus
 loss or clipboard failure. Conflicting title/caption drafts stop preparation.
 
 Preparation fills only the title and caption within its 120-second budget.
@@ -32,11 +32,13 @@ After Facebook confirms Live, the app sends End, including Facebook's final End
 button when a confirmation dialog appears, and stops the sender. It keeps the
 browser/container open and posts the comment once on the ended video's page.
 The comment has its own 75-second budget; streaming startup deadlines no longer
-limit it. A visible matching comment outside the draft input is sufficient,
-including wrapped URLs, once its delivery notice (such as `Posting…` or
-`Sending…`) has cleared. A matching optimistic bubble or failed delivery notice
-does not confirm success. An existing matching comment is awaited without
-reposting if delivery is still pending.
+limit it, and neither does the two-minute broadcast limit, which is cancelled when
+End begins. After Enter is sent once, the comment is confirmed when the comment box
+is empty again or the exact text is visible, and no delivery notice (such as
+`Posting…`, `Sending…` or `Couldn't post`) remains. The posted text is not compared
+when the box is empty, because Facebook shortens links on screen. Text still in the
+box or a remaining notice does not confirm success. An existing matching comment
+is awaited without reposting if delivery is still pending.
 If the ended Producer page has no comment input, the helper opens the profile
 and uses the Reel first-post header/timestamp parser. Only the newest card with
 a readable timestamp no older than three minutes is accepted; no title or
@@ -113,10 +115,11 @@ not establish the current editor layout.
 1. Start the profile and sign into the intended Facebook account/Page.
 2. In that profile's browser, prepare the broadcast in Facebook Live Producer.
    Choose its destination and **Streaming software**.
-3. In **Edit profile → Facebook Live**, save the server URL and prepared Live Producer URL.
-   The app copies the current broadcast key automatically before sending video.
+3. Nothing needs saving first. The app copies the current broadcast key automatically
+   before sending video, and every PC account starts with the default server and Live
+   Producer URLs. Change them in **Edit profile → Facebook Live** only if needed.
 4. Keep the prepared Live Producer page open. On **Studio Center → Facebook Live → New broadcast**,
-   upload videos, enter a title and caption for each video, select configured profiles, choose playback and click **Start Live**. The app starts the profile if needed and checks the prepared setup.
+   upload videos, enter a title and caption for each video, select PC accounts, choose playback and click **Start Live**. The app starts the profile if needed and checks the prepared setup.
 5. Status progresses through preparing, sending video, waiting for Facebook,
    confirmed live, and ended. **Stop Live** stops the sender and attempts to end
    the same Facebook broadcast. The profile container is stopped during cleanup.
