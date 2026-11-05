@@ -11,7 +11,8 @@ import numpy as np
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from engine.screen_state import ScreenState, StateObservation
-from skills.comment import comment_match_confidence, first_comment_search_regions
+from skills.comment import comment_box_empty, first_comment_search_regions
+from skills.comment_delivery import CommentDelivery, delivery_notice
 from skills.dialogs import KnownDialogs
 from skills.media import MediaAttachment
 from skills.navigation import Navigation
@@ -196,13 +197,38 @@ class TextEntryTests(unittest.TestCase):
 
 
 class FirstCommentTests(unittest.TestCase):
-    def test_comment_must_render_above_the_input_row(self):
-        items = [
-            {"text": "Read more: example.com/news", "center": (900, 400)},
-            {"text": "Read more: example.com/news", "center": (900, 900)},
-        ]
-        self.assertEqual(comment_match_confidence("Read more: example.com/news", items[:1], 800), 1.0)
-        self.assertEqual(comment_match_confidence("Read more: example.com/news", items[1:], 800), 0.0)
+    def test_box_is_empty_only_when_its_placeholder_shows_at_or_below_it(self):
+        below = {"text": "Comment as Example Page", "center": (900, 860)}
+        above = {"text": "Comment as Example Page", "center": (900, 400)}
+        draft = {"text": "https://example.com/news", "center": (900, 800)}
+        self.assertTrue(comment_box_empty([below], (900, 800), 1000))
+        self.assertFalse(comment_box_empty([above], (900, 800), 1000))
+        self.assertFalse(comment_box_empty([draft], (900, 800), 1000))
+
+    def test_delivery_notices_match_whole_notices_only(self):
+        for text in ("Posting...", "Posting…", "Sending…", "Submitting comment"):
+            self.assertEqual(delivery_notice([{"text": text}]), "pending")
+        for text in ("Couldn't post. Try again", "Retry", "Failed to post"):
+            self.assertEqual(delivery_notice([{"text": text}]), "failed")
+        self.assertIsNone(delivery_notice([{"text": "A posting guide"}, {"text": "Sending love"}]))
+
+    def test_delivery_needs_consecutive_settled_checks(self):
+        delivery = CommentDelivery()
+        self.assertFalse(delivery.observe([], True))
+        self.assertFalse(delivery.observe([], True))
+        self.assertFalse(delivery.observe([{"text": "Posting..."}], True))
+        self.assertEqual(delivery.state, "pending")
+        self.assertFalse(delivery.observe([], True))
+        self.assertFalse(delivery.observe([], True))
+        self.assertTrue(delivery.observe([], True))
+        self.assertTrue(delivery.finished)
+
+    def test_delivery_stops_waiting_when_text_stays_in_the_box(self):
+        delivery = CommentDelivery()
+        results = [delivery.observe([], False) for _ in range(10)]
+        self.assertEqual(results, [False] * 9 + [True])
+        self.assertFalse(delivery.finished)
+        self.assertEqual(delivery.state, "box_not_empty")
 
     def test_search_regions_scale_with_the_screen(self):
         narrow, broad = first_comment_search_regions(np.zeros((1000, 2000, 3), dtype=np.uint8))

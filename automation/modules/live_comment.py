@@ -3,6 +3,7 @@ import time
 from modules.live_producer import label
 from live_comment_status import COMMENT_TOTAL_SECONDS, COMMENT_VERIFY_SECONDS, COMMENT_CODES, LiveCommentFailure
 from modules.live_profile_comment import LiveProfileComment
+from skills.comment_delivery import CHECK_SECONDS, CommentDelivery
 
 
 class LiveComment:
@@ -64,9 +65,9 @@ class LiveComment:
             raise LiveCommentFailure('input_missing')
         target = targets[0]
         if self.contains(self.posted_items(items, target), text):
-            # A matching optimistic bubble may still be uploading. Wait on it
-            # rather than submitting the same comment again.
-            self.wait_for_delivery(items, target, text, deadline)
+            # Only a duplicate guard before Enter, never delivery proof. A matching
+            # bubble may still be uploading, so wait instead of submitting again.
+            self.wait_for_delivery(items, target, deadline)
             return
         fresh = self.inputs(self.observe())
         if len(fresh) != 1 or not self.task.same(target, fresh[0]):
@@ -91,33 +92,18 @@ class LiveComment:
         self.task.report('live_comment_submit_requested')
         self.task.live_input.human.key_press('Return', clear_modifiers=True)
         self.task.report('live_comment_submit_sent')
-        self.wait_for_delivery(self.observe(), target, text, deadline)
+        self.wait_for_delivery(self.observe(), target, deadline)
 
-    def wait_for_delivery(self, items, target, text, deadline):
+    def wait_for_delivery(self, items, target, deadline):
+        # The text was pasted and Enter sent exactly once.
+        delivery = CommentDelivery()
         while time.monotonic() < deadline:
-            posted = self.posted_items(items, target)
-            # The text was pasted and Enter sent exactly once. Facebook shortens
-            # links on screen, so an emptied box is enough without a text match.
-            if not self.delivery_pending(posted) and (self.input_empty(items) or self.contains(posted, text)):
-                return
-            time.sleep(.5)
+            if delivery.observe(self.posted_items(items, target), bool(self.inputs(items))):
+                break
+            time.sleep(CHECK_SECONDS)
             items = self.observe()
-        raise LiveCommentFailure('submission_unconfirmed')
-
-    def input_empty(self, items):
-        return any(self.profile is not None or
-                   (label(item).startswith('write a ') and ' as ' not in label(item))
-                   for item in self.inputs(items))
-
-    @staticmethod
-    def delivery_pending(items):
-        for item in items:
-            status = label(item)
-            if (status in {'posting', 'sending', 'pending', 'retry', 'try again'}
-                    or status.startswith(('posting ', 'sending ', 'couldnt post', 'could not post',
-                                          'failed to post', 'unable to post', 'comment failed'))):
-                return True
-        return False
+        if not delivery.finished:
+            raise LiveCommentFailure('submission_unconfirmed')
 
     def posted_items(self, items, target):
         # A profile includes the post's caption as well as its comments. Never

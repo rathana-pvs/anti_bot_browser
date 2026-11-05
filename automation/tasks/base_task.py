@@ -28,7 +28,6 @@ from engine.outcome import SUCCESS_STATUSES, PublicationStatus, resolve_status
 from engine.resource_signal import read_signal
 from skills.comment import (
     FirstComment,
-    comment_match_confidence,
     first_comment_search_regions,
     submitted_comment_region,
 )
@@ -710,10 +709,6 @@ class BaseTask:
 
     def _open_permalink_comment_input(self, post_url: str | None):
         return FirstComment(self).open_permalink_input(post_url)
-
-    @staticmethod
-    def _comment_match_confidence(comment_text: str, ocr_items: list[dict], max_y: int) -> float:
-        return comment_match_confidence(comment_text, ocr_items, max_y)
 
     def post_first_comment(
         self,

@@ -103,7 +103,7 @@ titles and captions. Arbitrary OCR text and clipboard payloads are not copied to
 Different title/caption drafts or unconfirmed fields stop preparation for review.
 Live preparation no longer edits preset pinned comments. With a supplied comment,
 the flow is: confirm Live, End Live, post the comment on the ended video, confirm
-the visible comment, stop the container, then mark success. The browser stays
+it finished (empty box and no delivery notice), stop the container, then mark success. The browser stays
 open for comment entry after the sender stops. A matching comment already visible
 is accepted without reposting. Unconfirmed comments or failed container cleanup
 remain for review. Pinning is manual; existing Facebook presets are unchanged.

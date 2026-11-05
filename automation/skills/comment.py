@@ -6,6 +6,7 @@ import re
 import time
 
 from engine.vision import VisionEngine
+from skills.comment_delivery import CHECK_SECONDS, CommentDelivery
 
 
 def first_comment_search_regions(screen):
@@ -27,40 +28,24 @@ def first_comment_search_regions(screen):
 
 
 def submitted_comment_region(screen, comment_box_pos):
-    """Crop around the verified input and the newly rendered comment above it."""
+    """Crop the input, delivery notices above it, and the input after it moves down."""
     height, width = screen.shape[:2]
-    anchor_x, anchor_y = comment_box_pos
-    x1 = max(int(width * 0.28), int(anchor_x - width * 0.08))
-    y1 = max(0, int(anchor_y - height * 0.20))
-    x2 = min(int(width * 0.95), int(anchor_x + width * 0.34))
-    y2 = min(height, int(anchor_y + height * 0.10))
+    _anchor_x, anchor_y = comment_box_pos
+    x1 = int(width * 0.28)
+    y1 = max(0, int(anchor_y - height * 0.40))
+    x2 = int(width * 0.95)
+    y2 = min(height, int(anchor_y + height * 0.25))
     return x1, y1, max(1, x2 - x1), max(1, y2 - y1)
 
 
-def comment_match_confidence(comment_text: str, ocr_items: list[dict], max_y: int) -> float:
-    """Measure whether submitted comment text is visible above the input row."""
-    normalized_target = re.sub(r"[^a-z0-9]+", " ", comment_text.casefold()).strip()
-    target_tokens = [token for token in normalized_target.split() if len(token) >= 2]
-    if not target_tokens:
-        return 0.0
-
-    visible_parts = []
-    for item in ocr_items:
-        if item.get("center", (0, max_y + 1))[1] > max_y:
-            continue
-        normalized = re.sub(r"[^a-z0-9]+", " ", item.get("text", "").casefold()).strip()
-        if VisionEngine.is_comment_input_text(normalized):
-            continue
-        visible_parts.append(normalized)
-
-    visible_text = " ".join(visible_parts)
-    if not visible_text:
-        return 0.0
-    if normalized_target in visible_text:
-        return 1.0
-    visible_tokens = set(visible_text.split())
-    matched = sum(1 for token in target_tokens if token in visible_tokens)
-    return matched / len(target_tokens)
+def comment_box_empty(ocr_items: list[dict], comment_box_pos, screen_height: int) -> bool:
+    """A placeholder shows only in an empty box, and a new comment never moves it up."""
+    floor = comment_box_pos[1] - screen_height * 0.05
+    return any(
+        VisionEngine.is_comment_input_text(item.get("text", ""))
+        and item.get("center", (0, floor - 1))[1] >= floor
+        for item in ocr_items
+    )
 
 
 class FirstComment:
@@ -334,107 +319,45 @@ class FirstComment:
         task.log("INFO", "First comment was submitted once; waiting for Facebook's Posting indicator to clear.")
 
         after_comment = None
-        clear_streak = 0
-        visible_streak = 0
-        best_comment_confidence = 0.0
-        settled_observations = 0
-        local_verification_misses = 0
+        delivery = CommentDelivery()
         for _ in range(30):
-            time.sleep(2.0)
+            time.sleep(CHECK_SECONDS)
             after_comment = task.client.screenshot()
-            screen_h, screen_w = after_comment.shape[:2]
-            # Verify around the known input first. After two local misses, use
-            # the established broad card crop so long comments and link-preview
-            # titles at the right edge still remain verifiable.
-            broad_comment_region = (
-                int(screen_w * 0.28),
-                int(screen_h * 0.22),
-                int(screen_w * 0.67),
-                int(screen_h * 0.73),
-            )
-            focused_comment_region = task._submitted_comment_region(
-                after_comment,
-                comment_box_pos,
-            )
-            comment_region = (
-                focused_comment_region
-                if local_verification_misses < 2
-                else broad_comment_region
-            )
             comment_items = task.vision.read_text(
                 after_comment,
-                region=comment_region,
+                region=task._submitted_comment_region(after_comment, comment_box_pos),
                 min_confidence=0.15,
             )
-            normalized_comment_items = {
-                re.sub(r"[^a-z0-9]+", " ", item.get("text", "").casefold()).strip()
-                for item in comment_items
-            }
-            submission_pending = bool(normalized_comment_items.intersection({
-                "posting",
-                "posting comment",
-                "sending",
-                "sending comment",
-                "submitting",
-                "submitting comment",
-            }))
-            comment_confidence = task._comment_match_confidence(
-                comment_link,
-                comment_items,
-                # The submitted comment renders directly above the known
-                # input. Tall Reel cards can place both below 90% of the
-                # viewport, so bind the cutoff to that input instead of a
-                # fixed screen percentage.
-                max_y=min(screen_h - 1, int(comment_box_pos[1]) - 4),
-            )
-            best_comment_confidence = max(best_comment_confidence, comment_confidence)
-            if submission_pending:
-                clear_streak = 0
-                settled_observations = 0
-                visible_streak = 0
-                continue
-            clear_streak += 1
-            settled_observations += 1
-            if comment_confidence >= 0.60:
-                visible_streak += 1
-            else:
-                visible_streak = 0
-                local_verification_misses += 1
-            # Two consecutive visible observations confirm the comment. When
-            # OCR cannot match it, allow four settled observations before
-            # returning unverified so a slowly rendered link preview is not
-            # missed. Never resubmit automatically.
-            if (visible_streak >= 2 and clear_streak >= 2) or settled_observations >= 4:
+            # Never resubmit automatically, whatever this check finds.
+            box_empty = comment_box_empty(comment_items, comment_box_pos, after_comment.shape[0])
+            if delivery.observe(comment_items, box_empty):
                 break
 
         if after_comment is None:
             after_comment = task.client.screenshot()
         comment_status = (
-            "submitted_verified"
-            if visible_streak >= 2
+            "submitted_verified" if delivery.finished
+            else "submission_pending" if delivery.state == "pending"
             else "submitted_unverified"
         )
         task.capture_evidence(
             "after_first_comment",
             after_comment,
             comment_status=comment_status,
-            comment_match_confidence=round(best_comment_confidence, 3),
+            comment_delivery_state=delivery.state,
             comment_method=task.last_comment_method,
         )
 
-        if clear_streak < 2:
+        if comment_status == "submission_pending":
             task.log("WARN", "First comment is still submitting; leaving the post modal open and not retrying.")
             return "submission_pending"
 
         if comment_status == "submitted_verified":
-            task.log(
-                "SUCCESS",
-                f"First comment text was visibly verified (confidence={best_comment_confidence:.2f}).",
-            )
+            task.log("SUCCESS", "First comment finished: the box is empty and no delivery notice remains.")
         else:
             task.log(
                 "WARN",
-                "First comment submission settled, but its text was not visibly verified; no automatic retry will be attempted.",
+                f"First comment did not finish cleanly ({delivery.state}); no automatic retry will be attempted.",
             )
 
         if not warm_down_after_submit:

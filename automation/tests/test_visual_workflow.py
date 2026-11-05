@@ -2612,6 +2612,7 @@ class FirstCommentTargetTests(unittest.TestCase):
         task.vision = Mock()
         task.vision.read_text.return_value = [
             {"text": "A posting guide", "confidence": 0.99, "center": (60, 60)},
+            {"text": "Comment as Fat Frog", "confidence": 0.95, "center": (60, 95)},
         ]
         task.paste_text = Mock()
         task._open_profile_first_comment_input = Mock(return_value=((90, 75), screen))
@@ -2622,7 +2623,7 @@ class FirstCommentTargetTests(unittest.TestCase):
 
         self.assertEqual(result, "submitted_verified")
 
-    def test_post_first_comment_visibly_verifies_submitted_text(self):
+    def test_first_comment_is_verified_without_comparing_text(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
         stub_verified_entry(task)
         task.log = Mock()
@@ -2633,7 +2634,7 @@ class FirstCommentTargetTests(unittest.TestCase):
         task.client.screenshot.return_value = np.zeros((100, 100, 3), dtype=np.uint8)
         task.vision = Mock()
         task.vision.read_text.return_value = [
-            {"text": "Canary comment test September 25 2026", "confidence": 0.95, "center": (60, 60)},
+            {"text": "asiandot.com/.../zelens", "confidence": 0.95, "center": (60, 60)},
             {"text": "Comment as Fat Frog", "confidence": 0.95, "center": (60, 95)},
         ]
         task.paste_text = Mock()
@@ -2643,16 +2644,94 @@ class FirstCommentTargetTests(unittest.TestCase):
 
         with unittest.mock.patch("time.sleep", return_value=None), \
              unittest.mock.patch("skills.comment.random.uniform", return_value=1.0):
-            result = task.post_first_comment("Canary comment test — September 25, 2026")
+            result = task.post_first_comment("មតិយោបល់ https://asiandot.com/article/full-long-link")
 
         self.assertEqual(result, "submitted_verified")
         task.capture_evidence.assert_any_call(
             "after_first_comment",
             task.client.screenshot.return_value,
             comment_status="submitted_verified",
-            comment_match_confidence=1.0,
+            comment_delivery_state="finished",
             comment_method="profile_first_post",
         )
+        task.human.key_press.assert_called_once_with("Return")
+
+    def test_first_comment_text_left_in_box_is_unverified_without_resubmitting(self):
+        task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
+        task.log = Mock()
+        task.log_decision = Mock()
+        task.capture_evidence = Mock()
+        task.human = Mock()
+        task.client = Mock()
+        task.client.screenshot.return_value = np.zeros((100, 100, 3), dtype=np.uint8)
+        task.vision = Mock()
+        task.vision.read_text.return_value = [
+            {"text": "Exact comment", "confidence": 0.99, "center": (60, 75)},
+        ]
+        task.paste_text = Mock()
+        task._open_profile_first_comment_input = Mock(
+            return_value=((90, 75), np.zeros((100, 100, 3)))
+        )
+
+        with unittest.mock.patch("time.sleep", return_value=None), \
+             unittest.mock.patch("skills.comment.random.uniform", return_value=1.0):
+            result = task.post_first_comment("Exact comment")
+
+        self.assertEqual(result, "submitted_unverified")
+        self.assertEqual(task.vision.read_text.call_count, 10)
+        task.human.key_press.assert_called_once_with("Return")
+
+    def test_first_comment_failure_notice_is_unverified(self):
+        task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
+        task.log = Mock()
+        task.log_decision = Mock()
+        task.capture_evidence = Mock()
+        task.human = Mock()
+        task.client = Mock()
+        task.client.screenshot.return_value = np.zeros((100, 100, 3), dtype=np.uint8)
+        task.vision = Mock()
+        task.vision.read_text.return_value = [
+            {"text": "Couldn't post. Try again", "confidence": 0.99, "center": (60, 60)},
+            {"text": "Comment as Fat Frog", "confidence": 0.95, "center": (60, 95)},
+        ]
+        task.paste_text = Mock()
+        task._open_profile_first_comment_input = Mock(
+            return_value=((90, 75), np.zeros((100, 100, 3)))
+        )
+
+        with unittest.mock.patch("time.sleep", return_value=None), \
+             unittest.mock.patch("skills.comment.random.uniform", return_value=1.0):
+            result = task.post_first_comment("Any comment")
+
+        self.assertEqual(result, "submitted_unverified")
+        task.human.key_press.assert_called_once_with("Return")
+
+    def test_first_comment_late_posting_notice_restarts_the_settled_checks(self):
+        task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
+        task.log = Mock()
+        task.log_decision = Mock()
+        task.capture_evidence = Mock()
+        task.human = Mock()
+        task.client = Mock()
+        task.client.screenshot.return_value = np.zeros((100, 100, 3), dtype=np.uint8)
+        task.vision = Mock()
+        empty = [{"text": "Comment as Fat Frog", "confidence": 0.95, "center": (60, 95)}]
+        posting = empty + [{"text": "Posting...", "confidence": 0.99, "center": (60, 80)}]
+        task.vision.read_text.side_effect = [empty, posting, empty, empty, empty]
+        task.paste_text = Mock()
+        task._open_profile_first_comment_input = Mock(
+            return_value=((90, 75), np.zeros((100, 100, 3)))
+        )
+
+        with unittest.mock.patch("time.sleep", return_value=None), \
+             unittest.mock.patch("skills.comment.random.uniform", return_value=1.0):
+            result = task.post_first_comment("Any comment")
+
+        self.assertEqual(result, "submitted_verified")
+        self.assertEqual(task.vision.read_text.call_count, 5)
 
     def test_comment_verification_accepts_text_above_low_viewport_input(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
@@ -2895,6 +2974,7 @@ class FirstCommentTargetTests(unittest.TestCase):
         task.vision = Mock()
         task.vision.read_text.return_value = [
             {"text": "Direct Reel comment", "confidence": 0.99, "center": (60, 60)},
+            {"text": "Comment as Fat Frog", "confidence": 0.95, "center": (60, 95)},
         ]
         task.paste_text = Mock()
         task._open_profile_first_comment_input = Mock(return_value=((90, 75), screen))
@@ -2914,7 +2994,7 @@ class FirstCommentTargetTests(unittest.TestCase):
         )
         task.human.click.assert_called_once_with(90, 75)
 
-    def test_comment_verification_includes_upper_modal_comment_stream(self):
+    def test_comment_check_sees_a_notice_high_above_the_input(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
         stub_verified_entry(task)
         task.log = Mock()
@@ -2924,15 +3004,12 @@ class FirstCommentTargetTests(unittest.TestCase):
         task.client = Mock()
         task.client.screenshot.return_value = np.zeros((100, 100, 3), dtype=np.uint8)
         task.vision = Mock()
-        visible_comment = {
-            "text": "Verification comment profile 002",
-            "confidence": 0.95,
-            "center": (50, 42),
-        }
+        notice = {"text": "Posting...", "confidence": 0.95, "center": (50, 55)}
+        box = {"text": "Comment as Fat Frog", "confidence": 0.95, "center": (70, 92)}
 
         def regional_ocr(_screen, region=None, **_kwargs):
             x, y, width, height = region
-            return [visible_comment] if y <= 42 <= y + height else []
+            return [item for item in (notice, box) if y <= item["center"][1] <= y + height]
 
         task.vision.read_text.side_effect = regional_ocr
         task.paste_text = Mock()
@@ -2940,12 +3017,10 @@ class FirstCommentTargetTests(unittest.TestCase):
             return_value=((70, 92), np.zeros((100, 100, 3), dtype=np.uint8))
         )
 
-        with unittest.mock.patch("time.sleep", return_value=None), \
-             unittest.mock.patch("skills.comment.random.uniform", return_value=1.0):
-            result = task.post_first_comment("Verification comment — profile 002")
+        with unittest.mock.patch("time.sleep", return_value=None):
+            result = task.post_first_comment("Any comment")
 
-        self.assertEqual(result, "submitted_verified")
-        self.assertLessEqual(task.vision.read_text.call_args.kwargs["region"][1], 42)
+        self.assertEqual(result, "submission_pending")
 
     def test_comment_verification_crop_includes_right_side_link_preview(self):
         task = FacebookReelTask.__new__(FacebookReelTask)
@@ -2963,7 +3038,8 @@ class FirstCommentTargetTests(unittest.TestCase):
                 "text": "Senate Rejects Sanders-Led Effort to Block Arms Sale to Israel",
                 "confidence": 0.95,
                 "center": (1500, 740),
-            }
+            },
+            {"text": "Comment as Fat Frog", "confidence": 0.95, "center": (1167, 900)},
         ]
         task.paste_text = Mock()
         task._open_profile_first_comment_input = Mock(return_value=((1167, 839), screen))
