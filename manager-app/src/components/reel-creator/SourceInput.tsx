@@ -3,10 +3,12 @@ import { Bookmark, ImagePlus, Sparkles, X } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { Textarea } from '../ui/Textarea';
 import { useFileDrop } from '../../hooks/useFileDrop';
+import { useArticlePaste } from '../../hooks/useArticlePaste';
 import { usePastedImages } from '../../hooks/usePastedImages';
 import { sourceKind } from '../../services/reelDocument';
 import type { WriteRequest } from '../../services/reelCreator';
 import type { HouseStyle, LookInfo, ReelAsset, ReelGoal } from '../../types/reelCreator';
+import { ArticlePasteNote } from './ArticlePasteNote';
 import { Thumb } from './Thumb';
 
 interface Props {
@@ -44,6 +46,7 @@ export function GoalPicker({ goal, onGoal, disabled }: { goal: ReelGoal; onGoal:
 /** The whole first step: paste an article, optionally add photos, press one button. */
 export function SourceInput({ active, looks, houseStyles, busy, goal, onGoal, onCreate, importImages, onBlank }: Props) {
   const [source, setSource] = useState('');
+  const articlePaste = useArticlePaste(source, setSource);
   const [look, setLook] = useState<WriteRequest['look']>('auto');
   const [houseId, setHouseId] = useState<string | null>(null);
   const house = houseStyles.find(style => style.id === houseId);
@@ -62,9 +65,10 @@ export function SourceInput({ active, looks, houseStyles, busy, goal, onGoal, on
   const chips = [{ id: 'auto', name: 'Auto', accent: '#a1a1aa' }, ...looks];
 
   return <div {...drop.handlers} className={`mx-auto flex w-full max-w-2xl flex-col gap-4 rounded-2xl border p-5 transition-colors ${drop.dragging ? 'border-violet-500 bg-violet-950/20' : 'border-zinc-800 bg-zinc-950'}`}>
-    <Textarea value={source} onChange={event => setSource(event.target.value)} rows={7} disabled={busy}
+    <Textarea value={source} onChange={event => setSource(event.target.value)} onPaste={articlePaste.onPaste} rows={7} disabled={busy}
       aria-label="Article link or text" placeholder="Paste a news link or the article text"
       className="resize-none text-sm leading-relaxed" />
+    <ArticlePasteNote restore={articlePaste.restore} />
 
     <GoalPicker goal={goal} onGoal={onGoal} disabled={busy} />
 
