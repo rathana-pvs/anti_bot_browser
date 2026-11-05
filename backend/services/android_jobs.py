@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from automation.warming_options import normalize_warming_options
-from backend.config import AUTOMATION_PYTHON, PROFILES_DIR, ROOT_DIR, SHARED_MEDIA_DIR
+from backend.config import AUTOMATION_PYTHON, AUTOMATION_RUNNER, PROFILES_DIR, ROOT_DIR, SHARED_MEDIA_DIR
 from backend.services import account_hold, android_devices, android_live, android_network
 from backend.services.adb_client import AdbError
 from backend.services.android_devices import ANDROID_RUNTIME, read_profile_runtime
@@ -30,7 +30,7 @@ from backend.services.queue_scheduler import release_execution_lease
 from backend.services.queue_service import (find_queue_execution, load_posting_queue,
                                             persist_queue_execution_stage, save_posting_queue)
 
-PHONE_RUNNER = Path(__file__).resolve().parents[2] / "automation" / "phone_runner.py"
+PHONE_RUNNER = AUTOMATION_RUNNER.with_name("phone_runner.py")
 IMAGE_TYPES = (".jpg", ".jpeg", ".png")
 VIDEO_TYPES = (".mp4",)
 # The comment follow-up starts this long after the publish tap: a new post needs a while to show.

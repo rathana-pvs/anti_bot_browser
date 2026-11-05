@@ -6,11 +6,26 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from backend.config import AUTOMATION_RUNNER, automation_runner
 from backend.services import android_devices, android_jobs, automation_service
 from backend.services import container_lifecycle as lifecycle
 
 SERIAL, USER = "PIXEL", 11
 RUNTIME = {"kind": "android_user", "device_serial": SERIAL, "android_user_id": USER}
+
+
+def test_phone_runner_is_found_next_to_the_automation_runner():
+    assert android_jobs.PHONE_RUNNER == AUTOMATION_RUNNER.with_name("phone_runner.py")
+    assert android_jobs.PHONE_RUNNER.is_file()
+
+
+def test_installed_build_uses_the_runner_folder_outside_its_temporary_bundle(tmp_path):
+    # An installed backend has no automation folder inside its temporary bundle.
+    runtime = tmp_path / "runtime" / "automation"
+    runtime.mkdir(parents=True)
+    (runtime / "runner.py").write_text("")
+    runner = automation_runner(tmp_path / "_MEI_bundle", tmp_path / "runtime")
+    assert runner.with_name("phone_runner.py") == runtime / "phone_runner.py"
 
 
 @pytest.fixture
