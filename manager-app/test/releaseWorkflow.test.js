@@ -21,12 +21,13 @@ test('one command synchronizes every version and rejects accidental downgrades',
     const files=['VERSION','manager-app/package.json','manager-app/package-lock.json','manager-app/src-tauri/tauri.conf.json','manager-app/src-tauri/Cargo.toml','manager-app/src-tauri/Cargo.lock'];
     for (const file of files) writeFileSync(join(dir,file),readFileSync(join(root,file)));
     const current=checkVersion(dir);
+    const next=`${BigInt(current.split('.')[0])+1n}.0.0`;
     assert.throws(()=>setVersion('1.0.2',dir));
-    assert.equal(setVersion('2.0.0',dir),'2.0.0');
-    assert.equal(checkVersion(dir,'2.0.0'),'2.0.0');
+    assert.equal(setVersion(next,dir),next);
+    assert.equal(checkVersion(dir,next),next);
     assert.throws(()=>checkVersion(dir,current));
     const file=join(dir,'manager-app/package.json');
-    const pkg=JSON.parse(readFileSync(file)); pkg.version='3.0.0'; writeFileSync(file,JSON.stringify(pkg));
+    const pkg=JSON.parse(readFileSync(file)); pkg.version=current; writeFileSync(file,JSON.stringify(pkg));
     assert.throws(()=>checkVersion(dir));
   } finally { rmSync(dir,{recursive:true,force:true}); }
 });

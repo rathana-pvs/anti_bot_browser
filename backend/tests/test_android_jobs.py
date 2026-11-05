@@ -42,6 +42,7 @@ def world(monkeypatch, tmp_path):
         return None
     monkeypatch.setattr(automation_service, "_delayed_dispatch", no_dispatch)
     monkeypatch.setattr(android_devices, "_job_holders", {})
+    monkeypatch.setattr(android_jobs, "_last_post_at", {})
     monkeypatch.setattr(lifecycle, "OWNERS_FILE", tmp_path / "owners.json")
     monkeypatch.setattr(lifecycle, "LOCK_FILE", tmp_path / "owners.lock")
     automation_service.active_automation_tasks.pop("phone_1", None)

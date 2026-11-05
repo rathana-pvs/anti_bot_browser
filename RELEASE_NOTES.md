@@ -1,3 +1,24 @@
+# Version 2.0.0
+
+- Manage Android phones alongside PC browser accounts. Create isolated phone
+  accounts, set up the companion app, and view and control the selected phone.
+- Assign each account its own proxy, verify phone connections, and keep phone
+  setup, account switching, and time-zone checks visible in Devices.
+- Publish photos and Reels from phone accounts through the posting queue, with
+  caption entry, optional first comments, feed warming, and publication checks.
+- Improve phone video decoding, composer recovery, account switching, and support
+  for Reels in different aspect ratios. Unconfirmed publication remains held for
+  review rather than automatically publishing again.
+- Add website connections and a Read more workflow in Studio: prepare and review
+  article publishing, captions, and saved website destinations before posting.
+- Improve Android publication recovery, evidence persistence, and detection of
+  accounts sharing Facebook Live stream keys.
+
+**Linux only.** Android phones connect to the Linux manager through ADB and the
+bundled companion app. After installing, run **Settings → Setup and repair →
+Install / update runtime** when prompted. Existing profiles, sessions, and settings
+remain in persistent app storage.
+
 # Version 1.2.3
 
 - Support both centered and left-editor image-post composer layouts, with
