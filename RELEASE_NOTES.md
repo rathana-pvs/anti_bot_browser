@@ -1,3 +1,15 @@
+# Version 2.0.2
+
+- Fix phone posting jobs failing to find the automation runner in the installed
+  Linux app.
+- Fix false “text too long” errors in Reel Creator’s Hot look when a high-positioned
+  subject leaves too little space for the headline. The layout falls back to the
+  full available height while retaining the tag and detail spacing.
+
+**Linux only.** After installing, run **Settings → Setup and repair → Install /
+update runtime** when prompted. Existing profiles, sessions, and settings remain
+in persistent app storage.
+
 # Version 2.0.1
 
 - Start Live broadcasts on PC accounts with default server and Producer URLs;
