@@ -1,5 +1,6 @@
 import { ReadMorePanel } from './ReadMorePanel';
-import { readMoreProblem, readMoreSelection, savedReadMore, emptyArticle } from '../services/websites';
+import { linkedArticle, readMoreProblem, readMoreSelection, savedReadMore, emptyArticle } from '../services/websites';
+import type { ReelSource } from '../services/websites';
 import type { ReadMoreDraft } from '../services/websites';
 import { CaptionHookEditor, HookDraft, hookIsApproved } from "./CaptionHookEditor";
 import { LivePlaybackSettings, LivePlaybackMode } from './LivePlaybackSettings';
@@ -67,6 +68,7 @@ interface DraftPostRow {
   first_comment: string;
   hook?: HookDraft;
   readMore?: ReadMoreDraft;
+  reelSource?: ReelSource;
 }
 
 export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
@@ -184,8 +186,9 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
     setPosts(current => current.some(row => row.id === id) ? current.map(row => row.id === id ? { ...row, type: incomingReel.postType } : row) : [...current, {
       id, type: incomingReel.postType, media_file: incomingReel.filename, media_name: incomingReel.name,
       preview_url: getSharedMediaUrl(incomingReel.filename), caption: incomingReel.caption || '',
-      readMore: { enabled: incomingReel.goal === 'readmore', connectionId: '', uniqueCaptions: false,
-        article: { ...emptyArticle(), title: incomingReel.websiteSource?.title || incomingReel.name,
+      ...(incomingReel.draftId ? { reelSource: { draftId: incomingReel.draftId, title: incomingReel.websiteSource?.title || '', text: incomingReel.websiteSource?.text || '' } } : {}),
+      readMore: { enabled: incomingReel.goal === 'readmore', connectionId: incomingReel.articleLink?.connection_id || '', uniqueCaptions: false,
+        article: incomingReel.articleLink ? linkedArticle(incomingReel.articleLink, { title: incomingReel.websiteSource?.title || '', text: incomingReel.websiteSource?.text || '' }) : { ...emptyArticle(), title: incomingReel.websiteSource?.title || incomingReel.name,
           content: incomingReel.websiteSource?.text || '', excerpt: (incomingReel.websiteSource?.text || '').slice(0, 160),
           credit: incomingReel.websiteSource?.credit || '', cover_file: incomingReel.websiteSource?.cover_file || '' } },
       // A Live video is titled by its headline; the read-more link is pinned once the broadcast starts.
@@ -753,7 +756,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                     </div>}
                   </div>
                   <ReadMorePanel value={post.readMore} onChange={readMore => handleUpdateRow(post.id, { readMore })}
-                    type={post.type} media={post.media_file} caption={post.caption} disabled={isSubmitting}
+                    type={post.type} media={post.media_file} caption={post.caption} disabled={isSubmitting} reelSource={post.reelSource}
                     profiles={profiles.filter(profile => selectedProfileIds.includes(profile.id))} />
                 </div>
               ))}

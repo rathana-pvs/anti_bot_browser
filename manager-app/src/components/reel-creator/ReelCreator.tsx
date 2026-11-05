@@ -131,7 +131,7 @@ export function ReelCreator({ active, onUseReel }: Props) {
             }}
             onScene={patch => edit(scene, patch)} onAccent={accent => studio.setReel(reel => ({ ...reel, accent }))}
             onResetScene={() => studio.setReel(reel => ({ ...reel, scenes: reel.scenes.map((s, i) => i === scene ? unstyledScene(s) : s) }))} layout={layout} />}
-          <FinishPanel reel={doc.reel} goal={doc.goal} onGoal={studio.setGoal} comment={doc.comment} onComment={comment => studio.setDoc(d => ({ ...d, comment }))} looks={capabilities.looks} tracks={capabilities.music} caption={doc.caption} busy={!!busy} writing={busy === 'caption'} canWrite={canWrite}
+          <FinishPanel linkedArticle={studio.articleLink ? { title: studio.articleLink.article.title, url: studio.articleLink.url } : undefined} reel={doc.reel} goal={doc.goal} onGoal={studio.setGoal} comment={doc.comment} onComment={comment => studio.setDoc(d => ({ ...d, comment }))} looks={capabilities.looks} tracks={capabilities.music} caption={doc.caption} busy={!!busy} writing={busy === 'caption'} canWrite={canWrite}
             onBrand={studio.setBrand} onDate={dateline => studio.setReel(reel => ({ ...reel, dateline }))} onProgress={show_progress => studio.setReel(reel => ({ ...reel, show_progress }))}
             onMotion={motion => studio.setReel(reel => ({ ...reel, motion }))}
             onMusic={studio.setMusic} onPickMusic={() => { void studio.pickMusic(); }}

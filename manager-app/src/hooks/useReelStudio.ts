@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { reelApi, type WriteRequest } from '../services/reelCreator';
 import { configuredGemini } from '../services/newsSource';
 import { addScene, KIND_NAMES, rewrittenWords, sceneWords, updatedStory, applyHouseStyle, applyWriting, houseStyleOf, datelineFor, liveVersion, photoVersion, emptyReel, fillPhotos, fillScenes, hasContent, headlines, insertIndex, MAX_SCENES, moveScene, placePhotos, reelKey, removeScene, setPhoto, sourceKind, withHook } from '../services/reelDocument';
+import type { ReelArticleLink } from '../services/websites';
 import type { CreatedReelMedia, HouseStyle, Reel, ReelGoal, ReelAsset, ReelBrand, ReelCapabilities, ReelDraft, ReelJob, ReelRatio, ReelScene } from '../types/reelCreator';
 
 interface Doc { reel: Reel; caption: string; goal: ReelGoal; comment: string; hooks: string[]; sourceText: string; sourceUrl: string; sourceTitle: string; sourcePublisher: string }
@@ -36,6 +37,7 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
   const [houseStyles, setHouseStyles] = useState<HouseStyle[]>([]);
   const [doc, setDocState] = useState<Doc>(() => blank());
   const [draftId, setDraftId] = useState(newId);
+  const [articleLink, setArticleLink] = useState<ReelArticleLink | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState('');
@@ -179,6 +181,7 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
    */
   const updateStory = (input: string, mark: boolean) => attempt('write', async () => {
     const base = docRef.current;
+    const link = await reelApi.articleLink(draftRef.current.id);
     const count = Math.min(MAX_SCENES, Math.max(1, base.reel.scenes.filter(scene => scene.kind !== 'end').length));
     const { written, article } = await requestWriting(input, base.reel.look, { scenes: count }, base.goal);
     await persist();
@@ -186,6 +189,7 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
       reel: updatedStory(base.reel, written, datelineFor(article.published), mark),
       sourceText: article.text, sourceUrl: article.url, sourceTitle: article.title, sourcePublisher: article.publisher };
     const id = newId();
+    if (link) await reelApi.saveArticleLink(id, link); // The newer version updates the same article.
     draftRef.current = { id, revision: 0 };
     savedHash.current = '';
     docRef.current = next;
@@ -193,6 +197,15 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
     try { localStorage.setItem('reel_creator_draft', id); } catch { /* A remembered draft is a convenience. */ }
     setNotice('Updated from the new reporting as a new reel. Check every scene, then generate a new caption.');
   });
+
+  useEffect(() => {
+    if (!active) return;
+    let current = true;
+    setArticleLink(null);
+    // Coming back from the Post screen can bring a newly published article, so this also runs on return.
+    reelApi.articleLink(draftId).then(link => { if (current) setArticleLink(link); }).catch(() => undefined);
+    return () => { current = false; };
+  }, [active, draftId]);
 
   const saveHouseStyle = (name: string) => attempt(null, async () => {
     setHouseStyles(await reelApi.saveHouseStyle(houseStyleOf(docRef.current.reel, newId(), name)));
@@ -339,7 +352,9 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
   const send = (scene: number) => attempt(output === 'photo' ? 'photo' : null, async () => {
     const { reel, caption, goal, comment, sourceText, sourceTitle, sourcePublisher } = docRef.current;
     const cover = (await reelApi.cover(reel)).filename;
-    const words = { name: reel.scenes.find(s => s.headline)?.headline.replace(/\n/g, ' ').slice(0, 80) || 'News reel', caption,
+    const draftId = draftRef.current.id;
+    const articleLink = await reelApi.articleLink(draftId);
+    const words = { draftId, articleLink, name: reel.scenes.find(s => s.headline)?.headline.replace(/\n/g, ' ').slice(0, 80) || 'News reel', caption,
       comment: goal === 'readmore' ? comment.trim() || undefined : undefined, goal,
       websiteSource: { title: sourceTitle, text: sourceText, credit: sourcePublisher, cover_file: cover || job?.output?.thumbnail || '' } };
     await persist();
@@ -364,7 +379,7 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
   };
 
   return {
-    capabilities, drafts, doc, draftId, houseStyles, saveHouseStyle, deleteHouseStyle, pickHouseStyle, loaded, busy, error, notice, saveState, job, fresh,
+    capabilities, drafts, doc, draftId, articleLink, houseStyles, saveHouseStyle, deleteHouseStyle, pickHouseStyle, loaded, busy, error, notice, saveState, job, fresh,
     setError, setNotice, setReel, setDoc, open, discard,
     create, updateStory, moreHooks, rewriteScene, undoRewrite, undo, rewriting, rewriteCaption, importImages,
     setGoal, addPhotos, changePhoto, setBrand, uploadLogo, pickMusic, setMusic, startRender, updateJob, send, saveFile, output, setOutput, photoRatio, setPhotoRatio, shown,

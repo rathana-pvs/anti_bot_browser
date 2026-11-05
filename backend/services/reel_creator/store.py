@@ -32,6 +32,8 @@ class Store:
                 CREATE TABLE IF NOT EXISTS jobs (
                     id TEXT PRIMARY KEY, request_id TEXT UNIQUE NOT NULL,
                     fingerprint TEXT NOT NULL, payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS article_links (
+                    id TEXT PRIMARY KEY, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS settings (
                     id TEXT PRIMARY KEY, payload TEXT NOT NULL);
             ''')
@@ -79,6 +81,18 @@ class Store:
     def delete_draft(self, draft_id):
         with self.db() as db:
             db.execute('DELETE FROM reels WHERE id=?', (draft_id,))
+            db.execute('DELETE FROM article_links WHERE id=?', (draft_id,))
+
+    def article_link(self, draft_id):
+        """The website article this reel was last published to, or None."""
+        with self.db() as db:
+            row = db.execute('SELECT payload FROM article_links WHERE id=?', (draft_id,)).fetchone()
+        return json.loads(row['payload']) if row else None
+
+    def save_article_link(self, draft_id, value):
+        with self.db() as db:
+            db.execute('INSERT OR REPLACE INTO article_links VALUES(?,?)', (draft_id, json.dumps(value)))
+        return value
 
     def put_asset(self, value):
         with self.db() as db:

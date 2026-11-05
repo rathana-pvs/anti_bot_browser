@@ -121,3 +121,12 @@ test('a published article missing from the loaded list still shows in the dropdo
   assert.deepEqual(values([{ id: 'x', title: 'X' }], { id: 'x', title: 'X' }), ['new', 'x']);
   assert.deepEqual(web.articleOptions([], { id: 'a1', title: 'Bridge' }, label)[1], { value: 'a1', label: 'Bridge' });
 });
+test('a linked reel keeps the published article unless the story changed', () => {
+  const article = { ...web.emptyArticle(), id: '7', title: 'Edited title', content: 'Old text', slug: 'story', tags: 'news', cover_file: 'cover.jpg' };
+  const link = { connection_id: 'site', url: 'https://news.example/story', article, source_title: 'Studio title', source_text: 'Old text' };
+  assert.deepEqual(web.linkedArticle(link, { title: 'Studio title', text: 'Old text' }), article);
+  const changed = web.linkedArticle(link, { title: 'New title', text: 'New text' });
+  assert.deepEqual([changed.id, changed.title, changed.content, changed.slug, changed.tags, changed.cover_file], ['7', 'New title', 'New text', 'story', 'news', 'cover.jpg']);
+  assert.equal(web.linkedArticle(link, { title: '', text: 'New text' }).title, 'Edited title');
+  assert.deepEqual(web.linkedArticle(link, { title: 'New title', text: '' }), article);
+});

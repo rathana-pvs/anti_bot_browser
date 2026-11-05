@@ -5,6 +5,7 @@ from fastapi import APIRouter, File, HTTPException, Path, Query, UploadFile
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
+from backend.services.website_service import Article
 from backend.services.reel_creator.articles import extract_article
 from backend.services.reel_creator.audio_presets import preset_path
 from backend.services.reel_creator.reel import MAX_HOUSE_STYLES, DraftInput, HouseStyle, Reel, RenderInput
@@ -53,6 +54,25 @@ def save_draft(draft_id: Id, value: DraftInput):
 def delete_draft(draft_id: Id):
     get_service().store.delete_draft(draft_id)
     return {}
+
+
+class ArticleLink(BaseModel):
+    connection_id: str = Field(pattern=r'^[a-f0-9]{32}$')
+    url: str = Field(default='', max_length=2048)
+    article: Article
+    # What Reel Studio supplied, so a later send can tell whether the story itself changed.
+    source_title: str = Field(default='', max_length=2000)
+    source_text: str = Field(default='', max_length=200000)
+
+
+@router.get('/drafts/{draft_id}/article')
+def article_link(draft_id: Id):
+    return get_service().store.article_link(draft_id)
+
+
+@router.put('/drafts/{draft_id}/article')
+def save_article_link(draft_id: Id, value: ArticleLink):
+    return get_service().store.save_article_link(draft_id, value.model_dump())
 
 
 class ArticleInput(BaseModel):

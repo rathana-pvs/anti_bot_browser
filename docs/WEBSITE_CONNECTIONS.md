@@ -6,6 +6,12 @@ article cover starts as the uploaded photo of the reel's first scene, without it
 or crop; a reel with no photo uses its finished image. Imported media can use the same
 panel with article text entered there.
 
+Each reel remembers the article it was last published to. Posting the reel again, or
+using **Update story**, selects the same website and article, so the update goes to that
+article instead of creating another. Its slug, tags, SEO fields and cover are kept, and
+Reel Studio's title and text replace the article's only when the story changed. Choose
+**Publish a new article** to make a separate one; the reel then remembers that one.
+
 ## Connect
 
 1. Open **Settings → Websites** and download the simple example JSON, or use your website connection file.

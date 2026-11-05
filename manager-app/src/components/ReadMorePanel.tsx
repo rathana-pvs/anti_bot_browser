@@ -2,15 +2,16 @@ import { useEffect, useRef, useState } from 'react';
 import { Checkbox } from './ui/Checkbox';
 import { Select } from './ui/Select';
 import { uploadMediaFiles } from '../services/api';
+import { reelApi } from '../services/reelCreator';
 import { articleOptions, captionsFingerprint, captionsReady, captionSourceOf, emptyArticle, knownCaptions, readMoreFingerprint, readMoreReady, websiteRequest, openWebsiteManagement, WEBSITE_CONNECTIONS_CHANGED } from '../services/websites';
-import type { ReadMoreDraft, WebsiteArticle, WebsiteConnection, WebsitePreparation } from '../services/websites';
+import type { ReadMoreDraft, ReelSource, WebsiteArticle, WebsiteConnection, WebsitePreparation } from '../services/websites';
 
 interface Catalog { articles: (WebsiteArticle & { status: string })[]; categories: { id: string; name: string }[]; authors: { id: string; name: string }[] }
 const cls = 'w-full rounded-lg border border-zinc-700 bg-zinc-950 px-2.5 py-2 text-xs text-zinc-200';
 const button = 'rounded-lg border border-zinc-700 px-3 py-2 text-xs text-blue-300 disabled:opacity-40';
-export function ReadMorePanel({ value, onChange, type, media, caption, profiles, disabled = false }: {
+export function ReadMorePanel({ value, onChange, type, media, caption, profiles, disabled = false, reelSource }: {
   value?: ReadMoreDraft; onChange: (value: ReadMoreDraft) => void; type: 'photo' | 'reel' | 'live';
-  media: string; caption: string; profiles: { id: string; name: string }[]; disabled?: boolean;
+  media: string; caption: string; profiles: { id: string; name: string }[]; disabled?: boolean; reelSource?: ReelSource;
 }) {
   const draft = value || { enabled: false, connectionId: '', article: emptyArticle(), uniqueCaptions: false };
   const [connections, setConnections] = useState<WebsiteConnection[]>([]);
@@ -78,6 +79,7 @@ export function ReadMorePanel({ value, onChange, type, media, caption, profiles,
   const prepare = () => run(async () => {
     if (!profiles.length) throw new Error('Choose accounts first.');
     if (!draft.connectionId) throw new Error('Connect and choose a website first.');
+    const updating = Boolean(draft.article.id);
     const requestId = draft.requestFingerprint === fingerprint && draft.requestId ? draft.requestId : crypto.randomUUID().replace(/-/g, '');
     const next = { ...draft, requestId, requestFingerprint: fingerprint };
     onChange(next); // Retain request identity even if the website response is lost.
@@ -92,7 +94,10 @@ export function ReadMorePanel({ value, onChange, type, media, caption, profiles,
       captionsFor: draft.uniqueCaptions ? captionsFingerprint(published, type, media, caption, ids) : draft.captionsFor,
       captionSource: draft.uniqueCaptions ? captionSourceOf(published.article, caption) : undefined,
       captions: Object.fromEntries(Object.entries(preparation.destinations).map(([id, destination]) => [id, destination.caption])) });
-    setMessage('Article published. Review the comment links below.');
+    const done = `Article ${updating ? 'updated' : 'published'}. Review the comment links below.`;
+    setMessage(done);
+    if (reelSource) await reelApi.saveArticleLink(reelSource.draftId, { connection_id: draft.connectionId, url: preparation.article.url, article: published.article,
+      source_title: reelSource.title, source_text: reelSource.text }).catch(() => setMessage(`${done} The reel could not remember this article, so choose it in the list next time.`));
   });
   const regenerate = (profileId: string) => run(async () => {
     const started = latestCaptions.current;
@@ -162,9 +167,9 @@ export function ReadMorePanel({ value, onChange, type, media, caption, profiles,
         </label>;
       })}
       {!draft.uniqueCaptions && !caption.trim() && <p className="text-amber-300">No caption yet. Add one above, or every account posts without a caption.</p>}
-      <p className="text-zinc-400">Publishes the article immediately and creates a unique comment link for every account. {type === 'live' ? 'Live comments are posted after the broadcast ends.' : 'Links are posted in the first comment.'}</p>
+      <p className="text-zinc-400">{draft.article.id ? 'Updates this article on the website immediately instead of making a new one,' : 'Publishes the article immediately'} and creates a unique comment link for every account. {type === 'live' ? 'Live comments are posted after the broadcast ends.' : 'Links are posted in the first comment.'}</p>
       {draft.uniqueCaptions && !haveCaptions && <p className="text-amber-300">Generate the captions above first.</p>}
-      <button type="button" className={button} onClick={prepare} disabled={!connections.some(connection => connection.id === draft.connectionId) || !profiles.length || busy || Boolean(draft.preparation && ready) || (draft.uniqueCaptions && !haveCaptions)}>{busy ? 'Publishing…' : 'Publish article & create links'}</button>
+      <button type="button" className={button} onClick={prepare} disabled={!connections.some(connection => connection.id === draft.connectionId) || !profiles.length || busy || Boolean(draft.preparation && ready) || (draft.uniqueCaptions && !haveCaptions)}>{busy ? (draft.article.id ? 'Updating…' : 'Publishing…') : draft.article.id ? 'Update article & create links' : 'Publish article & create links'}</button>
       {draft.preparation && !ready && <p className="text-amber-300">Content or accounts changed. Prepare and review again before posting.</p>}
       {draft.preparation && ready && <div className="space-y-3">
         <a href={draft.preparation.article.url} target="_blank" rel="noreferrer" className="text-blue-300 underline">Open published article</a>

@@ -1,3 +1,4 @@
+import type { ReelArticleLink } from './websites';
 import { invoke } from '@tauri-apps/api/core';
 import { API_BASE } from './api';
 import { isDesktopApp } from './desktopEnvironment';
@@ -58,6 +59,8 @@ export const reelApi = {
   drafts: async (): Promise<ReelDraft[]> => (await request('/drafts')).json(),
   saveDraft: async (id: string, revision: number, draft: Pick<ReelDraft, 'reel' | 'caption' | 'goal' | 'comment' | 'hooks' | 'source_text' | 'source_url' | 'source_title' | 'source_publisher'>): Promise<ReelDraft> =>
     (await request(`/drafts/${id}`, json('PUT', { revision, ...draft }))).json(),
+  articleLink: async (id: string): Promise<ReelArticleLink | null> => (await request(`/drafts/${id}/article`)).json(),
+  saveArticleLink: async (id: string, link: ReelArticleLink): Promise<void> => { await request(`/drafts/${id}/article`, json('PUT', link)); },
   deleteDraft: async (id: string): Promise<void> => { await request(`/drafts/${id}`, { method: 'DELETE' }); },
   article: async (url: string, signal?: AbortSignal): Promise<ArticleText> => (await request('/article', { ...json('POST', { url }), signal })).json(),
   write: async (value: WriteRequest, signal?: AbortSignal): Promise<WrittenReel> => (await request('/write', { ...json('POST', value), signal })).json(),

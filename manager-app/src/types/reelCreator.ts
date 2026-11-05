@@ -1,3 +1,4 @@
+import type { ReelArticleLink } from '../services/websites';
 export type ReelLook = 'breaking' | 'hot' | 'politics' | 'clean' | 'wire' | 'editorial' | 'pop_art';
 export type ReelMotion = 'auto' | 'zoom_in' | 'zoom_out' | 'none';
 /** engage: get people sharing their view. readmore: send them to the article, linked in the first comment. */
@@ -174,6 +175,9 @@ export interface ReelPhoto { id: string; filename: string }
 export interface CreatedReelMedia {
   goal?: ReelGoal;
   websiteSource?: { title: string; text: string; credit: string; cover_file: string };
+  /** The reel this came from, and the article it was last published to. */
+  draftId?: string;
+  articleLink?: ReelArticleLink | null;
   jobId: string;
   filename: string;
   /** A video goes to Posts as a Reel (whatever its ratio) or to Live; a photo goes to Posts as a feed post. */

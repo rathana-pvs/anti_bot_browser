@@ -12,6 +12,7 @@ import { Thumb } from './Thumb';
 import { GoalPicker } from './SourceInput';
 
 interface Props {
+  linkedArticle?: { title: string; url: string };
   reel: Reel;
   looks: LookInfo[];
   tracks: MusicTrack[];
@@ -89,6 +90,9 @@ export function FinishPanel(p: Props) {
         <Button type="button" variant="outline" loading={p.writing} disabled={p.busy} onClick={p.onRewrite}><Sparkles className="h-4 w-4" />Generate caption</Button>
         <button type="button" onClick={() => setManual(true)} className="text-xs text-zinc-500 underline-offset-2 hover:text-zinc-300 hover:underline">Write it myself</button>
       </div>}
+    {p.goal === 'readmore' && p.linkedArticle && <p className="text-xs leading-5 text-zinc-400">Posting this updates{' '}
+      {p.linkedArticle.url ? <a href={p.linkedArticle.url} target="_blank" rel="noreferrer" className="text-blue-300 underline">{p.linkedArticle.title}</a> : <span className="text-zinc-200">{p.linkedArticle.title}</span>}.
+      {' '}To make a separate article, choose Publish a new article on the Post screen.</p>}
     {p.goal === 'readmore' && <Textarea value={p.comment} onChange={event => p.onComment(event.target.value)} rows={3} maxLength={2000}
       aria-label="First comment" placeholder="First comment with the link to the full story" className="leading-relaxed" />}
   </section>;

@@ -45,6 +45,18 @@ export function readMoreReady(value: ReadMoreDraft | undefined, type: string, me
   if (value.enabled) return Boolean(value.preparation?.ready && value.preparedFingerprint === readMoreFingerprint(value, type, media, caption, profiles));
   return !value.uniqueCaptions || captionsReady(value, type, media, caption, profiles);
 }
+/** The article a reel was last published to; each reel remembers one so sending it again updates instead of duplicating. */
+export interface ReelArticleLink { connection_id: string; url: string; article: WebsiteArticle; source_title: string; source_text: string }
+/** Where a post came from in Reel Studio. */
+export interface ReelSource { draftId: string; title: string; text: string }
+/**
+ * Start from the article as last published, keeping its slug, tags and SEO fields so an update cannot blank them.
+ * Studio's text replaces it only when the story changed, so resending a reel keeps edits made on the Post screen.
+ */
+export function linkedArticle(link: ReelArticleLink, source: { title: string; text: string }): WebsiteArticle {
+  const changed = source.text.trim() && (link.source_title !== source.title || link.source_text !== source.text);
+  return changed ? { ...link.article, title: source.title || link.article.title, content: source.text } : link.article;
+}
 /** What is still missing before posting, in the words of the step the person has to take. */
 export function readMoreProblem(value: ReadMoreDraft | undefined, type: string, media: string, caption: string, profiles: string[]) {
   if (!value || readMoreReady(value, type, media, caption, profiles)) return '';

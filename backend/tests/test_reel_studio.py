@@ -364,6 +364,20 @@ def client(creator, monkeypatch):
     return TestClient(app)
 
 
+def test_article_link_survives_draft_saves_and_goes_with_the_draft(client, creator, reel):
+    draft = 'a' * 32
+    link = dict(connection_id='b' * 32, url='https://news.example/story', source_title='Title', source_text='Text',
+                article=dict(id='7', title='Edited title', content='Text', slug='story', tags='news'))
+    assert client.get(f'/api/reel-creator/drafts/{draft}/article').json() is None
+    assert client.put(f'/api/reel-creator/drafts/{draft}/article', json=link).status_code == 200
+    creator.store.save_draft(draft, 0, dict(reel=reel.model_dump(), caption=''))
+    saved = client.get(f'/api/reel-creator/drafts/{draft}/article').json()
+    assert saved['article']['id'] == '7' and saved['article']['slug'] == 'story' and saved['url'] == link['url']
+    assert client.put(f'/api/reel-creator/drafts/{draft}/article', json={**link, 'connection_id': 'nope'}).status_code == 422
+    creator.store.delete_draft(draft)
+    assert client.get(f'/api/reel-creator/drafts/{draft}/article').json() is None
+
+
 def test_api_poster_and_validation_errors(client, reel):
     response = client.post('/api/reel-creator/poster?scene=0', json=reel.model_dump())
     assert response.status_code == 200 and response.headers['content-type'] == 'image/jpeg'
