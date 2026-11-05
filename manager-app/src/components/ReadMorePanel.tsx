@@ -1,13 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
 import { Checkbox } from './ui/Checkbox';
 import { Select } from './ui/Select';
-import { uploadMediaFiles } from '../services/api';
+import { getSharedMediaUrl, uploadMediaFiles } from '../services/api';
 import { reelApi } from '../services/reelCreator';
-import { articleOptions, captionsFingerprint, captionsReady, captionSourceOf, emptyArticle, knownCaptions, readMoreFingerprint, readMoreReady, websiteRequest, openWebsiteManagement, WEBSITE_CONNECTIONS_CHANGED } from '../services/websites';
+import { articleMissing, articleOptions, captionsFingerprint, defaultWebsite, captionsReady, captionSourceOf, emptyArticle, knownCaptions, readMoreFingerprint, readMoreReady, websiteRequest, openWebsiteManagement, WEBSITE_CONNECTIONS_CHANGED } from '../services/websites';
 import type { ReadMoreDraft, ReelSource, WebsiteArticle, WebsiteConnection, WebsitePreparation } from '../services/websites';
 
 interface Catalog { articles: (WebsiteArticle & { status: string })[]; categories: { id: string; name: string }[]; authors: { id: string; name: string }[] }
 const cls = 'w-full rounded-lg border border-zinc-700 bg-zinc-950 px-2.5 py-2 text-xs text-zinc-200';
+const LAST_WEBSITE = 'read_more_last_website';
+const lastWebsite = () => { try { return localStorage.getItem(LAST_WEBSITE) || ''; } catch { return ''; } };
+const rememberWebsite = (id: string) => { try { localStorage.setItem(LAST_WEBSITE, id); } catch { /* A remembered website is a convenience. */ } };
 const button = 'rounded-lg border border-zinc-700 px-3 py-2 text-xs text-blue-300 disabled:opacity-40';
 export function ReadMorePanel({ value, onChange, type, media, caption, profiles, disabled = false, reelSource }: {
   value?: ReadMoreDraft; onChange: (value: ReadMoreDraft) => void; type: 'photo' | 'reel' | 'live';
@@ -17,6 +20,8 @@ export function ReadMorePanel({ value, onChange, type, media, caption, profiles,
   const [connections, setConnections] = useState<WebsiteConnection[]>([]);
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [busy, setBusy] = useState(false), [message, setMessage] = useState('');
+  // An article that arrives complete, such as from Reel Studio, opens as a summary.
+  const [editing, setEditing] = useState(() => articleMissing(draft.article).length > 0);
   const ids = profiles.map(profile => profile.id);
   const activeConnection = connections.find(connection => connection.id === draft.connectionId);
   const activeSchema = activeConnection?.schema;
@@ -52,6 +57,13 @@ export function ReadMorePanel({ value, onChange, type, media, caption, profiles,
     return () => { active = false; };
   }, [draft.connectionId, draft.enabled, activeConnection]);
   const update = (patch: Partial<ReadMoreDraft>) => onChange({ ...draft, ...patch });
+  const missing = articleMissing(draft.article, activeSchema?.fields);
+  useEffect(() => {
+    // Only an empty choice is filled in: a reel linked to a removed website must not move to another one.
+    if (!draft.enabled || draft.connectionId) return;
+    const connectionId = defaultWebsite(connections, lastWebsite());
+    if (connectionId) update({ connectionId });
+  }, [draft.enabled, draft.connectionId, connections]); // eslint-disable-line react-hooks/exhaustive-deps
   const article = (patch: Partial<WebsiteArticle>) => update({ article: { ...draft.article, ...patch } });
   const run = async (action: () => Promise<void>) => {
     setBusy(true); setMessage('');
@@ -94,6 +106,7 @@ export function ReadMorePanel({ value, onChange, type, media, caption, profiles,
       captionsFor: draft.uniqueCaptions ? captionsFingerprint(published, type, media, caption, ids) : draft.captionsFor,
       captionSource: draft.uniqueCaptions ? captionSourceOf(published.article, caption) : undefined,
       captions: Object.fromEntries(Object.entries(preparation.destinations).map(([id, destination]) => [id, destination.caption])) });
+    rememberWebsite(draft.connectionId);
     const done = `Article ${updating ? 'updated' : 'published'}. Review the comment links below.`;
     setMessage(done);
     if (reelSource) await reelApi.saveArticleLink(reelSource.draftId, { connection_id: draft.connectionId, url: preparation.article.url, article: published.article,
@@ -126,7 +139,7 @@ export function ReadMorePanel({ value, onChange, type, media, caption, profiles,
     {draft.enabled && <>
       <div className="flex flex-wrap items-center gap-2">
         <div className="min-w-40 flex-1"><Select ariaLabel="Website connection" value={draft.connectionId} placeholder="Choose website"
-          options={connections.map(connection => ({ value: connection.id, label: connection.name }))} onValueChange={connectionId => update({ connectionId, article: { ...draft.article, id: '', cover_id: '', category: '', author: '', custom_fields: {} } })} /></div>
+          options={connections.map(connection => ({ value: connection.id, label: connection.name }))} onValueChange={connectionId => { rememberWebsite(connectionId); update({ connectionId, article: { ...draft.article, id: '', cover_id: '', category: '', author: '', custom_fields: {} } }); }} /></div>
         <button type="button" className={button} onClick={openWebsiteManagement}>Manage websites</button>
       </div>
       {connections.length === 0 && <p className="text-zinc-400">Add a website in Settings → Websites, then select it here.</p>}
@@ -135,6 +148,17 @@ export function ReadMorePanel({ value, onChange, type, media, caption, profiles,
         const found = catalog?.articles.find(item => item.id === id);
         if (found) { const { status: _status, ...article } = found; update({ article }); }
       }} />
+      {!editing && <div className="flex items-start gap-3 rounded-lg bg-zinc-950 p-2">
+        {draft.article.cover_file && <img src={getSharedMediaUrl(draft.article.cover_file)} alt="" className="h-12 w-12 shrink-0 rounded object-cover" />}
+        <div className="min-w-0 flex-1 space-y-1">
+          <p className="truncate font-medium text-zinc-200">{draft.article.title || 'No title yet'}</p>
+          {draft.article.excerpt && <p className="line-clamp-2 text-zinc-400">{draft.article.excerpt}</p>}
+          {!draft.article.cover_file && draft.article.cover_id && <p className="text-zinc-400">Existing article cover</p>}
+          {missing.length > 0 && <p className="text-amber-300">Still needs: {missing.join(', ')}.</p>}
+        </div>
+        <button type="button" className={button} onClick={() => setEditing(true)}>Edit article</button>
+      </div>}
+      {editing && <>
       <input className={cls} aria-label="Article title" placeholder="Article title" maxLength={fieldLimit('title', 300, 300)} value={draft.article.title} onChange={event => article({ title: event.target.value })} />
       <textarea className={cls} aria-label="Article excerpt" placeholder={`Article excerpt (up to ${fieldLimit('excerpt', 160, 1000)} characters)`} maxLength={fieldLimit('excerpt', 160, 1000)} rows={2} value={draft.article.excerpt} onChange={event => article({ excerpt: event.target.value })} />
       <textarea className={cls} aria-label="Article content" placeholder="Full article text" maxLength={120000} rows={5} value={draft.article.content} onChange={event => article({ content: event.target.value })} />
@@ -166,6 +190,8 @@ export function ReadMorePanel({ value, onChange, type, media, caption, profiles,
               value={value == null ? '' : String(value)} onChange={event => change(field.type === 'number' ? event.target.value === '' ? null : Number(event.target.value) : event.target.value)} />}
         </label>;
       })}
+      <button type="button" className={button} onClick={() => setEditing(false)}>Done editing</button>
+      </>}
       {!draft.uniqueCaptions && !caption.trim() && <p className="text-amber-300">No caption yet. Add one above, or every account posts without a caption.</p>}
       <p className="text-zinc-400">{draft.article.id ? 'Updates this article on the website immediately instead of making a new one,' : 'Publishes the article immediately'} and creates a unique comment link for every account. {type === 'live' ? 'Live comments are posted after the broadcast ends.' : 'Links are posted in the first comment.'}</p>
       {draft.uniqueCaptions && !haveCaptions && <p className="text-amber-300">Generate the captions above first.</p>}

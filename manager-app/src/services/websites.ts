@@ -45,6 +45,35 @@ export function readMoreReady(value: ReadMoreDraft | undefined, type: string, me
   if (value.enabled) return Boolean(value.preparation?.ready && value.preparedFingerprint === readMoreFingerprint(value, type, media, caption, profiles));
   return !value.uniqueCaptions || captionsReady(value, type, media, caption, profiles);
 }
+/** A short excerpt that ends at a sentence or word instead of being cut mid-word. */
+export function excerptOf(text: string, limit = 160) {
+  const clean = text.trim().replace(/\s+/g, ' ');
+  if (clean.length <= limit) return clean;
+  const part = clean.slice(0, limit);
+  const sentence = Math.max(...['. ', '! ', '? ', '។ '].map(mark => clean.slice(0, limit + 1).lastIndexOf(mark)));
+  if (sentence >= limit / 3) return clean.slice(0, sentence + 1);
+  const word = part.lastIndexOf(' ');
+  return word >= limit / 3 ? part.slice(0, word) : part;
+}
+/** The website to start with: the last one used, or the only one there is. */
+export function defaultWebsite(connections: { id: string }[], lastUsed: string) {
+  if (connections.some(connection => connection.id === lastUsed)) return lastUsed;
+  return connections.length === 1 ? connections[0].id : '';
+}
+/** What the article still needs before it can be published, including fields the website's schema requires. */
+export function articleMissing(article: WebsiteArticle, fields: Record<string, { required?: boolean; label?: string; default?: unknown }> = {}) {
+  const missing = [...(article.title.trim() ? [] : ['title']), ...(article.content.trim() ? [] : ['article text']),
+    ...(article.cover_file || article.cover_id ? [] : ['cover image'])];
+  for (const [key, field] of Object.entries(fields)) {
+    if (!field.required) continue;
+    const custom = key.startsWith('custom_fields.');
+    if (!custom && ['title', 'content'].includes(key)) continue;
+    const name = custom ? key.slice('custom_fields.'.length) : key;
+    const value = custom ? article.custom_fields?.[name] ?? field.default : article[name as keyof WebsiteArticle];
+    if (value === undefined || value === null || value === '') missing.push(field.label || name);
+  }
+  return missing;
+}
 /** The article a reel was last published to; each reel remembers one so sending it again updates instead of duplicating. */
 export interface ReelArticleLink { connection_id: string; url: string; article: WebsiteArticle; source_title: string; source_text: string }
 /** Where a post came from in Reel Studio. */

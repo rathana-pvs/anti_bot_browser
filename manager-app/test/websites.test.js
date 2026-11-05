@@ -130,3 +130,24 @@ test('a linked reel keeps the published article unless the story changed', () =>
   assert.equal(web.linkedArticle(link, { title: '', text: 'New text' }).title, 'Edited title');
   assert.deepEqual(web.linkedArticle(link, { title: 'New title', text: '' }), article);
 });
+test('excerpts end at a sentence or word', () => {
+  assert.equal(web.excerptOf('Short  text.'), 'Short text.');
+  const sentence = 'The old town bridge reopened today after months of work. ';
+  assert.equal(web.excerptOf(sentence + 'Residents came out to walk across it again and many stayed all afternoon by the water to celebrate the opening with family.', 100), sentence.trim());
+  assert.equal(web.excerptOf('one two three four five six seven eight nine ten', 20), 'one two three four');
+  assert.equal(web.excerptOf('x'.repeat(50), 20), 'x'.repeat(20));
+});
+test('the website starts as the last used, or the only one', () => {
+  const sites = [{ id: 'a' }, { id: 'b' }];
+  assert.equal(web.defaultWebsite(sites, 'b'), 'b');
+  assert.equal(web.defaultWebsite(sites, 'gone'), '');
+  assert.equal(web.defaultWebsite([{ id: 'a' }], 'gone'), 'a');
+  assert.equal(web.defaultWebsite([], ''), '');
+});
+test('the article summary names what is missing', () => {
+  const article = { ...web.emptyArticle(), title: 'T', content: 'C', cover_id: '1' };
+  assert.deepEqual(web.articleMissing(web.emptyArticle()), ['title', 'article text', 'cover image']);
+  assert.deepEqual(web.articleMissing(article), []);
+  assert.deepEqual(web.articleMissing(article, { 'custom_fields.topic': { required: true, label: 'Topic' }, excerpt: { required: true }, tags: {} }), ['Topic', 'excerpt']);
+  assert.deepEqual(web.articleMissing(article, { 'custom_fields.topic': { required: true, default: 'news' }, title: { required: true } }), []);
+});

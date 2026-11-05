@@ -6,6 +6,10 @@ article cover starts as the uploaded photo of the reel's first scene, without it
 or crop; a reel with no photo uses its finished image. Imported media can use the same
 panel with article text entered there.
 
+The Post composer selects the last website used, or the only one saved. An article that
+arrives complete shows as a one-line summary with **Edit article**; a missing title, text,
+cover or required website field is named there.
+
 Each reel remembers the article it was last published to. Posting the reel again, or
 using **Update story**, selects the same website and article, so the update goes to that
 article instead of creating another. Its slug, tags, SEO fields and cover are kept, and

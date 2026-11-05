@@ -1,5 +1,5 @@
 import { ReadMorePanel } from './ReadMorePanel';
-import { linkedArticle, readMoreProblem, readMoreSelection, savedReadMore, emptyArticle } from '../services/websites';
+import { excerptOf, linkedArticle, readMoreProblem, readMoreSelection, savedReadMore, emptyArticle } from '../services/websites';
 import type { ReelSource } from '../services/websites';
 import type { ReadMoreDraft } from '../services/websites';
 import { CaptionHookEditor, HookDraft, hookIsApproved } from "./CaptionHookEditor";
@@ -189,7 +189,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
       ...(incomingReel.draftId ? { reelSource: { draftId: incomingReel.draftId, title: incomingReel.websiteSource?.title || '', text: incomingReel.websiteSource?.text || '' } } : {}),
       readMore: { enabled: incomingReel.goal === 'readmore', connectionId: incomingReel.articleLink?.connection_id || '', uniqueCaptions: false,
         article: incomingReel.articleLink ? linkedArticle(incomingReel.articleLink, { title: incomingReel.websiteSource?.title || '', text: incomingReel.websiteSource?.text || '' }) : { ...emptyArticle(), title: incomingReel.websiteSource?.title || incomingReel.name,
-          content: incomingReel.websiteSource?.text || '', excerpt: (incomingReel.websiteSource?.text || '').slice(0, 160),
+          content: incomingReel.websiteSource?.text || '', excerpt: excerptOf(incomingReel.websiteSource?.text || ''),
           credit: incomingReel.websiteSource?.credit || '', cover_file: incomingReel.websiteSource?.cover_file || '' } },
       // A Live video is titled by its headline; the read-more link is pinned once the broadcast starts.
       ...(live ? { title: incomingReel.name, pinned_comment: incomingReel.comment || '', first_comment: '' } : { first_comment: incomingReel.comment || '' }),
@@ -736,10 +736,11 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                         className="w-full px-3 py-2 text-xs rounded-lg bg-zinc-950 border border-zinc-800 text-white placeholder-zinc-500 focus:outline-none focus:border-blue-500 resize-none font-sans"
                       />
 
-                      <CaptionHookEditor caption={post.caption} media={post.media_file} type={post.type}
+                      {/* These do not apply with their replacements on; a hook already on stays visible so it can be turned off. */}
+                      {(post.hook?.enabled || !(post.readMore?.enabled || post.readMore?.uniqueCaptions)) && <CaptionHookEditor caption={post.caption} media={post.media_file} type={post.type}
                         value={post.hook} recentHooks={posts.filter(p => p.id !== post.id && p.hook?.approval).map(p => p.hook?.selected || '')}
-                        onChange={hook => handleUpdateRow(post.id, { hook })} />
-                      <div className="flex items-center gap-2">
+                        onChange={hook => handleUpdateRow(post.id, { hook })} />}
+                      {!post.readMore?.enabled && <div className="flex items-center gap-2">
                         <span className="text-[11px] text-zinc-500 whitespace-nowrap">
                           1st Comment Link:
                         </span>
@@ -752,7 +753,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                           placeholder="https://example.com/guide (optional destination link)"
                           className="flex-1 px-2.5 py-1 text-[11px] rounded bg-zinc-950 border border-zinc-800 text-zinc-300 placeholder-zinc-600 focus:outline-none focus:border-blue-500"
                         />
-                      </div>
+                      </div>}
                     </div>}
                   </div>
                   <ReadMorePanel value={post.readMore} onChange={readMore => handleUpdateRow(post.id, { readMore })}
