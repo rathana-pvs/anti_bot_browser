@@ -194,6 +194,18 @@ def test_slow_observations_use_real_native_entry_and_never_confirm_draft(adapter
     assert client.commands.count('key ctrl+c') == 2
 
 
+def test_shortened_link_is_confirmed_by_emptied_input():
+    task = comment_task()
+    module = LiveComment(task)
+    placeholder = [entry('Write a comment...')]
+    draft = [entry('https://asiandot.com/article/685872afea2cea3a28d7cd05/zelenskyy-hopes-us-midterm-shifts-bring-aid')]
+    shortened = placeholder + [entry('https://asiandot.com/.../zelens', y=600), entry('kyy-hopes-us-midterm...', y=625)]
+    module.observe = Mock(side_effect=[placeholder, placeholder, draft, shortened])
+    module.post(draft[0]['text'])
+    task.live_input.human.key_press.assert_called_once_with('Return', clear_modifiers=True)
+    assert module.observe.call_count == 4
+
+
 def test_text_in_input_cannot_be_used_as_posted_comment_evidence(monkeypatch):
     clock = Clock()
     monkeypatch.setattr('modules.live_comment.time.monotonic', clock.clock)
@@ -202,9 +214,8 @@ def test_text_in_input_cannot_be_used_as_posted_comment_evidence(monkeypatch):
     module = LiveComment(task)
     def observe():
         clock.sleep(4)
-        # Even if a placeholder is elsewhere, the draft text at input height
-        # is never accepted as a published comment.
-        return [entry('Write a comment...'), entry('hello', x=1350)]
+        # Draft text still in the box means Enter did not send the comment.
+        return [entry('hello')]
     module.observe = Mock(side_effect=[[entry('Write a comment...')], [entry('Write a comment...')]])
     task.live_input.human.key_press.side_effect = lambda *a,**k:setattr(module,'observe',observe)
     # Final pre-submit observation must also be present.

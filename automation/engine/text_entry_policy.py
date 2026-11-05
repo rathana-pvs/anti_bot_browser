@@ -34,6 +34,8 @@ def choose_entry_plan(text: str, field_kind: str, behavior) -> EntryPlan:
     words, link = len(text.split()), contains_link(text)
     if not text:
         method, reason = 'skip', 'empty'
+    elif field_kind in {'live_title', 'live_caption'}:
+        method, reason = 'paste', 'live_details'
     elif field_kind in {'link', 'comment'} or link:
         method, reason = 'paste', 'link_or_comment'
     elif words >= 100:
