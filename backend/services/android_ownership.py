@@ -91,7 +91,7 @@ def ensure_primary_offline_safe(serial: str) -> None:
     try:
         ensure_primary(serial)
     except AdbError:
-        saved = android_devices.load_store()["devices"].get(serial) or {}
+        saved = android_devices.load_store()["devices"].get(android_devices.canonical_serial(serial)) or {}
         if saved.get("role") == "secondary":
             raise ValueError(f"This phone is managed by {saved.get('primary_name') or 'another PC'}. "
                              "Make this PC primary to change it.") from None
@@ -99,7 +99,7 @@ def ensure_primary_offline_safe(serial: str) -> None:
 
 def claim(client: AdbClient, serial: str) -> dict:
     identity = pc_identity()
-    saved = android_devices.load_store()["devices"].get(serial) or {}
+    saved = android_devices.load_store()["devices"].get(android_devices.canonical_serial(serial)) or {}
     return write_phone(client, serial, primary_id=identity["id"], primary_name=identity["name"],
                        label=saved.get("label"),
                        one_account_at_a_time=saved.get("one_account_at_a_time", True),
@@ -107,7 +107,7 @@ def claim(client: AdbClient, serial: str) -> dict:
 
 
 def stored_pin(serial: str) -> str | None:
-    return (android_devices.load_store()["devices"].get(serial) or {}).get("pin")
+    return (android_devices.load_store()["devices"].get(android_devices.canonical_serial(serial)) or {}).get("pin")
 
 
 def _store_pin(serial: str, pin: str | None) -> None:
@@ -211,7 +211,7 @@ def import_from_phone(serial: str, user_id: int) -> dict:
     if not info or not info.get("readable"):
         raise ValueError((info or {}).get("reason") or "This Android user has no companion app, so it was not set up by a PC.")
     account = info["account"]
-    scan = (android_devices.load_store()["devices"].get(serial) or {}).get("last_scan") or {}
+    scan = (android_devices.load_store()["devices"].get(android_devices.canonical_serial(serial)) or {}).get("last_scan") or {}
     if not any(row.get("user_id") == user_id for row in scan.get("users", [])):
         android_devices.scan_device(serial)
     profile = android_devices.import_user(serial, user_id, account.get("name") or f"User {user_id}",

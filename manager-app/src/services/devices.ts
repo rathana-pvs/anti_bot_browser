@@ -29,6 +29,11 @@ export async function forgetDevice(serial: string): Promise<void> {
   if (!res.ok) throw await apiError(res, 'Failed to remove the phone');
 }
 
+export async function restartDevice(serial: string): Promise<void> {
+  const res = await fetch(`${devicePath(serial)}/restart`, { method: 'POST' });
+  if (!res.ok) throw await apiError(res, 'Failed to restart the phone');
+}
+
 export async function setDeviceTimezone(serial: string, timezone: string): Promise<{ zone: string | null; auto: boolean | null }> {
   const res = await fetch(`${devicePath(serial)}/timezone`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ timezone }),
@@ -82,7 +87,7 @@ export async function openAccountOnPhone(profileId: string): Promise<OpenAccount
 }
 
 export async function updateDeviceSettings(serial: string,
-  settings: { one_account_at_a_time?: boolean; switch_from_app_only?: boolean }): Promise<AndroidDevice> {
+  settings: { one_account_at_a_time?: boolean; switch_from_app_only?: boolean; active_hours?: boolean }): Promise<AndroidDevice> {
   const res = await fetch(`${devicePath(serial)}/settings`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings),
   });

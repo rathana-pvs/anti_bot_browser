@@ -66,3 +66,28 @@ def test_an_old_switched_off_account_is_held_too(tmp_path, monkeypatch):
     write_profile(tmp_path, natural=False)
     outside, _ = outside_and_inside()
     assert ordered_due_executions(queue(scheduled_ms=outside - 60000), outside) == []
+
+
+def test_phone_account_stays_on_the_pc_zone_not_its_proxy():
+    config = {"runtime": {"kind": "android_user"}, "fingerprint": {"timezone": "Asia/Phnom_Penh"},
+              "android_network": {"exit_timezone": ZONE}}
+    assert active_hours.account_zone(config) == ZoneInfo("Asia/Phnom_Penh")
+
+
+def test_phone_with_active_hours_off_starts_at_the_scheduled_time(tmp_path, monkeypatch):
+    from backend.services import android_devices
+    monkeypatch.setattr(active_hours, "PROFILES_DIR", tmp_path)
+    (tmp_path / "profile_001").mkdir(parents=True)
+    (tmp_path / "profile_001" / "config.json").write_text(json.dumps({
+        "behavior_seed": SEED, "fingerprint": {"timezone": ZONE},
+        "runtime": {"kind": "android_user", "device_serial": "PIXEL"},
+    }))
+    settings = {"PIXEL": {}}
+    monkeypatch.setattr(android_devices, "load_store", lambda: {"devices": settings})
+    outside, _ = outside_and_inside()
+    assert ordered_due_executions(queue(scheduled_ms=outside - 60000), outside) == []
+    settings["PIXEL"]["active_hours"] = False
+    assert len(ordered_due_executions(queue(scheduled_ms=outside - 60000), outside)) == 1
+    warming = queue(scheduled_ms=outside - 60000)
+    warming["daily_batches"][0]["posts"][0]["type"] = "warming"
+    assert ordered_due_executions(warming, outside) == []

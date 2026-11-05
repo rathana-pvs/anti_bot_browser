@@ -1,21 +1,25 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { formatProxyGeography, ProxyItem } from '../types/proxy';
 import { checkProxyGeography, importProxies, refreshProxyStatuses, testProxyPing, deleteSelectedProxies, testSavedProxySpeed, NetworkSpeedResult } from '../services/api';
-import { Globe, Plus, Trash2, Activity, MapPin, X, Loader2, Search, Lock, Folder, Gauge } from 'lucide-react';
+import { Globe, Plus, Trash2, Activity, MapPin, X, Loader2, Search, Lock, Folder, Gauge, Monitor, Smartphone } from 'lucide-react';
 import { useAppDialog } from './ui/AppDialogProvider';
 import { Checkbox } from './ui/Checkbox';
 import { Select } from './ui/Select';
 import { FolderList, ALL_FOLDERS } from './accounts/FolderList';
+import { isAndroid } from './accounts/accountModel';
 import { PROXY_FOLDERS } from '../types/proxy';
+import { Profile } from '../types/profile';
 
 interface ProxyPanelProps {
   proxies: ProxyItem[];
+  profiles: Profile[];
   onRefresh: () => void;
   onSelectProfile?: (profileId: string) => void;
 }
 
 export const ProxyPanel: React.FC<ProxyPanelProps> = ({
   proxies,
+  profiles,
   onRefresh,
   onSelectProfile,
 }) => {
@@ -41,6 +45,8 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
   const [isDeleting, setIsDeleting] = useState(false);
   const busy = isDeleting || isImporting || isRefreshingStatus || Boolean(speedRun);
   const inUse = (proxy: ProxyItem) => Boolean(proxy.assigned || proxy.profile_id);
+  const accountOf = (proxy: ProxyItem) => profiles.find(profile => profile.id === proxy.profile_id);
+  const accountName = (proxy: ProxyItem) => accountOf(proxy)?.name;
   const assigned = proxies.filter(inUse).length;
   const available = proxies.filter(p => p.group === 'Available').length;
   const poor = proxies.filter(p => p.group === 'Poor proxy').length;
@@ -49,7 +55,7 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
     if (folder !== ALL_FOLDERS && proxy.group !== folder) return false;
     if (filter === 'available' && inUse(proxy)) return false;
     if (filter === 'assigned' && !inUse(proxy)) return false;
-    return !query || [proxy.host, String(proxy.port), proxy.username, proxy.profile_id,
+    return !query || [proxy.host, String(proxy.port), proxy.username, proxy.profile_id, accountName(proxy),
       proxy.exit_ip, proxy.group, formatProxyGeography(proxy)].filter(Boolean).join(' ').toLowerCase().includes(query);
   }).sort((a, b) => Number(inUse(b)) - Number(inUse(a)));
   const selectableIds = visibleProxies.map((proxy) => proxy.id);
@@ -276,6 +282,7 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
                   </div>
                 </td></tr>
               {visibleProxies.filter(p => (p.group || '') === group).map((proxy) => {
+                const account = accountOf(proxy);
                 const result = speedResults[proxy.id] || proxy.speed_test;
                 const speed = (measurement: NetworkSpeedResult['download'] | undefined) => !measurement ? '—' : measurement.success ? `${measurement.mbps} Mbps` : 'Failed';
                 return (
@@ -298,12 +305,15 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
                     <p className="mt-1 truncate text-[10px] text-zinc-500">{proxy.geo_source !== 'unknown' && proxy.timezone ? proxy.timezone : 'Timezone not detected'}</p>
                   </td>
                   <td className="px-3 py-2.5">
-                    {inUse(proxy) ? (
+                    {inUse(proxy) ? (<div className="flex flex-wrap items-center gap-2">
                       <button disabled={!proxy.profile_id || !onSelectProfile} onClick={() => proxy.profile_id && onSelectProfile?.(proxy.profile_id)}
+                        title={proxy.profile_id ?? undefined}
                         className="inline-flex items-center gap-1.5 text-[11px] text-blue-300 hover:text-blue-200 disabled:text-zinc-400">
-                        <Lock className="h-3 w-3" />{proxy.profile_id || 'Assigned'}
+                        <Lock className="h-3 w-3" />{accountName(proxy) || proxy.profile_id || 'Assigned'}
                       </button>
-                    ) : <span className="text-[11px] text-zinc-400">Unassigned</span>}
+                      {account && <span className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] ${isAndroid(account) ? 'bg-teal-500/10 text-teal-300' : 'bg-violet-500/10 text-violet-300'}`}>
+                        {isAndroid(account) ? <Smartphone className="h-3 w-3" aria-hidden="true" /> : <Monitor className="h-3 w-3" aria-hidden="true" />}{isAndroid(account) ? 'Phone' : 'PC'}</span>}
+                    </div>) : <span className="text-[11px] text-zinc-400">Unassigned</span>}
                   </td>
                   <td className="whitespace-nowrap px-3 py-2.5 font-mono text-[11px] text-zinc-400">
                     {proxy.latency_ms !== null ? `${proxy.latency_ms} ms` : '—'}

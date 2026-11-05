@@ -69,8 +69,9 @@ def execution(state):
 
 
 def test_unsupported_jobs_are_named():
-    assert "not available on phones" in android_jobs.unsupported_reason({"type": "warming"})
     assert "not available on phones" in android_jobs.unsupported_reason({"type": "live", "media_file": "x.mp4"})
+    assert "not available on phones" in android_jobs.unsupported_reason({"type": "warming", "warming_options": {"check": True}})
+    assert android_jobs.unsupported_reason({"type": "warming"}) is None
 
 
 def test_media_must_suit_the_kind(world):
@@ -211,3 +212,88 @@ def test_not_found_comment_can_be_retried_at_any_age(world, monkeypatch):
         await asyncio.sleep(0.05)
     asyncio.run(go())
     assert "--published-ago" not in world["runs"][0]
+
+
+def warming_claim(state, options=None):
+    post = state["queue"]["daily_batches"][0]["posts"][0]
+    post.update(type="warming", media_file="", base_caption="", first_comment=None, warming_options=options or {"max_seconds": 60})
+    return claim(state)
+
+
+def test_a_warming_visit_completes_without_publishing_or_a_post_cooldown(world, monkeypatch):
+    seen = {}
+
+    async def fake(args, record, on_event):
+        seen["args"] = args
+        record["exit_code"] = 0
+        return {"status": "completed", "warming_surface": "news_feed", "warming_surface_requested": "news_feed",
+                "duration_seconds": 60, "scroll_actions": 9}
+    monkeypatch.setattr(android_jobs, "_run_runner", fake)
+    android_jobs._last_post_at.pop("phone_1", None)
+    result = asyncio.run(android_jobs.execute_queue_phone(warming_claim(world)))
+    ex = execution(world)
+    assert result == {"success": True, "status": "completed"}
+    assert ex["status"] == "completed" and ex["warming_surface"] == "news_feed" and ex["warming_duration_seconds"] == 60
+    assert not ex.get("published_at")
+    assert "--task" in seen["args"] and seen["args"][seen["args"].index("--task") + 1] == "warming"
+    assert seen["args"][seen["args"].index("--profile") + 1] == "phone_1"
+    assert "--media" not in seen["args"]
+    assert world["opened"] == [("phone_1", True)]
+    assert "phone_1" not in android_jobs._last_post_at
+    assert android_devices.job_on(RUNTIME["device_serial"]) is None
+
+
+def test_a_warming_visit_that_finds_the_account_stopped_holds_it(world, monkeypatch):
+    held = []
+
+    async def fake(args, record, on_event):
+        return {"status": "blocked", "reason": "logged out", "account_blocked": True}
+    monkeypatch.setattr(android_jobs, "_run_runner", fake)
+    monkeypatch.setattr(android_jobs, "_put_on_hold", lambda pid, note: held.append(pid))
+    asyncio.run(android_jobs.execute_queue_phone(warming_claim(world)))
+    assert execution(world)["status"] == "needs_review" and held == ["phone_1"]
+
+
+def test_a_warming_visit_waits_for_a_busy_phone(world, monkeypatch):
+    async def fake(args, record, on_event):
+        raise AssertionError("must not run")
+    monkeypatch.setattr(android_jobs, "_run_runner", fake)
+    android_devices.hold_for_job(RUNTIME["device_serial"], "post:other")
+    result = asyncio.run(android_jobs.execute_queue_phone(warming_claim(world)))
+    assert result["status"] == "deferred" and execution(world)["status"] == "pending"
+
+
+def test_a_phone_that_could_not_open_fails_the_visit_without_running(world, monkeypatch):
+    monkeypatch.setattr(android_jobs.android_network, "open_account", lambda pid, job=False: {"ready": False, "reason": "proxy down"})
+    asyncio.run(android_jobs.execute_queue_phone(warming_claim(world)))
+    assert execution(world)["status"] == "failed_before_publish" and "proxy down" in execution(world)["error"]
+    assert android_devices.job_on(RUNTIME["device_serial"]) is None
+
+
+def test_auto_visits_only_use_a_set_up_idle_connected_primary_phone(monkeypatch):
+    serial = RUNTIME["device_serial"]
+    config = {"runtime": RUNTIME, "android_setup": {"state": "done"}}
+    store = {"devices": {serial: {"role": "primary"}}}
+
+    class Client:
+        connected = [{"serial": serial, "state": "device"}]
+
+        def devices(self):
+            return self.connected
+    monkeypatch.setattr(android_devices, "_client", Client)
+    monkeypatch.setattr(android_devices, "load_store", lambda: store)
+    monkeypatch.setattr(android_devices, "_job_holders", {})
+    monkeypatch.setattr(android_jobs.android_live, "_sessions", {})
+    assert android_jobs.can_take_auto_visit(config)
+    assert not android_jobs.can_take_auto_visit({"runtime": RUNTIME, "android_setup": {"state": "waiting_login"}})
+    android_jobs.android_live._sessions[serial] = object()
+    assert not android_jobs.can_take_auto_visit(config)
+    android_jobs.android_live._sessions.clear()
+    android_devices.hold_for_job(serial, "post:x")
+    assert not android_jobs.can_take_auto_visit(config)
+    android_devices.release_job(serial)
+    store["devices"][serial]["role"] = "secondary"
+    assert not android_jobs.can_take_auto_visit(config)
+    store["devices"][serial]["role"] = "primary"
+    Client.connected = [{"serial": serial, "state": "offline"}]
+    assert not android_jobs.can_take_auto_visit(config)

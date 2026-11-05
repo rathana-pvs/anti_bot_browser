@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 from datetime import datetime, timezone
 
 import cv2
@@ -75,8 +76,16 @@ class EvidenceRecorder:
             "finished_at": datetime.now(timezone.utc).isoformat(),
             **extra,
         }
-        with open(result_path, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=2, ensure_ascii=False)
+        fd, temporary = tempfile.mkstemp(dir=self.directory, prefix='.result-', suffix='.tmp')
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2, ensure_ascii=False)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, result_path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
         return result_path
 
     def record_stage(self, stage: str, history: list[dict] | None = None) -> str:

@@ -1,3 +1,6 @@
+import { ReadMorePanel } from './ReadMorePanel';
+import { readMoreReady, emptyArticle } from '../services/websites';
+import type { ReadMoreDraft } from '../services/websites';
 import { CaptionHookEditor, HookDraft, hookIsApproved } from "./CaptionHookEditor";
 import { LivePlaybackSettings, LivePlaybackMode } from './LivePlaybackSettings';
 import { GroupedProfileSelector } from './GroupedProfileSelector';
@@ -63,6 +66,7 @@ interface DraftPostRow {
   caption: string;
   first_comment: string;
   hook?: HookDraft;
+  readMore?: ReadMoreDraft;
 }
 
 export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
@@ -180,6 +184,10 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
     setPosts(current => current.some(row => row.id === id) ? current.map(row => row.id === id ? { ...row, type: incomingReel.postType } : row) : [...current, {
       id, type: incomingReel.postType, media_file: incomingReel.filename, media_name: incomingReel.name,
       preview_url: getSharedMediaUrl(incomingReel.filename), caption: incomingReel.caption || '',
+      readMore: { enabled: incomingReel.goal === 'readmore', connectionId: '', uniqueCaptions: true,
+        article: { ...emptyArticle(), title: incomingReel.websiteSource?.title || incomingReel.name,
+          content: incomingReel.websiteSource?.text || '', excerpt: (incomingReel.websiteSource?.text || '').slice(0, 160),
+          credit: incomingReel.websiteSource?.credit || '', cover_file: incomingReel.websiteSource?.cover_file || '' } },
       // A Live video is titled by its headline; the read-more link is pinned once the broadcast starts.
       ...(live ? { title: incomingReel.name, pinned_comment: incomingReel.comment || '', first_comment: '' } : { first_comment: incomingReel.comment || '' }),
     }]);
@@ -424,9 +432,11 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
       list.push('Set a duration between 1 and 2 minutes. Loop needs a duration.');
     }
     if (posts.some(p => !p.caption.trim() && !p.media_file)) list.push('Each post needs a photo, video, or caption.');
+    if (posts.some(p => p.readMore?.enabled && p.hook?.enabled)) list.push('Disable opening hook preparation when using Read more captions.');
+    if (posts.some(p => !readMoreReady(p.readMore, p.type, p.media_file, p.caption, selectedProfileIds))) list.push('Prepare and review Read more captions and links for every selected account.');
     if (posts.some(p => !hookIsApproved(p.caption, p.media_file, p.type, p.hook))) list.push('Preview and approve each caption hook, or keep the original caption.');
     return list;
-  }, [selectedProfileIds.length, warmupMode, liveMode, posts, playbackMode, loopVideo, durationMinutes]);
+  }, [selectedProfileIds.join(','), warmupMode, liveMode, posts, playbackMode, loopVideo, durationMinutes]);
 
   const handleSubmitBatch = async () => {
     setErrorMsg(null);
@@ -457,6 +467,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
             ...(p.type === 'live' ? {title: (p.title || '').trim(), pinned_comment: (p.pinned_comment || '').trim(), end_after_comment: Boolean(p.pinned_comment?.trim()), playback_mode: playbackMode, loop: playbackMode === 'manual' && loopVideo, muted, max_duration_seconds: playbackMode === 'manual' && durationMinutes ? Number(durationMinutes) * 60 : undefined} : {}),
             media_file: p.media_file,
             base_caption: p.caption,
+            ...(p.readMore?.enabled ? { read_more: { preparation_id: p.readMore.preparation!.id, captions: p.readMore.captions } } : {}),
             ...(p.hook?.enabled ? { hook_approval: p.hook.approval } : {}),
             first_comment: p.type === 'live' ? undefined : p.first_comment.trim() || undefined,
             ai_spin: p.type === 'live' || p.hook?.enabled ? false : aiSpinAll,
@@ -740,6 +751,9 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
                       </div>
                     </div>}
                   </div>
+                  <ReadMorePanel value={post.readMore} onChange={readMore => handleUpdateRow(post.id, { readMore })}
+                    type={post.type} media={post.media_file} caption={post.caption} disabled={isSubmitting}
+                    profiles={profiles.filter(profile => selectedProfileIds.includes(profile.id))} />
                 </div>
               ))}
             </div>

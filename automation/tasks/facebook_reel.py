@@ -30,9 +30,7 @@ from .base_task import BaseTask
 
 class FacebookReelTask(BaseTask):
     VIDEO_COMPOSER_WAIT_TIMEOUT = 120.0
-    T1_PRE_FINAL_COMPOSER_WAIT_TIMEOUT = 90.0
-    T1_FINAL_POST_BUTTON_WAIT_TIMEOUT = 120.0
-    DEFAULT_FINAL_POST_BUTTON_WAIT_TIMEOUT = 90.0
+    TYPED_CAPTION_WAIT_EXTRA = 40.0
     POST_CLICK_VERIFICATION_TIMEOUT = 90.0
     POST_CONFIRMATION_POPUP_TIMEOUT = 30.0
     PROFILE_POST_LOADING_TIMEOUT = 15.0
@@ -282,13 +280,14 @@ class FacebookReelTask(BaseTask):
         self.capture_evidence(code, screen, error_code=code, message=message)
         return self.set_outcome("failed_after_publish", code, message=message)
 
-    def _remaining_video_composer_wait(self, requested: float | None = None) -> float:
-        """Return time left in this template's shared composer budget."""
-        budget = (
-            self.T1_PRE_FINAL_COMPOSER_WAIT_TIMEOUT
-            if getattr(self, "reel_template_id", None) == "t1"
-            else self.VIDEO_COMPOSER_WAIT_TIMEOUT
+    def _video_composer_wait_budget(self) -> float:
+        return self.VIDEO_COMPOSER_WAIT_TIMEOUT + (
+            self.TYPED_CAPTION_WAIT_EXTRA if getattr(self, '_reel_caption_typed', False) else 0.0
         )
+
+    def _remaining_video_composer_wait(self, requested: float | None = None) -> float:
+        """Return time left in the shared upload, caption and Post budget."""
+        budget = self._video_composer_wait_budget()
         started_at = getattr(self, "_video_composer_started_at", None)
         if started_at is None:
             return budget if requested is None else requested
@@ -299,10 +298,10 @@ class FacebookReelTask(BaseTask):
         return remaining if requested is None else min(requested, remaining)
 
     def _video_composer_timeout(self, screen=None) -> bool:
-        limit = 90 if getattr(self, "reel_template_id", None) == "t1" else 120
+        limit = self._video_composer_wait_budget()
         return self._fail(
             "reel_composer_timeout",
-            f"The video upload composer did not become ready within {limit} seconds; stopping this profile so the next profile can run.",
+            f"The video upload composer did not become ready within {limit:g} seconds; stopping this profile so the next profile can run.",
             screen,
         )
 
@@ -1269,6 +1268,8 @@ class FacebookReelTask(BaseTask):
             surface_guard=lambda: self._caption_entry_surface_visible(),
             deadline=time.monotonic() + 300,
         )
+        plan = self.composer_entry.plans.get(('caption', self.caption))
+        self._reel_caption_typed = getattr(plan, 'method', None) == 'type'
         if not entry.verified:
             self.log('WARNING', f'Reel caption entry stopped: {entry.status}'
                      + (f' ({entry.interruption_reason})' if entry.interruption_reason else '') + '.')
@@ -1771,11 +1772,11 @@ class FacebookReelTask(BaseTask):
         if not self.attach_file_gtk(container_path, chooser_window=chooser_window):
             return self._fail("file_chooser_failed", "The Reel file chooser could not be completed safely.")
 
-        # T1 uses a 90-second shared budget until the final composer and then a
-        # separate 120-second Post-button wait. Other templates retain their
-        # existing shared 120-second composer budget.
+        # One shared clock includes caption entry/review and final Post readiness.
+        # Typing adds 40 seconds to the total; it never resets the clock.
         self._video_composer_started_at = time.monotonic()
         self._reel_caption_entered = False
+        self._reel_caption_typed = False
         self._media_screen = None
         if entry_status == "direct_file_chooser":
             self.log("INFO", "Confirming that the new Reel layout accepted the selected video...")
@@ -1946,22 +1947,13 @@ class FacebookReelTask(BaseTask):
 
     def _step_wait_publish_ready(self):
         self._requires_review = False
-        if self.reel_template_id == "t1":
-            publish_timeout = self.T1_FINAL_POST_BUTTON_WAIT_TIMEOUT
-            self.log(
-                "INFO",
-                f"T1 final Reel stage reached; waiting up to {publish_timeout:g} seconds for Post to become enabled.",
-            )
-        else:
-            publish_timeout = self._remaining_video_composer_wait(
-                self.DEFAULT_FINAL_POST_BUTTON_WAIT_TIMEOUT
-            )
-            self.log(
-                "INFO",
-                f"Waiting up to {publish_timeout:g} seconds for enabled Post / Publish action (background processing / copyright check).",
-            )
-            if publish_timeout <= 0:
-                return self._video_composer_timeout(self._screen)
+        publish_timeout = self._remaining_video_composer_wait()
+        self.log(
+            "INFO",
+            f"Waiting up to {publish_timeout:g} seconds for enabled Post / Publish action (remaining shared composer time).",
+        )
+        if publish_timeout <= 0:
+            return self._video_composer_timeout(self._screen)
         publish_status, publish_button, self._screen = self._wait_for_target(
             self._find_stable_reel_publish_action,
             timeout=publish_timeout,
@@ -1972,7 +1964,7 @@ class FacebookReelTask(BaseTask):
         if publish_status == "error":
             return self._fail("reel_publish_error", "Facebook displayed an error before publication.", screen)
         if not publish_button:
-            if self.reel_template_id != "t1" and self._remaining_video_composer_wait() <= 0:
+            if self._remaining_video_composer_wait() <= 0:
                 return self._video_composer_timeout(screen)
             if getattr(self, "_requires_review", False):
                 return self._needs_review(
@@ -1980,13 +1972,11 @@ class FacebookReelTask(BaseTask):
                     "Enabled Reel Post / Publish action was semantically proposed but requires operator review before execution.",
                     screen,
                 )
-            if self.reel_template_id == "t1":
-                return self._fail(
-                    "reel_publish_button_timeout",
-                    "The final T1 Reel Post button did not become enabled within 120 seconds.",
-                    screen,
-                )
-            return self._fail("reel_publish_not_found", "Enabled Reel Post / Publish action could not be confirmed.")
+            return self._fail(
+                "reel_publish_button_timeout",
+                f"The final Reel Post button did not become enabled within {publish_timeout:g} seconds.",
+                screen,
+            )
 
         if self._direct_next_share_flow:
             self._t2b_final_stage_confirmed = True

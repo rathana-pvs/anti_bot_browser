@@ -478,6 +478,7 @@ export const App: React.FC = () => {
         <main className={`flex-1 flex min-w-0 overflow-hidden ${page === 'proxies' ? '' : 'hidden'}`}>
           <ProxyPanel
             proxies={proxies}
+            profiles={profiles}
             onRefresh={loadData}
             onSelectProfile={(profileId) => openAccountPage(profileId, 'settings')}
           />
@@ -504,6 +505,7 @@ export const App: React.FC = () => {
       <MoveToGroupDialog profiles={moveTargets} groups={profileGroups} onMove={moveProfiles} onClose={() => setMoveTargets(null)} />
 
       <SettingsModal
+        onRequestOpen={() => setIsSettingsOpen(true)}
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         onOpenSetup={isDesktopApp() ? async () => {

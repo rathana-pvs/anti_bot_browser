@@ -4,7 +4,8 @@ from datetime import datetime
 from pathlib import Path
 
 
-def _read_object(path: Path) -> dict:
+def read_evidence_object(path: Path) -> dict:
+    """Read a complete JSON object; absent or incomplete evidence is not proof."""
     try:
         value = json.loads(path.read_text(encoding='utf-8'))
         return value if isinstance(value, dict) else {}
@@ -65,13 +66,13 @@ def resolve_execution_evidence(profiles: Path, execution: dict, post_type: str) 
             continue
         context_file = directory / 'attempt.json'
         if context_file.exists():
-            context = _read_object(context_file)
+            context = read_evidence_object(context_file)
             matched = bool(lease.get('lease_id') and execution.get('container_owner_token')
                            and context.get('execution_id') == execution.get('execution_id')
                            and context.get('lease_id') == lease.get('lease_id')
                            and context.get('owner_token') == execution.get('container_owner_token'))
         else:
-            stages = _read_object(directory / 'stage.json').get('history') or []
+            stages = read_evidence_object(directory / 'stage.json').get('history') or []
             matched_stages = {entry.get('stage') for entry in history
                               if entry.get('stage') in {'preparing', 'composing', 'ready_to_publish',
                                   'publish_authorized', 'publish_clicked', 'verifying',

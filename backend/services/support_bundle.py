@@ -118,10 +118,10 @@ def build_execution_diagnostic(match: dict, options: dict | None = None) -> dict
 
     if options.get("includeContent"):
         report["execution"]["title"] = post.get("title", "")
-        report["execution"]["pinned_comment"] = post.get("pinned_comment")
+        report["execution"]["pinned_comment"] = execution.get("pinned_comment", post.get("pinned_comment"))
         report["execution"]["base_caption"] = post.get("base_caption", "")
         report["execution"]["spun_caption"] = execution.get("spun_caption", "")
-        report["execution"]["first_comment"] = post.get("first_comment")
+        report["execution"]["first_comment"] = execution.get("first_comment", post.get("first_comment"))
         report["execution"]["post_url"] = execution.get("post_url")
         report["execution"]["media_file"] = post.get("media_file", "")
 

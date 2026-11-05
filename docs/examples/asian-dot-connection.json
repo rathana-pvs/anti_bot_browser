@@ -1,0 +1,194 @@
+{
+  "$schema": "./website-connection.schema.json",
+  "schemaVersion": 2,
+  "name": "Asian Dot",
+  "baseUrl": "http://localhost:3000",
+  "adapter": "http-json-v1",
+  "email": "",
+  "password": "",
+  "schema": {
+    "authentication": {
+      "type": "json-login",
+      "login": {
+        "method": "POST",
+        "path": "/api/users/login",
+        "body": {
+          "email": "{{credentials.email}}",
+          "password": "{{credentials.password}}"
+        }
+      },
+      "tokenPath": "token",
+      "header": "Authorization",
+      "prefix": "JWT "
+    },
+    "fields": {
+      "title": {
+        "type": "string",
+        "label": "Article title",
+        "required": true,
+        "maxLength": 300
+      },
+      "excerpt": {
+        "type": "string",
+        "label": "Article excerpt",
+        "required": true,
+        "maxLength": 160
+      },
+      "content": {
+        "type": "string",
+        "label": "Full article text",
+        "required": true,
+        "maxLength": 120000
+      },
+      "slug": {
+        "type": "string",
+        "label": "Article slug",
+        "required": false,
+        "maxLength": 300
+      },
+      "alt": {
+        "type": "string",
+        "label": "Cover image alt text",
+        "required": false,
+        "maxLength": 300
+      },
+      "tags": {
+        "type": "string",
+        "label": "Tags separated by commas",
+        "required": false,
+        "maxLength": 1000
+      },
+      "id": {
+        "type": "string",
+        "label": "Existing article ID",
+        "required": false,
+        "maxLength": 100
+      },
+      "cover_id": {
+        "type": "string",
+        "label": "Existing cover media ID",
+        "required": false,
+        "maxLength": 100
+      },
+      "cover_file": {
+        "type": "string",
+        "label": "Cover image upload",
+        "required": false,
+        "maxLength": 255
+      },
+      "category": {
+        "type": "string",
+        "label": "Category ID",
+        "required": false,
+        "maxLength": 100
+      },
+      "author": {
+        "type": "string",
+        "label": "Author ID",
+        "required": false,
+        "maxLength": 100
+      },
+      "credit": {
+        "type": "string",
+        "label": "Source credit",
+        "required": false,
+        "maxLength": 300
+      },
+      "seo_title": {
+        "type": "string",
+        "label": "SEO title",
+        "required": false,
+        "maxLength": 300
+      },
+      "seo_description": {
+        "type": "string",
+        "label": "SEO description",
+        "required": false,
+        "maxLength": 160
+      }
+    },
+    "requireAny": [
+      [
+        "cover_file",
+        "cover_id"
+      ]
+    ],
+    "publicationStatusField": "article.status",
+    "contentFormat": "plain",
+    "publishedValue": "published",
+    "verifyValue": true,
+    "idempotentMutations": true,
+    "operations": {
+      "test": {
+        "method": "GET",
+        "path": "/api/studio"
+      },
+      "catalog": {
+        "method": "GET",
+        "path": "/api/studio",
+        "response": {
+          "articles": "articles",
+          "categories": "categories",
+          "authors": "authors"
+        }
+      },
+      "publish": {
+        "method": "POST",
+        "path": "/api/studio",
+        "encoding": "multipart",
+        "payloadField": "payload",
+        "fileField": "file",
+        "body": {
+          "action": "publish",
+          "requestId": "{{request_id}}",
+          "article": "{{article}}"
+        },
+        "response": {
+          "id": "id",
+          "status": "status",
+          "url": "url"
+        }
+      },
+      "update": {
+        "method": "POST",
+        "path": "/api/studio",
+        "encoding": "multipart",
+        "payloadField": "payload",
+        "fileField": "file",
+        "body": {
+          "action": "publish",
+          "requestId": "{{request_id}}",
+          "article": "{{article}}"
+        },
+        "response": {
+          "id": "id",
+          "status": "status",
+          "url": "url"
+        }
+      },
+      "verify": {
+        "method": "GET",
+        "path": "/api/studio",
+        "query": {
+          "published": "{{article.id}}"
+        },
+        "response": {
+          "published": "published"
+        }
+      },
+      "commentLink": {
+        "method": "POST",
+        "path": "/api/studio",
+        "body": {
+          "action": "link",
+          "requestId": "{{request_id}}",
+          "articleId": "{{article.id}}",
+          "label": "{{label}}"
+        },
+        "response": {
+          "url": "url"
+        }
+      }
+    }
+  }
+}

@@ -41,6 +41,7 @@ from backend.routers import (
     live,
     reel_creator,
     storage,
+    websites,
 )
 
 configure_structured_logging()
@@ -138,6 +139,7 @@ app.include_router(worker.router)
 app.include_router(live.router)
 app.include_router(reel_creator.router)
 app.include_router(storage.router)
+app.include_router(websites.router)
 
 # Mount /shared_media static directory
 if not SHARED_MEDIA_DIR.exists():

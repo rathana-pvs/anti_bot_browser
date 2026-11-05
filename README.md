@@ -602,3 +602,11 @@ For offline EasyOCR/PaddleOCR evaluation against saved profile screenshots, see
 [measured results](docs/OCR_ENGINE_COMPARISON_RESULTS.md). The evaluation uses
 separate environments and local evidence snapshots without browser actions.
 These crop measurements informed the default; they are not full publication tests.
+
+## Website publishing from Studio
+
+Photo, Reel, and Live drafts support **Read more** with a saved website connection,
+automatically published articles, optional unique 10–30 word hooks, and one saved
+comment link per account. Upload the website JSON once in **Settings → Websites**,
+then select the saved website in the composer. Review the article and captions,
+then post or schedule. See [Website connections](docs/WEBSITE_CONNECTIONS.md).

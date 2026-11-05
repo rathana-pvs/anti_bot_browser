@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "name": "My news website",
+  "baseUrl": "http://localhost:3000",
+  "adapter": "payload-news-v1",
+  "email": "",
+  "password": ""
+}

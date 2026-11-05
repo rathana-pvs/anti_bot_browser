@@ -1442,21 +1442,84 @@ class ReelEntryFlowTests(unittest.TestCase):
             task._find_stable_enabled_action.call_args.kwargs["allow_semantic_fallback"]
         )
 
-    def test_pre_final_composer_wait_is_capped_at_ninety_seconds_total(self):
+    def test_all_templates_share_one_composer_budget(self):
+        for template in ("t1", "t2", "t3"):
+            for typed, budget in ((False, 120.0), (True, 160.0)):
+                with self.subTest(template=template, typed=typed):
+                    task = self.make_task()
+                    task.reel_template_id = template
+                    task._reel_caption_typed = typed
+                    task._video_composer_started_at = 1000.0
+                    with patch("tasks.facebook_reel.time.monotonic", return_value=1115.0):
+                        self.assertEqual(task._remaining_video_composer_wait(), budget - 115.0)
+                    with patch("tasks.facebook_reel.time.monotonic", return_value=1161.0):
+                        self.assertEqual(task._remaining_video_composer_wait(), 0.0)
+
+    def test_caption_entry_does_not_reset_or_pause_shared_clock(self):
         task = self.make_task()
-        task.reel_template_id = "t1"
+        task.log = Mock()
+        task.caption = "Caption while the video processes"
+        task.human = Mock()
+        task.paste_text = Mock()
         task._video_composer_started_at = 1000.0
+        task.composer_entry.plans = {("caption", task.caption): Mock(method="type")}
+        task._wait_for_target = Mock(return_value=("ready", (290, 310), task.client.screenshot()))
+        with patch("tasks.facebook_reel.time.monotonic", return_value=1110.0):
+            status, _ = task._enter_reel_caption(15.0)
+            self.assertEqual(status, "entered")
+            self.assertEqual(task._video_composer_started_at, 1000.0)
+            self.assertEqual(task._remaining_video_composer_wait(), 50.0)
 
-        with unittest.mock.patch("tasks.facebook_reel.time.monotonic", return_value=1085.0):
-            self.assertEqual(task._remaining_video_composer_wait(), 5.0)
-            self.assertEqual(task._remaining_video_composer_wait(30.0), 5.0)
+    def test_expired_shared_budget_stops_final_post_detection(self):
+        task = self.make_task()
+        task.log = Mock()
+        task._video_composer_started_at = 1000.0
+        task._screen = None
+        task._wait_for_target = Mock()
+        task._fail = Mock(return_value=False)
+        with patch("tasks.facebook_reel.time.monotonic", return_value=1161.0):
+            self.assertFalse(task._step_wait_publish_ready())
+        task._wait_for_target.assert_not_called()
+        self.assertEqual(task._fail.call_args.args[0], "reel_composer_timeout")
 
-        with unittest.mock.patch("tasks.facebook_reel.time.monotonic", return_value=1091.0):
-            self.assertEqual(task._remaining_video_composer_wait(), 0.0)
+    def test_final_post_timeout_still_stops_without_publishing(self):
+        task = self.make_task()
+        task.log = Mock()
+        task.reel_template_id = "t3"
+        task._wait_for_target = Mock(return_value=("timeout", None, None))
+        task._fail = Mock(return_value=False)
+        self.assertFalse(task._step_wait_publish_ready())
+        self.assertEqual(task._fail.call_args.args[0], "reel_publish_button_timeout")
+        self.assertFalse(hasattr(task, "_publish_button"))
 
-    def test_final_post_button_has_independent_two_minute_budget(self):
-        self.assertEqual(FacebookReelTask.T1_PRE_FINAL_COMPOSER_WAIT_TIMEOUT, 90.0)
-        self.assertEqual(FacebookReelTask.T1_FINAL_POST_BUTTON_WAIT_TIMEOUT, 120.0)
+    def test_final_post_uses_only_remaining_shared_time(self):
+        for template in ("t1", "t2", "t3"):
+            for typed, expected in ((True, 50.0), (False, 10.0)):
+                with self.subTest(template=template, typed=typed):
+                    task = self.make_task()
+                    task.log = Mock()
+                    task.reel_template_id = template
+                    task._reel_caption_typed = typed
+                    task._direct_next_share_flow = True
+                    task._wait_for_target = Mock(return_value=("ready", (428, 1046), None))
+                    task._video_composer_started_at = 1000.0
+                    with patch("tasks.facebook_reel.time.monotonic", return_value=1110.0):
+                        self.assertIsNone(task._step_wait_publish_ready())
+                    self.assertEqual(task._wait_for_target.call_args.kwargs["timeout"], expected)
+
+    def test_reel_records_actual_caption_entry_method(self):
+        for method in ("type", "paste"):
+            with self.subTest(method=method):
+                task = self.make_task()
+                task.log = Mock()
+                task.caption = "Caption while the video processes"
+                task.human = Mock()
+                task.paste_text = Mock()
+                task.composer_entry.plans = {("caption", task.caption): Mock(method=method)}
+                task._wait_for_target = Mock(return_value=("ready", (290, 310), task.client.screenshot()))
+                status, _ = task._enter_reel_caption(timeout=15.0)
+                self.assertEqual(status, "entered")
+                self.assertEqual(task._reel_caption_typed, method == "type")
 
     def test_t1_final_post_wait_returns_immediately_when_button_is_ready(self):
         task = self.make_task()
@@ -1468,7 +1531,7 @@ class ReelEntryFlowTests(unittest.TestCase):
         ), unittest.mock.patch("tasks.facebook_reel.time.sleep") as sleep:
             status, target, _ = task._wait_for_target(
                 locator,
-                timeout=task.T1_FINAL_POST_BUTTON_WAIT_TIMEOUT,
+                timeout=task.VIDEO_COMPOSER_WAIT_TIMEOUT,
                 label="reel_publish_ready",
             )
 

@@ -117,6 +117,25 @@ async def run_get_ready(device, log: Callable[..., None]) -> dict:
     return result
 
 
+async def run_warming(device, options: dict, log: Callable[..., None],
+                      should_stop: Callable[[], bool] = lambda: False) -> dict:
+    """A standalone warming session: `completed`, `failed`, or `blocked` when the account needs review.
+    Nothing is published, so a stopped session is never uncertain."""
+    flows = Flows(device, log)
+    result: dict = {"status": "failed", "stage": "open"}
+    try:
+        await flows.open_feed()
+        result["stage"] = "browse"
+        result.update(await flows.visit(options, should_stop), status="completed")
+    except AccountBlocked as blocked:
+        result.update(status="blocked", reason=str(blocked), account_blocked=True)
+    except Exception as failure:
+        result.update(reason=f"{type(failure).__name__}: {failure}"[:400])
+    log(event=result["status"], stage=result["stage"], reason=result.get("reason"))
+    await _home(flows)
+    return result
+
+
 async def _comment(flows: Flows, item: PostItem, published_at: float, waits=COMMENT_WAITS,
                    max_age_minutes: float | None = None) -> dict:
     try:

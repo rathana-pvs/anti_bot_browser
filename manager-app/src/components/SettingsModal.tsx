@@ -4,15 +4,18 @@ import { AppUpdates } from './AppUpdates';
 import { ResourceModeControl } from './ResourceModeControl';
 import { AutoWarmingControl } from './AutoWarmingControl';
 import { StorageControl } from './StorageControl';
-import { Check, Cpu, Eye, EyeOff, HardDrive, KeyRound, Settings, X } from 'lucide-react';
+import { WebsiteConnectionsSettings } from './WebsiteConnectionsSettings';
+import { MANAGE_WEBSITE_CONNECTIONS } from '../services/websites';
+import { Check, Cpu, Eye, EyeOff, Globe, HardDrive, KeyRound, Settings, X } from 'lucide-react';
 
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
   onOpenSetup?: () => void;
+  onRequestOpen?: () => void;
 }
 
-type Section = 'api-keys' | 'updates' | 'resources' | 'storage';
+type Section = 'api-keys' | 'updates' | 'resources' | 'storage' | 'websites';
 
 const API_KEY_FIELDS = [
   { id: 'gemini', label: 'Google Gemini', placeholder: 'API key' },
@@ -39,6 +42,7 @@ const SECTION_COPY: Record<Section, { title: string; description: string }> = {
   'api-keys': { title: 'API keys', description: 'Manage your Gemini API key and model.' },
   updates: { title: 'App updates', description: 'Check published versions and update the whole app.' },
   resources: { title: 'Resources', description: 'Control how much automation runs at once and which OCR engine it uses.' },
+  websites: { title: 'Websites', description: 'Connect websites once, then select them when posting.' },
   storage: { title: 'Storage', description: 'What uses disk space, and housekeeping that keeps it from growing.' },
 };
 
@@ -58,13 +62,19 @@ function loadApiKeys(): ApiKeys {
   }
 }
 
-export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, onOpenSetup }) => {
+export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, onOpenSetup, onRequestOpen }) => {
   const [section, setSection] = useState<Section>('api-keys');
   const [apiKeys, setApiKeys] = useState<ApiKeys>(loadApiKeys);
   const [visibleKeys, setVisibleKeys] = useState<Set<ApiKeyId>>(new Set());
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const savedTimer = useRef<number>();
+
+  useEffect(() => {
+    const open = () => { setSection('websites'); onRequestOpen?.(); };
+    window.addEventListener(MANAGE_WEBSITE_CONNECTIONS, open);
+    return () => window.removeEventListener(MANAGE_WEBSITE_CONNECTIONS, open);
+  }, [onRequestOpen]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -126,6 +136,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
             </button>
             <button type="button" onClick={() => setSection('api-keys')} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition-colors ${section === 'api-keys' ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'}`}>
               <KeyRound className="h-4 w-4" /> API keys
+            </button>
+            <button type="button" onClick={() => setSection('websites')} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition-colors ${section === 'websites' ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'}`}>
+              <Globe className="h-4 w-4" /> Websites
             </button>
             <button type="button" onClick={() => setSection('resources')} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition-colors ${section === 'resources' ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'}`}>
               <Cpu className="h-4 w-4" /> Resources
@@ -190,7 +203,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                   <button type="button" onClick={saveKeys} className="rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-500">Save settings</button>
                 </div>
               </div>
-            ) : section === 'resources' ? (
+            ) : section === 'websites' ? <WebsiteConnectionsSettings /> : section === 'resources' ? (
               <div className="max-w-xl space-y-4">
                 <p className="text-xs leading-5 text-zinc-400">Resource mode sets how many browsers can run, warm up, and post at the same time. Auto picks a level from this computer’s memory and CPU.</p>
                 <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4"><ResourceModeControl /></div>

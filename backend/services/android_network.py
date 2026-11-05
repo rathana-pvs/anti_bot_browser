@@ -42,6 +42,7 @@ def _account(profile_id: str) -> tuple[dict, dict, dict | None]:
     runtime = config.get("runtime") or {}
     if runtime.get("kind") != ANDROID_RUNTIME:
         raise ValueError("This account is not on a phone.")
+    runtime = {**runtime, "device_serial": android_devices.canonical_serial(runtime["device_serial"])}
     proxy_id = (config.get("network") or {}).get("proxy_id")
     proxy = next((p for p in proxy_service.load_proxy_pool() if p.get("id") == proxy_id), None) if proxy_id else None
     return config, runtime, proxy

@@ -54,6 +54,30 @@ class ChromeWindowDiscoveryTests(unittest.TestCase):
 
 
 class ChromeNavigationTests(unittest.TestCase):
+    def test_input_owner_reads_fresh_focus_and_pointer_in_one_round_trip(self):
+        client = ContainerClient("test-profile")
+        client.exec_cmd = Mock(side_effect=[
+            completed(stdout="55\nX=10\nY=20\nSCREEN=0\nWINDOW=55\n"),
+            completed(stdout="66\nX=30\nY=40\nSCREEN=0\nWINDOW=66\n"),
+        ])
+        self.assertEqual(client.input_owner(), ("55", "X=10|Y=20"))
+        self.assertEqual(client.exec_cmd.call_count, 1)
+        # A second guard must see the changed focus, rather than cached state.
+        self.assertEqual(client.input_owner(), ("66", "X=30|Y=40"))
+        self.assertEqual(client.exec_cmd.call_count, 2)
+
+    def test_input_owner_rejects_missing_focus(self):
+        client = ContainerClient("test-profile")
+        client.exec_cmd = Mock(return_value=completed(stdout="X=10\nY=20\n"))
+        with self.assertRaisesRegex(RuntimeError, "Input focus"):
+            client.input_owner()
+
+    def test_input_owner_propagates_query_failure(self):
+        client = ContainerClient("test-profile")
+        client.exec_cmd = Mock(side_effect=subprocess.CalledProcessError(1, "xdotool"))
+        with self.assertRaises(subprocess.CalledProcessError):
+            client.input_owner()
+
     def test_navigation_clicks_address_bar_and_types_at_human_pace(self):
         client = ContainerClient("test-profile")
         client.ensure_focus = Mock(return_value=55)

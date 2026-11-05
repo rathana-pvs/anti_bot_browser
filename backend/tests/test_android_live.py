@@ -1,12 +1,16 @@
+import asyncio
 import hashlib
 import struct
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from backend.main import app
+from backend.routers import devices
 from backend.services import android_live
+from backend.services.adb_client import AdbError
 
 
 def test_touch_message_matches_scrcpy_layout():
@@ -77,3 +81,64 @@ async def _no_phone(serial):
 
 def test_reset_video_asks_the_phone_for_a_new_key_frame():
     assert android_live.control_messages({"type": "reset_video"}) == [bytes([17])]
+
+
+def test_stream_keeps_the_phone_awake():
+    assert "stay_awake=true" in android_live.server_command(1)
+
+
+def test_viewer_hears_only_when_the_screen_changes(monkeypatch):
+    # The last reading is an error the watcher does not catch, which ends its loop.
+    readings = iter([True, False, False, AdbError("slow"), None, True, RuntimeError("done")])
+
+    def screen_awake(_serial):
+        reading = next(readings)
+        if isinstance(reading, Exception):
+            raise reading
+        return reading
+
+    sent = []
+
+    class Socket:
+        async def send_json(self, message):
+            sent.append(message)
+
+    monkeypatch.setattr(devices, "SCREEN_POLL_S", 0)
+    monkeypatch.setattr(devices, "SCREEN_WAKE_GRACE_S", 0)
+    session = SimpleNamespace(serial="PHONE", client=SimpleNamespace(screen_awake=screen_awake))
+    with pytest.raises(RuntimeError, match="done"):
+        asyncio.run(devices._watch_screen(Socket(), session))
+    assert sent == [{"type": "screen", "awake": False}, {"type": "screen", "awake": True}]
+
+
+def test_screen_that_sleeps_as_the_stream_starts_is_woken_without_telling_the_viewer(monkeypatch):
+    readings = iter([False, True, RuntimeError("done")])
+    woken, sent = [], []
+
+    def screen_awake(_serial):
+        reading = next(readings)
+        if isinstance(reading, Exception):
+            raise reading
+        return reading
+
+    class Socket:
+        async def send_json(self, message):
+            sent.append(message)
+
+    monkeypatch.setattr(devices, "SCREEN_POLL_S", 0)
+    session = SimpleNamespace(serial="PHONE", client=SimpleNamespace(screen_awake=screen_awake, wake_screen=woken.append))
+    with pytest.raises(RuntimeError, match="done"):
+        asyncio.run(devices._watch_screen(Socket(), session))
+    assert woken == ["PHONE"] and sent == []
+
+
+def test_stream_start_wakes_the_phone_first():
+    woken = []
+
+    def wake_screen(serial):
+        woken.append(serial)
+        raise android_live.LiveViewError("stop after waking")
+
+    with pytest.raises(android_live.LiveViewError):
+        asyncio.run(android_live.LiveSession("PHONE", SimpleNamespace(wake_screen=wake_screen)).start())
+    assert woken == ["PHONE"]

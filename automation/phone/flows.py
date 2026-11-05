@@ -48,9 +48,19 @@ VIDEO_PROMPT = "Say something about this video"
 # Seconds before each of the three looks for a new post on the profile; a reel can take a while.
 COMMENT_WAITS = (30, 25, 25)
 PUBLISH_CONFIRM_TIMEOUT_S = 180
+# How long a greyed-out publish button may stay grey before the job fails without tapping it.
+PUBLISH_ENABLE_TIMEOUT_S = 180
+# A big video on a slow proxy may keep "Posting" up for long; leaving kills the upload.
+UPLOAD_TIMEOUT_S = 900
+# The bar can vanish for a moment or be misread, so it must stay gone this long.
+UPLOAD_GONE_S = 20
+# How long a reel waits on its result screen when the bar was never seen.
+UPLOAD_NEVER_SEEN_S = 60
 # The comment box's placeholder: "Write a comment..." on posts, "Add a comment" in the reel player, and
 # "Comment as NAME" under the "Get the ball rolling" sheet of a post with no comments yet.
 COMMENT_BOX = ["Write a comment", "Add a comment", "Comment as"]
+# Seconds spent reading between scrolls of a warming session.
+READING_PAUSES = {"quick": (1.0, 3.0), "balanced": (2.5, 5.5), "relaxed": (5.0, 10.0)}
 
 
 class StepFailed(Exception):
@@ -95,13 +105,22 @@ class Flows:
 
     # --- waiting ------------------------------------------------------------------------------
     async def wait_for(self, step: str, any_of: list[str], timeout: float = 20.0, exact: bool = False,
-                       handle_interruptions: bool = True) -> tuple[str, Point, list[Line]]:
-        """Until one of the texts shows; known pop-ups are closed meanwhile."""
+                       handle_interruptions: bool = True, evidence: bool = True,
+                       discard_old: bool = False) -> tuple[str, Point, list[Line]]:
+        """Until one of the texts shows; known pop-ups are closed meanwhile. A caller that recovers from a
+        miss passes `evidence=False`, so only real failures leave a fail_ screenshot. `discard_old` is for a
+        step before this job has made anything: a prompt about an earlier job's post is answered with discard."""
         dev = self.device
         deadline = dev.now() + timeout
         lines: list[Line] = []
         while dev.now() < deadline:
             lines = await dev.read()
+            old_post = screen.discard_button(lines) if discard_old else None
+            if old_post:
+                self.log(event="leftover", screen=step, action="discard")
+                await dev.tap(old_post)
+                await dev.settle(timeout=2.0)
+                continue
             for wanted in any_of:
                 point = match(lines, wanted, exact)
                 if point:
@@ -110,7 +129,8 @@ class Flows:
             if handle_interruptions and await self.close_interruption(lines):
                 continue
             await dev.sleep(0.6)
-        dev.snapshot(f"fail_{step.replace(' ', '_')}_{int(time.time())}")
+        if evidence:
+            dev.snapshot(f"fail_{step.replace(' ', '_')}_{int(time.time())}")
         raise StepFailed(f"{step}: none of {any_of} appeared; screen shows {texts(lines)}")
 
     def check_account(self, lines: list[Line]) -> None:
@@ -133,7 +153,7 @@ class Flows:
             await self.device.key(KEY_BACK)
         return True
 
-    async def scroll(self, start: Point, end: Point) -> None:
+    async def scroll(self, start: Point, end: Point, duration: float = 0.35) -> None:
         """A swipe that never lands on the keyboard: with the keyboard up (a comment box focused) it
         would gesture-type words into the box. The keyboard is hidden and its sheet closed first."""
         dev = self.device
@@ -143,12 +163,12 @@ class Flows:
             if await asyncio.to_thread(dev.keyboard_shown):
                 raise StepFailed("keyboard: still shown after Escape; not scrolling over it")
             await dev.key(KEY_BACK)
-        await dev.swipe(start, end)
+        await dev.swipe(start, end, duration=duration)
 
     # --- warming ------------------------------------------------------------------------------
     async def warm(self, scrolls: int = 3) -> None:
         """A short browse before the session's first post: varied swipes with the occasional backtrack
-        and, once in a while, a tap into a post. No-op after the first call until the device's
+        and, once in a while, a post opened by its text. No-op after the first call until the device's
         session closes. Failures are swallowed: warming is comfort, never fatal."""
         dev = self.device
         if dev._warmed or scrolls <= 0:
@@ -162,44 +182,125 @@ class Flows:
                 dwell = random.uniform(4.0, 8.0) if random.random() < 0.15 else random.uniform(0.8, 2.5)
                 await dev.sleep(dwell)
                 if forward_count >= tap_after and random.random() < 0.5:
-                    if await self._warm_open_post():
+                    lines = await dev.read()
+                    readable = screen.readable_lines(lines, dev.height)
+                    if readable:
+                        await self._read_post(random.choice(readable), dev.sleep)
                         tap_after = forward_count + random.randint(3, 5)
                         continue
-                    break  # recovery failed; stop warming rather than risk the post
-                x = dev.width * random.uniform(0.20, 0.80)
-                span = dev.height * random.uniform(0.40, 0.75)
-                duration = random.uniform(0.25, 0.55)
-                if i > 0 and i % reverse_at == 0:
-                    start_y = dev.height * random.uniform(0.25, 0.40)  # finger down: feed goes back
-                    end_y = min(dev.height * 0.95, start_y + span * 0.5)
+                back = i > 0 and i % reverse_at == 0
+                if back:
                     reverse_at = i + random.randint(4, 6)
                 else:
-                    start_y = dev.height * random.uniform(0.70, 0.85)  # finger up: feed goes forward
-                    end_y = max(dev.height * 0.05, start_y - span)
                     forward_count += 1
-                await dev.swipe((x, start_y), (x, end_y), duration=duration)
+                start, end, duration = self._feed_swipe(back)
+                await dev.swipe(start, end, duration=duration)
         except (StepFailed, Exception) as warm_error:  # don't let warming fail the job
             self.log(event="warm_skipped", reason=str(warm_error)[:200])
 
-    async def _warm_open_post(self) -> bool:
-        """Tap something in the middle of the feed, dwell, then Back to the feed. True if the feed
-        comes back; False if it does not after a few tries (the caller should stop warming)."""
+    def _feed_swipe(self, back: bool = False) -> tuple[Point, Point, float]:
+        """A varied swipe: finger up moves the feed forward, finger down a little way back."""
         dev = self.device
-        x = dev.width * random.uniform(0.30, 0.70)
-        y = dev.height * random.uniform(0.40, 0.65)
-        self.log(event="warm", action="tap into post")
-        await dev.tap((x, y))
-        await dev.sleep(random.uniform(2.0, 5.0))
-        for _ in range(3):
+        x = dev.width * random.uniform(0.20, 0.80)
+        span = dev.height * random.uniform(0.40, 0.75)
+        if back:
+            start_y = dev.height * random.uniform(0.25, 0.40)
+            end_y = min(dev.height * 0.95, start_y + span * 0.5)
+        else:
+            start_y = dev.height * random.uniform(0.70, 0.85)
+            end_y = max(dev.height * 0.05, start_y - span)
+        return (x, start_y), (x, end_y), random.uniform(0.25, 0.55)
+
+    async def visit(self, options: dict, should_stop: Callable[[], bool] = lambda: False) -> dict:
+        """A standalone warming session from the feed: read-only browsing of the feed and the account's
+        own Page until the time is up or `should_stop` says so. Nothing is liked, commented or typed."""
+        dev = self.device
+        begun = dev.now()
+        requested = options["surface"] if options["surface"] != "random" else random.choice(("news_feed", "profile"))
+        own_page_seconds = options["max_seconds"] if requested == "profile" else 0.0
+        if requested == "news_feed" and options["auto"] and random.random() < 0.6:
+            own_page_seconds = options["max_seconds"] * random.uniform(0.2, 0.4)
+        browsing = {"pace": options["pace"], "reread": options["reread"],
+                    "long_breaks": options["long_breaks"], "should_stop": should_stop}
+        scrolls, fallback = 0, False
+        if requested == "news_feed":
+            scrolls += await self.browse(options["max_seconds"] - own_page_seconds, **browsing)
+        if own_page_seconds and not should_stop():
+            try:
+                await self.discard_until_feed()
+                await self.open_profile()
+                self.log(event="warm", action="own page")
+                scrolls += await self.browse(own_page_seconds, read_posts=False, **browsing)
+            except StepFailed as unavailable:
+                self.log(event="warm", action="own page unavailable", reason=str(unavailable)[:200])
+                fallback = True
+                await self.discard_until_feed()
+                if requested == "profile":
+                    scrolls += await self.browse(own_page_seconds, **browsing)
+        return {"warming_surface_requested": requested,
+                "warming_surface": "news_feed" if fallback else requested,
+                "warming_surface_fallback": fallback, "scroll_actions": scrolls,
+                "duration_seconds": round(dev.now() - begun, 1),
+                "stop_reason": "asked_to_stop" if should_stop() else "finished"}
+
+    async def browse(self, seconds: float, *, pace: str = "balanced", reread: bool = False, long_breaks: bool = False,
+                     read_posts: bool = True, should_stop: Callable[[], bool] = lambda: False) -> int:
+        """Scrolls with reading pauses and, now and then, opens a post by its text. Every pass reads
+        the screen, so a logged-out or stopped account ends the session. Returns the scrolls made."""
+        dev = self.device
+        until = dev.now() + seconds
+        scrolls, reopened = 0, False
+        read_at = random.randint(3, 6)
+
+        async def pause(wanted: float) -> None:
+            end = min(dev.now() + wanted, until)
+            while dev.now() < end and not should_stop():
+                await dev.sleep(min(2.0, end - dev.now()))
+
+        while dev.now() < until and not should_stop():
             lines = await dev.read()
+            self.check_account(lines)
             if await self.close_interruption(lines):
                 continue
-            if match(lines, FEED_PROMPT) or match(lines, "facebook", exact=True):
-                return True
+            focus = await asyncio.to_thread(dev.focus)
+            if focus and "com.facebook" not in focus:
+                if reopened:
+                    raise StepFailed(f"browse: left Facebook again; {focus} is showing")
+                self.log(event="warm", action="back to Facebook", focus=focus)
+                reopened = True
+                await self.open_feed()
+                continue
+            if read_posts and scrolls >= read_at:
+                read_at = scrolls + random.randint(4, 8)
+                readable = screen.readable_lines(lines, dev.height)
+                if readable:
+                    await self._read_post(random.choice(readable), pause)
+                    continue
+            back = reread and scrolls > 0 and random.random() < 0.15
+            start, end, duration = self._feed_swipe(back)
+            await self.scroll(start, end, duration)
+            scrolls += 1
+            self.log(event="warm", action="scroll back" if back else "scroll", scrolls=scrolls)
+            await pause(random.uniform(*READING_PAUSES[pace]))
+            if long_breaks and random.random() < 0.08:
+                self.log(event="warm", action="long pause")
+                await pause(random.uniform(8.0, 15.0))
+        return scrolls
+
+    async def _read_post(self, line: Line, pause) -> None:
+        """Taps a post's text, reads, and comes back only if something actually opened: Back on the
+        feed itself would leave Facebook. A long caption just expands in place; a post with media can
+        open Facebook's full-screen viewer, which has no comment box but is its own window."""
+        dev = self.device
+        before = await asyncio.to_thread(dev.focus)
+        self.log(event="warm", action="read post")
+        await dev.tap(line.point)
+        await pause(random.uniform(4.0, 10.0))
+        lines = await dev.read()
+        if await asyncio.to_thread(dev.focus) != before or any(match(lines, box) for box in COMMENT_BOX):
             await dev.key(KEY_BACK)
-            await dev.sleep(0.8)
-        self.log(event="warm", action="tap recovery incomplete")
-        return False
+            await dev.sleep(random.uniform(0.8, 1.5))
+            self.log(event="warm", action="closed post", focus=await asyncio.to_thread(dev.focus))
 
     # --- feed ---------------------------------------------------------------------------------
     async def open_feed(self) -> None:
@@ -231,7 +332,7 @@ class Flows:
             try:
                 found, _, lines = await self.wait_for("open facebook", [
                     FEED_PROMPT, "New post", "Create post", "New reel", "Post settings", "Reel settings", "Discard changes",
-                    "Discard post", "Discard video", "facebook"], timeout=12)
+                    "Discard post", "Discard video", "Discard draft", screen.LEFT_UNFINISHED, "facebook"], timeout=12, evidence=False)
             except StepFailed as unknown:
                 self.log(event="unknown screen", action="back", detail=str(unknown)[:200])
                 await dev.key(KEY_BACK)
@@ -270,13 +371,37 @@ class Flows:
         """The composer with this job's media and caption."""
         # Warming can leave the feed far below its composer.
         await self.discard_until_feed()
-        try:
-            await self._compose_from_gallery()
-        except NotAReel as plain:
-            self.log(event="route", step="create reel", reason=str(plain))
-            await self.discard_until_feed()
-            await self._compose_from_create_reel()
+        if item.kind == "reel" and await self._reel_from_create_menu():
+            await self._pick_reel()
+        else:
+            try:
+                await self._compose_from_gallery()
+            except NotAReel as plain:
+                self.log(event="route", step="create reel", reason=str(plain))
+                await self.discard_until_feed()
+                await self._compose_from_create_reel()
         await self.write_caption(item)
+
+    async def _reel_from_create_menu(self) -> bool:
+        """From the feed: its + menu, then Reel. False, with the menu closed, when this feed has neither."""
+        dev = self.device
+        plus = dev.find_icon("create")
+        if not plus:
+            self.log(event="route", step="create menu", reason="no + button on the feed")
+            return False
+        await dev.tap(plus)
+        try:
+            _, _, lines = await self.wait_for("create menu", ["Story", "Live"], exact=True, timeout=6)
+            reel = screen.menu_reel(lines)
+        except StepFailed:
+            reel = None
+        if not reel:
+            self.log(event="route", step="create menu", reason="the + menu has no Reel")
+            await dev.key(KEY_BACK)
+            await self.discard_until_feed()
+            return False
+        await dev.tap(reel)
+        return True
 
     async def _compose_from_gallery(self) -> None:
         dev = self.device
@@ -284,7 +409,12 @@ class Flows:
         # The job's media was just saved, so it is the newest: the first cell, its circle top-right.
         offset = dev.pt(168, 110)
         await dev.tap((point[0] + offset[0], point[1] + offset[1]))
-        found, nxt, _ = await self.wait_for("picker selection", ["Next", PHOTO_PROMPT, VIDEO_PROMPT], timeout=10)
+        # Picking can open the composer at once. Its own Next leads past the caption, so the prompts come first.
+        found, nxt, _ = await self.wait_for("picker selection", [VIDEO_PROMPT, PHOTO_PROMPT, FEED_PROMPT, "Next"], timeout=10)
+        if found == "Next":  # the composer's prompt may not have drawn yet
+            await dev.settle(timeout=2.0)
+            lines = await dev.read()
+            found = next((prompt for prompt in (VIDEO_PROMPT, PHOTO_PROMPT, FEED_PROMPT) if match(lines, prompt)), found)
         if found == VIDEO_PROMPT:
             raise NotAReel("reel: Facebook opened a plain video post, not a reel; the video may not be 9:16")
         if found == "Next":
@@ -308,22 +438,60 @@ class Flows:
             dev.snapshot(f"fail_create_reel_{int(time.time())}")
             raise StepFailed("create reel: the button was not found on the profile")
         await dev.tap(button)
-        _, gallery, _ = await self.wait_for("reel picker", ["Gallery"], exact=True, timeout=15)
+        await self._pick_reel()
+
+    async def _pick_reel(self) -> None:
+        """From the reel picker: the newest video, then Next, to the composer."""
+        dev = self.device
         offset = dev.pt(68, 394)  # the first cell, whether or not a Drafts row sits above the grid
-        await dev.tap((gallery[0] + offset[0], gallery[1] + offset[1]))
-        _, nxt, _ = await self.wait_for("reel editor", ["Next"], timeout=30)  # OCR reads its arrow too
+        for _ in range(2):
+            _, gallery, lines = await self.wait_for("reel picker", ["Gallery"], exact=True, timeout=15)
+            if not await self._discard_unfinished_reel(lines):
+                await dev.tap((gallery[0] + offset[0], gallery[1] + offset[1]))
+                found, nxt, lines = await self.wait_for("reel editor", [screen.LEFT_UNFINISHED, "Next"], timeout=30)  # OCR reads its arrow too
+                if found == "Next":
+                    break
+                await self._discard_unfinished_reel(lines)
+        else:
+            raise StepFailed(f"reel picker: an unfinished reel keeps coming back; {texts(lines)}")
         await dev.tap(nxt)
         await self.wait_for("composer with media", ["Describe your reel", "Add a description"], timeout=30)
+
+    async def _discard_unfinished_reel(self, lines: list[Line]) -> bool:
+        """A stuck earlier job leaves a reel behind, and Facebook offers it back in the picker. This job has
+        not started its own yet, so only the old one is lost."""
+        if not match(lines, screen.LEFT_UNFINISHED):
+            return False
+        discard = match(lines, "DISCARD", exact=True)
+        if not discard:
+            raise StepFailed(f"reel picker: an unfinished reel without a Discard button; {texts(lines)}")
+        self.log(event="leftover", screen="unfinished reel", action="discard")
+        await self.device.tap(discard)
+        await self.device.settle(timeout=2.0)
+        return True
 
     async def open_gallery(self) -> Point:
         """From the feed: the composer, then its Gallery picker, past Facebook's camera roll consent
         (shown once; posting needs it). Returns the picker's "Gallery" title."""
         dev = self.device
-        _, point, _ = await self.wait_for("feed", [FEED_PROMPT])
-        await dev.tap(point)
-        # Facebook shows either a Gallery tile (tapped above its label) or a list with a Photo/video row.
-        found, entry, _ = await self.wait_for("composer", ["Gallery", "Photo/video"], exact=True)
-        await dev.tap(entry if found == "Photo/video" else (entry[0], entry[1] - dev.pt(0, 35)[1]))
+        for last_try in (False, True):
+            _, point, _ = await self.wait_for("feed", [FEED_PROMPT])
+            await dev.tap(point)
+            # Facebook shows a Gallery tile (tapped above its label), a list with a Photo/video row, or a bottom
+            # bar of icons where only GIF has a label and the photo icon comes first.
+            try:
+                found, entry, _ = await self.wait_for("composer", ["Gallery", "Photo/video", "GIF"], exact=True,
+                                                      evidence=last_try, discard_old=True)
+                break
+            except StepFailed as missed:  # a tap while the feed still moves only stops it
+                if last_try:
+                    raise
+                self.log(event="retry", step="composer", detail=str(missed)[:200])
+                await self.discard_until_feed()
+        if found == "GIF":
+            await dev.tap((dev.pt(90, 0)[0], entry[1]))
+        else:
+            await dev.tap(entry if found == "Photo/video" else (entry[0], entry[1] - dev.pt(0, 35)[1]))
         found, point, lines = await self.wait_for("picker", ["Gallery", "Allow access", "Allow Facebook to access"],
                                                   timeout=15)
         for _ in range(2):  # Facebook's own camera roll consent, first time only; posting needs it
@@ -379,20 +547,24 @@ class Flows:
             raise StepFailed(f"caption: not shown after paste; screen shows {texts(lines, 10)}")
         if not item.caption_key and any(match(lines, prompt) for prompt in (FEED_PROMPT, PHOTO_PROMPT, "Describe your reel")):
             raise StepFailed("caption: the field is still empty after paste")
+        done = match(lines, "Done", exact=True)
+        if done and match(lines, "Add text", exact=True):  # this composer takes the caption on a screen of its own
+            await dev.tap(done)
 
     async def publish(self, before_tap: Callable[[], None]) -> float:
-        """Next, then SHARE (photo) or Share now (reel); a Page's composer has POST, and its "New reel"
+        """Next, then SHARE or Post (photo) or Share now (reel); a Page's composer has POST, and its "New reel"
         screen has Share now under the caption, both with no Next. `before_tap` records the attempt as about to publish; from the
         tap on, the outcome is uncertain until confirmed. Returns the tap time."""
         dev = self.device
         found, nxt, _ = await self.wait_for("composer next", ["Next", "Share now", "POST"], exact=True)
         if found == "Next":
             await dev.tap(nxt)
-            found, _, _ = await self.wait_for("settings", ["Post settings", "Reel settings"], timeout=20)
-        button = {"Post settings": "SHARE", "POST": "POST"}.get(found, "Share now")
+            found, _, _ = await self.wait_for("settings", ["Post settings", "Reel settings", "Post audience"], timeout=20)
+        button = {"Post settings": "SHARE", "POST": "POST", "Post audience": "Post"}.get(found, "Share now")
         # The title shows before the button has finished drawing.
         _, point, _ = await self.wait_for(f"settings {button}", [button], exact=True, timeout=10,
                                           handle_interruptions=False)
+        await self._wait_until_enabled(button, point)
         dev.snapshot("before_publish")
         before_tap()
         self.log(event="about_to_publish", screen=found)
@@ -400,21 +572,44 @@ class Flows:
         await dev.tap(point)
         return tapped
 
+    async def _wait_until_enabled(self, button: str, point: Point) -> None:
+        """A tap on a greyed-out button does nothing, so the post would wrongly count as maybe published."""
+        dev = self.device
+        waited_from = dev.now()
+        logged = False
+        while screen.button_disabled(dev.image(), point):
+            if not logged:
+                self.log(event="publish_button", state="disabled", button=button)
+                logged = True
+            if dev.now() >= waited_from + PUBLISH_ENABLE_TIMEOUT_S:
+                dev.snapshot(f"fail_publish_disabled_{int(time.time())}")
+                raise StepFailed(f"publish: Facebook kept {button} disabled for {PUBLISH_ENABLE_TIMEOUT_S} s; nothing was tapped")
+            await dev.sleep(3)
+        if logged:
+            self.log(event="publish_button", state="enabled", seconds=round(dev.now() - waited_from))
+            await dev.settle(timeout=2.0)
+
     async def wait_published(self, item: PostItem, tapped: float) -> float:
         """A photo shows on the feed with its caption and "Just now"; a reel is confirmed once the
-        "Posting" bar has come and gone (it is then found on the profile for the comment). A Page
+        "Posting" bar has come and stayed gone, since the upload dies if Facebook is left or its Android user
+        stopped early (it is then found on the profile for the comment). A Page
         returns to an empty composer after sharing; it also shows the feed's prompt, so the feed is
         told by its logo, and the composer is left with Back. The feed may come back without the
         prompt in view, so the prompt is not required. A reel made with Create reel lands back on
         the profile, on whichever tab it last showed, told by its followers line or Create reel."""
         dev = self.device
-        seen_posting = False
-        while dev.now() < tapped + PUBLISH_CONFIRM_TIMEOUT_S:
+        last_uploading = None
+        while dev.now() < tapped + PUBLISH_CONFIRM_TIMEOUT_S or (
+                last_uploading is not None and dev.now() - last_uploading < UPLOAD_GONE_S + 5  # time to confirm it gone
+                and dev.now() < tapped + UPLOAD_TIMEOUT_S):
             lines = await dev.read()
             if await self.close_interruption(lines):
                 continue
-            if match(lines, "Posting"):
-                seen_posting = True
+            if screen.uploading(lines):
+                if last_uploading is None:
+                    dev.snapshot("upload_showing")
+                    self.log(event="upload", state="showing", seconds=round(dev.now() - tapped), screen=texts(lines, 6))
+                last_uploading = dev.now()
             elif match(lines, "Create post"):
                 self.log(event="leftover", screen="empty composer", action="back")
                 await dev.key(KEY_BACK)
@@ -422,8 +617,13 @@ class Flows:
                     match(lines, "followers") or match(lines, "Create reel"))):
                 if item.kind == "photo" and match(lines, "Just now") and (
                         not item.caption_key or match(lines, item.caption_key)):
+                    dev.snapshot("publish_confirmed")
                     return dev.now() - tapped
-                if item.kind == "reel" and (seen_posting or dev.now() - tapped > 25):
+                if item.kind == "reel" and (dev.now() - tapped > UPLOAD_NEVER_SEEN_S if last_uploading is None
+                                            else dev.now() - last_uploading >= UPLOAD_GONE_S):
+                    dev.snapshot("publish_confirmed")
+                    self.log(event="upload", state="gone", seen=last_uploading is not None,
+                             seconds=round(dev.now() - tapped), screen=texts(lines, 6))
                     return dev.now() - tapped
             await dev.sleep(1.5)
         dev.snapshot("publish_unconfirmed")

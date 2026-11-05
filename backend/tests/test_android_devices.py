@@ -576,3 +576,205 @@ def test_switching_from_the_app_only_hides_the_phones_switcher(phone):
     android_devices.update_device_settings("R58M12345ABC", app_only=False)
     assert phone.switcher is True
     assert android_devices.list_devices()["devices"][0]["switch_from_app_only"] is False
+
+
+@pytest.mark.parametrize('usb_connected', [True, False])
+def test_adb_groups_usb_and_wifi_by_hardware_serial_and_routes_commands(monkeypatch, usb_connected):
+    client = adb_client.AdbClient(binary='adb')
+    commands = []
+    usb, wifi = 'PIXEL123', '192.168.1.40:5555'
+
+    def execute(args, timeout=None):
+        commands.append(args)
+        if args == ['devices', '-l']:
+            return ('List of devices attached\n' +
+                    (f'{usb} device usb:1-2 model:Pixel_7_Pro\n' if usb_connected else '') +
+                    f'{wifi} device model:Pixel_7_Pro\n')
+        if args[-2:] == ['getprop', 'ro.serialno']:
+            return usb + '\n'
+        return '0\n'
+
+    monkeypatch.setattr(client, '_execute', execute)
+    devices_list = client.devices()
+    assert len(devices_list) == 1
+    assert devices_list[0]['serial'] == usb
+    assert devices_list[0]['connection'] == ('usb' if usb_connected else 'wifi')
+    assert wifi in devices_list[0]['aliases']
+    client.current_user(usb)
+    assert commands[-1] == ['-s', usb if usb_connected else wifi, 'shell', 'am', 'get-current-user']
+    client.current_user(wifi)
+    assert commands[-1][1] == (usb if usb_connected else wifi)
+
+
+def test_same_model_phones_are_kept_separate_when_identity_is_unreadable(monkeypatch):
+    client = adb_client.AdbClient(binary='adb')
+
+    def execute(args, timeout=None):
+        if args == ['devices', '-l']:
+            return ('List of devices attached\n'
+                    'USB123 device usb:1-2 model:Pixel_7_Pro\n'
+                    '192.168.1.40:5555 device model:Pixel_7_Pro\n')
+        raise AdbError('Cannot read identity')
+
+    monkeypatch.setattr(client, '_execute', execute)
+    assert len(client.devices()) == 2
+
+
+def test_restart_reboots_the_phone(phone):
+    restarted = []
+    phone.reboot = restarted.append
+    android_devices.restart_phone('R58M12345ABC')
+    assert restarted == ['R58M12345ABC']
+
+
+def test_restart_is_refused_while_a_job_holds_the_phone(phone):
+    restarted = []
+    phone.reboot = restarted.append
+    assert android_devices.hold_for_job('R58M12345ABC', 'post:1')
+    try:
+        with pytest.raises(AdbError, match='queued post'):
+            android_devices.restart_phone('R58M12345ABC')
+    finally:
+        android_devices.release_job('R58M12345ABC')
+    assert restarted == []
+
+
+def test_restart_is_refused_during_a_user_switch(phone):
+    restarted = []
+    phone.reboot = restarted.append
+    with android_devices.phone_lock('R58M12345ABC'):
+        with pytest.raises(AdbError, match='already switching'):
+            android_devices.restart_phone('R58M12345ABC')
+    assert restarted == []
+
+
+def test_reboot_targets_only_the_chosen_phone(monkeypatch):
+    client = adb_client.AdbClient(binary='adb')
+    commands = []
+
+    def execute(args, timeout=None):
+        commands.append(args)
+        return 'List of devices attached\nUSB123 device usb:1-2 model:Pixel\n' if args == ['devices', '-l'] else 'USB123\n'
+
+    monkeypatch.setattr(client, '_execute', execute)
+    client.reboot('USB123')
+    assert commands[-1] == ['-s', 'USB123', 'reboot']
+
+
+WIFI_NAME = 'adb-28131FDH300G60-UJrerS._adb-tls-connect._tcp'
+
+
+def test_wifi_name_identifies_the_phone_when_its_serial_cannot_be_read(monkeypatch):
+    client = adb_client.AdbClient(binary='adb')
+
+    def execute(args, timeout=None):
+        if args == ['devices', '-l']:
+            return ('List of devices attached\n'
+                    '28131FDH300G60 device usb:1-2 model:Pixel_7_Pro\n'
+                    f'{WIFI_NAME} device model:Pixel_7_Pro\n')
+        if args[1] == '28131FDH300G60':
+            return '28131FDH300G60\n'
+        raise AdbError('Cannot read identity')
+
+    monkeypatch.setattr(client, '_execute', execute)
+    devices_list = client.devices()
+    assert [device['serial'] for device in devices_list] == ['28131FDH300G60']
+    assert devices_list[0]['connection'] == 'usb' and WIFI_NAME in devices_list[0]['aliases']
+
+
+@pytest.mark.parametrize('name', ['192.168.1.40:5555', 'adb-OTHER-abc._adb-tls-connect._tcp', 'adb-x', 'R58M12345ABC'])
+def test_other_phones_are_not_folded_into_this_one(phone, monkeypatch, name):
+    usb = '28131FDH300G60'
+    android_devices.DEVICES_FILE.write_text(json.dumps({'devices': {
+        usb: {'serial': usb, 'label': 'Mine'}, name: {'serial': name, 'label': 'Other'}}}))
+    monkeypatch.setattr(phone, 'devices', lambda: [
+        {'serial': usb, 'aliases': [usb], 'state': 'device', 'connection': 'usb', 'model': 'Pixel'}])
+    android_devices.list_devices()
+    assert set(android_devices.load_store()['devices']) == {usb, name}
+
+
+def test_saved_wifi_entry_folds_into_its_phone_without_a_wifi_connection(phone, monkeypatch):
+    usb = '28131FDH300G60'
+    android_devices.DEVICES_FILE.write_text(json.dumps({'devices': {
+        usb: {'serial': usb, 'label': 'My phone', 'role': 'primary', 'pin': None},
+        WIFI_NAME: {'serial': WIFI_NAME, 'label': 'Pixel 7 Pro', 'switch_from_app_only': False},
+    }}))
+    profile = android_devices.PROFILES_DIR / 'profile_001'
+    profile.mkdir()
+    (profile / 'config.json').write_text(json.dumps(
+        {'runtime': {'kind': 'android_user', 'device_serial': WIFI_NAME, 'android_user_id': 10}}))
+    monkeypatch.setattr(phone, 'devices', lambda: [
+        {'serial': usb, 'aliases': [usb], 'state': 'device', 'connection': 'usb', 'model': 'Pixel'}])
+    result = android_devices.list_devices()['devices']
+    assert [device['serial'] for device in result] == [usb]
+    assert result[0]['label'] == 'My phone'
+    assert result[0]['switch_from_app_only'] is False  # Only what the phone's record lacked is kept.
+    assert result[0]['profile_count'] == 1
+    saved = android_devices.load_store()['devices'][usb]
+    assert saved['role'] == 'primary' and saved['aliases'] == sorted([usb, WIFI_NAME])
+    assert android_devices.canonical_serial(WIFI_NAME) == usb
+
+
+def test_inventory_merges_saved_transports_without_losing_accounts_or_settings(phone, monkeypatch):
+    usb, wifi = 'R58M12345ABC', '192.168.1.40:5555'
+    android_devices.DEVICES_FILE.write_text(json.dumps({'devices': {
+        usb: {'serial': usb, 'label': 'My phone', 'pin': '1234'},
+        wifi: {'serial': wifi, 'label': 'Pixel', 'switch_from_app_only': False},
+    }}))
+    profile = android_devices.PROFILES_DIR / 'profile_001'
+    profile.mkdir()
+    original = {'runtime': {'kind': 'android_user', 'device_serial': wifi, 'android_user_id': 10}}
+    (profile / 'config.json').write_text(json.dumps(original))
+    monkeypatch.setattr(phone, 'devices', lambda: [
+        {'serial': usb, 'aliases': [usb, wifi], 'state': 'device', 'connection': 'usb', 'model': 'Pixel'}])
+    result = android_devices.list_devices()['devices']
+    assert len(result) == 1
+    assert result[0]['label'] == 'My phone'
+    assert result[0]['pin_set'] is True
+    assert result[0]['switch_from_app_only'] is False
+    assert result[0]['profile_count'] == 1
+    assert set(android_devices.load_store()['devices']) == {usb}
+    assert android_devices.read_profile_runtime('profile_001')['device_serial'] == usb
+    assert json.loads((profile / 'config.json').read_text()) == original
+    # Unplugging Wi-Fi must retain its remembered alias for accounts and locks.
+    monkeypatch.setattr(phone, 'devices', lambda: [
+        {'serial': usb, 'aliases': [usb], 'state': 'device', 'connection': 'usb', 'model': 'Pixel'}])
+    assert android_devices.list_devices()['devices'][0]['profile_count'] == 1
+    assert wifi in android_devices.load_store()['devices'][usb]['aliases']
+    # A job accepted before alias discovery must still reserve the physical phone.
+    android_devices._job_holders[wifi] = 'post:old'
+    assert android_devices.job_on(usb) == 'post:old'
+    assert not android_devices.hold_for_job(usb, 'post:new')
+    android_devices.release_job(usb)
+    assert wifi not in android_devices._job_holders
+    assert android_devices.hold_for_job(wifi, 'post:1')
+    try:
+        assert android_devices.job_on(usb) == 'post:1'
+        assert not android_devices.hold_for_job(usb, 'post:2')
+        with pytest.raises(AdbError, match='queued post'):
+            with android_devices.phone_lock(usb):
+                pass
+    finally:
+        android_devices.release_job(wifi)
+
+
+def test_owner_live_view_switches_to_user_zero(phone, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from backend.services import android_live
+    monkeypatch.setenv('MANAGER_API_TOKEN', 'owner-view-token')
+
+    async def no_screen(serial):
+        raise android_live.LiveViewError('test screen connection')
+
+    monkeypatch.setattr(android_live, 'open_session', no_screen)
+    app = FastAPI()
+    app.include_router(devices.router)
+    with TestClient(app).websocket_connect(
+        '/api/devices/R58M12345ABC/live?user_id=0&access_token=owner-view-token'
+    ) as ws:
+        assert ws.receive_json()['type'] == 'status'
+        assert ws.receive_json()['type'] == 'status'
+        assert ws.receive_json() == {'type': 'error', 'message': 'test screen connection'}
+    assert phone.switched == [0]
+    assert phone.settings == {}

@@ -55,11 +55,17 @@ def within_active_hours(config: dict, now_ms: float) -> bool:
     return persona_hours_admit(config, now_ms)
 
 
-def admits(execution: dict, batch: dict, due_ms: float, now_ms: float, cache: dict) -> bool:
+def admits(execution: dict, batch: dict, due_ms: float, now_ms: float, cache: dict, post: dict | None = None) -> bool:
     if execution.get("cloud_attempt_id") or execution.get("status") != "pending":
         return True
     if (batch.get("schedule_window") or {}).get("start_now") is True:
         return True
     if now_ms - due_ms >= MAX_HOLD_MS:
         return True
-    return within_active_hours(_profile_config(execution.get("profile_id", ""), cache), now_ms)
+    config = _profile_config(execution.get("profile_id", ""), cache)
+    runtime = config.get("runtime") or {}
+    if runtime.get("kind") == "android_user" and (post or {}).get("type") != "warming":  # warming always keeps to them
+        from backend.services.android_devices import follows_active_hours
+        if not follows_active_hours(runtime.get("device_serial") or ""):
+            return True
+    return within_active_hours(config, now_ms)

@@ -2,6 +2,7 @@ from automation.warming_options import normalize_warming_options
 from automation.live_encoder import ENCODER_FAILURE_REASONS
 
 import asyncio
+import hashlib
 import json
 import math
 import time
@@ -14,6 +15,7 @@ from backend.config import PROFILES_DIR
 from backend.services import android_jobs
 from backend.services.execution_evidence import resolve_execution_evidence
 from backend.services.caption_hook import prepare_scheduled_post
+from backend.services.website_service import snapshot_post, execution_variant
 from backend.services.queue_service import (
     load_posting_queue,
     save_posting_queue,
@@ -106,9 +108,9 @@ def get_queue():
                     "media_file": post.get("media_file"),
                     "base_caption": post.get("base_caption"),
                     "title": post.get("title"),
-                    "pinned_comment": post.get("pinned_comment"),
-                    "end_after_comment": post.get("end_after_comment", False),
-                    "first_comment": post.get("first_comment"),
+                    "pinned_comment": exec_item.get("pinned_comment", post.get("pinned_comment")),
+                    "end_after_comment": exec_item.get("end_after_comment", post.get("end_after_comment", False)),
+                    "first_comment": exec_item.get("first_comment", post.get("first_comment")),
                     "scrolls": post.get("scrolls"),
                     "warming_options": post.get("warming_options"),
                 })
@@ -150,6 +152,12 @@ async def create_batch(payload: dict = Body(...)):
     schedule_window = payload.get("schedule_window") or {}
     posts = payload.get("posts")
     if isinstance(posts, list):
+        if any(isinstance(post, dict) and post.get('destination_variants') for post in posts):
+            raise HTTPException(status_code=400, detail='Destination variants must come from a reviewed Read more preparation.')
+        try:
+            posts = [snapshot_post(post, target_profiles or []) if isinstance(post, dict) else post for post in posts]
+        except (ValueError, TypeError, AttributeError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from None
         try:
             posts = [prepare_scheduled_post(post) if isinstance(post, dict) else post for post in posts]
         except (ValueError, TypeError, AttributeError):
@@ -191,7 +199,22 @@ async def create_batch(payload: dict = Body(...)):
             raise HTTPException(status_code=400, detail=f"Live setup required: {error}") from error
 
     queue = load_posting_queue()
-    batch_id = f"batch_{int(time.time() * 1000)}"
+    preparation_ids = [(post.get('read_more') or {}).get('preparation_id') for post in posts if post.get('read_more')]
+    if len(set(preparation_ids)) != len(preparation_ids):
+        raise HTTPException(status_code=400, detail='Prepare separate Read more links for each post item.')
+    request_fingerprint = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest() if preparation_ids else None
+    batch_id = ('batch_web_' + hashlib.sha256(json.dumps(preparation_ids).encode()).hexdigest()[:32]
+                if preparation_ids else f"batch_{int(time.time() * 1000)}")
+    existing = next((batch for batch in queue.get('daily_batches', []) if batch.get('batch_id') == batch_id), None)
+    if existing:
+        if existing.get('request_fingerprint') != request_fingerprint:
+            raise HTTPException(status_code=409, detail='This Read more preparation already belongs to a batch. Prepare a new posting job.')
+        return {'success': True, 'batch_id': batch_id, 'accepted_profiles': existing['target_profiles'],
+                'skipped_profiles': [], 'total_executions': sum(len(post['executions']) for post in existing['posts']), 'batch': existing}
+
+    used_preparations = {post.get('website_preparation_id') for batch in queue.get('daily_batches', []) for post in batch.get('posts', [])}
+    if any(preparation_id in used_preparations for preparation_id in preparation_ids):
+        raise HTTPException(status_code=409, detail='These comment links already belong to a posting job. Prepare new Read more links.')
     start_time_str = schedule_window.get("start_time") or "09:00"
     end_time_str = schedule_window.get("end_time") or "21:00"
 
@@ -310,6 +333,7 @@ async def create_batch(payload: dict = Body(...)):
                 "scheduled_at": sched_dt.isoformat(),
                 "batch_iteration_index": slot_idx * len(profile_execution_order) + p_idx,
                 "spun_caption": spun_caption,
+                **execution_variant(post, pid),
                 "status": "pending",
                 "stage": "pending",
                 "stage_history": [{"stage": "pending", "timestamp": datetime.now(timezone.utc).isoformat()}],
@@ -327,6 +351,7 @@ async def create_batch(payload: dict = Body(...)):
             "type": post.get("type", "photo"),
             "media_file": post.get("media_file", ""),
             "base_caption": post.get("base_caption", ""),
+            "website_preparation_id": (post.get("read_more") or {}).get("preparation_id"),
             "hook_preparation": post.get("hook_preparation"),
             "first_comment": post.get("first_comment"),
             "scrolls": max(1, int(post.get("scrolls", 4))),
@@ -337,6 +362,7 @@ async def create_batch(payload: dict = Body(...)):
         })
 
     new_batch = {
+        "request_fingerprint": request_fingerprint,
         "batch_id": batch_id,
         "name": name or f"Daily Batch {now.strftime('%Y-%m-%d')}",
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -395,6 +421,9 @@ async def append_batch_posts(batch_id: str, payload: dict = Body(...)):
             raise HTTPException(status_code=400, detail="Each appended post needs media or a caption.")
         if post.get("type", "photo") not in ("photo", "reel"):
             raise HTTPException(status_code=400, detail="Appended post type must be 'photo' or 'reel'.")
+
+    if any(post.get('read_more') for post in posts):
+        raise HTTPException(status_code=400, detail='Create a new batch for prepared Read more posts.')
 
     def _append():
         queue = load_posting_queue()

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Loader2, ShieldCheck } from 'lucide-react';
+import { Gauge, Loader2, ShieldCheck } from 'lucide-react';
 import { Profile } from '../../types/profile';
-import { ProxyItem, freeProxies, proxyOptionLabel } from '../../types/proxy';
+import { ProxyItem, freeProxies, proxyOptionLabel, savedSpeedSummary } from '../../types/proxy';
 import { AndroidDevice } from '../../types/device';
 import { AccountNetworkStatus, fetchAccountNetwork, replaceAccountProxy, verifyAccountNetwork } from '../../services/devices';
+import { NetworkSpeedResult, testSavedProxySpeed } from '../../services/api';
 import { Button } from '../ui/Button';
 import { Select } from '../ui/Select';
 import { cn } from '../ui/cn';
@@ -22,12 +23,15 @@ export function PhoneNetworkCard({ profile, proxies, devices, onChanged, canChan
   const [liveError, setLiveError] = useState('');
   const [verifying, setVerifying] = useState(false);
   const [verifyError, setVerifyError] = useState('');
+  const [testing, setTesting] = useState(false);
+  const [tested, setTested] = useState<NetworkSpeedResult | null>(null);
+  const [testError, setTestError] = useState('');
   const choices = freeProxies(proxies).filter(item => item.password);
   const [replacement, setReplacement] = useState('');
   const [replacing, setReplacing] = useState(false);
   const [replaceError, setReplaceError] = useState('');
   const check = profile.android_network;
-  const zone = phoneZone(devices.find(d => d.serial === profile.runtime?.device_serial));
+  const zone = phoneZone(devices.find(d => (d.serial === profile.runtime?.device_serial || d.aliases?.includes(profile.runtime?.device_serial ?? ''))));
 
   const readLive = useCallback(() => {
     setLiveError('');
@@ -46,6 +50,20 @@ export function PhoneNetworkCard({ profile, proxies, devices, onChanged, canChan
       setVerifyError(error instanceof Error ? error.message : 'Verify failed');
     } finally {
       setVerifying(false);
+    }
+  };
+
+  const testProxy = async () => {
+    if (!proxy) return;
+    setTesting(true);
+    setTested(null);
+    setTestError('');
+    try {
+      setTested(await testSavedProxySpeed(proxy.id));
+    } catch (error) {
+      setTestError(error instanceof Error ? error.message : 'Could not test the proxy');
+    } finally {
+      setTesting(false);
     }
   };
 
@@ -95,6 +113,16 @@ export function PhoneNetworkCard({ profile, proxies, devices, onChanged, canChan
         <span className="text-[11px] text-zinc-500">{verifying ? 'About 15 seconds.' : 'Measures the exit IP from inside this Android user.'}</span>
       </div>
       {verifyError && <p role="alert" className="mt-2 break-words text-[11px] text-red-300">{verifyError}</p>}
+      <div className="mt-2 flex items-center gap-2">
+        <button type="button" onClick={() => void testProxy()} disabled={testing || !proxy.password}
+          className="flex items-center gap-1.5 rounded border border-zinc-700 px-2.5 py-1 text-[11px] text-zinc-200 hover:bg-zinc-800 disabled:opacity-50">
+          {testing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Gauge className="h-3 w-3" />}{testing ? 'Testing from this PC…' : 'Test proxy'}</button>
+        <span className="text-[11px] text-zinc-500">{proxy.password ? 'Tests the proxy from this PC. The phone isn’t touched.' : 'This PC doesn’t have the proxy’s password.'}</span>
+      </div>
+      {tested && (tested.download?.success || tested.upload?.success
+        ? <p className="mt-2 text-[11px] text-emerald-300">Working · {savedSpeedSummary({ ...proxy, speed_test: tested })}</p>
+        : <p role="alert" className="mt-2 break-words text-[11px] text-red-300">No traffic got through this proxy from this PC.</p>)}
+      {testError && <p role="alert" className="mt-2 break-words text-[11px] text-red-300">{testError}</p>}
     </>}
     {canChangeProxy && choices.length > 0 && <div className="mt-4 space-y-2 border-t border-zinc-800 pt-3">
       <p className="font-medium text-zinc-300">{proxy && !proxy.held_by_phone ? 'Change proxy' : 'Choose a proxy'}</p>

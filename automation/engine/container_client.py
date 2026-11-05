@@ -231,9 +231,20 @@ class ContainerClient:
 
     def input_owner(self) -> tuple[str, str]:
         """Observable X11 focus/pointer state; does not detect all manual key input."""
-        focus = self.exec_cmd(["xdotool", "getwindowfocus"], timeout=5).stdout.strip()
-        pointer = self.exec_cmd(["xdotool", "getmouselocation", "--shell"], timeout=5).stdout
-        xy = tuple(line for line in pointer.splitlines() if line.startswith(("X=", "Y=")))
+        # Entry guards run before every character and throughout pauses. Keep
+        # both fresh observations in one Docker round trip, without caching
+        # focus or reducing the frequency of cancellation/ownership checks.
+        # Separate xdotool processes are intentional: command chaining inside
+        # xdotool suppresses getwindowfocus's stdout in favor of its window stack.
+        result = self.exec_cmd(
+            ["sh", "-c", "xdotool getwindowfocus && xdotool getmouselocation --shell"],
+            timeout=5,
+        )
+        lines = result.stdout.splitlines()
+        if not lines or not lines[0].strip().isdigit():
+            raise RuntimeError("Input focus could not be read")
+        focus = lines[0].strip()
+        xy = tuple(line for line in lines[1:] if line.startswith(("X=", "Y=")))
         return focus, "|".join(xy)
 
     def write_clipboard(self, text: str, selection: str = "clipboard") -> None:

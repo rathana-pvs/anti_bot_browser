@@ -335,13 +335,14 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
   const makePhoto = (scene: number) => reelApi.photo(docRef.current.reel, scene, photoRatio);
   /** Hands the chosen output to Post: a photo or the Reel to Posts, the Live video to Live. */
   const send = (scene: number) => attempt(output === 'photo' ? 'photo' : null, async () => {
-    const { reel, caption, goal, comment } = docRef.current;
+    const { reel, caption, goal, comment, sourceText, sourceTitle, sourcePublisher } = docRef.current;
     const words = { name: reel.scenes.find(s => s.headline)?.headline.replace(/\n/g, ' ').slice(0, 80) || 'News reel', caption,
-      comment: goal === 'readmore' ? comment.trim() || undefined : undefined };
+      comment: goal === 'readmore' ? comment.trim() || undefined : undefined, goal,
+      websiteSource: { title: sourceTitle, text: sourceText, credit: sourcePublisher, cover_file: job?.output?.thumbnail || '' } };
     await persist();
     if (output === 'photo') {
       const photo = await makePhoto(scene);
-      onUseReel({ jobId: photo.id, filename: photo.filename, postType: 'photo', ...words });
+      onUseReel({ jobId: photo.id, filename: photo.filename, postType: 'photo', ...words, websiteSource: { ...words.websiteSource, cover_file: photo.filename } });
     } else if (job?.output && job.kind === 'final' && fresh) {
       onUseReel({ jobId: job.id, filename: job.output.filename, postType: output, thumbnail: job.output.thumbnail ?? undefined, ...words });
     }

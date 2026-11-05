@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Check, Circle, Loader2, RotateCcw, X } from 'lucide-react';
+import { Check, Circle, Loader2, RefreshCw, RotateCcw, X } from 'lucide-react';
 import { Profile } from '../../types/profile';
 import { SetupProgress } from '../../types/device';
 import { confirmAccountLogin, fetchAccountSetup, startAccountSetup, startFacebookReady } from '../../services/devices';
@@ -22,7 +22,7 @@ export function PhoneSetupCard({ profile, onOpenScreen, onChanged }: {
 }) {
   const [progress, setProgress] = useState<SetupProgress | null>(null);
   const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<'action' | 'recheck' | null>(null);
 
   const read = useCallback(async () => {
     try {
@@ -45,25 +45,28 @@ export function PhoneSetupCard({ profile, onOpenScreen, onChanged }: {
   const finished = progress && !running;
   useEffect(() => { if (finished) void onChanged(); }, [finished]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const act = async (action: () => Promise<SetupProgress>) => {
-    setBusy(true);
+  const act = async (action: () => Promise<SetupProgress>, kind: 'action' | 'recheck' = 'action') => {
+    setBusy(kind);
     setError('');
     try {
       setProgress(await action());
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Something went wrong');
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   };
 
   const failed = progress?.steps.find(step => step.status === 'failed');
   const ready = progress?.steps.find(step => step.key === 'facebook_ready');
   const started = progress && progress.state !== 'not_started';
+  // A new run checks every step again and repairs what changed; the login stays as it was.
+  const recheck = <Button size="sm" variant="outline" loading={busy === 'recheck'} disabled={busy === 'action'}
+    onClick={() => void act(() => startAccountSetup(profile.id), 'recheck')}><RefreshCw className="mr-1.5 h-3.5 w-3.5" />Recheck</Button>;
   return <section className={card} aria-labelledby="overview-phone-setup">
     <h3 id="overview-phone-setup" className="mb-1 text-sm font-semibold text-zinc-100">Set up on the phone</h3>
     <p className="mb-3 text-[11px] text-zinc-500">Installs the companion app, sends the proxy, turns on the kill switch and checks the
-      network before Facebook is installed. Steps that are already done are skipped, so Retry is always safe.</p>
+      network before Facebook is installed. Steps that are already done are skipped, so Retry and Recheck are always safe.</p>
     {progress && <ol className="space-y-1.5">
       {progress.steps.map(step => <li key={step.key} className="flex items-start gap-2">
         <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center">{ICON[step.status]}</span>
@@ -76,13 +79,15 @@ export function PhoneSetupCard({ profile, onOpenScreen, onChanged }: {
     <div className="mt-3 flex flex-wrap items-center gap-2">
       {progress?.state === 'waiting_login' ? <>
         <Button size="sm" variant="outline" onClick={onOpenScreen}>Open the phone screen</Button>
-        <Button size="sm" loading={busy} onClick={() => void act(() => confirmAccountLogin(profile.id))}>I’m logged in</Button>
+        <Button size="sm" loading={busy === 'action'} disabled={busy === 'recheck'} onClick={() => void act(() => confirmAccountLogin(profile.id))}>I’m logged in</Button>
+        {recheck}
         <span className="text-[11px] text-zinc-500">Log in to Facebook on the phone screen, then confirm.</span>
-      </> : !running && progress?.state === 'done' ? ready?.status !== 'passed' && <>
-        <Button size="sm" variant="outline" loading={busy} onClick={() => void act(() => startFacebookReady(profile.id))}>
-          {ready?.status === 'failed' ? <><RotateCcw className="mr-1.5 h-3.5 w-3.5" />Retry</> : 'Get Facebook ready'}</Button>
-        <span className="text-[11px] text-zinc-500">Opens Facebook’s gallery once so its first-use screens never stop a post. Nothing is posted.</span>
-      </> : !running && progress?.state !== 'done' && <Button size="sm" loading={busy} onClick={() => void act(() => startAccountSetup(profile.id))}>
+      </> : !running && progress?.state === 'done' ? <>
+        {ready?.status !== 'passed' && <Button size="sm" variant="outline" loading={busy === 'action'} disabled={busy === 'recheck'} onClick={() => void act(() => startFacebookReady(profile.id))}>
+          {ready?.status === 'failed' ? <><RotateCcw className="mr-1.5 h-3.5 w-3.5" />Retry</> : 'Get Facebook ready'}</Button>}
+        {recheck}
+        {ready?.status !== 'passed' && <span className="text-[11px] text-zinc-500">Opens Facebook’s gallery once so its first-use screens never stop a post. Nothing is posted.</span>}
+      </> : !running && progress?.state !== 'done' && <Button size="sm" loading={busy === 'action'} onClick={() => void act(() => startAccountSetup(profile.id))}>
         {failed ? <><RotateCcw className="mr-1.5 h-3.5 w-3.5" />Retry</> : started ? 'Continue setup' : 'Start setup'}</Button>}
       {running && <span className="flex items-center gap-1.5 text-[11px] text-zinc-400"><Loader2 className="h-3 w-3 animate-spin" />
         Setting up… this can take a few minutes. You can leave this page.</span>}

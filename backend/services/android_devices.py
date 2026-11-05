@@ -19,7 +19,7 @@ from typing import Any
 
 from backend.config import DATA_DIR, PROFILES_DIR
 from backend.services import proxy_service
-from backend.services.adb_client import AdbClient, AdbError, FACEBOOK_PACKAGE, validate_serial
+from backend.services.adb_client import AdbClient, AdbError, FACEBOOK_PACKAGE, validate_serial, wifi_endpoint_serial
 from backend.services.profile_service import (
     DEFAULT_RESOURCE_LIMITS, PROFILE_SCHEMA_VERSION, allocate_profile_identity, atomic_write_json,
     compatibility_fingerprint, creation_lock, resolve_requested_environment, utc_now, validate_timezone,
@@ -53,6 +53,11 @@ def load_store() -> dict[str, Any]:
     return {"devices": {}}
 
 
+def canonical_serial(serial: str) -> str:
+    return next((key for key, value in load_store()["devices"].items()
+                 if serial == key or serial in value.get("aliases", [])), serial)
+
+
 def _save_store(store: dict[str, Any]) -> None:
     atomic_write_json(DEVICES_FILE, store)
 
@@ -63,6 +68,8 @@ def read_profile_runtime(profile_id: str, root: Path | None = None) -> dict | No
     except (OSError, ValueError):
         return None
     runtime = config.get("runtime")
+    if isinstance(runtime, dict) and runtime.get("kind") == ANDROID_RUNTIME:
+        runtime = {**runtime, "device_serial": canonical_serial(runtime.get("device_serial"))}
     return runtime if isinstance(runtime, dict) else None
 
 
@@ -92,6 +99,7 @@ def linked_profiles(root: Path | None = None) -> list[dict]:
             continue
         runtime = config.get("runtime") or {}
         if runtime.get("kind") == ANDROID_RUNTIME:
+            runtime = {**runtime, "device_serial": canonical_serial(runtime.get("device_serial"))}
             linked.append({"profile_id": config.get("id") or entry.name, "name": config.get("name") or entry.name,
                            "runtime": runtime})
     return linked
@@ -100,7 +108,7 @@ def linked_profiles(root: Path | None = None) -> list[dict]:
 def _profile_for(links: list[dict], serial: str, user_id: int, user_serial: int | None) -> dict | None:
     for link in links:
         runtime = link["runtime"]
-        if runtime.get("device_serial") != serial or runtime.get("android_user_id") != user_id:
+        if runtime.get("device_serial") != canonical_serial(serial) or runtime.get("android_user_id") != user_id:
             continue
         stored_serial = runtime.get("android_user_serial")
         # A recreated Android user can reuse an id; it must not inherit the old profile.
@@ -135,6 +143,25 @@ def _health(client: AdbClient, serial: str) -> dict:
     return {key: value for (key, _), value in zip(reads, values)}
 
 
+def _merge_wifi_records(store: dict[str, Any]) -> bool:
+    """Folds a saved wireless debugging entry into the record of the phone its name carries.
+
+    Such an entry can be left behind with no link to the phone's record, and the phone may never
+    connect over Wi-Fi again to reveal the link. The phone's record wins; its old name stays an alias.
+    """
+    changed = False
+    for name, record in list(store["devices"].items()):
+        serial = wifi_endpoint_serial(name)
+        target = store["devices"].get(serial) if serial else None
+        if target is None:
+            continue
+        aliases = {serial, name, *record.get("aliases", []), *target.get("aliases", [])}
+        store["devices"][serial] = {**record, **target, "serial": serial, "aliases": sorted(aliases)}
+        del store["devices"][name]
+        changed = True
+    return changed
+
+
 def list_devices() -> dict:
     client = _client()
     adb_error = None
@@ -147,6 +174,23 @@ def list_devices() -> dict:
         store = load_store()
         changed = False
         for serial, device in connected.items():
+            if device["state"] != "device":
+                continue
+            aliases = set(device.get("aliases", [serial]))
+            # Retain settings, scans and labels from previously remembered endpoints.
+            saved = store["devices"].get(serial, {})
+            aliases.update(saved.get("aliases", []))
+            for alias, record in list(store["devices"].items()):
+                if alias != serial and (alias in aliases or aliases.intersection(record.get("aliases", []))):
+                    saved = {**record, **saved}
+                    aliases.update(record.get("aliases", []))
+                    del store["devices"][alias]
+            if saved or aliases != {serial}:
+                store["devices"][serial] = {**saved, "serial": serial, "aliases": sorted(aliases)}
+                store["devices"][serial].setdefault("label", device.get("model") or serial)
+                store["devices"][serial].setdefault("first_seen", utc_now())
+                changed = True
+        for serial, device in connected.items():
             if device["state"] == "device" and serial not in store["devices"]:
                 store["devices"][serial] = {"serial": serial, "label": device.get("model") or serial,
                                             "first_seen": utc_now()}
@@ -154,6 +198,7 @@ def list_devices() -> dict:
             if serial in store["devices"] and device["state"] == "device":
                 store["devices"][serial]["last_seen"] = utc_now()
                 changed = True
+        changed = _merge_wifi_records(store) or changed
         if changed:
             _save_store(store)
     links = linked_profiles()
@@ -170,6 +215,7 @@ def list_devices() -> dict:
         entry = {**saved, "state": state, "connection": (live or {}).get("connection"),
                  "one_account_at_a_time": saved.get("one_account_at_a_time", True),
                  "switch_from_app_only": saved.get("switch_from_app_only", True),
+                 "active_hours": saved.get("active_hours", True),
                  "model": saved.get("model") or (live or {}).get("model"),
                  "profile_count": sum(1 for link in links if link["runtime"].get("device_serial") == serial),
                  "health": None}
@@ -188,8 +234,10 @@ def list_devices() -> dict:
 def scan_device(serial: str) -> dict:
     from backend.services import android_ownership  # imports this module
     validate_serial(serial)
+    serial = canonical_serial(serial)
     client = _client()
     connected = {device["serial"]: device for device in client.devices()}
+    serial = next((key for key, value in connected.items() if serial == key or serial in value.get("aliases", [])), serial)
     live = connected.get(serial)
     if not live:
         raise DeviceNotFound("This phone is not connected. Check the USB cable and that USB debugging is on.")
@@ -239,6 +287,7 @@ def scan_device(serial: str) -> dict:
 def update_device_record(serial: str, **changes: Any) -> dict:
     """Saves fields of this PC's record of a phone, e.g. its last known role."""
     validate_serial(serial)
+    serial = canonical_serial(serial)
     with _store_lock:
         store = load_store()
         saved = store["devices"].setdefault(serial, {"serial": serial, "label": serial, "first_seen": utc_now()})
@@ -249,6 +298,7 @@ def update_device_record(serial: str, **changes: Any) -> dict:
 
 def rename_device(serial: str, label: str) -> dict:
     validate_serial(serial)
+    serial = canonical_serial(serial)
     label = label.strip()
     if not label or len(label) > 80:
         raise ValueError("Device name must be 1-80 characters")
@@ -263,6 +313,7 @@ def rename_device(serial: str, label: str) -> dict:
 
 def forget_device(serial: str) -> None:
     validate_serial(serial)
+    serial = canonical_serial(serial)
     if any(link["runtime"].get("device_serial") == serial for link in linked_profiles()):
         raise ValueError("Delete or move this phone's accounts before removing the phone.")
     with _store_lock:
@@ -325,6 +376,7 @@ def account_timezones(serial: str) -> list[dict]:
 def set_timezone(serial: str, zone: str, client: AdbClient | None = None) -> dict:
     """Set the phone's single timezone, refusing one that any account on it does not match."""
     validate_serial(serial)
+    serial = canonical_serial(serial)
     zone = validate_timezone(zone)
     wanted = utc_offset(zone)
     # With one account at a time, the time is set again whenever another account opens.
@@ -348,30 +400,38 @@ _job_holders: dict[str, str] = {}
 
 def hold_for_job(serial: str, holder: str) -> bool:
     """Reserves the phone for one queued job; False when another job has it."""
+    serial = canonical_serial(serial)
     with _store_lock:
-        if serial in _job_holders:
+        if job_on(serial) is not None:
             return False
         _job_holders[serial] = holder
         return True
 
 
 def release_job(serial: str) -> None:
+    serial = canonical_serial(serial)
     with _store_lock:
-        _job_holders.pop(serial, None)
+        for key in list(_job_holders):
+            if canonical_serial(key) == serial:
+                _job_holders.pop(key, None)
 
 
 def job_on(serial: str) -> str | None:
-    return _job_holders.get(serial)
+    serial = canonical_serial(serial)
+    return next((holder for key, holder in list(_job_holders.items()) if canonical_serial(key) == serial), None)
 
 
 @contextmanager
 def phone_lock(serial: str, job: bool = False):
     """One switch at a time per phone: only the user on screen can be seen and controlled. While a
     queued job holds the phone, only that job (`job=True`) may switch it."""
-    if not job and serial in _job_holders:
+    serial = canonical_serial(serial)
+    if not job and job_on(serial) is not None:
         raise AdbError("This phone is running a queued post. Wait for it to finish.")
     with _store_lock:
-        lock = _switch_locks.setdefault(serial, threading.Lock())
+        aliases = [lock for key, lock in _switch_locks.items() if canonical_serial(key) == serial]
+        lock = next((lock for lock in aliases if lock.locked()), aliases[0] if aliases else threading.Lock())
+        _switch_locks[serial] = lock
     if not lock.acquire(blocking=False):
         raise AdbError("This phone is already switching users. Wait for it to finish.")
     try:
@@ -403,6 +463,7 @@ def switch_and_wait(client: AdbClient, serial: str, user_id: int) -> dict:
 
 def switch_user(serial: str, user_id: int) -> dict:
     validate_serial(serial)
+    serial = canonical_serial(serial)
     client = _client()
     if user_id not in {user.user_id for user in client.users(serial)}:
         raise DeviceNotFound("This Android user does not exist on the phone")
@@ -415,26 +476,44 @@ def switch_user(serial: str, user_id: int) -> dict:
         return switch_and_wait(client, serial, user_id)
 
 
+def restart_phone(serial: str) -> None:
+    """Restarts the phone, unless a queued job or a user switch is using it."""
+    validate_serial(serial)
+    serial = canonical_serial(serial)
+    with phone_lock(serial):
+        _client().reboot(serial)
+
+
 def one_account_at_a_time(serial: str) -> bool:
     """On (the default): opening an account stops the phone's other users and sets the phone's
     time to that account's proxy, so no account runs in the background on the wrong time."""
-    return bool((load_store()["devices"].get(serial) or {}).get("one_account_at_a_time", True))
+    return bool((load_store()["devices"].get(canonical_serial(serial)) or {}).get("one_account_at_a_time", True))
 
 
 def switch_from_app_only(serial: str) -> bool:
     """On (the default): the phone's own user switcher is hidden, so accounts change only through
     the app's safe flow. Someone holding the phone could still turn it back on in Settings."""
-    return bool((load_store()["devices"].get(serial) or {}).get("switch_from_app_only", True))
+    return bool((load_store()["devices"].get(canonical_serial(serial)) or {}).get("switch_from_app_only", True))
 
 
-def update_device_settings(serial: str, one_at_a_time: bool | None = None, app_only: bool | None = None) -> dict:
+def follows_active_hours(serial: str) -> bool:
+    """On (the default): this phone's scheduled posts wait for each account's active hours. Off: they
+    start at their scheduled time."""
+    return bool((load_store()["devices"].get(canonical_serial(serial)) or {}).get("active_hours", True))
+
+
+def update_device_settings(serial: str, one_at_a_time: bool | None = None, app_only: bool | None = None,
+                           active_hours: bool | None = None) -> dict:
     validate_serial(serial)
+    serial = canonical_serial(serial)
     with _store_lock:
         store = load_store()
         if serial not in store["devices"]:
             raise DeviceNotFound("Device not found")
         if one_at_a_time is not None:
             store["devices"][serial]["one_account_at_a_time"] = bool(one_at_a_time)
+        if active_hours is not None:
+            store["devices"][serial]["active_hours"] = bool(active_hours)
         if app_only is not None:
             # Applied before saving, so a disconnected phone keeps its old setting and the error shows.
             _client().set_user_switcher(serial, not app_only)
@@ -510,6 +589,7 @@ def create_android_user(serial: str, name: str) -> dict:
     """Creates an account user, skips its Android welcome wizard, and rescans the phone."""
     from backend.services import android_ownership  # imports this module
     validate_serial(serial)
+    serial = canonical_serial(serial)
     name = name.strip()
     if not name or len(name) > 40:
         raise ValueError("The Android user's name must be 1-40 characters")
@@ -538,6 +618,7 @@ def create_android_user(serial: str, name: str) -> dict:
 def import_user(serial: str, user_id: int, name: str, group: str = "", proxy_id: str | None = None,
                 profile_id: str | None = None) -> dict:
     validate_serial(serial)
+    serial = canonical_serial(serial)
     name = name.strip()
     if not name or len(name) > 120:
         raise ValueError("Account name must be 1-120 characters")

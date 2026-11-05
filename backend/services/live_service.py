@@ -313,8 +313,8 @@ async def execute_queue_live(claim):
             sync_queue(record, finalize=True)
             return {'success': False, 'status': 'needs_review'}
         settings = launch_settings(profile_id)
-        record.update(validate_details(post.get('title', ''), post.get('base_caption', ''), post.get('pinned_comment')))
-        record['end_after_comment'] = validate_end_after_comment(post.get('end_after_comment', False), post.get('pinned_comment'))
+        record.update(validate_details(post.get('title', ''), execution.get('spun_caption', post.get('base_caption', '')), execution.get('pinned_comment', post.get('pinned_comment'))))
+        record['end_after_comment'] = validate_end_after_comment(execution.get('end_after_comment', post.get('end_after_comment', False)), record.get('pinned_comment'))
         record.update(validate_playback(post.get('loop', False), post.get('max_duration_seconds'), post.get('muted', False), post.get('playback_mode')))
         video = resolve_video(record['filename'])
         archive_previous_session(profile_id)

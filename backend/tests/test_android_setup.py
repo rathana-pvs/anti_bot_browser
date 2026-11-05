@@ -302,6 +302,30 @@ def test_retry_skips_steps_that_are_already_done(phone):
     assert phone.installs == [11]
 
 
+def test_recheck_repairs_what_changed_and_keeps_the_login(phone):
+    run_setup()
+    android_setup.confirm_login("profile_020")
+    phone.settings[(11, "secure", "location_mode")] = "3"
+    progress = run_setup()
+    assert phone.settings[(11, "secure", "location_mode")] == "0"
+    assert progress["state"] == "done" and statuses(progress)["login"] == "passed"
+
+
+def test_recheck_reports_a_step_that_no_longer_passes_and_keeps_the_login(phone, monkeypatch):
+    run_setup()
+    android_setup.confirm_login("profile_020")
+
+    def network_down(_ctx):
+        raise android_setup.StepFailed("The network check did not pass.")
+
+    with monkeypatch.context() as patch:
+        patch.setitem(android_setup.ACTIONS, "network", network_down)
+        progress = run_setup()
+    assert progress["state"] == "failed" and statuses(progress)["network"] == "failed"
+    assert statuses(progress)["login"] == "passed"
+    assert run_setup()["state"] == "done"
+
+
 def test_facebook_is_never_installed_before_the_network_passes(phone):
     phone.agents[11].reachable = set()
     progress = run_setup()
@@ -431,6 +455,30 @@ def test_a_proxy_that_does_not_work_leaves_the_phone_on_its_old_one(phone, tmp_p
     with pytest.raises(AdbError, match="kept its old one"):
         android_ownership.replace_proxy("profile_020", "dead")
     assert phone.agents[11].proxy["host"] == "9.142.198.36"
+
+
+def test_a_proxy_that_stopped_working_can_be_swapped_during_setup_on_a_new_phone(phone, tmp_path, monkeypatch):
+    def proxy_down(_ctx):
+        raise android_setup.StepFailed("The exit IP could not be measured: Connection reset.")
+
+    with monkeypatch.context() as patch:
+        patch.setitem(android_setup.ACTIONS, "network", proxy_down)
+        progress = run_setup()
+    assert progress["state"] == "failed" and statuses(progress)["network"] == "failed"
+    assert statuses(progress)["save_details"] == "pending"  # The phone isn't claimed yet.
+    pool = json.loads((tmp_path / "pool.json").read_text())
+    pool.append({"id": "ny", "host": "72.1.183.109", "port": 1080, "username": "u2", "password": "pw",
+                 "type": "socks5", "exit_ip": "72.1.183.109", "assigned": False, "profile_id": None})
+    (tmp_path / "pool.json").write_text(json.dumps(pool))
+    phone.agents[11].reachable.add(("72.1.183.109", 1080, "u2", "pw"))
+
+    assert android_ownership.replace_proxy("profile_020", "ny")["status"] == "verified"
+    saved = {p["id"]: p for p in json.loads((tmp_path / "pool.json").read_text())}
+    assert saved["ny"]["profile_id"] == "profile_020"
+    assert saved["la"]["profile_id"] is None and saved["la"]["assigned"] is False  # One account, one proxy.
+
+    progress = run_setup()
+    assert progress["state"] == "waiting_login" and phone.agents[11].proxy["host"] == "72.1.183.109"
 
 
 def test_permission_state_is_read_from_the_right_user():

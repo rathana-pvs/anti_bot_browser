@@ -62,7 +62,7 @@ export function activityFor(profileId: string, executions: QueueExecutionItem[],
 export const isAndroid = (profile: Profile) => profile.runtime?.kind === 'android_user';
 
 export function phoneOf(profile: Profile, devices: AndroidDevice[]) {
-  return profile.runtime ? devices.find(device => device.serial === profile.runtime!.device_serial) : undefined;
+  return profile.runtime ? devices.find(device => (device.serial === profile.runtime!.device_serial || device.aliases?.includes(profile.runtime!.device_serial))) : undefined;
 }
 
 /** Where the account lives, e.g. "This PC" or "Pixel 10 · User 11". */

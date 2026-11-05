@@ -8,6 +8,7 @@ the account and phone locks and has checked the account's network before startin
   phone_runner.py --serial S --user 11 --task comment --kind photo|reel --caption TEXT --comment TEXT
                   [--published-ago SECONDS]
   phone_runner.py --serial S --user 11 --task get_ready     (setup: Facebook's first screens, no post)
+  phone_runner.py --serial S --user 11 --task warming --profile ID --warming-options JSON
 """
 
 import argparse
@@ -22,10 +23,12 @@ AUTOMATION = Path(__file__).resolve().parent
 sys.path.insert(0, str(AUTOMATION))
 sys.path.insert(1, str(AUTOMATION.parent))  # backend.services: adb, scrcpy and the companion app
 
+from engine.resource_signal import read_signal, read_yield  # noqa: E402
 from engine.runtime_paths import runtime_root  # noqa: E402
 from phone.device import PhoneDevice  # noqa: E402
 from phone.flows import PostItem  # noqa: E402
-from phone.job import run_comment, run_get_ready, run_post  # noqa: E402
+from phone.job import run_comment, run_get_ready, run_post, run_warming  # noqa: E402
+from warming_options import normalize_warming_options  # noqa: E402
 
 
 def emit(**event) -> None:
@@ -40,6 +43,10 @@ async def main(args) -> dict:
     try:
         if args.task == "get_ready":
             return await run_get_ready(device, emit)
+        if args.task == "warming":
+            started = time.time()
+            return await run_warming(device, normalize_warming_options(json.loads(args.warming_options)), emit,
+                                     lambda: bool(read_yield(args.profile, started) or read_signal()["hold"]))
         if args.task == "comment":
             item = PostItem(args.kind, args.caption, args.comment)
             return await run_comment(device, item, emit, published_ago=args.published_ago)
@@ -53,13 +60,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Phone job runner")
     parser.add_argument("--serial", required=True)
     parser.add_argument("--user", type=int, required=True, help="Android user of the account")
-    parser.add_argument("--task", required=True, choices=["photo", "reel", "comment", "get_ready"])
+    parser.add_argument("--task", required=True, choices=["photo", "reel", "comment", "get_ready", "warming"])
     parser.add_argument("--kind", choices=["photo", "reel"], default="photo", help="comment task: the post's kind")
     parser.add_argument("--media")
     parser.add_argument("--caption", default="")
     parser.add_argument("--comment", default="")
     parser.add_argument("--published-ago", type=float, help="comment task: seconds since the publish tap")
     parser.add_argument("--comment-later", action="store_true", help="leave the first comment pending")
+    parser.add_argument("--profile", default="", help="warming task: the account, to notice a request to stop")
+    parser.add_argument("--warming-options", default="{}", help="warming task: JSON options")
     parser.add_argument("--evidence-dir")
     options = parser.parse_args()
     if options.task in ("photo", "reel", "comment") and not options.caption:
@@ -73,4 +82,4 @@ if __name__ == "__main__":
     except Exception as error:  # run_post reports its own errors, so this is the connection itself
         outcome = {"status": "failed", "stage": "connect", "reason": f"{type(error).__name__}: {error}"[:400]}
     print(json.dumps(outcome, ensure_ascii=False), flush=True)
-    sys.exit(0 if outcome.get("status") == "published" else 1)
+    sys.exit(0 if outcome.get("status") in ("published", "completed") else 1)

@@ -181,7 +181,7 @@ def ordered_due_executions(queue: dict | None, now_ms: float | None = None) -> l
                 config = active_hours._profile_config(execution.get("profile_id", ""), profile_configs)
                 if not account_hold.admits(execution, post, config, now_ms, history):
                     continue
-                if not active_hours.admits(execution, batch, sched_time, now_ms, profile_configs):
+                if not active_hours.admits(execution, batch, sched_time, now_ms, profile_configs, post):
                     continue
 
                 due.append({

@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { BatteryCharging, BatteryMedium, Check, ChevronRight, CircleAlert, Copy, Cpu, MemoryStick, Monitor, PencilLine, Plus, RefreshCw, ScanLine, ShieldCheck, Smartphone, Thermometer, Trash2, Usb, UserRound, Wifi } from 'lucide-react';
+import { BatteryCharging, BatteryMedium, Check, ChevronRight, CircleAlert, Copy, Cpu, MemoryStick, Monitor, PencilLine, Plus, Power, RefreshCw, ScanLine, ShieldCheck, Smartphone, Thermometer, Trash2, Usb, UserRound, Wifi } from 'lucide-react';
 import { AndroidDevice, AndroidUserRow, DeviceListResponse } from '../../types/device';
 import { Profile, SystemStats } from '../../types/profile';
 import { ProxyItem } from '../../types/proxy';
-import { adoptDeviceUser, fetchDevices, forgetDevice, makeDevicePrimary, openAccountOnPhone, renameDevice, scanDevice, setDevicePin, setDeviceTimezone, switchDeviceUser, updateDeviceSettings } from '../../services/devices';
+import { adoptDeviceUser, fetchDevices, forgetDevice, makeDevicePrimary, renameDevice, restartDevice, scanDevice, setDevicePin, setDeviceTimezone, updateDeviceSettings } from '../../services/devices';
+import { PhoneLiveView } from './PhoneLiveView';
+import { Dialog } from '../ui/Dialog';
 import { Checkbox } from '../ui/Checkbox';
 import { Select } from '../ui/Select';
 import { formatUtcOffset, phoneTimeReport } from './phoneTime';
@@ -14,7 +16,6 @@ import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { EmptyState } from '../ui/EmptyState';
 import { IconButton } from '../ui/IconButton';
-import { Spinner } from '../ui/Spinner';
 import { useAppDialog } from '../ui/AppDialogProvider';
 import { cn } from '../ui/cn';
 import { STATUS_LABEL, STATUS_TONE, isAndroid } from '../accounts/accountModel';
@@ -33,6 +34,7 @@ const POLL_INTERVALS = [
   { value: '120000', label: '2 minutes' },
 ];
 const POLL_STORAGE_KEY = 'devices.scanInterval';
+const RESTART_REFRESH_MS = [5000, 45000, 90000];
 
 const STATE_LABEL: Record<string, { label: string; variant: 'success' | 'warning' | 'danger' | 'neutral' }> = {
   device: { label: 'Online', variant: 'success' },
@@ -72,8 +74,9 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
   const [loadError, setLoadError] = useState('');
   const [selected, setSelected] = useState<string>(THIS_PC);
   const [scanning, setScanning] = useState<string | null>(null);
-  const [switching, setSwitching] = useState<number | null>(null);
   const [taking, setTaking] = useState(false);
+  const [viewingUser, setViewingUser] = useState<AndroidUserRow | null>(null);
+  useEffect(() => setViewingUser(null), [selected, active]);
   const [pollInterval, setPollInterval] = useState(() => {
     try {
       const saved = localStorage.getItem(POLL_STORAGE_KEY);
@@ -89,7 +92,7 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
       const next = await fetchDevices();
       setData(next);
       setLoadError('');
-      setSelected(current => current === THIS_PC || current === ADD_PHONE || next.devices.some(d => d.serial === current) ? current : THIS_PC);
+      setSelected(current => current === THIS_PC || current === ADD_PHONE || next.devices.some(d => d.serial === current) ? current : next.devices.find(d => d.aliases?.includes(current))?.serial ?? THIS_PC);
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : 'Failed to load phones');
     } finally {
@@ -99,7 +102,7 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
 
   useEffect(() => { if (active) void load(); }, [active, load]);
 
-  useEffect(() => { if (focus) setSelected(focus.serial ?? THIS_PC); }, [focus]);
+  useEffect(() => { if (focus) setSelected(data?.devices.find(d => d.serial === focus.serial || d.aliases?.includes(focus.serial ?? ''))?.serial ?? focus.serial ?? THIS_PC); }, [focus]);
 
   const device = data?.devices.find(d => d.serial === selected) ?? null;
 
@@ -123,7 +126,7 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
 
   useEffect(() => {
     const delay = Number(pollInterval);
-    if (!active || !device || device.state !== 'device' || !delay || switching !== null || taking) return;
+    if (!active || !device || device.state !== 'device' || !delay || viewingUser !== null || taking) return;
     const serial = device.serial;
     let stopped = false;
     let polling = false;
@@ -150,7 +153,7 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
       clearTimeout(timer);
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [active, device?.serial, device?.state, pollInterval, switching, taking, scan]);
+  }, [active, device?.serial, device?.state, pollInterval, viewingUser, taking, scan]);
 
   useEffect(() => {
     if (rescan) void scan(rescan.serial).then(load);
@@ -180,6 +183,19 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
     }
   };
 
+  const restart = async (target: AndroidDevice) => {
+    if (!await showConfirm(`Restart ${target.label}? It goes offline for about a minute, and every account on it stops until it is opened again.`,
+      { title: 'Restart phone', confirmLabel: 'Restart', variant: 'danger' })) return;
+    try {
+      await restartDevice(target.serial);
+      showToast(`${target.label} is restarting`, 'success');
+      // Shows it going offline, then back online.
+      RESTART_REFRESH_MS.forEach(delay => window.setTimeout(() => void load(), delay));
+    } catch (error) {
+      await showAlert(error instanceof Error ? error.message : 'Restart failed', { title: 'Phone not restarted', variant: 'danger' });
+    }
+  };
+
   const setTimezone = async (target: AndroidDevice, zone: string) => {
     if (!await showConfirm(`Set ${target.label} to ${zone} (${formatUtcOffset(zone)})? Every Android user on this phone sees the new time at once, and automatic time zone is turned off so Android won’t change it back.`,
       { title: 'Set phone time', confirmLabel: 'Set time' })) return;
@@ -198,32 +214,6 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
       await load();
     } catch (error) {
       await showAlert(error instanceof Error ? error.message : 'Could not save', { title: 'Setting not saved', variant: 'danger' });
-    }
-  };
-
-  const switchTo = async (user: AndroidUserRow) => {
-    if (!device) return;
-    setSwitching(user.user_id);
-    try {
-      // An account's user opens through the safe path: other users stop, time is set, proxy verified.
-      if (user.profile_id) {
-        const opened = await openAccountOnPhone(user.profile_id);
-        if (opened.ready) showToast(`${user.profile_name ?? user.name} is on screen with its proxy verified`, 'success');
-        else await showAlert(`${opened.reason ?? 'The phone didn’t confirm it.'} Don’t use Facebook on this account until this is fixed.`,
-          { title: `${user.profile_name ?? user.name} isn’t ready`, variant: 'warning' });
-        await scan(device.serial);
-        await load();
-        return;
-      }
-      const result = await switchDeviceUser(device.serial, user.user_id);
-      if (result.ready) showToast(`Switched to ${user.name}`, 'success');
-      else await showAlert(`${result.reason ?? 'The phone didn’t confirm the switch.'} Check the phone, then switch again.`,
-        { title: `${user.name} isn’t ready yet`, variant: 'warning' });
-      await scan(device.serial);
-    } catch (error) {
-      await showAlert(error instanceof Error ? error.message : 'Switch failed', { title: 'Could not switch user', variant: 'danger' });
-    } finally {
-      setSwitching(null);
     }
   };
 
@@ -342,6 +332,7 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
             <Button size="sm" onClick={() => void scan(device.serial)} loading={scanning === device.serial} disabled={device.state !== 'device'}>
               <ScanLine className="mr-1.5 h-3.5 w-3.5" />Scan phone
             </Button>
+            <IconButton aria-label="Restart phone" title="Restart phone" disabled={device.state !== 'device'} onClick={() => void restart(device)}><Power className="h-4 w-4" /></IconButton>
             <IconButton aria-label="Rename phone" onClick={() => void rename(device)}><PencilLine className="h-4 w-4" /></IconButton>
             <IconButton aria-label="Remove phone" onClick={() => void forget(device)}><Trash2 className="h-4 w-4" /></IconButton>
           </div>
@@ -386,8 +377,23 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
             <span><span className="font-medium">One account at a time</span>
               <span className="block text-[11px] text-zinc-500">Opening an account stops this phone’s other accounts and sets the phone’s time to that account’s proxy, so nothing runs in the background on the wrong time or uses resources. Opening takes up to about two minutes while the proxy is checked.</span></span>
           </label>
+          <label className="flex items-start gap-2 px-4 pt-3 text-xs text-zinc-300">
+            <Checkbox checked={device.active_hours !== false} onCheckedChange={(on) => void saveSettings(device, { active_hours: on })} ariaLabel="Follow active hours" className="mt-0.5" />
+            <span><span className="font-medium">Follow active hours</span>
+              <span className="block text-[11px] text-zinc-500">Scheduled posts on this phone wait for each account’s active hours, by this PC’s time. Turn off to start them at their scheduled time. Warming always keeps to active hours.</span></span>
+          </label>
           <DeviceWarnings device={device} profiles={profiles} proxies={proxies} onSetTimezone={(zone) => void setTimezone(device, zone)} />
-          <UsersTable device={device} switching={switching} onSwitch={switchTo} onImport={(user) => onImport(device, user)}
+          {active && viewingUser && device.state === 'device' && <Dialog open
+            onOpenChange={(open) => { if (!open) { setViewingUser(null); void scan(device.serial, true); } }}
+            title={`${device.label} · ${viewingUser.profile_name || viewingUser.name}`} className="max-w-sm">
+            <div className="flex h-[min(75vh,48rem)] min-h-0">
+              <PhoneLiveView key={`${device.serial}:${viewingUser.user_id}`} autoStart screenOnly
+                runtime={{ kind: 'android_user', device_serial: device.serial,
+                  android_user_id: viewingUser.user_id, android_user_serial: viewingUser.user_serial,
+                  android_user_name: viewingUser.profile_name || viewingUser.name }} />
+            </div>
+          </Dialog>}
+          <UsersTable device={device} onView={setViewingUser} onImport={(user) => onImport(device, user)}
             onAdopt={(user) => void adopt(device, user)} onOpenAccount={onOpenAccount} />
         </section>}
       </div>
@@ -603,8 +609,9 @@ function DeviceWarnings({ device, profiles, proxies, onSetTimezone }: {
   </div>;
 }
 
-function UsersTable({ device, switching, onSwitch, onImport, onAdopt, onOpenAccount }: {
-  device: AndroidDevice; switching: number | null; onSwitch: (user: AndroidUserRow) => void;
+function UsersTable({ device, onView, onImport, onAdopt, onOpenAccount }: {
+  device: AndroidDevice;
+  onView: (user: AndroidUserRow) => void;
   onImport: (user: AndroidUserRow) => void; onAdopt: (user: AndroidUserRow) => void; onOpenAccount: (profileId: string) => void;
 }) {
   const scan = device.last_scan;
@@ -613,17 +620,7 @@ function UsersTable({ device, switching, onSwitch, onImport, onAdopt, onOpenAcco
       description={device.state === 'device' ? 'Scan the phone to list its Android users.' : 'Connect the phone, then scan it to list its Android users.'} /></div>;
   }
   const online = device.state === 'device';
-  const switchingUser = scan.users.find(user => user.user_id === switching);
   return <div className="p-4">
-    {switchingUser && <div role="status" className="mb-3 flex items-center gap-3 rounded-control border border-blue-500/20 bg-blue-500/10 px-3 py-2.5 text-xs text-blue-200">
-      <Spinner label="Switching Android user" className="shrink-0" />
-      <div>
-        <p className="font-medium">Switching to {switchingUser.profile_name || switchingUser.name}…</p>
-        <p className="mt-0.5 text-[11px] text-blue-200/70">{switchingUser.profile_id
-          ? 'Opening the account and checking its proxy and timezone. This may take a moment.'
-          : 'Waiting for the phone to show this user.'}</p>
-      </div>
-    </div>}
     <div className="overflow-x-auto rounded-control border border-zinc-800">
       <table className="w-full min-w-[36rem] text-left text-xs">
         <thead className="bg-zinc-900/60 text-[11px] text-zinc-500">
@@ -631,10 +628,12 @@ function UsersTable({ device, switching, onSwitch, onImport, onAdopt, onOpenAcco
             <th className="px-3 py-2 font-medium">Network</th><th className="px-3 py-2 font-medium">Linked account</th><th className="px-3 py-2" /></tr>
         </thead>
         <tbody>
-          {scan.users.map(user => <tr key={user.user_id} className="border-t border-zinc-800/70">
+          {scan.users.map(user => <tr key={user.user_id} className={cn('border-t border-zinc-800/70', online && user.current && 'bg-emerald-500/5')}>
             <td className="px-3 py-2.5">
-              <p className="font-medium text-zinc-100">{user.name}</p>
-              <p className="text-[11px] text-zinc-500">User {user.user_id}{user.current ? ' · on screen' : user.running ? ' · running' : ''}</p>
+              <p className="flex items-center gap-2 font-medium text-zinc-100">{user.name}
+                {online && user.current && <span className="inline-flex items-center gap-1 rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-[11px] font-normal text-emerald-300">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" aria-hidden="true" />Active</span>}</p>
+              <p className="text-[11px] text-zinc-500">User {user.user_id}{online ? (user.current ? ' · on screen' : user.running ? ' · running in background' : ' · stopped') : ''}</p>
             </td>
             <td className="px-3 py-2.5 text-zinc-300">
               {user.control_user ? <span className="text-zinc-500">—</span>
@@ -653,8 +652,10 @@ function UsersTable({ device, switching, onSwitch, onImport, onAdopt, onOpenAcco
                     : <Button size="sm" variant="outline" onClick={() => onImport(user)}>Create account</Button>}
             </td>
             <td className="px-3 py-2.5 text-right">
-              {(!user.current || switching === user.user_id) && <Button size="sm" variant="ghost" disabled={!online || switching !== null} loading={switching === user.user_id}
-                onClick={() => onSwitch(user)}>{switching === user.user_id ? 'Switching…' : 'Show on screen'}</Button>}
+              <div className="flex items-center justify-end gap-2">
+              <Button size="sm" variant="outline" disabled={!online}
+                onClick={() => onView(user)}>View screen</Button>
+              </div>
             </td>
           </tr>)}
         </tbody>

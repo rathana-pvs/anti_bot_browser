@@ -48,6 +48,39 @@ def match(lines: list[Line], wanted: str, exact: bool = False) -> Point | None:
     return None
 
 
+_UPLOAD_BAR = ("posting", "uploading", "finishingup", "processing", "keepfacebookopen")
+
+
+def uploading(lines: list[Line]) -> bool:
+    """Facebook's upload bar, such as "Posting... Keep Facebook open." A longer line is a post in the feed."""
+    return any(len(key) <= 40 and key.startswith(_UPLOAD_BAR) for key in (squash(line.text) for line in lines))
+
+
+def button_disabled(image: np.ndarray | None, point: Point) -> bool:
+    """A publish button Facebook has greyed out: light grey above its label. Blue is enabled; anything
+    else, such as a label with no button shape, is not treated as disabled."""
+    if image is None:
+        return False
+    scale = image.shape[1] / TEMPLATE_WIDTH
+    x, y = int(point[0]), int(point[1] - 40 * scale)
+    half = int(40 * scale)
+    patch = image[max(0, y - 2):y + 3, max(0, x - half):x + half]
+    if patch.size == 0:
+        return False
+    blue, green, red = np.median(patch.reshape(-1, 3), axis=0)
+    return max(blue, green, red) - min(blue, green, red) < 30 and 180 < min(blue, green, red) < 245
+
+
+def menu_reel(lines: list[Line]) -> Point | None:
+    """The + menu's Reel row. OCR can read its icon as a letter, so "B Reel" counts; a longer text
+    behind the menu does not."""
+    for line in lines:
+        key = squash(line.text)
+        if key.endswith("reel") and len(key) <= 6:
+            return line.point
+    return None
+
+
 def shown_across_lines(lines: list[Line], wanted: str) -> bool:
     """`wanted` anywhere in the screen's text read top to bottom, for text that wraps onto several lines."""
     key = squash(wanted)
@@ -74,7 +107,7 @@ def caption_tail_key(caption: str) -> str:
     return words[-20:] if len(squash(words[-20:])) >= 6 else ""
 
 
-def load_templates(names=("comment", "send", "home_tab")) -> dict[str, np.ndarray]:
+def load_templates(names=("comment", "send", "home_tab", "create")) -> dict[str, np.ndarray]:
     templates = {name: cv2.imread(str(TEMPLATE_DIR / f"{name}.png")) for name in names}
     missing = [name for name, image in templates.items() if image is None]
     if missing:
@@ -142,11 +175,31 @@ def interruption(lines: list[Line]) -> tuple[str, str, Point | None] | None:
     return None
 
 
+# Text that does something other than open its post when tapped.
+_NOT_PLAIN_TEXT = re.compile(r"https?://|www\.|[#@]|\b\w+\.(com|net|org|co|io|me)\b", re.IGNORECASE)
+READABLE_MIN_CHARS = 30
+
+
+def readable_lines(lines: list[Line], height: float) -> list[Line]:
+    """Lines of a post's own text a person could tap to read it. Only long plain text in the middle of
+    the screen, so a tap cannot land on an icon-only Like or Share row; nothing on a screen with an ad."""
+    if match(lines, "Sponsored"):
+        return []
+    return [line for line in lines
+            if len(line.text.strip()) >= READABLE_MIN_CHARS and height * 0.25 <= line.point[1] <= height * 0.75
+            and not _NOT_PLAIN_TEXT.search(line.text)]
+
+
+LEFT_UNFINISHED = "Continue editing your last"
+
+
 def discard_button(lines: list[Line]) -> Point | None:
-    """The discard choice of the prompts a half-made post shows: "Discard changes?" (DISCARD), the
-    "finish your post later?" sheet (Discard post) or "Save this reel as a draft?" (Discard video)."""
-    if match(lines, "Discard changes"):
-        point = match(lines, "DISCARD", exact=True)
+    """The discard choice of the prompts a half-made post shows: "Discard changes?" or "Continue editing
+    your last reel?" or "...post?" (DISCARD), the "finish your post later?" sheet (Discard post) or "Save this
+    reel as a draft?" (Discard video)."""
+    if match(lines, "Discard changes") or match(lines, LEFT_UNFINISHED):
+        point = match(lines, "DISCARD", exact=True) or match(lines, "Discard", exact=True)
         if point:
             return point
-    return match(lines, "Discard post", exact=True) or match(lines, "Discard video", exact=True)
+    return (match(lines, "Discard post", exact=True) or match(lines, "Discard video", exact=True)
+            or match(lines, "Discard draft", exact=True))

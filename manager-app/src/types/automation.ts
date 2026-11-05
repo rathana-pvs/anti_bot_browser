@@ -394,6 +394,7 @@ export interface CreateBatchParams {
     start_now?: boolean;
   };
   posts: {
+    read_more?: { preparation_id: string; captions?: Record<string, string> };
     playback_mode?: 'auto' | 'manual';
     muted?: boolean;
     loop?: boolean;

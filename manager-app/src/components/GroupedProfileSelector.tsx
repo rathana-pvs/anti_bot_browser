@@ -43,8 +43,10 @@ export function GroupedProfileSelector({ profiles, selectedIds, onChange, busyPr
         }
         const ids = eligible.filter(p => stages[p.id]?.stage === stage).map(p => p.id);
         if (!ids.length) return null;
-        return <button key={stage} type="button" onClick={() => onChange(ids)} title={`Select only the ${STAGE_META[stage].label} accounts. ${STAGE_META[stage].suggestion}`}
-          className="inline-flex items-center gap-1 rounded-full border border-zinc-800 px-2 py-0.5 text-zinc-300 hover:border-zinc-600">
+        const allSelected = ids.every(id => selectedIds.includes(id));
+        return <button key={stage} type="button" onClick={() => toggle(ids)} aria-pressed={allSelected}
+          title={`${allSelected ? 'Deselect' : 'Add'} ${STAGE_META[stage].label} accounts. Other selections stay selected. ${STAGE_META[stage].suggestion}`}
+          className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 ${allSelected ? 'border-blue-500/50 bg-blue-500/15 text-blue-200' : 'border-zinc-800 text-zinc-300 hover:border-zinc-600'}`}>
           <Icon className={`h-3 w-3 ${STAGE_META[stage].tone}`} aria-hidden="true" />{STAGE_META[stage].label} <span className="text-zinc-500">{ids.length}</span>
         </button>;
       })}
@@ -86,6 +88,6 @@ export function GroupedProfileSelector({ profiles, selectedIds, onChange, busyPr
       })}
       {!groups.length && <p className="py-8 text-center text-xs text-zinc-500">Create a profile to choose batch targets.</p>}
     </div>
-    <p className="text-[11px] text-zinc-500">Folder checkboxes select every account in that folder. Uncheck individual accounts to fine-tune.</p>
+    <p className="text-[11px] text-zinc-500">Combine stage buttons to select multiple stages. Click a selected stage again to deselect it. Folder checkboxes select every account in that folder.</p>
   </div>;
 }

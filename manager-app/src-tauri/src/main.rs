@@ -1241,6 +1241,22 @@ fn configure_backend_lifetime(command: &mut Command) {
     }
 }
 
+/// Dev mode skips the runtime version check, so a branch's new package would otherwise only
+/// surface as an import error during a job. Runs beside the startup so it never delays the app.
+fn sync_development_requirements(code_root: &Path, runtime_root: &Path) {
+    let script = code_root.join("automation/sync_dev_requirements.py");
+    let mut pythons = vec![runtime_root.join("automation/venv/bin/python")];
+    pythons.push(code_root.join("automation/venv/bin/python"));
+    pythons.dedup();
+    for python in pythons.into_iter().filter(|python| python.exists()) {
+        let mut command = Command::new(python);
+        command.arg(&script).stdin(Stdio::null());
+        std::thread::spawn(move || {
+            let _ = command.status();
+        });
+    }
+}
+
 #[allow(unused_variables)]
 fn spawn_backend(app: &AppHandle) -> Option<Child> {
     if std::env::var("WORKER_SERVICE_ATTACHED").as_deref() == Ok("1") {
@@ -1298,6 +1314,9 @@ fn spawn_backend(app: &AppHandle) -> Option<Child> {
             if uvicorn.exists() {
                 println!("[Tauri] Starting Python backend from {}", code_root.display());
                 println!("[Tauri] Using persistent runtime {}", root.display());
+                if development_root().is_some() {
+                    sync_development_requirements(&code_root, &root);
+                }
                 let port = manager_api_port().to_string();
                 let mut command = Command::new(uvicorn);
                 configure_backend_lifetime(&mut command);

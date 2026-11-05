@@ -187,3 +187,48 @@ def test_dispatcher_starts_no_visit_while_a_post_waits_for_a_slot(monkeypatch):
     asyncio.run(automation.dispatch_pending_queue())
     assert yields == ["post_1"]
     assert started == []
+
+
+PHONE = {"kind": "android_user", "device_serial": "PHONE1", "android_user_id": 11}
+
+
+def phone_config():
+    return config("phone_1", runtime=PHONE, automation={"enabled": False, "reason": "android_automation_unavailable"})
+
+
+def test_phone_accounts_get_visits_when_their_phone_can_take_one(monkeypatch):
+    from backend.services import android_jobs
+    health = {"phone_1": {"stage": "ready"}}
+    monkeypatch.setattr(android_jobs, "can_take_auto_visit", lambda cfg: True)
+    assert [c["profile_id"] for c in candidates(queue(), {"phone_1": phone_config()}, health, {}, NOW_MS)] == ["phone_1"]
+    monkeypatch.setattr(android_jobs, "can_take_auto_visit", lambda cfg: False)
+    assert candidates(queue(), {"phone_1": phone_config()}, health, {}, NOW_MS) == []
+
+
+def test_a_phone_account_marked_manual_is_left_alone(monkeypatch):
+    from backend.services import android_jobs
+    monkeypatch.setattr(android_jobs, "can_take_auto_visit", lambda cfg: True)
+    manual = config("phone_1", runtime=PHONE, automation={"enabled": False, "reason": "manual_control_only"})
+    assert candidates(queue(), {"phone_1": manual}, {"phone_1": {"stage": "ready"}}, {}, NOW_MS) == []
+
+
+def test_a_failed_phone_visit_is_not_tried_again_every_minute(monkeypatch):
+    from backend.services import android_jobs
+    monkeypatch.setattr(android_jobs, "can_take_auto_visit", lambda cfg: True)
+    history = {"phone_1": {"e1": history_entry(0.2, status="failed_before_publish", kind="warming")}}
+    assert candidates(queue(), {"phone_1": phone_config()}, {"phone_1": {"stage": "ready"}}, history, NOW_MS) == []
+    history = {"phone_1": {"e1": history_entry(2, status="failed_before_publish", kind="warming")}}
+    assert candidates(queue(), {"phone_1": phone_config()}, {"phone_1": {"stage": "ready"}}, history, NOW_MS)
+
+
+def test_a_running_visit_ends_for_work_on_its_phone_only(monkeypatch):
+    from backend.services import android_jobs
+    phones = {"phone_1": {"device_serial": "PHONE1"}, "phone_2": {"device_serial": "PHONE2"}}
+    monkeypatch.setattr(android_jobs, "phone_of", phones.get)
+    asked = []
+    monkeypatch.setattr(auto_warming, "read_yields", lambda: {})
+    monkeypatch.setattr(auto_warming, "request_yield", lambda pid, reason, handoff_to=None: asked.append((pid, reason, handoff_to)))
+    running = queue({"profile_id": "phone_2", "status": "running"}, batch_id="auto_warming_2026-10-31", kind="warming")
+    assert auto_warming.yield_phone_for_post(running, "PHONE1") is False
+    assert auto_warming.yield_phone_for_post(running, "PHONE2") is True
+    assert asked == [("phone_2", "post_needs_phone", None)]

@@ -60,6 +60,7 @@ export interface DeviceScan {
 
 export interface AndroidDevice {
   serial: string;
+  aliases?: string[];
   label: string;
   state: AdbState;
   connection: 'usb' | 'wifi' | 'unknown' | null;
@@ -75,6 +76,8 @@ export interface AndroidDevice {
   one_account_at_a_time?: boolean;
   /** The phone's own user switcher is hidden, so accounts change only through this app. */
   switch_from_app_only?: boolean;
+  /** Scheduled posts wait for each account's active hours; off, they start at their scheduled time. */
+  active_hours?: boolean;
   health?: DeviceHealth | null;
   role?: PhoneRole;
   /** Name of the PC that manages the phone, when known. */

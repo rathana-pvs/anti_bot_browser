@@ -6,6 +6,7 @@ command runs against one explicit serial; nothing here talks to "the" device.
 from __future__ import annotations
 
 import base64
+import json
 import os
 import re
 import shlex
@@ -19,6 +20,7 @@ DEFAULT_TIMEOUT = 15.0
 
 _USER_RE = re.compile(r"UserInfo\{(\d+):(.*):([0-9a-fA-F]+)\}(\s+running)?")
 _USER_SERIAL_RE = re.compile(r"UserInfo\{(\d+):.*?\}\s+serialNo=(\d+)")
+_WIFI_ENDPOINT_RE = re.compile(r"adb-([A-Za-z0-9]+)-[A-Za-z0-9]+\._adb-tls-connect\._tcp\.?")
 
 
 class AdbError(RuntimeError):
@@ -221,12 +223,35 @@ def parse_int(output: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def wifi_endpoint_serial(endpoint: str) -> str | None:
+    """The phone's own serial from a wireless debugging name, e.g. `adb-SERIAL-abc123._adb-tls-connect._tcp`."""
+    match = _WIFI_ENDPOINT_RE.fullmatch(endpoint)
+    return match.group(1) if match else None
+
+
+def canonical_serial(serial: str) -> str:
+    """Resolve remembered transport aliases without changing account files."""
+    from backend.config import DATA_DIR
+    try:
+        devices = json.loads((DATA_DIR / "android_devices.json").read_text())["devices"]
+        return next((key for key, value in devices.items()
+                     if serial == key or serial in value.get("aliases", [])), serial)
+    except (OSError, ValueError, KeyError, TypeError):
+        return serial
+
+
 class AdbClient:
     def __init__(self, binary: str | None = None, timeout: float = DEFAULT_TIMEOUT):
         self.binary = binary or adb_path()
         self.timeout = timeout
+        self._transports = None
 
     def _run(self, args: list[str], timeout: float | None = None) -> str:
+        if args[:1] == ["-s"]:
+            args = ["-s", self.transport_serial(args[1]), *args[2:]]
+        return self._execute(args, timeout)
+
+    def _execute(self, args: list[str], timeout: float | None = None) -> str:
         if not self.binary:
             raise AdbUnavailable("ADB is not installed. Install Android platform-tools and reopen the app.")
         try:
@@ -246,7 +271,39 @@ class AdbClient:
         return self._run(["-s", validate_serial(serial), "shell", *command], timeout)
 
     def devices(self) -> list[dict]:
-        return parse_devices(self._run(["devices", "-l"]))
+        """One hardware identity per phone; USB wins when both transports are online."""
+        raw = parse_devices(self._run(["devices", "-l"]))
+        grouped = {}
+        transports = {}
+        for device in raw:
+            endpoint = device["serial"]
+            identity = canonical_serial(endpoint)
+            if identity == endpoint:
+                identity = wifi_endpoint_serial(endpoint) or endpoint
+            if device["state"] == "device":
+                try:
+                    value = self._execute(["-s", endpoint, "shell", "getprop", "ro.serialno"]).strip()
+                    if value and value.casefold() not in {"unknown", "null"} and SERIAL_RE.fullmatch(value):
+                        identity = value
+                except AdbError:
+                    pass  # An unreadable identity must never merge two phones by model/name.
+            group = grouped.setdefault(identity, [])
+            group.append(device)
+        result = []
+        for identity, entries in grouped.items():
+            chosen = min(entries, key=lambda entry: (entry["state"] != "device", entry["connection"] != "usb"))
+            aliases = sorted({identity, *(entry["serial"] for entry in entries)})
+            for alias in aliases:
+                transports[alias] = chosen["serial"]
+            result.append({**chosen, "serial": identity, "aliases": aliases})
+        self._transports = transports
+        return result
+
+    def transport_serial(self, serial: str) -> str:
+        validate_serial(serial)
+        if self._transports is None:
+            self.devices()
+        return self._transports.get(serial, self._transports.get(canonical_serial(serial), serial))
 
     def properties(self, serial: str) -> dict:
         names = ("ro.product.manufacturer", "ro.product.model", "ro.build.version.release", "ro.build.version.sdk")
@@ -378,7 +435,7 @@ class AdbClient:
         command = f"content write --user {int(user_id)} --uri {shlex.quote(uri)}"
         try:
             with open(local, "rb") as source:
-                result = subprocess.run([self.binary, "-s", validate_serial(serial), "shell", command],
+                result = subprocess.run([self.binary, "-s", self.transport_serial(serial), "shell", command],
                                         stdin=source, capture_output=True, timeout=timeout, check=False)
         except subprocess.TimeoutExpired as exc:
             raise AdbError("ADB timed out writing a file to the phone") from exc
@@ -419,6 +476,9 @@ class AdbClient:
         return parse_lock_screen_showing(self.shell(serial,
             "dumpsys activity activities | grep -i keyguardshowing; "
             "dumpsys window | grep -iE 'isKeyguardShowing|ShowingLockscreen|DreamingLockscreen|isStatusBarKeyguard'; true"))
+
+    def reboot(self, serial: str) -> None:
+        self._run(["-s", validate_serial(serial), "reboot"])
 
     def wake_screen(self, serial: str) -> None:
         self.shell(serial, "input", "keyevent", "KEYCODE_WAKEUP")

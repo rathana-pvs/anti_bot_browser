@@ -42,7 +42,6 @@ from backend.services.queue_scheduler import (
     find_stale_running_executions,
 )
 from backend.services.queue_safety import (
-    apply_automation_permalink_result,
     apply_comment_retry_result,
     apply_warming_result,
     can_retry_first_comment,
@@ -69,6 +68,7 @@ from backend.services.queue_service import (
 
 from backend.services import container_lifecycle as lifecycle
 from backend.services import network_recovery
+from backend.services.publication_recovery import apply_published_result, recover_completed_publication
 from backend.services.android_devices import ensure_not_android
 from backend.services import android_jobs
 
@@ -1101,8 +1101,8 @@ async def _execute_queue_item_inner(execution_id: str, scheduler_kind: str = "pu
         args.extend(["--scrolls", str(target_post.get("scrolls") or 4)])
     if target_exec.get("spun_caption"):
         args.extend(["--caption", target_exec["spun_caption"]])
-    if target_post.get("first_comment"):
-        args.extend(["--comment-link", target_post["first_comment"]])
+    if target_exec.get("first_comment", target_post.get("first_comment")):
+        args.extend(["--comment-link", target_exec.get("first_comment", target_post.get("first_comment"))])
     if target_post.get("media_file"):
         args.extend(["--media", target_post["media_file"]])
 
@@ -1253,15 +1253,7 @@ async def _execute_queue_item_inner(execution_id: str, scheduler_kind: str = "pu
             ex["stage"] = reported_status
             ex["error"] = res.get("error") or None
         elif reported_status == "published":
-            ex["status"] = "published"
-            ex["published_at"] = ended_at
-            ex["error"] = None
-            apply_automation_permalink_result(ex, res, task_type)
-            if res.get("first_comment"):
-                ex["first_comment_status"] = res["first_comment"]
-                ex["first_comment_method"] = res.get("first_comment_method")
-                if res["first_comment"] == "submitted_verified":
-                    ex["first_comment_verified_at"] = ended_at
+            apply_published_result(ex, res, task_type, ended_at)
         elif reported_status == "failed_after_publish":
             ex["status"] = "failed_after_publish"
             ex["stage"] = "failed_after_publish"
@@ -1567,6 +1559,11 @@ def recover_stale_queue_executions(reason: str = "expired_scheduler_lease"):
         for batch in queue.get("daily_batches", []):
             for post in batch.get("posts", []):
                 for execution in post.get("executions", []):
+                    if (execution.get('status') in {'uncertain', 'needs_review'}
+                            and execution.get('execution_id') not in live_comment_retries
+                            and not queue_attempt_still_active(execution)
+                            and recover_completed_publication(PROFILES_DIR, execution, post.get('type'))):
+                        modified = True
                     if repair_identity_verification_skip(execution):
                         modified = True
                     if post.get("type") == "warming" and repair_interrupted_warming(execution):
@@ -1589,7 +1586,10 @@ def recover_stale_queue_executions(reason: str = "expired_scheduler_lease"):
                 marker = DATA_DIR / "worker" / "publish-intents" / (exec_item["execution_id"] + ".json")
                 if marker.exists():
                     exec_item["stage"] = "publish_clicked"
-            if not recover_preparation_attempt(exec_item):
+            match = find_queue_execution(queue, exec_item.get('execution_id'))
+            post_type = match['post'].get('type') if match else None
+            if (not recover_completed_publication(PROFILES_DIR, exec_item, post_type)
+                    and not recover_preparation_attempt(exec_item)):
                 apply_interrupted_execution_recovery(exec_item)
             exec_item["scheduler_recovery_reason"] = reason
             exec_item["last_scheduler_lease"] = stale_lease
@@ -1840,15 +1840,22 @@ async def dispatch_pending_queue():
                 # A phone has no container; it runs one job at a time across its accounts.
                 serial = phone.get("device_serial")
                 if android_jobs.phone_busy(serial) or serial in reservations.setdefault("phones", set()):
+                    if not auto_visit:
+                        auto_warming.yield_phone_for_post(load_posting_queue(), serial)
                     continue
-                if not can_acquire_scheduler_slot(current_q, active_in_memory_scheduler_leases(), "publisher",
+                phone_slot = "preparer" if standalone_warming else "publisher"
+                if not can_acquire_scheduler_slot(current_q, active_in_memory_scheduler_leases(), phone_slot,
                                                   pid, scheduler_cfg)["allowed"]:
+                    if not auto_visit:
+                        make_room(match)
                     continue
-                if not _reserve_dispatch_slot(reservations, "publisher", pid, scheduler_cfg):
+                if not _reserve_dispatch_slot(reservations, phone_slot, pid, scheduler_cfg):
+                    if not auto_visit:
+                        make_room(match)
                     continue
                 reservations["phones"].add(serial)
                 print(f"[Queue Dispatcher] Claiming phone slot for {exec_id} on profile {pid}...")
-                asyncio.create_task(_run_dispatched_queue_task(exec_id, "publisher"))
+                asyncio.create_task(_run_dispatched_queue_task(exec_id, phone_slot))
                 continue
 
             if needs_prep and count_buffered_preparations(current_q, exec_id) >= scheduler_cfg["max_preparers"]:

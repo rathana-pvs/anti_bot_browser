@@ -258,7 +258,7 @@ function PhoneSide({ profile, proxies, devices, onOpenTab, onChanged }: {
   profile: Profile; proxies: ProxyItem[]; devices: AndroidDevice[]; onOpenTab: (tab: AccountTab) => void;
   onChanged: () => Promise<void> | void;
 }) {
-  const phone = devices.find(d => d.serial === profile.runtime?.device_serial);
+  const phone = devices.find(d => (d.serial === profile.runtime?.device_serial || d.aliases?.includes(profile.runtime?.device_serial ?? '')));
   if (phone?.role === 'secondary') {
     return <div className="space-y-3">
       <p className="rounded-xl border border-zinc-800 bg-zinc-950/40 p-4 text-zinc-400">
@@ -275,8 +275,10 @@ function PhoneSide({ profile, proxies, devices, onOpenTab, onChanged }: {
     </div>
     : <div className="space-y-3">
       <PhoneSetupCard profile={profile} onOpenScreen={() => onOpenTab('browser')} onChanged={onChanged} />
-      {/* After a takeover without the PIN, an account whose proxy wasn't in this PC's pool needs one. */}
-      {phone?.role === 'primary' && needsProxy(profile, proxies)
+      {/* After a takeover without the PIN, an account whose proxy wasn't in this PC's pool needs one.
+          A proxy that stopped working blocks setup at its network check, before a new phone is claimed,
+          so it can be swapped as soon as the phone can try one. */}
+      {phone && ((phone.role === 'primary' && needsProxy(profile, proxies)) || profile.android_setup?.steps?.companion_app?.status === 'passed')
         && <PhoneNetworkCard profile={profile} proxies={proxies} devices={devices} onChanged={onChanged} canChangeProxy />}
     </div>;
 }

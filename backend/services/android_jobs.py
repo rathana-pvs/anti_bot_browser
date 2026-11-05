@@ -1,4 +1,4 @@
-"""Queue jobs for phone accounts: photo and reel posts and their first comment.
+"""Queue jobs for phone accounts: photo and reel posts, their first comment, and warming visits.
 
 A phone shows one Android user at a time, so a phone runs one job at a time, whichever of its accounts
 it is for. A job opens the account the same way the app does (switch to its user, stop the others,
@@ -19,10 +19,13 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from automation.warming_options import normalize_warming_options
 from backend.config import AUTOMATION_PYTHON, PROFILES_DIR, ROOT_DIR, SHARED_MEDIA_DIR
-from backend.services import account_hold, android_devices, android_network
+from backend.services import account_hold, android_devices, android_live, android_network
+from backend.services.adb_client import AdbError
 from backend.services.android_devices import ANDROID_RUNTIME, read_profile_runtime
 from backend.services.profile_service import atomic_write_json
+from backend.services.queue_safety import apply_warming_result
 from backend.services.queue_scheduler import release_execution_lease
 from backend.services.queue_service import (find_queue_execution, load_posting_queue,
                                             persist_queue_execution_stage, save_posting_queue)
@@ -88,6 +91,23 @@ def accepts_automation(config: dict) -> bool:
             and automation.get("reason") == android_devices.AUTOMATION_UNAVAILABLE)
 
 
+def can_take_auto_visit(config: dict) -> bool:
+    """Auto warming only uses a phone that is set up, here, this PC's to run and idle: nobody is
+    watching it in the app, since a visit switches the Android user on screen."""
+    from backend.services.android_setup import is_set_up
+    runtime = config.get("runtime") or {}
+    serial = android_devices.canonical_serial(runtime.get("device_serial"))
+    if not serial or not is_set_up(config) or phone_busy(serial) or serial in android_live._sessions:
+        return False
+    if (android_devices.load_store()["devices"].get(serial) or {}).get("role") == "secondary":
+        return False
+    try:
+        return any(android_devices.canonical_serial(device["serial"]) == serial and device["state"] == "device"
+                   for device in android_devices._client().devices())
+    except AdbError:
+        return False
+
+
 def media_path(post: dict) -> Path | None:
     name = post.get("media_file") or ""
     if not name:
@@ -98,6 +118,10 @@ def media_path(post: dict) -> Path | None:
 
 def unsupported_reason(post: dict) -> str | None:
     kind = post.get("type") or "photo"
+    if kind == "warming":
+        if (post.get("warming_options") or {}).get("check"):
+            return "Account checks are not available on phones yet."
+        return None
     if kind not in ("photo", "post", "reel"):
         return f"{kind.capitalize()} jobs are not available on phones yet."
     path = media_path(post)
@@ -176,6 +200,8 @@ async def execute_queue_phone(claim_res: dict) -> dict:
     and lifecycle ownership already held."""
     from backend.services.automation_service import _delayed_dispatch, active_automation_tasks
     execution, post = claim_res["targetExec"], claim_res["targetPost"]
+    if post.get("type") == "warming":
+        return await execute_queue_warming(claim_res)
     execution_id, lease_id = execution["execution_id"], claim_res["leaseId"]
     profile_id = execution["profile_id"]
     runtime = phone_of(profile_id) or {}
@@ -230,7 +256,7 @@ async def execute_queue_phone(claim_res: dict) -> dict:
         evidence = PROFILES_DIR / profile_id / "automation_evidence" / execution_id
         args = ["--serial", serial, "--user", str(user_id), "--task", kind, "--media", str(media_path(post)),
                 "--caption", execution.get("spun_caption") or post.get("base_caption") or "",
-                "--comment", post.get("first_comment") or "", "--comment-later", "--evidence-dir", str(evidence)]
+                "--comment", execution.get("first_comment", post.get("first_comment")) or "", "--comment-later", "--evidence-dir", str(evidence)]
         record["current_stage"] = "running"
         result = await _run_runner(args, record, on_event)
         record["result"] = result
@@ -265,6 +291,75 @@ async def execute_queue_phone(claim_res: dict) -> dict:
         android_devices.release_job(serial)
         if record.get("status") in ("completed", "uncertain"):
             _last_post_at[profile_id] = time.monotonic()
+
+
+# --- warming visits --------------------------------------------------------------------------------
+
+async def execute_queue_warming(claim_res: dict) -> dict:
+    """Runs one claimed warming item on its phone: browsing only, nothing published, so a stopped
+    visit is simply failed and leaves no post cooldown behind."""
+    from backend.services.automation_service import _delayed_dispatch, active_automation_tasks
+    execution, post = claim_res["targetExec"], claim_res["targetPost"]
+    execution_id, lease_id = execution["execution_id"], claim_res["leaseId"]
+    profile_id = execution["profile_id"]
+    runtime = phone_of(profile_id) or {}
+    serial, user_id = runtime.get("device_serial"), runtime.get("android_user_id")
+
+    def finish(status: str, error: str | None, result: dict | None = None, **fields) -> dict:
+        def change(ex):
+            ex.update(status=status, stage=status, error=error, ended_at=now_iso(), automation_container_owned=False, **fields)
+            if status == "completed":
+                apply_warming_result(ex, result)
+        _update(execution_id, lease_id, change)
+        asyncio.create_task(_delayed_dispatch(100))
+        return {"success": status == "completed", "status": status}
+
+    reason = unsupported_reason(post)
+    if reason or not serial:
+        return finish("skipped_unsupported", reason or "The account's phone is not known.")
+    if not android_devices.hold_for_job(serial, f"warming:{execution_id}"):
+        def back_to_pending(ex):
+            ex.update(status="pending", stage="pending", automation_container_owned=False)
+        _update(execution_id, lease_id, back_to_pending)
+        return {"success": False, "status": "deferred", "error": "The phone is running another job"}
+
+    record = {"profile_id": profile_id, "task": "warming", "status": "running", "started_at": now_iso(),
+              "ended_at": None, "logs": [], "result": None, "current_stage": "opening", "error": None,
+              "queue_execution_id": execution_id, "scheduler_lease": claim_res["lease"], "process": None,
+              "last_activity_at": now_iso(), "lifecycle_active": True, "surface": "phone"}
+    active_automation_tasks[profile_id] = record
+    try:
+        opened = await asyncio.to_thread(android_network.open_account, profile_id, True)
+        if not opened["ready"]:
+            record["status"] = "failed"
+            return finish("failed_before_publish", f"The phone account is not ready: {opened.get('reason')}")
+        evidence = PROFILES_DIR / profile_id / "automation_evidence" / execution_id
+        args = ["--serial", serial, "--user", str(user_id), "--task", "warming", "--profile", profile_id,
+                "--warming-options", json.dumps(normalize_warming_options(post.get("warming_options"))),
+                "--evidence-dir", str(evidence)]
+        record["current_stage"] = "warming"
+        result = await _run_runner(args, record, lambda event: None)
+        record["result"] = result
+        common = {"logs": [entry["message"] for entry in record["logs"]][-500:], "evidence_dir": str(evidence)}
+        outcome = result.get("status")
+        if outcome == "completed":
+            record["status"] = "completed"
+            return finish("completed", None, result, **common)
+        if outcome == "blocked":
+            record["status"] = "needs_review"
+            _put_on_hold(profile_id, "Facebook logged out or stopped this account on the phone")
+            return finish("needs_review", result.get("reason"), **common)
+        record["status"] = "failed"
+        return finish("failed_before_publish", result.get("reason") or
+                      f"The phone runner exited with code {record.get('exit_code')}", **common)
+    except Exception as error:
+        record["status"] = "failed"
+        return finish("failed_before_publish", f"{type(error).__name__}: {error}")
+    finally:
+        record["ended_at"] = now_iso()
+        record["scheduler_lease"] = None
+        record["lifecycle_active"] = False
+        android_devices.release_job(serial)
 
 
 # --- setup's first-use pass -----------------------------------------------------------------------
@@ -343,6 +438,9 @@ def dispatch_comments(active_profiles: set[str]) -> list[str]:
     for execution, post in due:
         profile_id = execution["profile_id"]
         runtime = phone_of(profile_id)
+        if runtime and phone_busy(runtime["device_serial"]):
+            from backend.services import auto_warming
+            auto_warming.yield_phone_for_post(queue, runtime["device_serial"])
         if not runtime or profile_id in active_profiles or phone_busy(runtime["device_serial"]):
             continue
         if not android_devices.hold_for_job(runtime["device_serial"], f"comment:{execution['execution_id']}"):
@@ -398,7 +496,7 @@ async def run_comment(execution_id: str, runtime: dict, post: dict) -> None:
             args = ["--serial", serial, "--user", str(runtime["android_user_id"]), "--task", "comment",
                     "--kind", "reel" if post.get("type") == "reel" else "photo",
                     "--caption", execution.get("spun_caption") or post.get("base_caption") or "",
-                    "--comment", post.get("first_comment") or "",
+                    "--comment", execution.get("first_comment", post.get("first_comment")) or "",
                     "--evidence-dir", str(PROFILES_DIR / profile_id / "automation_evidence" / f"{execution_id}_comment")]
             tapped = execution.get("publish_tapped_at")
             if tapped and not execution.get("phone_comment_any_age"):

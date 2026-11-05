@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
@@ -11,6 +12,9 @@ from backend.services.adb_client import AdbError, AdbUnavailable
 
 
 router = APIRouter(prefix="/api/devices", tags=["devices"])
+
+SCREEN_POLL_S = 2.0
+SCREEN_WAKE_GRACE_S = 10.0
 
 
 class DeviceRenameRequest(BaseModel):
@@ -34,6 +38,7 @@ class DeviceSettingsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     one_account_at_a_time: bool | None = None
     switch_from_app_only: bool | None = None
+    active_hours: bool | None = None
 
 
 class CreateUserRequest(BaseModel):
@@ -166,7 +171,13 @@ def set_pin(serial: str, request: PinRequest):
 @router.put("/{serial}/settings")
 def update_device_settings(serial: str, request: DeviceSettingsRequest):
     return _call(lambda: android_devices.update_device_settings(
-        serial, request.one_account_at_a_time, request.switch_from_app_only))
+        serial, request.one_account_at_a_time, request.switch_from_app_only, request.active_hours))
+
+
+@router.post("/{serial}/restart")
+def restart_phone(serial: str):
+    _call(lambda: android_devices.restart_phone(serial))
+    return {"success": True}
 
 
 @router.post("/{serial}/timezone")
@@ -224,7 +235,7 @@ async def _bridge(websocket: WebSocket, session: android_live.LiveSession) -> No
                 continue  # Ignore malformed input instead of dropping the view.
 
     tasks = [asyncio.create_task(video()), asyncio.create_task(control()),
-             asyncio.create_task(session.drain_device_messages())]
+             asyncio.create_task(session.drain_device_messages()), asyncio.create_task(_watch_screen(websocket, session))]
     try:
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in done:
@@ -236,6 +247,27 @@ async def _bridge(websocket: WebSocket, session: android_live.LiveSession) -> No
     finally:
         for task in tasks:
             task.cancel()
+
+
+async def _watch_screen(websocket: WebSocket, session: android_live.LiveSession) -> None:
+    """Tells the viewer when the phone's screen turns off or on, because a sleeping phone only streams black.
+
+    A screen that sleeps just after the stream starts is woken instead, so opening the viewer needs no extra click.
+    """
+    awake = True
+    wake_until = time.monotonic() + SCREEN_WAKE_GRACE_S
+    while True:
+        try:
+            current = await asyncio.to_thread(session.client.screen_awake, session.serial)
+            if current is False and time.monotonic() < wake_until:
+                await asyncio.to_thread(session.client.wake_screen, session.serial)
+                current = None  # The next reading shows whether it woke.
+        except AdbError:
+            current = None  # A slow adb call is no reason to drop the view; the video task notices a lost phone.
+        if current is not None and current != awake:
+            awake = current
+            await websocket.send_json({"type": "screen", "awake": awake})
+        await asyncio.sleep(SCREEN_POLL_S)
 
 
 async def _send_error(websocket: WebSocket, message: str) -> None:

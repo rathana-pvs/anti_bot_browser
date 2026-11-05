@@ -172,6 +172,8 @@ export interface PhotoImport { assets: ReelAsset[]; errors: string[] }
 export interface ReelPhoto { id: string; filename: string }
 
 export interface CreatedReelMedia {
+  goal?: ReelGoal;
+  websiteSource?: { title: string; text: string; credit: string; cover_file: string };
   jobId: string;
   filename: string;
   /** A video goes to Posts as a Reel (whatever its ratio) or to Live; a photo goes to Posts as a feed post. */

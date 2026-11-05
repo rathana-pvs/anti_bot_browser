@@ -49,7 +49,7 @@ export function phoneTimeReport(device: AndroidDevice, profiles: Profile[], prox
   const zone = phoneZone(device);
   const auto = device.health?.timezone?.auto ?? null;
   const accounts = profiles
-    .filter(profile => profile.runtime?.device_serial === device.serial)
+    .filter(profile => (profile.runtime?.device_serial === device.serial || device.aliases?.includes(profile.runtime?.device_serial ?? '')))
     .map(profile => ({ profile, zone: proxies.find(proxy => proxy.id === profile.network.proxy_id)?.timezone || '' }))
     .filter(entry => entry.zone);
   const isolated = device.one_account_at_a_time !== false;

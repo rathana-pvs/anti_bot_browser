@@ -15,7 +15,7 @@ import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from backend.services.adb_client import AdbClient, AdbError, AdbUnavailable, validate_serial
+from backend.services.adb_client import AdbClient, AdbError, AdbUnavailable, validate_serial, canonical_serial
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +108,8 @@ def server_command(scid: int) -> list[str]:
         f"scid={scid:08x}", "log_level=info", "tunnel_forward=true", "audio=false", "control=true",
         "video_codec=h264", f"max_size={MAX_SIZE}", "video_bit_rate=4000000", "max_fps=30",
         "clipboard_autosync=false", "cleanup=true", "power_on=true",
+        # A sleeping phone streams black. Android honours this only while plugged in; cleanup restores the setting.
+        "stay_awake=true",
     ]
 
 
@@ -139,10 +141,13 @@ class LiveSession:
     _stderr: list[str] = field(default_factory=list)
 
     async def start(self) -> None:
+        # Switching users does not restart the idle timer, so the phone can sleep just as the stream starts.
+        await asyncio.to_thread(self.client.wake_screen, self.serial)
         await asyncio.to_thread(_ensure_server_on_phone, self.client, self.serial)
         self.port = await asyncio.to_thread(self.client.forward, self.serial, f"localabstract:scrcpy_{self.scid:08x}")
+        transport = await asyncio.to_thread(self.client.transport_serial, self.serial)
         self.process = await asyncio.create_subprocess_exec(
-            self.client.binary, "-s", self.serial, "shell", *server_command(self.scid),
+            self.client.binary, "-s", transport, "shell", *server_command(self.scid),
             stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
         asyncio.create_task(self._collect_output())
         try:
@@ -225,6 +230,7 @@ _sessions: dict[str, LiveSession] = {}
 async def open_session(serial: str, client: AdbClient | None = None) -> LiveSession:
     """Start a live session, replacing any earlier one on the same phone."""
     validate_serial(serial)
+    serial = canonical_serial(serial)
     client = client or AdbClient()
     if not client.binary:
         raise AdbUnavailable("ADB is not installed. Install Android platform-tools and reopen the app.")

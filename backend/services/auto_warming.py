@@ -97,10 +97,17 @@ def candidates(queue: dict, configs: dict, health: dict, history: dict, now_ms: 
         stage = (health.get(pid) or {}).get("stage")
         if stage not in STAGE_WEIGHT or pid in busy:
             continue
-        if (config.get("runtime") or {}).get("kind") == "android_user" or (config.get("automation") or {}).get("enabled") is False:
+        phone = (config.get("runtime") or {}).get("kind") == "android_user"
+        automation = config.get("automation") or {}
+        # Phone accounts are created with automation marked unavailable; only another reason keeps them out.
+        if automation.get("enabled") is False and automation.get("reason") != "android_automation_unavailable":
             continue
         if not active_hours.persona_hours_admit(config, now_ms):
             continue
+        if phone:
+            from backend.services import android_jobs
+            if not android_jobs.can_take_auto_visit(config):
+                continue
         habits = persona_day(config, now_ms)
         if habits["rest_day"]:
             continue
@@ -112,6 +119,10 @@ def candidates(queue: dict, configs: dict, health: dict, history: dict, now_ms: 
         if visits_today >= DAILY_VISIT_CAP[stage]:
             continue
         if visits and now_ms - max(visits) < GAP_AFTER_VISIT_MS:
+            continue
+        # A phone visit can fail before it starts (proxy, Wi-Fi); it waits as long as after a good one.
+        attempts = [_ms(e["at"]) for e in entries if e.get("kind") == "warming"] if phone else []
+        if attempts and now_ms - max(attempts) < GAP_AFTER_VISIT_MS:
             continue
         if posts and now_ms - max(posts) < GAP_AFTER_POST_MS:
             continue
@@ -340,6 +351,21 @@ def yield_for_post(queue: dict, execution: dict) -> bool:
     lowest = min(visits, key=lambda visit: (visit.get("auto_warming") or {}).get("score", 0))
     request_yield(lowest["profile_id"], "post_needs_slot")
     return True
+
+
+def yield_phone_for_post(queue: dict, serial: str) -> bool:
+    """A phone runs one job at a time, so its running visit ends for work on any of its accounts.
+    No browser stays open to hand over: the post starts from the launcher."""
+    from backend.services import android_jobs
+    asked = False
+    for visit in running_visits(queue):
+        pid = visit.get("profile_id")
+        phone = android_jobs.phone_of(pid)
+        if phone and phone.get("device_serial") == serial:
+            if pid not in read_yields():
+                request_yield(pid, "post_needs_phone")
+            asked = True
+    return asked
 
 
 def summary() -> dict:
