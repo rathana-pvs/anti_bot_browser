@@ -458,6 +458,8 @@ fn get_api_session(state: State<'_, ApiSession>) -> ApiSessionInfo {
     }
 }
 
+const PROXY_LIST_FILENAME: &str = "selected_proxies.txt";
+
 fn safe_support_filename(filename: &str) -> String {
     let basename = Path::new(filename)
         .file_name()
@@ -499,11 +501,7 @@ fn available_download_path(downloads_dir: &Path, filename: &str) -> PathBuf {
     downloads_dir.join(format!("{stem}-{}.{}", Uuid::new_v4().simple(), extension))
 }
 
-#[tauri::command]
-fn save_support_bundle(app: AppHandle, filename: String, bytes: Vec<u8>) -> Result<String, String> {
-    if bytes.is_empty() {
-        return Err("The generated support ZIP was empty.".to_string());
-    }
+fn save_to_downloads(app: &AppHandle, filename: &str, bytes: &[u8]) -> Result<String, String> {
     let downloads_dir = app
         .path()
         .download_dir()
@@ -511,10 +509,26 @@ fn save_support_bundle(app: AppHandle, filename: String, bytes: Vec<u8>) -> Resu
         .map_err(|_| "Could not locate the Downloads folder.".to_string())?;
     std::fs::create_dir_all(&downloads_dir)
         .map_err(|error| format!("Could not create the Downloads folder: {error}"))?;
-    let destination = available_download_path(&downloads_dir, &safe_support_filename(&filename));
+    let destination = available_download_path(&downloads_dir, filename);
     std::fs::write(&destination, bytes)
-        .map_err(|error| format!("Could not save the support ZIP: {error}"))?;
+        .map_err(|error| format!("Could not save {filename}: {error}"))?;
     Ok(destination.display().to_string())
+}
+
+#[tauri::command]
+fn save_support_bundle(app: AppHandle, filename: String, bytes: Vec<u8>) -> Result<String, String> {
+    if bytes.is_empty() {
+        return Err("The generated support ZIP was empty.".to_string());
+    }
+    save_to_downloads(&app, &safe_support_filename(&filename), &bytes)
+}
+
+#[tauri::command]
+fn save_proxy_list(app: AppHandle, contents: String) -> Result<String, String> {
+    if contents.is_empty() {
+        return Err("No proxies to export.".to_string());
+    }
+    save_to_downloads(&app, PROXY_LIST_FILENAME, contents.as_bytes())
 }
 
 
@@ -1373,6 +1387,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_api_session,
             save_support_bundle,
+            save_proxy_list,
             reel_export::export_reel_video,
             reel_export::export_reel_photo,
             reel_import::pick_reel_audio,

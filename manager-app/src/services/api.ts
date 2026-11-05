@@ -525,6 +525,21 @@ export async function deleteSelectedProxies(proxyIds: string[]): Promise<ProxyDe
   return res.json();
 }
 
+/** Saves the text to Downloads and returns where it went. */
+export async function saveProxyList(contents: string): Promise<string> {
+  if (isDesktopApp()) return invoke<string>('save_proxy_list', { contents });
+  const filename = 'selected_proxies.txt';
+  const url = URL.createObjectURL(new Blob([contents], { type: 'text/plain' }));
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  return filename;
+}
+
 // Automation API Functions
 export async function runAutomation(
   params: import('../types/automation').RunAutomationParams

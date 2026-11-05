@@ -38,6 +38,11 @@ export function formatProxyGeography(proxy: ProxyItem): string {
   return [location, proxy.timezone].filter(Boolean).join(' · ') || 'Location unknown';
 }
 
+/** One IP per line for a provider's replace page. Holds no port or password; proxies sharing an IP appear once. */
+export function proxyIpListText(proxies: ProxyItem[]): string {
+  return [...new Set(proxies.map(proxy => proxy.host))].join('\n') + '\n';
+}
+
 const QUALITY_LABEL: Record<NonNullable<ProxyItem['speed_quality']>, string> = {
   good: 'Good', poor: 'Poor', check_failed: 'Test failed', untested: 'Untested',
 };

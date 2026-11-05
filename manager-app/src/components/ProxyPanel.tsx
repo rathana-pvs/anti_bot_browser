@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { formatProxyGeography, ProxyItem } from '../types/proxy';
-import { checkProxyGeography, importProxies, refreshProxyStatuses, testProxyPing, deleteSelectedProxies, testSavedProxySpeed, NetworkSpeedResult } from '../services/api';
-import { Globe, Plus, Trash2, Activity, MapPin, X, Loader2, Search, Lock, Folder, Gauge, Monitor, Smartphone } from 'lucide-react';
+import { formatProxyGeography, ProxyItem, proxyIpListText } from '../types/proxy';
+import { checkProxyGeography, importProxies, refreshProxyStatuses, testProxyPing, deleteSelectedProxies, testSavedProxySpeed, saveProxyList, NetworkSpeedResult } from '../services/api';
+import { Download, Globe, Plus, Trash2, Activity, MapPin, X, Loader2, Search, Lock, Folder, Gauge, Monitor, Smartphone } from 'lucide-react';
 import { useAppDialog } from './ui/AppDialogProvider';
 import { Checkbox } from './ui/Checkbox';
 import { Select } from './ui/Select';
@@ -187,6 +187,18 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
     }
   };
 
+  const handleExport = async () => {
+    const selected = proxies.filter(p => selectedIds.has(p.id));
+    if (!selected.length) return;
+    try {
+      const savedTo = await saveProxyList(proxyIpListText(selected));
+      const ips = new Set(selected.map(p => p.host)).size;
+      await showAlert(`Saved ${ips} ${ips === 1 ? 'IP' : 'IPs'} to ${savedTo}.`, { title: 'Proxy IPs exported', variant: 'success' });
+    } catch (err: any) {
+      await showAlert(err.message || String(err), { title: 'Proxy export failed', variant: 'danger' });
+    }
+  };
+
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden bg-background select-none">
       <FolderList automatic value={folder} onChange={setFolder} folders={folderEntries} total={proxies.length} attention={0}
@@ -243,6 +255,10 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
           {selectedIds.size > 0 && (
             <>
               <button onClick={() => checkSpeeds([...selectedIds])} disabled={busy} className="px-2 py-1.5 text-xs text-blue-300 disabled:opacity-40">Check selected download/upload</button>
+              <button onClick={handleExport}
+                className="flex items-center gap-1.5 rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800">
+                <Download className="h-3.5 w-3.5" />Export IPs ({selectedIds.size})
+              </button>
               <button onClick={() => setSelectedIds(new Set())} disabled={busy} className="px-2 py-1.5 text-xs text-zinc-400 hover:text-white disabled:opacity-40">Clear selection</button>
               <button onClick={() => handleDelete([...selectedIds])} disabled={busy || !proxies.some(p => selectedIds.has(p.id) && !inUse(p))}
                 className="flex items-center gap-1.5 rounded-md border border-red-900/60 bg-red-950/30 px-3 py-1.5 text-xs text-red-300 hover:bg-red-950/60 disabled:opacity-40">
