@@ -1,3 +1,18 @@
+# Version 2.0.1
+
+- Start Live broadcasts on PC accounts with default server and Producer URLs;
+  the current stream key is copied from Live Producer before each broadcast.
+- Always paste Live titles and captions so text entry stays within the
+  preparation budget.
+- Give post-broadcast comments their full completion budget after End begins.
+  Confirm submission when the input clears or the text appears and delivery
+  notices have cleared, including when Facebook shortens displayed links.
+- Clarify Live account selection and settings: Live runs on PC accounts only.
+
+**Linux only.** After installing, run **Settings → Setup and repair → Install /
+update runtime** when prompted. Existing profiles, sessions, and settings remain
+in persistent app storage.
+
 # Version 2.0.0
 
 - Manage Android phones alongside PC browser accounts. Create isolated phone
