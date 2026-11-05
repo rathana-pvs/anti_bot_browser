@@ -59,6 +59,8 @@ UPLOAD_NEVER_SEEN_S = 60
 # The comment box's placeholder: "Write a comment..." on posts, "Add a comment" in the reel player, and
 # "Comment as NAME" under the "Get the ball rolling" sheet of a post with no comments yet.
 COMMENT_BOX = ["Write a comment", "Add a comment", "Comment as"]
+# Swipes down the profile looking for its tabs; promo cards can push them about three swipes below the top.
+PROFILE_TAB_SCROLLS = 6
 # Seconds spent reading between scrolls of a warming session.
 READING_PAUSES = {"quick": (1.0, 3.0), "balanced": (2.5, 5.5), "relaxed": (5.0, 10.0)}
 
@@ -637,9 +639,21 @@ class Flows:
     async def open_profile(self) -> None:
         await self._tap_profile_picture()
         # A Page's profile has an All tab, with its Posts list further down. It reopens on the tab it
-        # last showed, so the tab is tapped.
-        _, tab, _ = await self.wait_for("profile", ["Posts", "All"], exact=True, timeout=15)
-        await self.device.tap(tab)
+        # last showed, so the tab is tapped. Promo cards can push the tabs below the screen.
+        dev = self.device
+        timeout = 15
+        for _ in range(PROFILE_TAB_SCROLLS):
+            try:
+                _, tab, _ = await self.wait_for("profile", ["Posts", "All"], exact=True, timeout=timeout,
+                                                evidence=False)
+                await dev.tap(tab)
+                return
+            except StepFailed:
+                await self.scroll(dev.pt(540, 1700), dev.pt(540, 1150))
+                await dev.settle(timeout=2.0)
+                timeout = 3
+        _, tab, _ = await self.wait_for("profile", ["Posts", "All"], exact=True, timeout=timeout)
+        await dev.tap(tab)
 
     async def find_and_comment(self, item: PostItem, published_at: float, waits=COMMENT_WAITS,
                                max_age_minutes: float | None = None) -> int:

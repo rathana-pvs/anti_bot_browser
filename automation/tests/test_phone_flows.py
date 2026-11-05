@@ -87,6 +87,25 @@ class FakeDevice:
         self.deleted.append(uri)
 
 
+class ProfileWithCards(FakeDevice):
+    """A profile whose Posts tab shows only after enough swipes (`None`: never)."""
+
+    def __init__(self, swipes_to_tabs):
+        super().__init__([lines(("What's on your mind?", 300))])
+        self.swipes_to_tabs = swipes_to_tabs
+        self.reads = 0
+
+    async def read(self):
+        self.t += 0.3
+        self.reads += 1
+        if self.reads == 1:
+            return self.screens[0]
+        swipes = sum(action[0] == "swipe" for action in self.actions)
+        if self.swipes_to_tabs is not None and swipes >= self.swipes_to_tabs:
+            return lines(("Posts", 900))
+        return lines(("0 followers", 300), ("Get more out of your profile", 550))
+
+
 def run(coroutine):
     return asyncio.run(coroutine)
 
@@ -378,6 +397,20 @@ class PublishTests(unittest.TestCase):
         device = FakeDevice([lines(("What's on your mind?", 300)), lines(("All", 1100), ("Photos", 1100))])
         run(Flows(device, lambda **e: None).open_profile())
         self.assertIn(("tap", (100.0, 1100.0)), device.actions)
+
+    def test_profile_scrolls_past_promo_cards_to_its_tabs(self):
+        device = ProfileWithCards(swipes_to_tabs=3)
+        run(Flows(device, lambda **e: None).open_profile())
+        self.assertEqual(sum(action[0] == "swipe" for action in device.actions), 3)
+        self.assertEqual(device.actions[-1], ("tap", (100.0, 900.0)))
+
+    def test_profile_without_tabs_fails_after_its_scrolls(self):
+        device = ProfileWithCards(swipes_to_tabs=None)
+        with self.assertRaises(StepFailed):
+            run(Flows(device, lambda **e: None).open_profile())
+        self.assertEqual(sum(action[0] == "swipe" for action in device.actions), 6)
+        self.assertTrue(any(action[0] == "snapshot" and action[1].startswith("fail_profile")
+                            for action in device.actions))
 
     def test_page_photo_composer_goes_straight_to_post(self):
         device = FakeDevice([lines(("Create post", 50), ("POST", 60), ("court", 300))])
