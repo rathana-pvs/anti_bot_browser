@@ -83,6 +83,25 @@ def test_reel_rejects_bad_input():
 # --- renderer -------------------------------------------------------------
 
 @pytest.mark.parametrize('ratio', ['9:16', '4:5'])
+def test_hot_headline_with_no_room_under_subject_moves_up_instead_of_failing(ratio, creator, reel):
+    reel.look, reel.ratio = 'hot', ratio
+    reel.scenes[0].headline = 'Iran reports fires on tankers and captured US drones'
+    reel.scenes[0].detail = 'The IRGC says two oil tankers and a tugboat caught fire in the Strait of Hormuz.'
+    reel.scenes[0].focal_x = .436
+    images, logo, _ = creator.validate_assets(reel)
+    plan = Plan(reel, 1080, images, logo)
+    assert max(e.y + e.tile.height for e in plan.scene_elements[0]) <= plan.px(plan.limit)
+
+
+def test_hot_text_too_long_for_the_full_frame_still_fails(creator, reel):
+    reel.look = 'hot'
+    reel.scenes[0].headline = ' '.join(['Unbreakablewordsthatneverfitonline'] * 8)
+    reel.scenes[0].focal_x = .436
+    with pytest.raises(ValueError, match='too long'):
+        creator.validate_assets(reel)
+
+
+@pytest.mark.parametrize('ratio', ['9:16', '4:5'])
 @pytest.mark.parametrize('look', list(LOOKS))
 def test_every_look_renders_in_both_ratios(look, ratio, creator, reel):
     reel.look, reel.ratio = look, ratio

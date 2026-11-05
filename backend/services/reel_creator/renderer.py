@@ -776,13 +776,7 @@ class Plan:
         # Below a high subject the block starts under the face (about .14 of the frame past its center), and the
         # headline shrinks to fit what is left; it is then pushed down to the bottom of the safe area.
         out, y = [], max(self.inset + 130, round((subject + .14) * self.DH)) if high else self.inset + 130
-        if self.reel.tag_text:
-            pill = self._tag(self.reel.tag_text, px(42), self._ink_on(self.accent), accent, 14, 72, 24)
-            out.append(Element(pill, px(LEFT), px(y), 0, .5, 'pop', role='label'))
-            if self._source:
-                tile, base = self._text(self._source.upper(), px(32), WHITE, self._face('label', 'condensed-semi'), spacing=px(2))
-                out.append(Element(tile, px(LEFT) + pill.width + px(16), px(y) + (px(72) + round(px(32) * .7)) // 2 - base, .3, .5, 'fade', role='label'))
-            y += 72 + 34
+        tag_height = 72 + 34 if self.reel.tag_text else 0
         reserve, sticker = 0, None
         if scene.detail_text:  # the sticker claims the bottom first; the headline gets what is left
             face, d0, d1 = self.type['detail']
@@ -794,7 +788,21 @@ class Plan:
                 tile, base = self._text(line, ds, self._ink('detail', self._ink_on(fill[:3])), face, shadow=False)
                 sticker.alpha_composite(tile, (pad - px(8), px(22) + k * round(ds * 1.32) + round(ds) - base))
             reserve = sticker.height / self.s + 52
-        hl, hs, _, _, block = self._fit(scene.headline, '', self.text_w, self.limit - y - reserve)
+        try:
+            hl, hs, _, _, block = self._fit(scene.headline, '', self.text_w, self.limit - y - tag_height - reserve)
+        except ValueError:
+            if not high:
+                raise
+            # Too little room under the subject: use the full height, still pushed to the bottom below.
+            y = self.inset + 130
+            hl, hs, _, _, block = self._fit(scene.headline, '', self.text_w, self.limit - y - tag_height - reserve)
+        if self.reel.tag_text:
+            pill = self._tag(self.reel.tag_text, px(42), self._ink_on(self.accent), accent, 14, 72, 24)
+            out.append(Element(pill, px(LEFT), px(y), 0, .5, 'pop', role='label'))
+            if self._source:
+                tile, base = self._text(self._source.upper(), px(32), WHITE, self._face('label', 'condensed-semi'), spacing=px(2))
+                out.append(Element(tile, px(LEFT) + pill.width + px(16), px(y) + (px(72) + round(px(32) * .7)) // 2 - base, .3, .5, 'fade', role='label'))
+            y += tag_height
         bottom = px(y)
         if block:
             lines, bottom = self._headline(hl, hs, WHITE, px(LEFT), px(y), .15, stroke=max(2, px(5)), shadow=False)
