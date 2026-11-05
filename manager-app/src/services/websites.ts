@@ -45,6 +45,18 @@ export function readMoreReady(value: ReadMoreDraft | undefined, type: string, me
   if (value.enabled) return Boolean(value.preparation?.ready && value.preparedFingerprint === readMoreFingerprint(value, type, media, caption, profiles));
   return !value.uniqueCaptions || captionsReady(value, type, media, caption, profiles);
 }
+/** What is still missing before posting, in the words of the step the person has to take. */
+export function readMoreProblem(value: ReadMoreDraft | undefined, type: string, media: string, caption: string, profiles: string[]) {
+  if (!value || readMoreReady(value, type, media, caption, profiles)) return '';
+  if (!value.uniqueCaptions || captionsReady(value, type, media, caption, profiles)) return 'Publish the article and create links for every selected account.';
+  return value.enabled ? 'Generate unique captions, then publish the article and create links for every selected account.'
+    : 'Generate unique captions for every selected account.';
+}
+/** The article just published may not be in the loaded list yet, and a Select cannot show a value it has no option for. */
+export function articleOptions(articles: Pick<WebsiteArticle, 'id' | 'title'>[], article: Pick<WebsiteArticle, 'id' | 'title'>, labelOf: (id: string) => string) {
+  return [{ value: 'new', label: 'Publish a new article' }, ...articles.map(item => ({ value: item.id, label: labelOf(item.id) })),
+    ...(article.id && !articles.some(item => item.id === article.id) ? [{ value: article.id, label: article.title || 'Published article' }] : [])];
+}
 /** Drafts saved when unique captions were on by default did not choose them; ones already prepared keep them. */
 export function savedReadMore(value?: ReadMoreDraft) {
   return value?.uniqueCaptions && !value.captionsPreparationId && !value.preparation ? { ...value, uniqueCaptions: false } : value;

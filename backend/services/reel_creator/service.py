@@ -290,6 +290,25 @@ class ReelCreator:
                 partial.replace(path)
         return dict(id=photo_id, filename=path.name)
 
+    def create_cover(self, reel):
+        """The uploaded photo of the reel's first scene, without its text or crop, for a website article."""
+        image_ids = reel.image_ids()
+        if not image_ids:
+            return dict(filename='')
+        source = self.asset_path(image_ids[0], 'image')
+        path = self.media_dir / f'reel_cover_{image_ids[0]}.jpg'
+        if not path.is_file():
+            with self.poster_lock:
+                self.media_dir.mkdir(parents=True, exist_ok=True)
+                partial = path.with_suffix('.part')
+                with Image.open(source) as image:
+                    photo = image.convert('RGBA')
+                flat = Image.new('RGB', photo.size, 'white')  # JPEG has no transparency
+                flat.paste(photo, mask=photo.getchannel('A'))
+                flat.save(partial, format='JPEG', quality=95)
+                partial.replace(path)
+        return dict(filename=path.name)
+
     def photo_path(self, photo_id):
         return self.media_dir / f'reel_photo_{photo_id}.jpg'
 

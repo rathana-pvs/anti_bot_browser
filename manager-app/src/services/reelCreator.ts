@@ -116,6 +116,8 @@ export const reelApi = {
   video: async (id: string): Promise<Blob> => (await request(`/jobs/${id}/video`)).blob(),
   photo: async (reel: Reel, scene: number, ratio: ReelRatio): Promise<ReelPhoto> =>
     (await request(`/photo?scene=${scene}&ratio=${encodeURIComponent(ratio)}`, json('POST', reel))).json(),
+  /** The first scene's uploaded photo, without text, as a file a website article can use; empty when the reel has none. */
+  cover: async (reel: Reel): Promise<{ filename: string }> => (await request('/cover', json('POST', reel))).json(),
   savePhoto: async (photo: ReelPhoto): Promise<string> => {
     if (isDesktopApp()) return invoke<string>('export_reel_photo', { photoId: photo.id });
     download(await (await request(`/photos/${photo.id}/download`)).blob(), photo.filename);

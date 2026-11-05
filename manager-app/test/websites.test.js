@@ -103,3 +103,21 @@ test('drafts saved under the old default do not start asking for unique captions
   assert.equal(web.savedReadMore({ ...draft(), preparation: { ready: true } }).uniqueCaptions, true);
   assert.equal(web.savedReadMore(undefined), undefined);
 });
+test('the posting message names only the step that is missing', () => {
+  const value = { ...draft(), enabled: false, article: { ...web.emptyArticle(), content: 'Article' } };
+  assert.equal(web.readMoreProblem(undefined, 'reel', 'm', 'Caption', ['a']), '');
+  assert.equal(web.readMoreProblem({ ...value, uniqueCaptions: false }, 'reel', 'm', 'Caption', ['a']), '');
+  assert.equal(web.readMoreProblem(value, 'reel', 'm', 'Caption', ['a']), 'Generate unique captions for every selected account.');
+  assert.match(web.readMoreProblem({ ...value, enabled: true }, 'reel', 'm', 'Caption', ['a']), /^Generate unique captions, then publish/);
+  assert.match(web.readMoreProblem({ ...value, enabled: true, uniqueCaptions: false }, 'reel', 'm', 'Caption', ['a']), /^Publish the article/);
+  const generated = { ...value, enabled: true, captionsPreparationId: 'c', captions: { a: 'Written' } };
+  generated.captionsFor = web.captionsFingerprint(generated, 'reel', 'm', 'Caption', ['a']);
+  assert.match(web.readMoreProblem(generated, 'reel', 'm', 'Caption', ['a']), /^Publish the article/);
+});
+test('a published article missing from the loaded list still shows in the dropdown', () => {
+  const label = id => `listed ${id}`;
+  const values = (articles, article) => web.articleOptions(articles, article, label).map(item => item.value);
+  assert.deepEqual(values([], { id: '', title: '' }), ['new']);
+  assert.deepEqual(values([{ id: 'x', title: 'X' }], { id: 'x', title: 'X' }), ['new', 'x']);
+  assert.deepEqual(web.articleOptions([], { id: 'a1', title: 'Bridge' }, label)[1], { value: 'a1', label: 'Bridge' });
+});

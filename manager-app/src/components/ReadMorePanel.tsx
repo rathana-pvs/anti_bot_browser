@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Checkbox } from './ui/Checkbox';
 import { Select } from './ui/Select';
 import { uploadMediaFiles } from '../services/api';
-import { captionsFingerprint, captionsReady, captionSourceOf, emptyArticle, knownCaptions, readMoreFingerprint, readMoreReady, websiteRequest, openWebsiteManagement, WEBSITE_CONNECTIONS_CHANGED } from '../services/websites';
+import { articleOptions, captionsFingerprint, captionsReady, captionSourceOf, emptyArticle, knownCaptions, readMoreFingerprint, readMoreReady, websiteRequest, openWebsiteManagement, WEBSITE_CONNECTIONS_CHANGED } from '../services/websites';
 import type { ReadMoreDraft, WebsiteArticle, WebsiteConnection, WebsitePreparation } from '../services/websites';
 
 interface Catalog { articles: (WebsiteArticle & { status: string })[]; categories: { id: string; name: string }[]; authors: { id: string; name: string }[] }
@@ -73,7 +73,7 @@ export function ReadMorePanel({ value, onChange, type, media, caption, profiles,
     if (!mounted.current || latestCaptions.current !== started) return;
     onChange({ ...draft, captionsPreparationId: result.id, captionsFor: started, captionSource: captionSourceOf(draft.article, caption),
       captions: Object.fromEntries(ids.map(id => [id, known[id] ?? result.destinations[id].caption])) });
-    setMessage('Captions ready. Nothing was published. Review them below.');
+    setMessage('Captions ready. Nothing was published. Review them above.');
   });
   const prepare = () => run(async () => {
     if (!profiles.length) throw new Error('Choose accounts first.');
@@ -125,9 +125,11 @@ export function ReadMorePanel({ value, onChange, type, media, caption, profiles,
         <button type="button" className={button} onClick={openWebsiteManagement}>Manage websites</button>
       </div>
       {connections.length === 0 && <p className="text-zinc-400">Add a website in Settings → Websites, then select it here.</p>}
-      <Select ariaLabel="Website article" value={draft.article.id || 'new'} placeholder="New article" options={[
-        { value: 'new', label: 'Publish a new article' }, ...(catalog?.articles || []).map(item => ({ value: item.id, label: `${item.title} · ${item.status}` })),
-      ]} onValueChange={id => update({ article: id === 'new' ? { ...draft.article, id: '', cover_id: '' } : (() => { const { status: _status, ...article } = catalog!.articles.find(item => item.id === id)!; return article; })() })} />
+      <Select ariaLabel="Website article" value={draft.article.id || 'new'} placeholder="New article" options={articleOptions(catalog?.articles || [], draft.article, id => { const item = catalog!.articles.find(entry => entry.id === id)!; return `${item.title} · ${item.status}`; })} onValueChange={id => {
+        if (id === 'new') return update({ article: { ...draft.article, id: '', cover_id: '' } });
+        const found = catalog?.articles.find(item => item.id === id);
+        if (found) { const { status: _status, ...article } = found; update({ article }); }
+      }} />
       <input className={cls} aria-label="Article title" placeholder="Article title" maxLength={fieldLimit('title', 300, 300)} value={draft.article.title} onChange={event => article({ title: event.target.value })} />
       <textarea className={cls} aria-label="Article excerpt" placeholder={`Article excerpt (up to ${fieldLimit('excerpt', 160, 1000)} characters)`} maxLength={fieldLimit('excerpt', 160, 1000)} rows={2} value={draft.article.excerpt} onChange={event => article({ excerpt: event.target.value })} />
       <textarea className={cls} aria-label="Article content" placeholder="Full article text" maxLength={120000} rows={5} value={draft.article.content} onChange={event => article({ content: event.target.value })} />

@@ -106,6 +106,11 @@ def photo(value: Reel, scene: int = Query(default=0, ge=0, le=7), ratio: str = Q
     return checked(get_service().create_photo, value, scene, ratio)
 
 
+@router.post('/cover')
+def cover(value: Reel):
+    return checked(get_service().create_cover, value)
+
+
 @router.get('/photos/{photo_id}/download')
 def download_photo(photo_id: Id):
     path = get_service().photo_path(photo_id)

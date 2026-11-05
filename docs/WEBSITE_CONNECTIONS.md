@@ -1,8 +1,10 @@
 # Website connections and Read more
 
 The Post composer supports Read more for Photo, Reel, and Live. Reel Studio carries
-its saved article text, headline, source credit, goal, and generated cover into the
-composer. Imported media can use the same panel with article text entered there.
+its saved article text, headline, source credit, and goal into the composer. The
+article cover starts as the uploaded photo of the reel's first scene, without its text
+or crop; a reel with no photo uses its finished image. Imported media can use the same
+panel with article text entered there.
 
 ## Connect
 

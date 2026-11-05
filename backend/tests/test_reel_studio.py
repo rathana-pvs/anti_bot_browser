@@ -219,6 +219,28 @@ def test_writer_blocks_links_in_generated_text():
 
 # --- storage --------------------------------------------------------------
 
+def test_cover_is_the_first_uploaded_photo_without_text(creator, reel):
+    source = creator.asset_path(reel.image_ids()[0], 'image')
+    first = creator.create_cover(reel)
+    path = creator.media_dir / first['filename']
+    with Image.open(path) as cover, Image.open(source) as original:
+        assert cover.format == 'JPEG' and cover.size == original.size
+        assert all(abs(a - b) <= 3 for a, b in zip(cover.getpixel((5, 5)), original.convert('RGB').getpixel((5, 5))))
+    assert creator.create_cover(reel) == first  # the same file, so the article does not count as changed
+
+
+def test_cover_flattens_transparency_and_is_empty_without_a_photo(creator, reel):
+    data = io.BytesIO()
+    Image.new('RGBA', (40, 40), (0, 0, 0, 0)).save(data, 'PNG')
+    asset = creator.import_asset(data.getvalue(), 'clear.png', 'image')
+    scene = reel.scenes[0].model_copy(update=dict(image_id=asset['id']))
+    cover = creator.create_cover(reel.model_copy(update=dict(scenes=[scene])))
+    with Image.open(creator.media_dir / cover['filename']) as image:
+        assert image.getpixel((5, 5)) == (255, 255, 255)
+    blank = reel.scenes[0].model_copy(update=dict(image_id=''))
+    assert creator.create_cover(reel.model_copy(update=dict(scenes=[blank]))) == dict(filename='')
+
+
 def test_drafts_use_revisions(creator, reel):
     payload = dict(reel=reel.model_dump(), caption='hi', source_text='', source_url='')
     saved = creator.store.save_draft('a' * 32, 0, payload)
