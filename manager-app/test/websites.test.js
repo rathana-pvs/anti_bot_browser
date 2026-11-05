@@ -13,7 +13,7 @@ test('read more requires a reviewed preparation and ignores account ordering', (
   value.preparation = { ready: true };
   value.preparedFingerprint = web.readMoreFingerprint(value, 'reel', 'movie.mp4', 'Caption', ['a', 'b']);
   assert.equal(web.readMoreReady(value, 'reel', 'movie.mp4', 'Caption', ['b', 'a']), true);
-  for (const args of [['photo', 'movie.mp4', 'Caption', ['a', 'b']], ['reel', 'changed.mp4', 'Caption', ['a', 'b']], ['reel', 'movie.mp4', 'Edited', ['a', 'b']], ['reel', 'movie.mp4', 'Caption', ['a']]]) {
+  for (const args of [['photo', 'movie.mp4', 'Caption', ['a', 'b']], ['reel', 'changed.mp4', 'Caption', ['a', 'b']], ['reel', 'movie.mp4', 'Caption', ['a']]]) {
     assert.equal(web.readMoreReady(value, ...args), false);
   }
   value.article.seo_title = 'Edited SEO';
@@ -60,4 +60,18 @@ test('management shortcuts and saved connection changes notify separate subscrib
     web.notifyWebsiteConnectionsChanged();
     assert.equal(open, 1); assert.equal(changed, 1);
   } finally { globalThis.window = previous; }
+});
+test('the supplied caption only matters without unique captions', () => {
+  const unique = draft(), shared = { ...draft(), uniqueCaptions: false };
+  for (const value of [unique, shared]) { value.preparation = { ready: true }; value.preparedFingerprint = web.readMoreFingerprint(value, 'reel', 'movie.mp4', 'Caption', ['a']); }
+  assert.equal(web.readMoreReady(unique, 'reel', 'movie.mp4', 'Edited', ['a']), true);
+  assert.equal(web.readMoreReady(shared, 'reel', 'movie.mp4', 'Edited', ['a']), false);
+});
+test('saved captions are reused only for the same article and selected accounts', () => {
+  const value = { ...draft(), captions: { a: 'Hook A', gone: 'Hook gone' } };
+  value.captionSource = web.captionSourceOf(value.article);
+  assert.deepEqual(web.knownCaptions(value, ['a', 'new']), { a: 'Hook A' });
+  assert.deepEqual(web.knownCaptions({ ...value, uniqueCaptions: false }, ['a']), {});
+  assert.deepEqual(web.knownCaptions({ ...value, article: { ...value.article, content: 'Changed' } }, ['a']), {});
+  assert.deepEqual(web.knownCaptions({ ...value, captionSource: undefined }, ['a']), {});
 });

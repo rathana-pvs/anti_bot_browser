@@ -31,6 +31,8 @@ export interface WriteRequest {
   existing?: string[];
   /** The post caption is written only when this is true. */
   caption?: boolean;
+  /** Write only this for a finished reel; `existing` then holds its headlines (caption) or current hooks (hooks). */
+  part?: 'caption' | 'hooks';
   /** Rewrite one scene as this kind; `existing` then holds the other scenes' headlines. */
   rewrite?: SceneKind;
   /** That scene's place in the reel, 1 = the hook. */

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Checkbox } from './ui/Checkbox';
 import { Select } from './ui/Select';
 import { uploadMediaFiles } from '../services/api';
-import { emptyArticle, readMoreFingerprint, readMoreReady, websiteRequest, openWebsiteManagement, WEBSITE_CONNECTIONS_CHANGED } from '../services/websites';
+import { captionSourceOf, emptyArticle, knownCaptions, readMoreFingerprint, readMoreReady, websiteRequest, openWebsiteManagement, WEBSITE_CONNECTIONS_CHANGED } from '../services/websites';
 import type { ReadMoreDraft, WebsiteArticle, WebsiteConnection, WebsitePreparation } from '../services/websites';
 
 interface Catalog { articles: (WebsiteArticle & { status: string })[]; categories: { id: string; name: string }[]; authors: { id: string; name: string }[] }
@@ -12,7 +12,7 @@ export function ReadMorePanel({ value, onChange, type, media, caption, profiles,
   value?: ReadMoreDraft; onChange: (value: ReadMoreDraft) => void; type: 'photo' | 'reel' | 'live';
   media: string; caption: string; profiles: { id: string; name: string }[]; disabled?: boolean;
 }) {
-  const draft = value || { enabled: false, connectionId: '', article: emptyArticle(), uniqueCaptions: true };
+  const draft = value || { enabled: false, connectionId: '', article: emptyArticle(), uniqueCaptions: false };
   const [connections, setConnections] = useState<WebsiteConnection[]>([]);
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [busy, setBusy] = useState(false), [message, setMessage] = useState('');
@@ -65,12 +65,13 @@ export function ReadMorePanel({ value, onChange, type, media, caption, profiles,
     try { keys = JSON.parse(localStorage.getItem('app_api_keys') || '{}'); } catch { /* Backend reports missing key. */ }
     const preparation = await websiteRequest<WebsitePreparation>('/prepare', {
       request_id: requestId, connection_id: draft.connectionId, article: draft.article,
-      profiles: [...ids].sort(), post_type: type, media_file: media, caption,
-      unique_captions: draft.uniqueCaptions, api_key: keys.gemini || '', model: keys.gemini_model || 'gemini-3.8-flash',
+      profiles: [...ids].sort(), post_type: type, media_file: media, caption: draft.uniqueCaptions ? '' : caption,
+      unique_captions: draft.uniqueCaptions, known_captions: knownCaptions(draft, ids), api_key: keys.gemini || '', model: keys.gemini_model || 'gemini-3.8-flash',
     });
     if (!mounted.current || latest.current !== fingerprint) return;
     const published = { ...next, article: { ...next.article, id: preparation.article.id } };
     onChange({ ...published, preparation, preparedFingerprint: readMoreFingerprint(published, type, media, caption, ids),
+      captionSource: draft.uniqueCaptions ? captionSourceOf(published.article) : undefined,
       captions: Object.fromEntries(Object.entries(preparation.destinations).map(([id, destination]) => [id, destination.caption])) });
     setMessage('Article published. Review the captions and comment links below.');
   });
@@ -128,7 +129,8 @@ export function ReadMorePanel({ value, onChange, type, media, caption, profiles,
               value={value == null ? '' : String(value)} onChange={event => change(field.type === 'number' ? event.target.value === '' ? null : Number(event.target.value) : event.target.value)} />}
         </label>;
       })}
-      <label className="flex items-center gap-2 text-zinc-200"><Checkbox checked={draft.uniqueCaptions} onCheckedChange={uniqueCaptions => update({ uniqueCaptions })} />Generate unique captions for every account · 10–30 words</label>
+      <label className="flex items-center gap-2 text-zinc-200"><Checkbox checked={draft.uniqueCaptions} onCheckedChange={uniqueCaptions => update({ uniqueCaptions })} />Generate unique captions for every account · 10–30 words · replaces the caption above · uses more AI tokens</label>
+      {!draft.uniqueCaptions && !caption.trim() && <p className="text-amber-300">No caption yet. Add one above, or every account posts without a caption.</p>}
       <p className="text-zinc-400">Publishes the article immediately and creates a unique comment link for every account. {draft.uniqueCaptions ? 'Article text goes to your configured Gemini provider. ' : ''}{type === 'live' ? 'Live comments are posted after the broadcast ends.' : 'Links are posted in the first comment.'}</p>
       <button type="button" className={button} onClick={prepare} disabled={!connections.some(connection => connection.id === draft.connectionId) || !profiles.length || busy || Boolean(draft.preparation && ready)}>{busy ? 'Preparing…' : 'Publish article & generate captions and links'}</button>
       {draft.preparation && !ready && <p className="text-amber-300">Content or accounts changed. Prepare and review again before posting.</p>}

@@ -11,6 +11,7 @@ import uuid
 import httpx
 from pydantic import BaseModel, Field, SecretStr
 from backend.config import DATA_DIR
+from backend.services.reel_creator.news_ai import log_usage
 from automation.engine.text_entry_policy import contains_link
 
 VERSION = 1
@@ -110,6 +111,7 @@ def provider_generate(context, key, model, rejected):
     response.raise_for_status()
     if len(response.content) > 100000:
         raise ValueError('Provider response exceeded the limit')
+    log_usage('caption_hook', model, response.json())
     parts = response.json()['candidates'][0]['content']['parts']
     output = json.loads(''.join(part.get('text', '') for part in parts))
     hooks = output.get('hooks', [])

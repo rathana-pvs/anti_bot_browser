@@ -184,7 +184,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
     setPosts(current => current.some(row => row.id === id) ? current.map(row => row.id === id ? { ...row, type: incomingReel.postType } : row) : [...current, {
       id, type: incomingReel.postType, media_file: incomingReel.filename, media_name: incomingReel.name,
       preview_url: getSharedMediaUrl(incomingReel.filename), caption: incomingReel.caption || '',
-      readMore: { enabled: incomingReel.goal === 'readmore', connectionId: '', uniqueCaptions: true,
+      readMore: { enabled: incomingReel.goal === 'readmore', connectionId: '', uniqueCaptions: false,
         article: { ...emptyArticle(), title: incomingReel.websiteSource?.title || incomingReel.name,
           content: incomingReel.websiteSource?.text || '', excerpt: (incomingReel.websiteSource?.text || '').slice(0, 160),
           credit: incomingReel.websiteSource?.credit || '', cover_file: incomingReel.websiteSource?.cover_file || '' } },

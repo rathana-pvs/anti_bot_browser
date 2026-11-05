@@ -60,7 +60,10 @@ mode. New articles are not automatically marked Breaking or Featured. Existing
 articles retain those flags. Existing rich-text formatting is retained if the
 plain body text has not changed; edited body text is converted into paragraphs.
 
-Unique captions are optional and use the Gemini key/model configured in Settings.
+Unique captions are off by default and use the Gemini key/model configured in Settings.
+They replace the supplied caption. The AI reads the title and the first 4,000 characters of
+the article. Preparing again for the same article text keeps the existing captions, including
+your edits, and only asks the AI about newly added accounts.
 Each generated hook has 10–30 whitespace-separated words, no links, and must pass
 length, numeric-claim, and similarity checks. Caption generation is text-only.
 Review factual accuracy and edit or regenerate individual hooks before scheduling.

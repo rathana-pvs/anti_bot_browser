@@ -1362,3 +1362,47 @@ def test_api_makes_and_downloads_a_photo(client, reel):
     assert download.status_code == 200 and download.headers['content-type'] == 'image/jpeg'
     assert client.get(f"/api/reel-creator/photos/{'0' * 32}/download").status_code == 404
     assert client.get('/api/reel-creator/photos/../download').status_code == 404
+
+
+def test_caption_request_writes_only_the_caption_from_current_headlines():
+    seen = []
+    def provider(r):
+        seen.append(r.provider_context())
+        return dict(post_caption='The council approved a flood relief plan. ' * 3, comment_lead='What it means for you', hashtags=['#Flood'])
+    long = ARTICLE + ' ' + 'y' * 5000
+    result = write_reel(WriteRequest(api_key='k', model='gemini-test', text=long, source_url='https://example.com/story', goal='readmore',
+                                     part='caption', existing=['My edited headline']), provider=provider)
+    assert result['scenes'] == [] and result['hooks'] == []
+    assert 'Full story in the first comment.' in result['caption'] and '#Flood' in result['caption']
+    assert result['comment'] == 'What it means for you\nhttps://example.com/story'
+    assert seen[0]['reel_headlines'] == ['My edited headline'] and len(seen[0]['text']) == 4000
+    assert 'scene_count' not in seen[0] and 'source_url' not in seen[0]
+
+
+def test_part_requests_use_their_own_small_prompt():
+    from backend.services.reel_creator import writer
+    assert len(writer.CAPTION_SYSTEM) < len(writer.SYSTEM) / 2 and len(writer.HOOKS_SYSTEM) < len(writer.SYSTEM) / 2
+    assert 'scenes' not in writer.CaptionCopy.model_json_schema()['properties']
+    assert 'source_quote' not in str(writer.HooksCopy.model_json_schema())
+
+
+def test_hooks_request_returns_only_new_grounded_hooks():
+    result = write_reel(request(part='hooks', existing=['Council backs flood relief plan']), provider=lambda r: dict(hooks=[
+        'Council backs flood relief plan', 'Council approved 99 new homes', 'See www.example.com now', 'Who gets flood relief money?']))
+    assert result['hooks'] == ['Who gets flood relief money?'] and result['scenes'] == []
+    calls = []
+    def empty(r):
+        calls.append(r)
+        return {}
+    with pytest.raises(ValueError):
+        write_reel(request(part='hooks'), provider=empty)
+    assert len(calls) == 2
+
+
+def test_gemini_usage_is_logged_as_counts_only(caplog):
+    from backend.services.reel_creator.news_ai import log_usage
+    with caplog.at_level('INFO', logger='backend.services.reel_creator.news_ai'):
+        log_usage('caption', 'gemini-test', {'usageMetadata': {'promptTokenCount': 900, 'candidatesTokenCount': 80, 'totalTokenCount': 980},
+                                             'candidates': [{'content': 'private article words'}]})
+    assert 'action=caption' in caplog.text and 'input=900' in caplog.text and 'output=80' in caplog.text
+    assert 'private article words' not in caplog.text

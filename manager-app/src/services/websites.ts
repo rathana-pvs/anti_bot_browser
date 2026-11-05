@@ -16,10 +16,19 @@ export interface ReadMoreDraft {
   enabled: boolean; connectionId: string; article: WebsiteArticle; uniqueCaptions: boolean;
   requestId?: string; requestFingerprint?: string; preparedFingerprint?: string;
   preparation?: WebsitePreparation; captions?: Record<string, string>;
+  /** The article text the saved captions were written from. */
+  captionSource?: string;
 }
 export const emptyArticle = (): WebsiteArticle => ({ id: '', title: '', excerpt: '', content: '', cover_file: '', cover_id: '', alt: '', category: '', author: '', tags: '', credit: '', slug: '', seo_title: '', seo_description: '' });
 export function readMoreFingerprint(value: ReadMoreDraft, type: string, media: string, caption: string, profiles: string[]) {
-  return JSON.stringify([value.connectionId, value.article, value.uniqueCaptions, type, media, caption, [...profiles].sort()]);
+  // Unique captions replace the supplied caption, so editing it changes nothing.
+  return JSON.stringify([value.connectionId, value.article, value.uniqueCaptions, type, media, value.uniqueCaptions ? '' : caption, [...profiles].sort()]);
+}
+export const captionSourceOf = (article: WebsiteArticle) => JSON.stringify([article.title, article.content]);
+/** Captions already written for this article, so preparing again only asks the AI about accounts that have none. */
+export function knownCaptions(value: ReadMoreDraft, profiles: string[]): Record<string, string> {
+  if (!value.uniqueCaptions || value.captionSource !== captionSourceOf(value.article)) return {};
+  return Object.fromEntries(profiles.flatMap(id => value.captions?.[id] ? [[id, value.captions[id]]] : []));
 }
 export function readMoreReady(value: ReadMoreDraft | undefined, type: string, media: string, caption: string, profiles: string[]) {
   return !value?.enabled || Boolean(value.preparation?.ready && value.preparedFingerprint === readMoreFingerprint(value, type, media, caption, profiles));

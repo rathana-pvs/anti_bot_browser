@@ -1,5 +1,6 @@
 """Gemini access and source-grounding helpers shared by the writer and narration."""
 import json
+import logging
 import re
 import time
 import unicodedata
@@ -8,6 +9,17 @@ from typing import Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
+
+logger = logging.getLogger(__name__)
+# Short writing (captions, hooks) needs the top of an article, not all of it. Checks still read what they were given.
+SHORT_COPY_SOURCE_CHARS = 4000
+
+
+def log_usage(action, model, body):
+    """What one Gemini call cost, by action. Counts only: never the prompt, the answer or the key."""
+    usage = body.get('usageMetadata') or {}
+    logger.info('Gemini usage action=%s model=%s input=%s output=%s thinking=%s total=%s', action, model, usage.get('promptTokenCount'),
+                usage.get('candidatesTokenCount'), usage.get('thoughtsTokenCount'), usage.get('totalTokenCount'))
 
 
 def normalize_hashtags(value):
@@ -52,7 +64,7 @@ def numbers(value):
     return set(re.findall(r'\d+(?:[.,]\d+)*', value))
 
 
-def provider_generate(request, client_factory=httpx.Client, *, system, schema):
+def provider_generate(request, client_factory=httpx.Client, *, system, schema, action='news'):
     key = request.api_key.get_secret_value().strip()
     if not key:
         raise ValueError('Add your Gemini API key in Settings first.')
@@ -79,6 +91,7 @@ def provider_generate(request, client_factory=httpx.Client, *, system, schema):
                     if len(data) > 256000 or time.monotonic() - started > 65:
                         raise ValueError('The Gemini response exceeded the size or time limit. Try again.')
         body = json.loads(data)
+        log_usage(action, request.model, body)
         candidate = body.get('candidates', [{}])[0]
         if candidate.get('finishReason') not in (None, 'STOP'):
             raise ValueError('Gemini did not finish a usable news draft. Try clearer or shorter source text.')

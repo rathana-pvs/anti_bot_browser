@@ -34,7 +34,9 @@ your saved key). Pop Art downloads model weights once; photos, rendering and pre
    Choose accounts and post now or schedule from the draft.
 
 The post caption is never written automatically: press **Generate caption** when the reel is ready
-(or write your own), and use the refresh icon to rewrite it.
+(or write your own), and use the refresh icon to rewrite it. Captions and more hooks are separate small
+requests: they read the first 4,000 characters of the article, and a caption also reads the reel's current
+headlines. Each AI request logs its token counts as `Gemini usage` in the backend log.
 
 A link is read once, when the reel is created. More hooks, captions and added scenes are written
 from that saved article text, so the website is not contacted again.

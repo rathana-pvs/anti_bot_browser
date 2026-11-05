@@ -154,7 +154,7 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
   };
 
   /** One call to the AI writer; `source` is an article already read, or a pasted article or web address. */
-  const requestWriting = async (source: Article | string, look: WriteRequest['look'], extra: Pick<WriteRequest, 'scenes' | 'existing' | 'caption' | 'rewrite' | 'position' | 'replacing'> = {}, goal: ReelGoal = docRef.current.goal) => {
+  const requestWriting = async (source: Article | string, look: WriteRequest['look'], extra: Pick<WriteRequest, 'scenes' | 'existing' | 'caption' | 'part' | 'rewrite' | 'position' | 'replacing'> = {}, goal: ReelGoal = docRef.current.goal) => {
     const gemini = configuredGemini();
     const article = typeof source === 'string' ? await readArticle(source) : source;
     if (article.text.length < 80) throw new Error('Paste the full article text, or a link to it.');
@@ -213,8 +213,10 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
     return d.sourceText ? { text: d.sourceText, url: d.sourceUrl, title: d.sourceTitle, publisher: d.sourcePublisher, published: '' } : d.sourceUrl;
   };
   const moreHooks = () => attempt('hooks', async () => {
-    const { written } = await requestWriting(sourceInput(), 'auto');
-    setDoc(d => ({ ...d, hooks: written.hooks.slice(0, 4) }));
+    const d = docRef.current;
+    const current = [...new Set([...d.hooks, d.reel.scenes[0]?.headline.trim() ?? ''])].filter(Boolean).slice(0, MAX_SCENES);
+    const { written } = await requestWriting(sourceInput(), 'auto', { part: 'hooks', existing: current });
+    setDoc(doc => ({ ...doc, hooks: written.hooks.slice(0, 4) }));
   });
   /**
    * New words for one scene in its current type, from the same article; its photo, credit, timing and styles stay.
@@ -244,7 +246,7 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
   };
 
   const rewriteCaption = () => attempt('caption', async () => {
-    const { written } = await requestWriting(sourceInput(), 'auto', { caption: true });
+    const { written } = await requestWriting(sourceInput(), 'auto', { part: 'caption', existing: headlines(docRef.current.reel) });
     setDoc(d => ({ ...d, caption: written.caption, comment: written.comment }));
   });
 

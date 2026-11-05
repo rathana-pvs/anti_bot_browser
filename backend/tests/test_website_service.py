@@ -198,3 +198,51 @@ def test_regenerating_hook_keeps_website_article_and_links(monkeypatch):
     assert observed == HOOKS
     assert len(FakeWebsite.calls) == calls
     assert web.read_preparation(prepared['id'])[0]['destinations'] == prepared['destinations']
+
+
+def test_prompt_reads_what_the_number_check_reads_and_only_recent_hooks():
+    far_number = 'x' * 4100 + ' 777 homes'
+    req = request(unique_captions=True, article={'title': 'Council considers park changes', 'content': far_number, 'cover_id': '1'})
+    req._previous = [f'hook {index}' for index in range(100)]
+    context = req.provider_context()
+    assert '777' not in context['article'] and len(context['article']) == 4000
+    assert context['previous_hooks'] == req._previous[-30:]
+
+
+def test_retry_asks_only_for_the_hooks_still_missing():
+    wanted = []
+    def provider(value, **_):
+        wanted.append(len(value.provider_context()['profiles']))
+        return {'hooks': HOOKS[len(wanted) - 1:len(wanted)]}
+    assert web.generate_hooks(request(unique_captions=True), provider) == HOOKS
+    assert wanted == [2, 1]
+
+
+def test_adding_an_account_only_writes_that_accounts_hook(monkeypatch):
+    site(monkeypatch)
+    asked = []
+    def generate(value):
+        asked.append((value.profiles, value._previous))
+        return [HOOKS[1]]
+    monkeypatch.setattr(web, 'generate_hooks', generate)
+    prepared = web.prepare(request(unique_captions=True, known_captions={'page-a': HOOKS[0]}))
+    assert asked == [(['page-b'], [HOOKS[0]])]
+    assert prepared['destinations']['page-a']['caption'] == HOOKS[0]
+    assert prepared['destinations']['page-b']['caption'] == HOOKS[1]
+
+
+def test_all_known_captions_make_no_ai_request(monkeypatch):
+    site(monkeypatch)
+    monkeypatch.setattr(web, 'generate_hooks', Mock(side_effect=AssertionError('No AI needed')))
+    prepared = web.prepare(request(unique_captions=True, known_captions={'page-a': HOOKS[0], 'page-b': HOOKS[1]}))
+    assert [prepared['destinations'][name]['caption'] for name in ('page-a', 'page-b')] == HOOKS
+
+
+def test_supplied_caption_only_matters_without_unique_captions(monkeypatch):
+    site(monkeypatch)
+    monkeypatch.setattr(web, 'generate_hooks', lambda _: HOOKS)
+    assert web.fingerprint(request(unique_captions=True)) == web.fingerprint(request(unique_captions=True, known_captions={'page-a': HOOKS[0]}))
+    record = web.prepare(request(unique_captions=True))
+    post = web.snapshot_post({'type': 'reel', 'media_file': 'video.mp4', 'base_caption': 'Edited after preparing',
+                              'read_more': {'preparation_id': record['id']}}, ['page-a', 'page-b'])
+    assert web.execution_variant(post, 'page-a')['spun_caption'] == HOOKS[0]
