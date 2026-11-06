@@ -93,7 +93,7 @@ const QUALITY_ORDER = ['good', 'untested', 'poor', 'check_failed'];
 const GRADE_ORDER: ProxyGrade[] = ['good', 'slow', 'timeout', 'dead'];
 
 /** Working first, then slow, untested, timed out, not working. */
-const qualityRank = (proxy: ProxyItem) => proxy.rating
+export const qualityRank = (proxy: ProxyItem) => proxy.rating
   ? [0, 1, 3, 4][GRADE_ORDER.indexOf(proxy.rating.grade)]
   : [0.5, 2, 3.5, 4][QUALITY_ORDER.indexOf(proxy.speed_quality ?? 'untested')];
 

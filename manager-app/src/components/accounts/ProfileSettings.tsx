@@ -38,9 +38,11 @@ function Section({ id, title, description, children }: { id: string; title: stri
 }
 
 /** Every editable account setting on one page, saved together. */
-export function ProfileSettings({ profile, onSave, proxies = [], groups = [] }: {
+export function ProfileSettings({ profile, onSave, proxies = [], groups = [], profiles = [] }: {
   profile: Profile; onSave: (profileId: string, updates: ProfileUpdateRequest) => Promise<void>;
   proxies?: ProxyItem[]; groups?: string[];
+  /** All accounts, used to block renaming onto another account's name. */
+  profiles?: Profile[];
 }) {
   const { confirmTimezone, timezoneDialog } = useTimezoneConfirmation();
   const [resetKey, setResetKey] = useState(0);
@@ -115,6 +117,10 @@ export function ProfileSettings({ profile, onSave, proxies = [], groups = [] }: 
 
   if (!environment) return null;
 
+  // Names are matched case-insensitively and trimmed, ignoring this account so keeping its own name is fine.
+  const takenNames = new Set(profiles.filter((other) => other.id !== profile.id).map((other) => other.name.trim().toLowerCase()));
+  const nameExists = name.trim() !== '' && takenNames.has(name.trim().toLowerCase());
+
   const selectedPoolProxy = poolChoices.find((proxy) => proxy.id === networkChoice);
   const originalNetworkChoice = profile.network.mode === 'pool' && profile.network.proxy_id
     ? profile.network.proxy_id : profile.network.proxy_host ? 'custom' : 'direct';
@@ -146,6 +152,7 @@ export function ProfileSettings({ profile, onSave, proxies = [], groups = [] }: 
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (nameExists) { setError(`An account named “${name.trim()}” already exists. Choose a different name.`); return; }
     setIsSaving(true);
     setError(null);
     setSaved(false);
@@ -185,7 +192,9 @@ export function ProfileSettings({ profile, onSave, proxies = [], groups = [] }: 
       </div>}
 
       <Section id="settings-general" title="General">
-        <label className="block text-zinc-400">Name<input required value={name} onChange={(e) => setName(e.target.value)} className={input} /></label>
+        <label className="block text-zinc-400">Name<input required value={name} onChange={(e) => setName(e.target.value)} aria-invalid={nameExists}
+          className={nameExists ? `${input} border-red-800 focus:border-red-600` : input} /></label>
+        {nameExists && <p className="-mt-1 text-[11px] text-red-300">This name is already used by another account. Pick a unique name.</p>}
         <ProfileGroupField value={group} onChange={setGroup} groups={groups} />
         <div className="block text-zinc-400">
           <span className="mb-1 block">Account stage</span>
@@ -295,7 +304,7 @@ export function ProfileSettings({ profile, onSave, proxies = [], groups = [] }: 
         {error && <p role="alert" className="mr-auto text-red-300">{error}</p>}
         {saved && <span role="status" className="flex items-center gap-1.5 text-emerald-400"><Check className="h-3.5 w-3.5" />Saved</span>}
         <Button type="button" variant="ghost" disabled={isSaving} onClick={() => setResetKey(key => key + 1)}>Discard changes</Button>
-        <Button type="submit" loading={isSaving}>Save changes</Button>
+        <Button type="submit" loading={isSaving} disabled={nameExists}>Save changes</Button>
       </div>
     </form>
   </>;

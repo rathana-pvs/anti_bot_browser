@@ -113,7 +113,7 @@ export function AccountPage({ profile, devices, tab: requestedTab, onTabChange, 
       ? <div className="flex min-h-0 flex-1"><VncViewer profile={profile} onAction={(_id, action) => run(action)} embedded /></div>
       : <div className="min-h-0 flex-1 overflow-y-auto p-6">
         {tab === 'overview' && <AccountOverview profile={profile} proxies={proxies} profiles={profiles} devices={devices} activity={activity} onOpenQueue={onOpenQueue} onOpenTab={onTabChange} onToggleHold={() => handlers.toggleHold(profile)} onOpenDevice={onOpenDevice} onChanged={onReload} />}
-        {tab === 'settings' && <ProfileSettings profile={profile} onSave={onSave} proxies={proxies} groups={groups} />}
+        {tab === 'settings' && <ProfileSettings profile={profile} onSave={onSave} proxies={proxies} groups={groups} profiles={profiles} />}
         {tab === 'activity' && <AccountActivityTab profile={profile} recent={activity.recent}
           onOpenImage={(url, label) => setLightbox({ url, type: 'photo', name: label })} onToast={showToast} />}
       </div>}

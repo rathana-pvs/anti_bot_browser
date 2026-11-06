@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { accountLimit, formatProxyGeography, hasRoom, ProxyItem, proxyHolders, proxyIpListText } from '../types/proxy';
+import { accountLimit, formatProxyGeography, hasRoom, ProxyItem, proxyHolders, proxyIpListText, qualityRank } from '../types/proxy';
 import { checkProxyGeography, importProxies, refreshProxyStatuses, testProxyPing, deleteSelectedProxies, saveProxyList, updateAccountsPerProxy } from '../services/api';
 import { Download, Globe, Plus, Trash2, Activity, MapPin, X, Loader2, Search, Lock, Folder, Gauge, Monitor, Smartphone, Users } from 'lucide-react';
 import { useAppDialog } from './ui/AppDialogProvider';
 import { Checkbox } from './ui/Checkbox';
 import { Select } from './ui/Select';
+import { SortButton, sortRows, useSort } from './ui/sort';
 import { useProxyLocationFilter } from './ProxyLocationFilter';
 import { CheckRunBar, ProxyQualityCell, useProxyCheckRun } from './ProxyCheck';
 import { FolderList, ALL_FOLDERS } from './accounts/FolderList';
@@ -13,6 +14,8 @@ import { PROXY_FOLDERS } from '../types/proxy';
 import { Profile } from '../types/profile';
 
 const ACCOUNT_LIMIT_OPTIONS = Array.from({ length: 20 }, (_, i) => i + 1);
+
+type ProxySortKey = 'proxy' | 'location' | 'assignment' | 'latency' | 'quality';
 
 interface ProxyPanelProps {
   proxies: ProxyItem[];
@@ -48,6 +51,16 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
   const busy = isDeleting || isImporting || isRefreshingStatus || checkRun.running;
   const inUse = (proxy: ProxyItem) => proxyHolders(proxy).length > 0;
   const accountsOf = (proxy: ProxyItem) => proxyHolders(proxy).map(id => ({ id, profile: profiles.find(profile => profile.id === id) }));
+  const { sort, toggle } = useSort<ProxySortKey>();
+  const proxyValue = (proxy: ProxyItem, key: ProxySortKey): string | number | null => {
+    switch (key) {
+      case 'proxy': return `${proxy.host}:${proxy.port}`;
+      case 'location': return [proxy.country_code || proxy.country, proxy.city].filter(Boolean).join(' ') || null;
+      case 'assignment': return proxyHolders(proxy).length;
+      case 'latency': return proxy.latency_ms;
+      case 'quality': return qualityRank(proxy);
+    }
+  };
   // Every listed proxy carries the setting; an empty pool shows the last value saved here.
   const [savedLimit, setSavedLimit] = useState(1);
   const limit = proxies.length ? accountLimit(proxies[0]) : savedLimit;
@@ -57,14 +70,18 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
   const available = proxies.filter(p => p.group === 'Available').length;
   const poor = proxies.filter(p => p.group === 'Poor proxy').length;
   const query = search.trim().toLowerCase();
-  const visibleProxies = proxies.filter((proxy) => {
+  const filteredProxies = proxies.filter((proxy) => {
     if (folder !== ALL_FOLDERS && proxy.group !== folder) return false;
     if (filter === 'available' && inUse(proxy)) return false;
     if (filter === 'assigned' && !inUse(proxy)) return false;
     if (!inLocation.has(proxy.id)) return false;
     return !query || [proxy.host, String(proxy.port), proxy.username, ...accountsOf(proxy).flatMap(a => [a.id, a.profile?.name]),
       proxy.exit_ip, proxy.group, formatProxyGeography(proxy)].filter(Boolean).join(' ').toLowerCase().includes(query);
-  }).sort((a, b) => Number(inUse(b)) - Number(inUse(a)));
+  });
+  // A clicked column sorts within each folder; otherwise assigned proxies come first.
+  const visibleProxies = sort
+    ? sortRows(filteredProxies, sort, proxyValue)
+    : [...filteredProxies].sort((a, b) => Number(inUse(b)) - Number(inUse(a)));
   const selectableIds = visibleProxies.map((proxy) => proxy.id);
   const groups = PROXY_FOLDERS.filter(group => visibleProxies.some(p => p.group === group));
   const selectedVisible = selectableIds.filter((id) => selectedIds.has(id)).length;
@@ -296,11 +313,11 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
                     checked={allVisibleSelected ? true : selectedVisible > 0 ? 'indeterminate' : false}
                     onCheckedChange={(checked) => toggleSelection(selectableIds, checked)} />
                 </th>
-                <th className="px-3 py-2.5 font-medium">Proxy</th>
-                <th className="px-3 py-2.5 font-medium">Location / timezone</th>
-                <th className="px-3 py-2.5 font-medium">Assignment</th>
-                <th className="px-3 py-2.5 font-medium">Latency</th>
-                <th className="px-3 py-2.5 font-medium">Quality</th>
+                <th className="px-3 py-2.5 font-medium"><SortButton label="Proxy" column="proxy" sort={sort} onToggle={toggle} /></th>
+                <th className="px-3 py-2.5 font-medium"><SortButton label="Location / timezone" column="location" sort={sort} onToggle={toggle} /></th>
+                <th className="px-3 py-2.5 font-medium"><SortButton label="Assignment" column="assignment" sort={sort} onToggle={toggle} /></th>
+                <th className="px-3 py-2.5 font-medium"><SortButton label="Latency" column="latency" sort={sort} onToggle={toggle} /></th>
+                <th className="px-3 py-2.5 font-medium"><SortButton label="Quality" column="quality" sort={sort} onToggle={toggle} /></th>
                 <th className="w-28 px-3 py-2.5 text-right font-medium">Actions</th>
               </tr>
             </thead>

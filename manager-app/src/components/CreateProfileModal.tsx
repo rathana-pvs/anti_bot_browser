@@ -19,6 +19,8 @@ interface CreateProfileModalProps {
   onClose: () => void;
   onCreate: (request: ProfileCreateRequest) => Promise<void>;
   existingCount: number;
+  /** Names of every existing account, used to block duplicates. */
+  existingNames?: string[];
   proxies?: ProxyItem[];
   groups?: string[];
   devices?: AndroidDevice[];
@@ -40,7 +42,7 @@ const fallbackEnvironment = (): RequestedEnvironment => ({
 });
 
 export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
-  isOpen, onClose, onCreate, existingCount, proxies = [], groups = [], devices = [], phonePreset = null, onCreatePhone, onProxiesChanged,
+  isOpen, onClose, onCreate, existingCount, existingNames = [], proxies = [], groups = [], devices = [], phonePreset = null, onCreatePhone, onProxiesChanged,
 }) => {
   // An account lives on one device for good, so this is the first choice in the dialog.
   const [where, setWhere] = useState<'pc' | 'phone'>('pc');
@@ -132,6 +134,10 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
 
   if (!isOpen) return null;
 
+  // Names are matched case-insensitively and trimmed, so "Account 1" and " account 1 " collide.
+  const takenNames = new Set(existingNames.map((value) => value.trim().toLowerCase()));
+  const nameExists = name.trim() !== '' && takenNames.has(name.trim().toLowerCase());
+
   const availableProxies = freeProxies(proxies);
   const selectedProxy = availableProxies.find((proxy) => proxy.id === networkChoice);
 
@@ -169,6 +175,10 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
     event.preventDefault();
     if (isSaving) return;
     setError(null);
+    if (nameExists) {
+      setError(`An account named “${name.trim()}” already exists. Choose a different name.`);
+      return;
+    }
     setCreationStage('timezone');
     setIsSaving(true);
     try {
@@ -238,7 +248,7 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
 
         {where === 'phone'
           ? <PhoneAccountForm key={phonePreset ? `${phonePreset.serial}:${phonePreset.userId}` : 'phone'} devices={devices} preset={phonePreset}
-            proxies={proxies} groups={groups} onCancel={onClose} onProxiesChanged={onProxiesChanged}
+            proxies={proxies} groups={groups} existingNames={existingNames} onCancel={onClose} onProxiesChanged={onProxiesChanged}
             onCreate={async (serial, userId, request) => { await onCreatePhone(serial, userId, request); onClose(); }} />
           :
 
@@ -247,8 +257,10 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
             <fieldset disabled={isSaving} className="contents space-y-4">
             <label className="block text-zinc-400">
               <span className="mb-1.5 block font-medium">Account name</span>
-              <input required value={name} onChange={(e) => setName(e.target.value)}
-                className="w-full rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2 text-zinc-100 focus:border-zinc-600 focus:outline-none" />
+              <input required value={name} onChange={(e) => setName(e.target.value)} aria-invalid={nameExists}
+                className={cn('w-full rounded-md border bg-zinc-950 px-3 py-2 text-zinc-100 focus:outline-none',
+                  nameExists ? 'border-red-800 focus:border-red-600' : 'border-zinc-800 focus:border-zinc-600')} />
+              {nameExists && <span className="mt-1.5 block text-[11px] text-red-300">This name is already used by another account. Pick a unique name.</span>}
             </label>
 
             <ProfileGroupField value={group} onChange={setGroup} groups={groups} />
@@ -364,7 +376,7 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
             )}
             <div className="flex justify-end gap-2">
               <button type="button" disabled={isSaving} onClick={onClose} className="rounded border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-zinc-300 disabled:opacity-40">Cancel</button>
-              <button disabled={isSaving} type="submit" className="flex items-center gap-2 rounded bg-white px-4 py-1.5 font-semibold text-zinc-950 disabled:opacity-50">
+              <button disabled={isSaving || nameExists} type="submit" className="flex items-center gap-2 rounded bg-white px-4 py-1.5 font-semibold text-zinc-950 disabled:opacity-50">
                 {isSaving && !awaitingTimezoneConfirmation && <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />}
                 {isSaving ? awaitingTimezoneConfirmation ? 'Confirm timezone…' : creationStage === 'timezone' ? 'Checking timezone…' : 'Creating…' : 'Create account'}
               </button>

@@ -11,6 +11,7 @@ import { EmptyState } from '../ui/EmptyState';
 import { Input } from '../ui/Input';
 import { useContextMenu } from '../ui/ContextMenu';
 import { cn } from '../ui/cn';
+import { SortButton, sortRows, useSort } from '../ui/sort';
 import { AccountHandlers, FolderHandlers, accountMenu, bulkMenu, folderMenu } from './accountActions';
 import { ACCOUNT_DRAG_TYPE, ALL_FOLDERS, ATTENTION, FolderList, NO_FOLDER, SystemFolder } from './FolderList';
 import { STAGE_FOLDER_PREFIX, STAGE_META, STAGE_ORDER, StageBadge, StageView, stageFolder, stageView, useAccountHealth } from './accountHealth';
@@ -25,6 +26,19 @@ import { ProxyShareBadge } from './ProxyShareBadge';
 
 type StatusFilter = 'all' | 'running' | 'stopped';
 type TypeFilter = 'all' | 'browser' | 'android';
+type AccountSortKey = 'name' | 'device' | 'status' | 'network' | 'live' | 'period';
+
+function accountSortValue(profile: Profile, key: AccountSortKey,
+  ctx: { devices: AndroidDevice[]; proxies: ProxyItem[]; activity: Map<string, AccountActivity> }): string | number | null {
+  switch (key) {
+    case 'name': return profile.name;
+    case 'device': return deviceLabel(profile, ctx.devices);
+    case 'status': return isAndroid(profile) ? phoneStatus(profile, ctx.devices)?.label ?? null : STATUS_LABEL[profile.status];
+    case 'network': return networkSignal(profile, ctx.proxies).label;
+    case 'live': return liveSignal(profile).label;
+    case 'period': return ctx.activity.get(profile.id)?.posted ?? 0;
+  }
+}
 
 export function AccountsPage({ profiles, proxies, devices, groups, executions, handlers, folderHandlers, busyIds, onCreate, onOpenDevice }: {
   profiles: Profile[]; proxies: ProxyItem[]; devices: AndroidDevice[]; groups: string[]; executions: QueueExecutionItem[];
@@ -42,6 +56,7 @@ export function AccountsPage({ profiles, proxies, devices, groups, executions, h
   const [selected, setSelected] = useState<Set<string>>(new Set());
   // Always opens on Today; longer ranges are a deliberate, temporary choice.
   const [period, setPeriod] = useState<ActivityPeriod>(1);
+  const { sort, toggle: toggleSort } = useSort<AccountSortKey>();
   const menu = useContextMenu();
 
   const activity = useMemo(() => new Map(profiles.map(p => [p.id, activityFor(p.id, executions, period)])), [profiles, executions, period]);
@@ -76,7 +91,7 @@ export function AccountsPage({ profiles, proxies, devices, groups, executions, h
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return profiles.filter(p => {
+    const filtered = profiles.filter(p => {
       if (stageFilter && stages.get(p.id)?.stage !== stageFilter) return false;
       if (folder === NO_FOLDER && p.group) return false;
       if (!stageFilter && ![ALL_FOLDERS, NO_FOLDER].includes(folder) && (p.group || '') !== folder) return false;
@@ -85,8 +100,11 @@ export function AccountsPage({ profiles, proxies, devices, groups, executions, h
       if (kind === 'browser' && isAndroid(p)) return false;
       if (kind === 'android' && !isAndroid(p)) return false;
       return !q || [p.name, p.id, p.group || '', deviceLabel(p, devices)].some(value => value.toLowerCase().includes(q));
-    }).sort((a, b) => Number(!a.group) - Number(!b.group) || (a.group || '').localeCompare(b.group || '') || a.name.localeCompare(b.name));
-  }, [profiles, devices, status, kind, folder, search, stages, stageFilter]);
+    });
+    // A clicked column sorts the whole list; otherwise group accounts by folder, then name.
+    if (sort) return sortRows(filtered, sort, (p, key) => accountSortValue(p, key, { devices, proxies, activity }));
+    return filtered.sort((a, b) => Number(!a.group) - Number(!b.group) || (a.group || '').localeCompare(b.group || '') || a.name.localeCompare(b.name));
+  }, [profiles, devices, proxies, status, kind, folder, search, stages, stageFilter, sort, activity]);
 
   const attentionCount = profiles.filter(p => stages.get(p.id)?.stage === 'attention').length;
   const runningCount = profiles.filter(p => p.status === 'running').length;
@@ -170,27 +188,37 @@ export function AccountsPage({ profiles, proxies, devices, groups, executions, h
         </div>
       </div>
 
-      {selected.size > 0 && <div className="mx-6 mt-3 flex shrink-0 flex-wrap items-center gap-2 rounded-xl border border-blue-900 bg-blue-950/30 px-3 py-2 text-xs text-blue-100">
-        <span>{selected.size} selected</span>
-        <div className="ml-auto flex flex-wrap items-center gap-1">
-          {bulkMenu(selectedProfiles, handlers).map(item => <Button key={item.label} size="sm" variant="ghost" disabled={item.disabled}
-            className={item.danger ? 'text-red-300 hover:text-red-200' : 'text-blue-100'} onClick={item.onSelect}>{item.icon}{item.label}</Button>)}
-          <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())} aria-label="Clear selection"><X className="h-3.5 w-3.5" /></Button>
-        </div>
-      </div>}
-
       <div className="min-h-0 flex-1 overflow-y-auto px-6 py-3">
         <div className="overflow-hidden rounded-xl border border-zinc-800">
-          <div className={cn(ROW_GRID, 'border-b border-zinc-800 bg-zinc-950/60 px-3 py-2 text-[11px] text-zinc-500')}>
-            <Checkbox checked={allVisibleSelected ? true : selected.size > 0 ? 'indeterminate' : false} onCheckedChange={toggleAll} ariaLabel="Select all shown accounts" />
-            <span>Account</span><span>Device</span><span>Status</span><span className="hidden md:block">Network</span><span className="hidden md:block">Live</span><span className="hidden md:block">{periodInfo.column}</span><span />
+          <div className={cn(ROW_GRID, 'min-h-11 border-b border-zinc-800 px-3 text-[11px]', selected.size > 0 ? 'bg-blue-950/30 text-blue-100' : 'bg-zinc-950/60 text-zinc-500')}>
+            <span onClick={toggleAll} className="-ml-3 flex cursor-pointer items-center self-stretch pl-3 pr-2">
+              <Checkbox checked={allVisibleSelected ? true : selected.size > 0 ? 'indeterminate' : false} onCheckedChange={toggleAll} ariaLabel="Select all shown accounts" className="pointer-events-none" />
+            </span>
+            {selected.size > 0
+              ? <div className="col-[2/-1] flex flex-wrap items-center gap-1">
+                  <span className="mr-1 text-xs font-medium">{selected.size} selected</span>
+                  <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
+                    {bulkMenu(selectedProfiles, handlers).map(item => <Button key={item.label} size="sm" variant="ghost" disabled={item.disabled}
+                      className={item.danger ? 'text-red-300 hover:text-red-200' : 'text-blue-100'} onClick={item.onSelect}>{item.icon}{item.label}</Button>)}
+                    <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())} aria-label="Clear selection"><X className="h-3.5 w-3.5" /></Button>
+                  </div>
+                </div>
+              : <>
+                  <SortButton label="Account" column="name" sort={sort} onToggle={toggleSort} />
+                  <SortButton label="Device" column="device" sort={sort} onToggle={toggleSort} />
+                  <SortButton label="Status" column="status" sort={sort} onToggle={toggleSort} />
+                  <SortButton label="Network" column="network" sort={sort} onToggle={toggleSort} className="hidden md:inline-flex" />
+                  <SortButton label="Live" column="live" sort={sort} onToggle={toggleSort} className="hidden md:inline-flex" />
+                  <SortButton label={periodInfo.column} column="period" sort={sort} onToggle={toggleSort} className="hidden md:inline-flex" />
+                  <span />
+                </>}
           </div>
           {visible.length === 0 && <p className="px-3 py-10 text-center text-xs text-zinc-500">
             {stageFilter && !search && status === 'all' ? 'No accounts are in this stage right now.'
               : folder !== ALL_FOLDERS && !search && status === 'all' ? 'This folder is empty. Drag accounts here, or use Move to folder.' : 'No accounts match these filters.'}</p>}
           {visible.map(profile => <AccountRow key={profile.id} profile={profile} devices={devices} onOpenDevice={onOpenDevice} activity={activity.get(profile.id)!} stage={stages.get(profile.id)!}
             network={networkSignal(profile, proxies)} proxyShare={<ProxyShareBadge profile={profile} proxies={proxies} profiles={profiles} />} selected={selected.has(profile.id)} busy={busyIds.has(profile.id)} onToggle={() => toggle(profile.id)}
-            onOpen={() => handlers.open(profile.id, 'overview')} onDragStart={startDrag(profile)}
+            onOpen={() => handlers.open(profile.id, 'browser')} onDragStart={startDrag(profile)}
             menuItems={() => accountMenu(profile, handlers, { failureCutoff: periodStart(period) })}
             onOpenQueue={() => handlers.openQueue(profile.id)}
             onContextMenu={(e) => { const m = rowMenu(profile); menu.open(e, m.items, m.title); }}
@@ -229,7 +257,9 @@ function AccountRow({ profile, devices, onOpenDevice, network, proxyShare, activ
     aria-label={`${profile.name}, ${deviceLabel(profile, devices)}, ${phone?.label ?? STATUS_LABEL[profile.status]}`}
     className={cn(ROW_GRID, 'cursor-pointer border-b border-zinc-800/70 px-3 py-2.5 text-xs outline-none transition-colors last:border-b-0 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500',
       selected ? 'bg-blue-950/25' : 'hover:bg-zinc-900/60')}>
-    <span onClick={(e) => e.stopPropagation()}><Checkbox checked={selected} onCheckedChange={onToggle} ariaLabel={`Select ${profile.name}`} /></span>
+    <span onClick={(e) => { e.stopPropagation(); onToggle(); }} className="-my-2.5 -ml-3 flex cursor-pointer items-center self-stretch py-2.5 pl-3 pr-2">
+      <Checkbox checked={selected} onCheckedChange={onToggle} ariaLabel={`Select ${profile.name}`} className="pointer-events-none" />
+    </span>
     <div className="min-w-0">
       <p className="flex items-center gap-1.5 truncate font-medium text-zinc-100">
         {isAndroid(profile) && <Smartphone className="h-3.5 w-3.5 shrink-0 text-zinc-400" aria-label="Phone account" />}{profile.name}</p>

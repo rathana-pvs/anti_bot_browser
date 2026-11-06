@@ -492,6 +492,7 @@ export const App: React.FC = () => {
         onClose={() => setIsCreateModalOpen(false)}
         onCreate={handleCreate}
         existingCount={profiles.length}
+        existingNames={profiles.map((p) => p.name)}
         proxies={proxies}
         groups={profileGroups}
         devices={devices}

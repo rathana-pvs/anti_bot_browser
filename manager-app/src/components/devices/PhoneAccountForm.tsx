@@ -15,9 +15,11 @@ const NEW_USER = 'new';
 
 /** New account on a new or free Android user of a phone. Users that already hold an account, here or on
  *  another PC, are not offered; another PC's accounts are added from the Devices page. */
-export function PhoneAccountForm({ devices, preset, proxies, groups, onCreate, onCancel, onProxiesChanged }: {
+export function PhoneAccountForm({ devices, preset, proxies, groups, existingNames = [], onCreate, onCancel, onProxiesChanged }: {
   devices: AndroidDevice[]; preset?: { serial: string; userId: number } | null;
   proxies: ProxyItem[]; groups: string[];
+  /** Names of every existing account, used to block duplicates. */
+  existingNames?: string[];
   /** userId null creates a new Android user. */
   onCreate: (serial: string, userId: number | null, request: PhoneAccountRequest) => Promise<void>;
   onCancel: () => void;
@@ -71,6 +73,7 @@ export function PhoneAccountForm({ devices, preset, proxies, groups, onCreate, o
     if (saving) return;
     if (!phone || (!newUser && userId === null)) { setError('Choose a phone and an Android user'); return; }
     if (!name.trim()) { setError('Enter an account name'); return; }
+    if (nameExists) { setError(`An account named “${name.trim()}” already exists. Choose a different name.`); return; }
     setSaving(true);
     setError(null);
     try {
@@ -82,6 +85,8 @@ export function PhoneAccountForm({ devices, preset, proxies, groups, onCreate, o
   };
 
   const selectedProxy = available.find(proxy => proxy.id === proxyChoice);
+  // Names are matched case-insensitively and trimmed, so "Account 1" and " account 1 " collide.
+  const nameExists = name.trim() !== '' && new Set(existingNames.map((value) => value.trim().toLowerCase())).has(name.trim().toLowerCase());
   return <form onSubmit={submit} aria-busy={saving} className="flex min-h-0 flex-1 flex-col">
     <div className="flex-1 space-y-4 overflow-y-auto p-5 text-xs">
       <fieldset disabled={saving} className="contents space-y-4">
@@ -107,8 +112,9 @@ export function PhoneAccountForm({ devices, preset, proxies, groups, onCreate, o
 
         <label className="block text-zinc-400">
           <span className="mb-1.5 block font-medium">Account name</span>
-          <input required value={name} onChange={(e) => { setName(e.target.value); setNameTouched(true); }} maxLength={120}
-            className="w-full rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2 text-zinc-100 focus:border-zinc-600 focus:outline-none" />
+          <input required value={name} onChange={(e) => { setName(e.target.value); setNameTouched(true); }} maxLength={120} aria-invalid={nameExists}
+            className={`w-full rounded-md border bg-zinc-950 px-3 py-2 text-zinc-100 focus:outline-none ${nameExists ? 'border-red-800 focus:border-red-600' : 'border-zinc-800 focus:border-zinc-600'}`} />
+          {nameExists && <span className="mt-1.5 block text-[11px] text-red-300">This name is already used by another account. Pick a unique name.</span>}
         </label>
         <ProfileGroupField value={group} onChange={setGroup} groups={groups} />
 
@@ -140,7 +146,7 @@ export function PhoneAccountForm({ devices, preset, proxies, groups, onCreate, o
     </div>
     <div className="flex justify-end gap-2 border-t border-border px-5 py-3">
       <button type="button" disabled={saving} onClick={onCancel} className="rounded border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-zinc-300 disabled:opacity-40">Cancel</button>
-      <button disabled={saving || !phone || (!newUser && userId === null)} type="submit" className="flex items-center gap-2 rounded bg-white px-4 py-1.5 font-semibold text-zinc-950 disabled:opacity-50">
+      <button disabled={saving || nameExists || !phone || (!newUser && userId === null)} type="submit" className="flex items-center gap-2 rounded bg-white px-4 py-1.5 font-semibold text-zinc-950 disabled:opacity-50">
         {saving && <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />}{saving ? 'Creating…' : 'Create account'}
       </button>
     </div>
