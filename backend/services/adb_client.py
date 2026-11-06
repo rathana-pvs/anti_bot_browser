@@ -156,6 +156,54 @@ def parse_timezone_state(output: str) -> dict:
     return {"zone": zone, "auto": auto}
 
 
+LOCALE_RE = re.compile(r"^[a-z]{2,3}(-[A-Z]{2})?$")
+PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$")
+
+
+def validate_package(package: str) -> str:
+    if not PACKAGE_RE.fullmatch(package or ""):
+        raise ValueError("Invalid Android package name")
+    return package
+LOCATION_OPS = ("COARSE_LOCATION", "FINE_LOCATION")
+LOCATION_PERMISSIONS = ("ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION", "ACCESS_BACKGROUND_LOCATION")
+
+
+def parse_privacy_state(output: str, language: str) -> dict:
+    """`key=value` lines from AdbClient.privacy_state. None means the phone gave no answer."""
+    values = {}
+    for line in output.splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            values[key.strip()] = value.strip()
+    flag = lambda key: {"true": True, "false": False}.get(values.get(key, "").casefold())
+    zero_one = lambda key: {"0": False, "1": True}.get(values.get(key, ""))
+    ops = [values.get(f"op_{op}", "") for op in LOCATION_OPS]
+    if not all(ops):
+        blocked = None
+    elif any("unknown package" in op.casefold() for op in ops):
+        blocked = True  # Facebook is not installed for this user, so it cannot ask for a location.
+    else:
+        blocked = all(any(mode in op.casefold() for mode in (": ignore", ": deny", ": errored")) for op in ops)
+    location = flag("location")
+    scans = [zero_one("wifi_scan"), zero_one("ble_scan")]
+    data = zero_one("mobile_data")
+    states = [part.strip().upper() for part in values.get("sim_state", "").split(",") if part.strip()]
+    sim_present = any(state in ("LOADED", "READY", "PIN_REQUIRED", "PUK_REQUIRED", "NETWORK_LOCKED") for state in states)
+    countries = [part.strip().upper() for part in values.get("sim_country", "").split(",") if part.strip()]
+    locales = values.get("app_locales", "")
+    wanted = language.replace("-", "_")
+    return {
+        "location_off": None if location is None else not location,
+        "facebook_location_blocked": blocked,
+        "scanning_off": None if None in scans else not any(scans),
+        # No setting means mobile data was never turned on.
+        "mobile_data_off": True if data is None else not data,
+        "sim_present": sim_present,
+        "sim_country": next((c for c in countries if c), None) if sim_present else None,
+        "language": language if (wanted in locales or language in locales) else None,
+    }
+
+
 def parse_switch_flag(output: str) -> bool | None:
     return {"1": True, "0": False}.get(output.strip())
 
@@ -358,6 +406,38 @@ class AdbClient:
         turned off first, or Android would switch the zone back (verified on Android 17)."""
         self.shell(serial, "cmd", "time_zone_detector", "set_auto_detection_enabled", "false")
         self.shell(serial, "cmd", "alarm", "set-timezone", zone)
+
+    def apply_privacy(self, serial: str, user_id: int, language: str = "en-US",
+                      package: str = FACEBOOK_PACKAGE) -> None:
+        """Keeps the phone from telling Facebook where it really is: location off for this Android
+        user, Facebook's location access taken away, Wi-Fi/Bluetooth scanning (used to guess location)
+        and mobile data off phone-wide, and Facebook's own language set. Each step may fail on its
+        own; `privacy_state` reads back what took effect."""
+        user, package = str(int(user_id)), validate_package(package)
+        if not LOCALE_RE.fullmatch(language):
+            raise ValueError("Unsupported language")
+        steps = [f"cmd location set-location-enabled false --user {user}",
+                 *(f"pm revoke --user {user} {package} android.permission.{perm}" for perm in LOCATION_PERMISSIONS),
+                 *(f"appops set --user {user} {package} {op} ignore" for op in LOCATION_OPS),
+                 "settings put global wifi_scan_always_enabled 0", "settings put global ble_scan_always_enabled 0",
+                 "svc data disable", f"cmd locale set-app-locales {package} --user {user} --locales {language}"]
+        self.shell(serial, "; ".join(f"{step} >/dev/null 2>&1" for step in steps) + "; true")
+
+    def privacy_state(self, serial: str, user_id: int, language: str = "en-US",
+                      package: str = FACEBOOK_PACKAGE) -> dict:
+        user, package = str(int(user_id)), validate_package(package)
+        one = lambda key, command: f"echo \"{key}=$({command} 2>&1 | tr '\\n' ' ')\""
+        script = "; ".join([
+            one("location", f"cmd location is-location-enabled --user {user}"),
+            *(one(f"op_{op}", f"appops get --user {user} {package} {op}") for op in LOCATION_OPS),
+            one("wifi_scan", "settings get global wifi_scan_always_enabled"),
+            one("ble_scan", "settings get global ble_scan_always_enabled"),
+            one("mobile_data", "settings get global mobile_data"),
+            one("sim_state", "getprop gsm.sim.state"),
+            one("sim_country", "getprop gsm.sim.operator.iso-country"),
+            one("app_locales", f"cmd locale get-app-locales {package} --user {user}"),
+        ])
+        return parse_privacy_state(self.shell(serial, script), language)
 
     def user_switcher_enabled(self, serial: str) -> bool | None:
         """Whether the phone shows its own user switcher (Quick Settings, lock screen)."""

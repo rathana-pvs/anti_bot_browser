@@ -150,6 +150,16 @@ class FakeTwoUserPhone(FakePhone):
     def set_timezone(self, serial, zone):
         self.zone, self.auto = zone, False
 
+    privacy = {"location_off": True, "facebook_location_blocked": True, "scanning_off": True,
+               "mobile_data_off": True, "sim_present": False, "sim_country": None, "language": "en-US"}
+    privacy_applied = 0
+
+    def apply_privacy(self, serial, user_id, language="en-US"):
+        self.privacy_applied += 1
+
+    def privacy_state(self, serial, user_id, language="en-US"):
+        return dict(self.privacy)
+
     def shell(self, serial, *command, timeout=None):
         if command[command.index("--method") + 1] == "check" and self.dns_ready_after > 0:
             self.dns_ready_after -= 1
@@ -246,3 +256,20 @@ def test_automation_never_opens_a_phone_account_without_a_proxy(monkeypatch):
     monkeypatch.setattr(android_network, "_account", lambda pid: ({}, {"device_serial": "PIXEL", "android_user_id": 11}, None))
     result = android_network.open_account("profile_020", job=True)
     assert result["ready"] is False and "phone's own internet" in result["reason"]
+
+
+
+def test_opening_an_account_turns_off_what_could_reveal_the_real_place(two_users, account):
+    result = android_network.open_account("profile_020")
+    assert two_users.privacy_applied == 1
+    assert result["privacy"]["location_off"] is True and result["privacy"]["blocking"] is None
+    saved = json.loads((android_network.PROFILES_DIR / "profile_020" / "config.json").read_text())
+    assert saved["android_privacy"]["facebook_location_blocked"] is True
+
+
+def test_automation_does_not_open_an_account_while_location_is_still_on(two_users, account):
+    two_users.privacy = {**two_users.privacy, "location_off": False}
+    result = android_network.open_account("profile_020", job=True)
+    assert result["ready"] is False and "Location" in result["reason"]
+    # Opening by hand still works, so the user can look at the phone.
+    assert android_network.open_account("profile_020")["privacy"]["blocking"]

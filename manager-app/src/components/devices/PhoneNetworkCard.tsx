@@ -109,6 +109,7 @@ export function PhoneNetworkCard({ profile, proxies, devices, onChanged, canChan
           <dd className={sameTime(zone, proxy.timezone) ? 'text-emerald-300' : 'text-amber-300'}>
             {zone} ({formatUtcOffset(zone)}){sameTime(zone, proxy.timezone) ? ' · matches the proxy' : ` · the proxy is on ${proxy.timezone} (${formatUtcOffset(proxy.timezone)})`}</dd></>}
       </dl>
+      <PhonePrivacy privacy={profile.android_privacy} />
       <div className="mt-3 flex items-center gap-2">
         <button type="button" onClick={() => void verify()} disabled={verifying}
           className="flex items-center gap-1.5 rounded border border-zinc-700 px-2.5 py-1 text-[11px] text-zinc-200 hover:bg-zinc-800 disabled:opacity-50">
@@ -139,4 +140,29 @@ export function PhoneNetworkCard({ profile, proxies, devices, onChanged, canChan
       {replaceError && <p role="alert" className="break-words text-[11px] text-red-300">{replaceError}</p>}
     </div>}
   </section>;
+}
+
+/** What could tell Facebook the phone's real place, as the app found it when it last opened this account. */
+function PhonePrivacy({ privacy }: { privacy: Profile['android_privacy'] }) {
+  if (!privacy) return <p className="mt-3 text-[11px] text-zinc-500">Location, mobile data and language are set the next time the app opens this account.</p>;
+  const item = (ok: boolean | null, good: string, bad: string, unknown = 'Not confirmed') =>
+    ({ ok, text: ok === true ? good : ok === false ? bad : unknown });
+  const items = [
+    item(privacy.location_off, 'Location off', 'Location on'),
+    item(privacy.facebook_location_blocked, 'Facebook location blocked', 'Facebook can read location'),
+    item(privacy.scanning_off, 'Wi-Fi/Bluetooth scanning off', 'Wi-Fi/Bluetooth scanning on'),
+    item(privacy.mobile_data_off, 'Mobile data off', 'Mobile data on'),
+    item(privacy.language ? true : null, `Facebook in ${privacy.language ?? ''}`, '', 'Facebook language not confirmed'),
+    item(privacy.sim_present === false ? true : privacy.sim_present ? false : null, 'No SIM card',
+      `SIM card in${privacy.sim_country ? ` (${privacy.sim_country})` : ''}: apps can still read its country. Remove it.`),
+  ];
+  return <div className="mt-3 rounded border border-zinc-800 bg-zinc-950/60 p-2.5">
+    <p className="mb-1.5 flex items-center justify-between text-[11px] font-medium text-zinc-300">Privacy on the phone
+      <span className="font-normal text-zinc-500">{new Date(privacy.checked_at).toLocaleString()}</span></p>
+    <ul className="grid gap-x-4 gap-y-1 text-[11px] sm:grid-cols-2">
+      {items.map(({ ok, text }) => <li key={text} className={cn('flex items-start gap-1.5', ok === true ? 'text-emerald-300' : ok === false ? 'text-amber-300' : 'text-zinc-500')}>
+        <span aria-hidden="true">{ok === true ? '✓' : ok === false ? '⚠' : '·'}</span><span>{text}</span></li>)}
+    </ul>
+    {privacy.blocking && <p role="alert" className="mt-1.5 text-[11px] text-red-300">{privacy.blocking} Automation won't open this account until it is.</p>}
+  </div>;
 }

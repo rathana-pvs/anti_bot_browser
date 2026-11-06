@@ -182,6 +182,12 @@ export interface Profile {
   live?: { configured: boolean };
   runtime?: AndroidRuntime;
   android_network?: AndroidNetwork;
+  /** What the app turned off on the phone the last time it opened this account. */
+  android_privacy?: {
+    checked_at: string; location_off: boolean | null; facebook_location_blocked: boolean | null; scanning_off: boolean | null;
+    mobile_data_off: boolean | null; sim_present: boolean | null; sim_country: string | null; language: string | null;
+    blocking: string | null; error?: string;
+  };
   /** In-app setup progress of a phone account; `done` once the login is confirmed. */
   android_setup?: { state?: string; steps?: Record<string, { status?: string; reason?: string | null }> };
   group?: string;

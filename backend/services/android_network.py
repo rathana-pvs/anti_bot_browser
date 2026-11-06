@@ -123,8 +123,9 @@ def open_account(profile_id: str, job: bool = False) -> dict:
     The target is switched to first because Android cannot stop the user on screen. `job` is set by
     the queued job that holds the phone.
     """
-    _, runtime, proxy = _account(profile_id)
+    config, runtime, proxy = _account(profile_id)
     serial, user_id = runtime["device_serial"], runtime["android_user_id"]
+    language = ((config or {}).get("requested_environment") or {}).get("language") or "en-US"
     if job and not proxy:
         # Automation never reaches Facebook through the phone's own internet: that is this PC's
         # real IP and location.
@@ -156,10 +157,43 @@ def open_account(profile_id: str, job: bool = False) -> dict:
                 # The timezone belongs to the phone, so side-by-side accounts must agree.
                 android_devices.set_timezone(serial, zone, client=client)
                 zone_set = zone
+        privacy = apply_privacy(profile_id, client, serial, user_id, language)
+        if job and privacy["blocking"]:
+            # Fail closed: automation never runs Facebook while it could still learn the real location.
+            return {"ready": False, "reason": privacy["blocking"], "switch": switch, "stopped_users": stopped,
+                    "timezone_set": zone_set, "network": None, "privacy": privacy}
         network = _verify_until_ready(profile_id) if proxy else {"status": "no_proxy", "reason": None}
     ready = network["status"] in ("verified", "no_proxy")
     return {"ready": ready, "reason": None if ready else network.get("reason"), "switch": switch,
-            "stopped_users": stopped, "timezone_set": zone_set, "network": network}
+            "stopped_users": stopped, "timezone_set": zone_set, "network": network, "privacy": privacy}
+
+
+def apply_privacy(profile_id: str, client, serial: str, user_id: int, language: str = "en-US") -> dict:
+    """Turns off what could tell Facebook the phone's real place, reads it back and saves the
+    result on the account for the phone page. `blocking` says why automation must not run."""
+    try:
+        client.apply_privacy(serial, user_id, language)
+        state = client.privacy_state(serial, user_id, language)
+    except (AdbError, ValueError) as exc:
+        state = {"location_off": None, "facebook_location_blocked": None, "scanning_off": None,
+                 "mobile_data_off": None, "sim_present": None, "sim_country": None, "language": None,
+                 "error": str(exc)[:200]}
+    if state.get("location_off") is not True:
+        blocking = "Location could not be turned off on the phone for this account."
+    elif state.get("facebook_location_blocked") is not True:
+        blocking = "Facebook's location access could not be blocked on the phone."
+    else:
+        blocking = None
+    state = {**state, "checked_at": utc_now(), "blocking": blocking}
+    path = PROFILES_DIR / profile_id / "config.json"
+    try:
+        with _write_lock:
+            config = json.loads(path.read_text(encoding="utf-8"))
+            config["android_privacy"] = {k: v for k, v in state.items()}
+            atomic_write_json(path, config)
+    except (OSError, ValueError):
+        pass
+    return state
 
 
 def _verify_until_ready(profile_id: str) -> dict:
