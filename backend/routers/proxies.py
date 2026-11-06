@@ -18,6 +18,7 @@ from backend.services.proxy_service import (
     account_limit,
     set_account_limit,
 )
+from backend.services import proxy_check
 
 router = APIRouter(prefix="/api/proxies", tags=["proxies"])
 
@@ -84,12 +85,11 @@ def test_network_speed(intent: NetworkIntent):
     if intent.mode == "direct":
         raise HTTPException(status_code=400, detail="Select a proxy to test its speed")
     if intent.mode == "pool":
-        proxy = next((p for p in load_proxy_pool() if p.get("id") == intent.proxy_id), None)
-        if not proxy:
-            raise HTTPException(status_code=404, detail="Selected proxy does not exist")
-        network = {"mode": "pool", "proxy_host": proxy["host"], "proxy_port": proxy["port"],
-                   "proxy_type": proxy.get("type") or "socks5",
-                   "proxy_user": proxy.get("username"), "proxy_pass": proxy.get("password")}
+        # A pool proxy gets the full check (quick check, timed samples, rating), saved on the proxy.
+        try:
+            return proxy_check.check_one(intent.proxy_id)["speed_test"]
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail="Selected proxy does not exist") from exc
     else:
         network = {"mode": "custom", "proxy_host": intent.host, "proxy_port": intent.port,
                    "proxy_type": "socks5", "proxy_user": intent.username, "proxy_pass": intent.password}
@@ -99,13 +99,34 @@ def test_network_speed(intent: NetworkIntent):
         upload = check_proxy_speed(network, "upload")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    result = {"latency": latency, "download": download, "upload": upload,
-              "last_checked": datetime.now(timezone.utc).isoformat()}
-    if intent.mode == "pool":
-        saved = update_proxy_metadata([intent.proxy_id], speed_test=result)
-        if not saved["updated_ids"]:
-            raise HTTPException(status_code=404, detail="Proxy removed during speed test")
-    return result
+    return {"latency": latency, "download": download, "upload": upload,
+            "last_checked": datetime.now(timezone.utc).isoformat()}
+
+
+class CheckRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    # None checks the whole pool.
+    proxy_ids: list[str] | None = Field(default=None, max_length=10000)
+    # Also check proxies checked in the last 24 hours.
+    force: bool = False
+
+
+@router.post("/check", status_code=202)
+def start_proxy_check(request: CheckRequest):
+    try:
+        return proxy_check.runner.start(request.proxy_ids, request.force)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/check")
+def proxy_check_status():
+    return proxy_check.runner.status()
+
+
+@router.post("/check/stop")
+def stop_proxy_check():
+    return proxy_check.runner.stop()
 
 
 @router.post("/delete-selected")
@@ -121,20 +142,26 @@ def get_proxies():
 
 class ProxySettings(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    accounts_per_proxy: int
+    accounts_per_proxy: int | None = None
+
+
+def _settings():
+    return {"accounts_per_proxy": account_limit()}
 
 
 @router.get("/settings")
 def get_proxy_settings():
-    return {"accounts_per_proxy": account_limit()}
+    return _settings()
 
 
 @router.put("/settings")
 def update_proxy_settings(request: ProxySettings):
     try:
-        return {"accounts_per_proxy": set_account_limit(request.accounts_per_proxy)}
+        if request.accounts_per_proxy is not None:
+            set_account_limit(request.accounts_per_proxy)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _settings()
 
 @router.post("/import")
 def import_proxies(payload: dict = Body(...)):

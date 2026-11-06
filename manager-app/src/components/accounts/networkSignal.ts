@@ -1,5 +1,10 @@
 import type { Profile } from '../../types/profile';
 import type { ProxyItem } from '../../types/proxy';
+
+// Kept here, not imported, so this file loads on its own in tests.
+const GRADE_LABEL = { good: 'Working', slow: 'Working · slow', timeout: 'Timed out', dead: 'Not working' } as const;
+const proxyWarnings = (proxy: ProxyItem) =>
+  [proxy.rating?.stable === false && 'Unstable', proxy.check?.ip_changed && 'IP changed'].filter(Boolean) as string[];
 import type { HealthSignal } from './accountModel';
 
 /** Use the saved test for this account's selected pool proxy, never another proxy. */
@@ -27,6 +32,19 @@ export function networkSignal(profile: Profile, proxies: ProxyItem[] = []): Heal
   const proxy = network.mode === 'pool'
     ? proxies.find(p => p.id === network.proxy_id)
     : undefined;
+  if (proxy?.rating && proxy.check) {
+    const { rating, check } = proxy;
+    const one = (value: number | null) => value === null ? '—' : Number(value.toFixed(1)).toString();
+    const detail = rating.grade === 'dead' ? (check.error || 'No traffic got through')
+      : `↓${one(rating.download_mbps)} ↑${one(rating.upload_mbps)} Mbps`;
+    const hint = [`${proxy.host}:${proxy.port} · ${GRADE_LABEL[rating.grade]}`,
+      check.facebook_ms != null ? `Facebook responds in ${check.facebook_ms} ms` : '',
+      ...proxyWarnings(proxy), `Checked ${new Date(check.checked_at).toLocaleString()}`].filter(Boolean).join('\n');
+    if (rating.grade === 'dead') return { label: 'Proxy offline', tone: 'bad', detail, hint };
+    if (rating.grade === 'timeout') return { label: 'Proxy timed out', tone: 'bad', detail, hint };
+    if (rating.grade === 'slow') return { label: 'Proxy slow', tone: 'warn', detail, hint };
+    return { label: proxyWarnings(proxy).length ? 'Proxy · watch' : 'Proxy good', tone: proxyWarnings(proxy).length ? 'warn' : 'ok', detail, hint };
+  }
   if (proxy) {
     const test = proxy.speed_test;
     const samples = [test?.download, test?.upload];

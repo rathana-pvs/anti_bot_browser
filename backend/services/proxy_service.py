@@ -16,6 +16,7 @@ from backend.services.proxy_quality import normalize_proxy
 
 PROXY_POOL_FILE = ROOT_DIR / "proxies" / "proxy_pool.json"
 _proxy_assignment_lock = threading.Lock()
+_settings_lock = threading.Lock()
 GEO_LOOKUP_URL = "https://ipwho.is/"
 
 def load_proxy_pool(*, raise_errors: bool = False) -> list:
@@ -151,12 +152,28 @@ def _settings_file() -> Path:
     return PROXY_POOL_FILE.with_name("proxy_settings.json")
 
 
+def _read_settings() -> dict:
+    try:
+        data = json.loads(_settings_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_settings(changes: dict) -> dict:
+    with _settings_lock:
+        data = {**_read_settings(), **changes}
+        path = _settings_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        tmp.replace(path)
+        return data
+
+
 def account_limit() -> int:
     """How many accounts one proxy may serve. 1 keeps every account on its own proxy."""
-    try:
-        value = json.loads(_settings_file().read_text(encoding="utf-8")).get("accounts_per_proxy")
-    except (OSError, ValueError, AttributeError):
-        return DEFAULT_ACCOUNT_LIMIT
+    value = _read_settings().get("accounts_per_proxy")
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= MAX_ACCOUNT_LIMIT:
         return DEFAULT_ACCOUNT_LIMIT
     return value
@@ -165,12 +182,7 @@ def account_limit() -> int:
 def set_account_limit(value: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= MAX_ACCOUNT_LIMIT:
         raise ValueError(f"Accounts per proxy must be a whole number from 1 to {MAX_ACCOUNT_LIMIT}.")
-    with _proxy_assignment_lock:
-        path = _settings_file()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"accounts_per_proxy": value}), encoding="utf-8")
-        tmp.replace(path)
+    _write_settings({"accounts_per_proxy": value})
     return value
 
 
@@ -361,7 +373,7 @@ def _curl_config_value(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def _proxy_test_config(network: dict) -> list[str]:
+def _proxy_test_config(network: dict, max_time: float = 20) -> list[str]:
     host = str(network.get("proxy_host") or "").strip()
     port = int(network.get("proxy_port") or 0)
     if not host or not 1 <= port <= 65535 or network.get("mode") == "direct":
@@ -372,7 +384,7 @@ def _proxy_test_config(network: dict) -> list[str]:
         raise ValueError("Unsupported proxy type")
     endpoint = f"[{host}]" if ":" in host and not host.startswith("[") else host
     lines = [f"proxy = {_curl_config_value(f'{scheme}://{endpoint}:{port}')}", 'noproxy = ""',
-             "silent", "connect-timeout = 6", "max-time = 20", f"output = {_curl_config_value(os.devnull)}"]
+             "silent", "connect-timeout = 6", f"max-time = {max_time}", f"output = {_curl_config_value(os.devnull)}"]
     username = str(network.get("proxy_user") or "")
     password = str(network.get("proxy_pass") or "")
     if username or password:
@@ -380,13 +392,13 @@ def _proxy_test_config(network: dict) -> list[str]:
     return lines
 
 
-def check_facebook_response(network: dict) -> dict:
+def check_facebook_response(network: dict, max_time: float = 15) -> dict:
     """Measure time to Facebook's first response byte through the saved proxy."""
-    lines = _proxy_test_config(network) + ['url = "https://www.facebook.com/"', "head",
-                                         "max-time = 15", 'write-out = "%{http_code} %{time_starttransfer}"']
+    lines = _proxy_test_config(network, max_time) + ['url = "https://www.facebook.com/"', "head",
+                                                   'write-out = "%{http_code} %{time_starttransfer}"']
     try:
         result = subprocess.run(["curl", "--disable", "--config", "-"], input="\n".join(lines) + "\n",
-                                capture_output=True, text=True, timeout=18, check=False, env=_curl_environment())
+                                capture_output=True, text=True, timeout=max_time + 3, check=False, env=_curl_environment())
     except subprocess.TimeoutExpired:
         return {"success": False, "response_ms": None, "http_status": None, "error": "Facebook connection timed out"}
     except OSError:

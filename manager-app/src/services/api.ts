@@ -470,6 +470,43 @@ export async function setProxyGroup(proxyIds: string[], group: string): Promise<
   if (!res.ok) throw await apiError(res, 'Failed to move proxies');
 }
 
+export interface ProxyCheckRun {
+  state: 'idle' | 'running' | 'done' | 'stopped';
+  run_id?: string;
+  started_at?: string;
+  finished_at?: string | null;
+  total?: number;
+  done?: number;
+  at_once?: number;
+  running_ids?: string[];
+  skipped?: number;
+  grades?: Record<import('../types/proxy').ProxyGrade, number>;
+  baseline?: { download_mbps: number | null; upload_mbps: number | null; checked_at: string } | null;
+  error?: string | null;
+}
+
+/** Starts a check of the given proxies (all when none), several at once. `force` also checks those checked in the last 24 h. */
+export async function startProxyCheck(proxyIds?: string[], force = false): Promise<ProxyCheckRun> {
+  const res = await fetch(`${API_BASE}/proxies/check`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ proxy_ids: proxyIds?.length ? proxyIds : null, force }),
+  });
+  if (!res.ok) throw await apiError(res, 'Could not start the proxy check');
+  return res.json();
+}
+
+export async function fetchProxyCheck(): Promise<ProxyCheckRun> {
+  const res = await fetch(`${API_BASE}/proxies/check`);
+  if (!res.ok) throw await apiError(res, 'Could not read the proxy check');
+  return res.json();
+}
+
+export async function stopProxyCheck(): Promise<ProxyCheckRun> {
+  const res = await fetch(`${API_BASE}/proxies/check/stop`, { method: 'POST' });
+  if (!res.ok) throw await apiError(res, 'Could not stop the proxy check');
+  return res.json();
+}
+
 export async function testSavedProxySpeed(proxyId: string): Promise<NetworkSpeedResult> {
   const res = await fetch(`${API_BASE}/proxies/${encodeURIComponent(proxyId)}/speed-test`, { method: 'POST' });
   const detail = (res.status === 404 || res.status === 405)

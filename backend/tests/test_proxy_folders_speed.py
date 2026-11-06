@@ -30,24 +30,21 @@ def client(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize('download,upload,folder,quality', [
-    (2, 2, 'Available', 'good'), (1, 1, 'Available', 'good'),
-    (.99, 2, 'Poor proxy', 'poor'), (2, .99, 'Poor proxy', 'poor'),
-    (0, 2, 'Poor proxy', 'poor'), (.5, None, 'Poor proxy', 'poor'),
-    (2, None, 'Poor proxy', 'check_failed'), (float('nan'), 2, 'Poor proxy', 'check_failed'),
-    (float('inf'), 2, 'Poor proxy', 'check_failed'), (-1, 2, 'Poor proxy', 'check_failed'),
+    (2, 2, 'Available', 'good'), (.2, .1, 'Available', 'good'), (0, 2, 'Available', 'good'),
+    (.5, None, 'Poor proxy', 'check_failed'), (None, 2, 'Poor proxy', 'check_failed'),
+    (float('nan'), 2, 'Poor proxy', 'check_failed'), (-1, 2, 'Poor proxy', 'check_failed'),
 ])
-def test_classification_threshold(download, upload, folder, quality):
-    proxy = normalize_proxy({'speed_test': result(download, upload)})
-    assert proxy['group'] == folder
-    assert proxy['speed_quality'] == quality
+def test_only_a_timeout_makes_a_proxy_poor(download, upload, folder, quality):
+    proxy = normalize_proxy({'speed_test': result(download, upload), 'last_speed_quality': 'poor'})
+    assert (proxy['group'], proxy['speed_quality']) == (folder, quality)
 
 
 def test_assignment_and_release_reclassify_using_saved_speed(client):
     session, path = client
-    proxy_service.update_proxy_metadata(['b'], speed_test=result(.5, 2))
+    proxy_service.update_proxy_metadata(['b'], speed_test=result(.5, None))
     assigned = proxy_service.assign_proxy_by_id('profile_002', 'b')
     assert assigned['group'] == 'Used'
-    assert assigned['speed_quality'] == 'poor'
+    assert assigned['speed_quality'] == 'check_failed'
     assert proxy_service.release_proxy('profile_002')
     pool = json.loads(path.read_text())
     assert pool[1]['group'] == 'Poor proxy'
@@ -113,14 +110,16 @@ def test_all_pool_speed_checks_persist_classification(client, monkeypatch, endpo
 
 def test_assignment_during_slow_test_is_preserved(client, monkeypatch):
     session, path = client
-    def measure(network, direction):
+    from backend.services import proxy_check
+    def measure(proxy):
         proxy_service.assign_proxy_by_id('profile_002', 'b')
-        return {'success': True, 'mbps': .2}
-    monkeypatch.setattr(proxies, 'check_proxy_speed', measure)
+        return {'checked_at': '2026-11-06T00:00:00+00:00', 'reachable': True, 'connect_ms': 200, 'facebook_ok': True,
+                'facebook_ms': 400, 'exit_ip': None, 'download': [{'mbps': .2, 'bytes': 50000}], 'upload': []}
+    monkeypatch.setattr(proxy_check, 'measure', measure)
     assert session.post('/api/proxies/b/speed-test').status_code == 200
     proxy = json.loads(path.read_text())[1]
     assert proxy['group'] == 'Used' and proxy['profile_id'] == 'profile_002'
-    assert proxy['speed_quality'] == 'poor'
+    assert proxy['speed_quality'] == 'check_failed'
 
 
 def test_unknown_proxy_speed_returns_404(client):
@@ -137,7 +136,7 @@ def test_new_import_is_available_and_untested(client):
 
 def test_automatic_assignment_skips_poor_proxies(client):
     session, _ = client
-    proxy_service.update_proxy_metadata(['b'], speed_test=result(.5, 2))
+    proxy_service.update_proxy_metadata(['b'], speed_test=result(.5, None))
     assert proxy_service.assign_proxy('profile_002') is None
     proxy_service.update_proxy_metadata(['b'], speed_test=result(1, 1))
     assert proxy_service.assign_proxy('profile_002')['group'] == 'Used'
@@ -159,8 +158,8 @@ def test_first_timeout_moves_available_proxy_to_poor_and_retest_recovers(client)
 
 def test_accounts_per_proxy_setting_round_trips_and_reaches_the_list(client):
     session, _ = client
-    assert session.get('/api/proxies/settings').json() == {'accounts_per_proxy': 1}
-    assert session.put('/api/proxies/settings', json={'accounts_per_proxy': 3}).json() == {'accounts_per_proxy': 3}
+    assert session.get('/api/proxies/settings').json()['accounts_per_proxy'] == 1
+    assert session.put('/api/proxies/settings', json={'accounts_per_proxy': 3}).json()['accounts_per_proxy'] == 3
     listed = session.get('/api/proxies').json()
     assert {proxy['account_limit'] for proxy in listed} == {3}
     assert listed[0]['profile_ids'] == ['profile_001']

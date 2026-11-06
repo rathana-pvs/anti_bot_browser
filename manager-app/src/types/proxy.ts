@@ -6,6 +6,10 @@ export interface ProxyItem {
   speed_quality?: 'good' | 'poor' | 'untested' | 'check_failed';
   last_speed_quality?: 'good' | 'poor';
   speed_test?: import('../services/api').NetworkSpeedResult;
+  /** The last full check: quick check plus timed speed samples. */
+  check?: ProxyCheck;
+  /** The check rated against the current rules. */
+  rating?: ProxyRating;
   host: string;
   port: number;
   username: string;
@@ -35,6 +39,41 @@ export interface ProxyItem {
   last_checked: string | null;
 }
 
+/** good: both ways ≥ 1 Mbps · slow: working, a direction under 1 Mbps · timeout: a direction got nothing through · dead: unreachable. */
+export type ProxyGrade = 'good' | 'slow' | 'timeout' | 'dead';
+
+export interface ProxySample { mbps: number | null; bytes: number; error?: string | null }
+
+export interface ProxyCheck {
+  checked_at: string;
+  reachable: boolean;
+  connect_ms: number | null;
+  facebook_ok: boolean;
+  facebook_ms: number | null;
+  facebook_status?: number | null;
+  exit_ip: string | null;
+  ip_changed?: boolean;
+  error?: string | null;
+  download: ProxySample[];
+  upload: ProxySample[];
+  seconds?: number;
+  history?: { at: string; grade: ProxyGrade; down: number | null; up: number | null; facebook_ms: number | null; exit_ip: string | null }[];
+}
+
+export interface ProxyRating {
+  grade: ProxyGrade;
+  stable: boolean | null;
+  download_mbps: number | null;
+  upload_mbps: number | null;
+}
+
+export const GRADE_LABEL: Record<ProxyGrade, string> = {
+  good: 'Working', slow: 'Working · slow', timeout: 'Timed out', dead: 'Not working',
+};
+export const GRADE_TONE: Record<ProxyGrade, string> = {
+  good: 'text-emerald-400', slow: 'text-amber-300', timeout: 'text-red-400', dead: 'text-red-400',
+};
+
 export function formatProxyGeography(proxy: ProxyItem): string {
   if (proxy.geo_source === 'unknown') return 'Location unknown';
   const country = proxy.country_code || proxy.country;
@@ -51,8 +90,20 @@ const QUALITY_LABEL: Record<NonNullable<ProxyItem['speed_quality']>, string> = {
   good: 'Good', poor: 'Poor', check_failed: 'Test failed', untested: 'Untested',
 };
 const QUALITY_ORDER = ['good', 'untested', 'poor', 'check_failed'];
+const GRADE_ORDER: ProxyGrade[] = ['good', 'slow', 'timeout', 'dead'];
 
-export const proxyQualityLabel = (proxy: ProxyItem) => QUALITY_LABEL[proxy.speed_quality ?? 'untested'];
+/** Working first, then slow, untested, timed out, not working. */
+const qualityRank = (proxy: ProxyItem) => proxy.rating
+  ? [0, 1, 3, 4][GRADE_ORDER.indexOf(proxy.rating.grade)]
+  : [0.5, 2, 3.5, 4][QUALITY_ORDER.indexOf(proxy.speed_quality ?? 'untested')];
+
+export const proxyQualityLabel = (proxy: ProxyItem) =>
+  proxy.rating ? GRADE_LABEL[proxy.rating.grade] : QUALITY_LABEL[proxy.speed_quality ?? 'untested'];
+
+/** Warnings worth showing beside the rating. */
+export function proxyWarnings(proxy: ProxyItem): string[] {
+  return [proxy.rating?.stable === false && 'Unstable', proxy.check?.ip_changed && 'IP changed'].filter(Boolean) as string[];
+}
 export const isPoorProxy = (proxy: ProxyItem) => proxy.group === 'Poor proxy';
 
 /** The accounts using this proxy. */
@@ -77,9 +128,8 @@ export const proxyUsageLabel = (proxy: ProxyItem) => {
 
 /** Proxies with room for another account, best first, then least shared. Poor ones stay listed so the user can still choose them knowingly. */
 export function freeProxies(proxies: ProxyItem[], profileId?: string) {
-  const rank = (proxy: ProxyItem) => QUALITY_ORDER.indexOf(proxy.speed_quality ?? 'untested');
   return proxies.filter(proxy => hasRoom(proxy, profileId))
-    .sort((a, b) => rank(a) - rank(b) || proxyHolders(a).length - proxyHolders(b).length);
+    .sort((a, b) => qualityRank(a) - qualityRank(b) || proxyHolders(a).length - proxyHolders(b).length);
 }
 
 /** Matches any state or city in the location filters. */

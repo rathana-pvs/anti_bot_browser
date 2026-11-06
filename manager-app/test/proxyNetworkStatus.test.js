@@ -46,3 +46,18 @@ test('only the selected proxy contributes measurements', () => {
   assert.equal(networkSignal({ ...profile, network: { mode: 'direct' } }, [proxy(.1, .1)]).label, 'Direct OK');
   assert.equal(networkSignal({ ...profile, network: { ...profile.network, mode: 'custom' } }, [proxy(.1, .1)]).label, 'Proxy online');
 });
+
+test('a checked proxy shows working, slow or timed out', () => {
+  const rated = (grade, extra = {}) => ({ id: 'proxy1', host: 'proxy.example', port: 1080,
+    check: { checked_at: '2026-11-06T00:00:00Z', reachable: grade !== 'dead', facebook_ms: 400, error: grade === 'dead' ? 'No traffic got through this proxy' : null, ...extra.check },
+    rating: { grade, stable: true, download_mbps: 8.7, upload_mbps: grade === 'slow' ? 0.6 : 3.7, ...extra.rating } });
+  const good = networkSignal(profile, [rated('good')]);
+  assert.equal(good.label, 'Proxy good');
+  assert.equal(good.detail, '↓8.7 ↑3.7 Mbps');
+  assert.equal(networkSignal(profile, [rated('slow')]).label, 'Proxy slow');
+  assert.equal(networkSignal(profile, [rated('timeout')]).tone, 'bad');
+  assert.equal(networkSignal(profile, [rated('dead')]).detail, 'No traffic got through this proxy');
+  const moved = networkSignal(profile, [rated('good', { check: { ip_changed: true } })]);
+  assert.equal(moved.tone, 'warn');
+  assert.match(moved.hint, /IP changed/);
+});

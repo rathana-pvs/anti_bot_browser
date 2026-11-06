@@ -44,21 +44,6 @@ def speed_client(monkeypatch):
         assert not saved
 
 
-def test_pool_speed_before_assignment(speed_client):
-    client, calls = speed_client
-    response = client.post("/api/proxies/speed-test", json={"mode": "pool", "proxy_id": "proxy_1"})
-    assert response.status_code == 200
-    result = response.json()
-    assert result["latency"]["latency_ms"] == 123
-    assert result["download"]["mbps"] == 12.5
-    assert result["upload"]["error"] == "Upload test timed out"
-    assert result["last_checked"]
-    assert "secret" not in response.text
-    assert [direction for _, direction in calls] == ["download", "upload"]
-    assert calls[0][0] == {"mode": "pool", "proxy_host": "proxy.example", "proxy_port": 8080,
-                            "proxy_type": "http", "proxy_user": "user", "proxy_pass": "secret"}
-
-
 def test_custom_speed_before_save(speed_client):
     client, calls = speed_client
     response = client.post("/api/proxies/speed-test", json={
