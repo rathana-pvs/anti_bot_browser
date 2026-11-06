@@ -1,3 +1,21 @@
+# Version 2.0.4
+
+- Check several proxies at once with timed speed samples, filter by state and
+  city, and export selected proxy IPs to a text file.
+- Configure how many accounts may share one proxy. Keep accounts on their
+  proxy's local time and apply a distance-based rest after a proxy change.
+- Apply phone location, mobile-data, and Facebook-language checks when opening
+  an account, and improve profile navigation past promotional cards.
+- Always paste captions instead of typing them.
+- Simplify Read more, separate unique caption generation from website publishing,
+  link reels to their website articles, and use the original photo as article cover.
+- Keep article text when pasting web content into Reel Studio and reduce Gemini
+  token usage in Reel Studio and Read more.
+
+**Linux only.** After installing, run **Settings → Setup and repair → Install /
+update runtime** when prompted. Existing profiles, sessions, and settings remain
+in persistent app storage.
+
 # Version 2.0.2
 
 - Fix phone posting jobs failing to find the automation runner in the installed
