@@ -638,7 +638,7 @@ def import_user(serial: str, user_id: int, name: str, group: str = "", proxy_id:
         if not profile_id or (PROFILES_DIR / profile_id).exists():
             profile_id, _, _ = allocate_profile_identity(PROFILES_DIR)
         profile_dir = PROFILES_DIR / profile_id
-        # One account, one proxy: the pool refuses a proxy another account already holds.
+        # The pool refuses a proxy already serving as many accounts as the per-proxy limit allows.
         proxy = proxy_service.assign_proxy_by_id(profile_id, proxy_id) if proxy_id else None
         try:
             profile = _android_profile(profile_id, name, group.strip(), serial, user, proxy)

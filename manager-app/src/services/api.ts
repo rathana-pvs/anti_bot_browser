@@ -347,6 +347,17 @@ export async function fetchProxies(): Promise<ProxyItem[]> {
   return res.json();
 }
 
+/** Sets how many accounts one proxy may serve (1 = every account on its own proxy). */
+export async function updateAccountsPerProxy(accountsPerProxy: number): Promise<{ accounts_per_proxy: number }> {
+  const res = await fetch(`${API_BASE}/proxies/settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ accounts_per_proxy: accountsPerProxy }),
+  });
+  if (!res.ok) throw await apiError(res, 'Failed to save accounts per proxy');
+  return res.json();
+}
+
 export async function importProxies(text: string, group = ''): Promise<{ added: number; total: number; status_checked: number; online: number; offline: number; geo_checked: number; geo_failed: number }> {
   const res = await fetch(`${API_BASE}/proxies/import`, {
     method: 'POST',

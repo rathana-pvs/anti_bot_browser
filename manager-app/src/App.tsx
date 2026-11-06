@@ -444,7 +444,7 @@ export const App: React.FC = () => {
               backLabel={openAccount.from === 'devices' ? 'Devices' : 'Accounts'}
               onBack={() => { const from = openAccount.from; setOpenAccount(null); if (from === 'devices') setPage('devices'); }}
               onOpenDevice={openDevice} handlers={handlers} busy={busyIds.has(currentAccount.id)}
-              executions={executions} proxies={proxies} groups={profileGroups} onSave={handleUpdate}
+              executions={executions} proxies={proxies} profiles={profiles} groups={profileGroups} onSave={handleUpdate}
               onOpenQueue={(executionId) => openQueue(currentAccount.id, executionId)} onReload={loadData} />
             : <AccountsPage profiles={profiles} proxies={proxies} devices={devices} onOpenDevice={openDevice} groups={profileGroups} executions={executions} handlers={handlers} folderHandlers={folderHandlers}
               busyIds={busyIds} onCreate={() => { setPhonePreset(null); setIsCreateModalOpen(true); }} />}

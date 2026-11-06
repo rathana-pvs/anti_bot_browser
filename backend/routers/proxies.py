@@ -15,6 +15,8 @@ from backend.services.proxy_service import (
     test_proxy_ping,
     check_proxy_speed,
     update_proxy_metadata,
+    account_limit,
+    set_account_limit,
 )
 
 router = APIRouter(prefix="/api/proxies", tags=["proxies"])
@@ -112,7 +114,27 @@ def remove_selected_proxies(request: ProxySelection):
 
 @router.get("")
 def get_proxies():
-    return load_proxy_pool()
+    # Each entry carries the per-proxy limit so pickers can show "2/3 accounts" without another request.
+    limit = account_limit()
+    return [{**proxy, "account_limit": limit} for proxy in load_proxy_pool()]
+
+
+class ProxySettings(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    accounts_per_proxy: int
+
+
+@router.get("/settings")
+def get_proxy_settings():
+    return {"accounts_per_proxy": account_limit()}
+
+
+@router.put("/settings")
+def update_proxy_settings(request: ProxySettings):
+    try:
+        return {"accounts_per_proxy": set_account_limit(request.accounts_per_proxy)}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 @router.post("/import")
 def import_proxies(payload: dict = Body(...)):

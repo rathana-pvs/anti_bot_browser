@@ -14,8 +14,11 @@ controls in application UI.
   creation; moving to another device means a new account and a fresh login.
 - A device is hardware: the PC, or one phone that holds many accounts (one per
   Android user). Keep account data and device data separate.
-- One account, one proxy. Each account gets its own dedicated proxy, and a
-  proxy is never shared between accounts, including a PC and a phone account.
+- An account uses one proxy at a time. A proxy serves at most "Accounts per
+  proxy" accounts (a setting on the Proxies page, default 1, so by default every
+  account has its own proxy). Each proxy keeps the list of accounts using it in
+  `profile_ids`, and that limit applies to PC and phone accounts alike. Lowering
+  the limit keeps the accounts already on a proxy but lets no new one join.
 
 ## Read cross-project context
 

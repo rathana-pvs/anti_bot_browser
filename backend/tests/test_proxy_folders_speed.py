@@ -57,7 +57,7 @@ def test_assignment_and_release_reclassify_using_saved_speed(client):
 
 
 def test_assigned_flags_take_priority():
-    for fields in [{'assigned': True}, {'profile_id': 'profile_1'}]:
+    for fields in [{'profile_ids': ['profile_1', 'profile_2']}, {'profile_id': 'profile_1'}]:
         assert normalize_proxy({**fields, 'speed_test': result(.1, .1)})['group'] == 'Used'
 
 
@@ -155,3 +155,13 @@ def test_first_timeout_moves_available_proxy_to_poor_and_retest_recovers(client)
     assert session.get('/api/proxies').json()[1]['group'] == 'Poor proxy'
     proxy_service.update_proxy_metadata(['b'], speed_test=result(2, 2))
     assert session.get('/api/proxies').json()[1]['group'] == 'Available'
+
+
+def test_accounts_per_proxy_setting_round_trips_and_reaches_the_list(client):
+    session, _ = client
+    assert session.get('/api/proxies/settings').json() == {'accounts_per_proxy': 1}
+    assert session.put('/api/proxies/settings', json={'accounts_per_proxy': 3}).json() == {'accounts_per_proxy': 3}
+    listed = session.get('/api/proxies').json()
+    assert {proxy['account_limit'] for proxy in listed} == {3}
+    assert listed[0]['profile_ids'] == ['profile_001']
+    assert session.put('/api/proxies/settings', json={'accounts_per_proxy': 0}).status_code == 422

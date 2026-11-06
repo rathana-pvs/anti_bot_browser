@@ -304,7 +304,7 @@ def _take_over_account(client: AdbClient, serial: str, user_id: int, info: dict,
         return result
     proxy = info.get("proxy")
     match = proxy_service.find_proxy(proxy["host"], proxy["port"], proxy["username"]) if proxy else None
-    if not match or not match.get("password") or (match.get("profile_id") not in (None, profile_id)):
+    if not match or not match.get("password") or not proxy_service.has_room(match, profile_id):
         return {**result, "status": "needs_proxy",
                 "reason": "This PC's pool has no matching proxy. Choose a proxy for this account."}
     same = _with_user(client, serial, user_id, lambda: agent_call(
@@ -338,8 +338,8 @@ def replace_proxy(profile_id: str, proxy_id: str) -> dict:
         raise ValueError("Selected proxy does not exist")
     if not entry.get("password") and entry.get("held_by_phone"):
         raise ValueError("This PC doesn't have this proxy's password.")
-    if entry.get("profile_id") not in (None, profile_id):
-        raise ValueError("Selected proxy is already assigned")
+    if not proxy_service.has_room(entry, profile_id):
+        raise ValueError("Selected proxy already serves as many accounts as the limit per proxy allows.")
     with android_devices.phone_lock(serial):
         tried = _with_user(client, serial, user_id, lambda: agent_call(
             client, serial, user_id, "try_config", TRY_TIMEOUT_S, _proxy_args(entry)))

@@ -7,6 +7,7 @@ import { AccountNetworkStatus, fetchAccountNetwork, replaceAccountProxy, verifyA
 import { NetworkSpeedResult, testSavedProxySpeed } from '../../services/api';
 import { Button } from '../ui/Button';
 import { Select } from '../ui/Select';
+import { useProxyLocationFilter } from '../ProxyLocationFilter';
 import { cn } from '../ui/cn';
 import { formatUtcOffset, phoneZone, sameTime } from './phoneTime';
 
@@ -28,6 +29,7 @@ export function PhoneNetworkCard({ profile, proxies, devices, onChanged, canChan
   const [testError, setTestError] = useState('');
   const choices = freeProxies(proxies).filter(item => item.password);
   const [replacement, setReplacement] = useState('');
+  const location = useProxyLocationFilter(choices, replacement);
   const [replacing, setReplacing] = useState(false);
   const [replaceError, setReplaceError] = useState('');
   const check = profile.android_network;
@@ -126,9 +128,10 @@ export function PhoneNetworkCard({ profile, proxies, devices, onChanged, canChan
     </>}
     {canChangeProxy && choices.length > 0 && <div className="mt-4 space-y-2 border-t border-zinc-800 pt-3">
       <p className="font-medium text-zinc-300">{proxy && !proxy.held_by_phone ? 'Change proxy' : 'Choose a proxy'}</p>
+      {location.controls({ icon: true })}
       <div className="flex flex-wrap items-center gap-2">
         <div className="min-w-[14rem] flex-1"><Select value={replacement} onValueChange={setReplacement} ariaLabel="New proxy"
-          placeholder="Pick a free proxy" options={choices.map(item => ({ value: item.id, label: proxyOptionLabel(item) }))} /></div>
+          placeholder="Pick a free proxy" options={location.filtered.map(item => ({ value: item.id, label: proxyOptionLabel(item) }))} /></div>
         <Button size="sm" loading={replacing} disabled={!replacement} onClick={() => void replace()}>Use this proxy</Button>
       </div>
       <p className="text-[11px] text-zinc-500">The phone tries it first and keeps its current proxy if traffic doesn’t get through.</p>

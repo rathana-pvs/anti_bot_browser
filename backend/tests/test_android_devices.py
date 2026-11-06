@@ -530,7 +530,7 @@ def test_import_reserves_one_free_proxy_for_the_phone_account(phone, tmp_path, m
     assert profile["android_network"] == {"status": "not_set_up"}
     assert json.loads(pool.read_text())[0]["profile_id"] == profile["id"]
 
-    with pytest.raises(ValueError, match="already assigned"):
+    with pytest.raises(ValueError, match="limit per proxy"):
         android_devices.import_user("R58M12345ABC", 11, "Second", proxy_id="p1")
     # The refused import leaves no account behind.
     assert len(android_devices.linked_profiles()) == 1

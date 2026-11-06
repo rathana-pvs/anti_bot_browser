@@ -410,7 +410,7 @@ def test_forgot_pin_with_a_wrong_pool_password_keeps_the_phone_working(taken, tm
 
 
 def test_a_proxy_held_by_another_account_is_refused(phone):
-    with pytest.raises(ValueError, match="already used"):
+    with pytest.raises(ValueError, match="limit per proxy"):
         proxy_service.hold_phone_proxy("profile_999", "9.142.198.36", 5703, "u1", None)
 
 

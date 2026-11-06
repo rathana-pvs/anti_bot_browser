@@ -7,6 +7,7 @@ import { formatUtcOffset, phoneZone, sameTime } from './phoneTime';
 import { scanDevice } from '../../services/devices';
 import { ProfileGroupField } from '../ProfileGroupField';
 import { Select } from '../ui/Select';
+import { useProxyLocationFilter } from '../ProxyLocationFilter';
 
 export interface PhoneAccountRequest { name: string; group: string; proxyId: string | null }
 const OWN_NETWORK = 'phone-network';
@@ -39,6 +40,7 @@ export function PhoneAccountForm({ devices, preset, proxies, groups, onCreate, o
   const matchesPhone = (proxy: ProxyItem) => Boolean(zone && proxy.timezone && sameTime(proxy.timezone, zone));
   const available = freeProxies(proxies).sort((a, b) => Number(matchesPhone(b)) - Number(matchesPhone(a)));
   const [proxyChoice, setProxyChoice] = useState(available.find(proxy => !isPoorProxy(proxy))?.id ?? OWN_NETWORK);
+  const location = useProxyLocationFilter(available, proxyChoice);
   const [scanning, setScanning] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -112,9 +114,10 @@ export function PhoneAccountForm({ devices, preset, proxies, groups, onCreate, o
 
         <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
           <div className="flex items-center gap-1.5 font-medium text-zinc-300"><Globe className="h-3.5 w-3.5" />Proxy</div>
+          {location.controls({ icon: true })}
           <Select value={proxyChoice} onValueChange={setProxyChoice} ariaLabel="Proxy"
             options={[
-              ...available.map(proxy => ({ value: proxy.id,
+              ...location.filtered.map(proxy => ({ value: proxy.id,
                 label: zone && proxy.timezone ? `${proxyOptionLabel(proxy)} · ${matchesPhone(proxy) ? 'phone time ✓' : 'other time'}` : proxyOptionLabel(proxy) })),
               { value: OWN_NETWORK, label: 'No proxy for now' },
             ]} />

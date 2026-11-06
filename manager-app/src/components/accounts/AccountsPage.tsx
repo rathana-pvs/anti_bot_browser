@@ -21,6 +21,7 @@ import {
 } from './accountModel';
 import { formatTime, kindLabel } from '../queue/queueModel';
 import { DeviceChip } from './DeviceChip';
+import { ProxyShareBadge } from './ProxyShareBadge';
 
 type StatusFilter = 'all' | 'running' | 'stopped';
 type TypeFilter = 'all' | 'browser' | 'android';
@@ -188,7 +189,7 @@ export function AccountsPage({ profiles, proxies, devices, groups, executions, h
             {stageFilter && !search && status === 'all' ? 'No accounts are in this stage right now.'
               : folder !== ALL_FOLDERS && !search && status === 'all' ? 'This folder is empty. Drag accounts here, or use Move to folder.' : 'No accounts match these filters.'}</p>}
           {visible.map(profile => <AccountRow key={profile.id} profile={profile} devices={devices} onOpenDevice={onOpenDevice} activity={activity.get(profile.id)!} stage={stages.get(profile.id)!}
-            network={networkSignal(profile, proxies)} selected={selected.has(profile.id)} busy={busyIds.has(profile.id)} onToggle={() => toggle(profile.id)}
+            network={networkSignal(profile, proxies)} proxyShare={<ProxyShareBadge profile={profile} proxies={proxies} profiles={profiles} />} selected={selected.has(profile.id)} busy={busyIds.has(profile.id)} onToggle={() => toggle(profile.id)}
             onOpen={() => handlers.open(profile.id, 'overview')} onDragStart={startDrag(profile)}
             menuItems={() => accountMenu(profile, handlers, { failureCutoff: periodStart(period) })}
             onOpenQueue={() => handlers.openQueue(profile.id)}
@@ -210,8 +211,8 @@ function Signal({ signal, onOpenQueue }: { signal: HealthSignal; onOpenQueue?: (
     : <span title={signal.hint} className={cn('whitespace-nowrap', TONE_CLASS[signal.tone])}>{signal.label}</span>;
 }
 
-function AccountRow({ profile, devices, onOpenDevice, network, activity, stage, selected, busy, onToggle, onOpen, onOpenQueue, onDragStart, menuItems, onContextMenu, onMenuKey }: {
-  profile: Profile; devices: AndroidDevice[]; onOpenDevice: (serial: string | null) => void; network: HealthSignal; activity: AccountActivity; stage: StageView; selected: boolean; busy: boolean;
+function AccountRow({ profile, devices, onOpenDevice, network, proxyShare, activity, stage, selected, busy, onToggle, onOpen, onOpenQueue, onDragStart, menuItems, onContextMenu, onMenuKey }: {
+  profile: Profile; devices: AndroidDevice[]; onOpenDevice: (serial: string | null) => void; network: HealthSignal; proxyShare: React.ReactNode; activity: AccountActivity; stage: StageView; selected: boolean; busy: boolean;
   onToggle: () => void; onOpen: () => void; onOpenQueue: () => void; onDragStart: (event: React.DragEvent) => void; menuItems: () => ReturnType<typeof accountMenu>;
   onContextMenu: (event: React.MouseEvent) => void; onMenuKey: (event: React.KeyboardEvent) => void;
 }) {
@@ -245,7 +246,10 @@ function AccountRow({ profile, devices, onOpenDevice, network, activity, stage, 
       {notes.filter(note => note.label !== 'Browser error').map(note => <p key={note.label} className="truncate text-[11px]"><Signal signal={note} /></p>)}
     </div>
     <div className="hidden min-w-0 text-[11px] md:block" title={network.hint}>
-      <span className={cn('inline-flex max-w-full rounded-md border border-current/20 bg-current/5 px-1.5 py-0.5', TONE_CLASS[network.tone])}><Signal signal={network} /></span>
+      <span className="flex min-w-0 items-center gap-1">
+        <span className={cn('inline-flex min-w-0 max-w-full rounded-md border border-current/20 bg-current/5 px-1.5 py-0.5', TONE_CLASS[network.tone])}><Signal signal={network} /></span>
+        {proxyShare}
+      </span>
       {network.detail && <p className="mt-1 truncate text-[10px] text-zinc-500">{network.detail}</p>}
     </div>
     <div className="hidden text-[11px] md:block"><Signal signal={liveSignal(profile)} /></div>

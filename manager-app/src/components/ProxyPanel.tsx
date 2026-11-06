@@ -1,14 +1,17 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { formatProxyGeography, ProxyItem, proxyIpListText } from '../types/proxy';
-import { checkProxyGeography, importProxies, refreshProxyStatuses, testProxyPing, deleteSelectedProxies, testSavedProxySpeed, saveProxyList, NetworkSpeedResult } from '../services/api';
-import { Download, Globe, Plus, Trash2, Activity, MapPin, X, Loader2, Search, Lock, Folder, Gauge, Monitor, Smartphone } from 'lucide-react';
+import { accountLimit, formatProxyGeography, hasRoom, ProxyItem, proxyHolders, proxyIpListText } from '../types/proxy';
+import { checkProxyGeography, importProxies, refreshProxyStatuses, testProxyPing, deleteSelectedProxies, testSavedProxySpeed, saveProxyList, updateAccountsPerProxy, NetworkSpeedResult } from '../services/api';
+import { Download, Globe, Plus, Trash2, Activity, MapPin, X, Loader2, Search, Lock, Folder, Gauge, Monitor, Smartphone, Users } from 'lucide-react';
 import { useAppDialog } from './ui/AppDialogProvider';
 import { Checkbox } from './ui/Checkbox';
 import { Select } from './ui/Select';
+import { useProxyLocationFilter } from './ProxyLocationFilter';
 import { FolderList, ALL_FOLDERS } from './accounts/FolderList';
 import { isAndroid } from './accounts/accountModel';
 import { PROXY_FOLDERS } from '../types/proxy';
 import { Profile } from '../types/profile';
+
+const ACCOUNT_LIMIT_OPTIONS = Array.from({ length: 20 }, (_, i) => i + 1);
 
 interface ProxyPanelProps {
   proxies: ProxyItem[];
@@ -42,12 +45,18 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
+  const location = useProxyLocationFilter(proxies);
+  const inLocation = new Set(location.filtered.map(p => p.id));
   const [isDeleting, setIsDeleting] = useState(false);
   const busy = isDeleting || isImporting || isRefreshingStatus || Boolean(speedRun);
-  const inUse = (proxy: ProxyItem) => Boolean(proxy.assigned || proxy.profile_id);
-  const accountOf = (proxy: ProxyItem) => profiles.find(profile => profile.id === proxy.profile_id);
-  const accountName = (proxy: ProxyItem) => accountOf(proxy)?.name;
+  const inUse = (proxy: ProxyItem) => proxyHolders(proxy).length > 0;
+  const accountsOf = (proxy: ProxyItem) => proxyHolders(proxy).map(id => ({ id, profile: profiles.find(profile => profile.id === id) }));
+  // Every listed proxy carries the setting; an empty pool shows the last value saved here.
+  const [savedLimit, setSavedLimit] = useState(1);
+  const limit = proxies.length ? accountLimit(proxies[0]) : savedLimit;
+  const [savingLimit, setSavingLimit] = useState(false);
   const assigned = proxies.filter(inUse).length;
+  const withRoom = proxies.filter(p => p.group !== 'Poor proxy' && hasRoom(p)).length;
   const available = proxies.filter(p => p.group === 'Available').length;
   const poor = proxies.filter(p => p.group === 'Poor proxy').length;
   const query = search.trim().toLowerCase();
@@ -55,7 +64,8 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
     if (folder !== ALL_FOLDERS && proxy.group !== folder) return false;
     if (filter === 'available' && inUse(proxy)) return false;
     if (filter === 'assigned' && !inUse(proxy)) return false;
-    return !query || [proxy.host, String(proxy.port), proxy.username, proxy.profile_id, accountName(proxy),
+    if (!inLocation.has(proxy.id)) return false;
+    return !query || [proxy.host, String(proxy.port), proxy.username, ...accountsOf(proxy).flatMap(a => [a.id, a.profile?.name]),
       proxy.exit_ip, proxy.group, formatProxyGeography(proxy)].filter(Boolean).join(' ').toLowerCase().includes(query);
   }).sort((a, b) => Number(inUse(b)) - Number(inUse(a)));
   const selectableIds = visibleProxies.map((proxy) => proxy.id);
@@ -187,6 +197,20 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
     }
   };
 
+  const changeLimit = async (value: string) => {
+    const next = Number(value);
+    if (next === limit) return;
+    setSavingLimit(true);
+    try {
+      setSavedLimit((await updateAccountsPerProxy(next)).accounts_per_proxy);
+      onRefresh();
+    } catch (err: any) {
+      await showAlert(err.message || String(err), { title: 'Could not change accounts per proxy', variant: 'danger' });
+    } finally {
+      setSavingLimit(false);
+    }
+  };
+
   const handleExport = async () => {
     const selected = proxies.filter(p => selectedIds.has(p.id));
     if (!selected.length) return;
@@ -213,6 +237,13 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2 text-xs text-zinc-400" title="How many accounts can share one proxy. Accounts already on a proxy keep it when you lower this.">
+            <Users className="h-3.5 w-3.5" />Accounts per proxy
+            <div className="w-20">
+              <Select value={String(limit)} onValueChange={changeLimit} ariaLabel="Accounts per proxy" disabled={savingLimit || busy} className="min-h-8 py-1.5"
+                options={ACCOUNT_LIMIT_OPTIONS.map(n => ({ value: String(n), label: String(n) }))} />
+            </div>
+          </label>
           <button onClick={() => checkSpeeds(proxies.map(p => p.id))} disabled={busy || !proxies.length}
             className="flex items-center gap-1.5 rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 disabled:opacity-40">
             <Gauge className="h-3.5 w-3.5" />Check all download/upload
@@ -233,12 +264,13 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
         <span><strong className="font-medium text-zinc-200">{proxies.length}</strong> total</span>
         <span><strong className="font-medium text-emerald-400">{available}</strong> available</span>
         <span><strong className="font-medium text-zinc-300">{assigned}</strong> used</span>
+        {limit > 1 && <span><strong className="font-medium text-sky-300">{withRoom}</strong> with room for another account</span>}
         <span><strong className="font-medium text-amber-400">{poor}</strong> poor</span>
       </div>
 
       <div className="text-[11px] text-zinc-500" aria-live="polite">
         {speedRun ? <span>Checking proxy {speedRun.done + 1} of {speedRun.total}… <button className="ml-2 text-blue-300" onClick={() => { stopSpeed.current = true; }}>Stop after current proxy</button></span>
-          : 'Used proxies stay locked to their profiles. Unassigned proxies move to Poor proxy if download or upload fails or is below 1 Mbps. Both must pass to recover. Untested proxies are marked in Available.'}
+          : `${limit === 1 ? 'Each proxy serves one account.' : `Each proxy serves up to ${limit} accounts.`} Used proxies stay locked to their accounts. Unassigned proxies move to Poor proxy if download or upload fails or is below 1 Mbps. Both must pass to recover. Untested proxies are marked in Available.`}
       </div>
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-surface">
         <div className="flex flex-wrap items-center gap-2 border-b border-border p-3">
@@ -252,6 +284,7 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
             <Select value={filter} onValueChange={setFilter} ariaLabel="Filter proxies" className="min-h-8 py-2"
               options={[{ value: 'all', label: 'All proxies' }, { value: 'available', label: 'Available' }, { value: 'assigned', label: 'Assigned' }]} />
           </div>
+          {location.controls({ className: "w-80", selectClassName: "min-h-8 py-2" })}
           {selectedIds.size > 0 && (
             <>
               <button onClick={() => checkSpeeds([...selectedIds])} disabled={busy} className="px-2 py-1.5 text-xs text-blue-300 disabled:opacity-40">Check selected download/upload</button>
@@ -298,7 +331,7 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
                   </div>
                 </td></tr>
               {visibleProxies.filter(p => (p.group || '') === group).map((proxy) => {
-                const account = accountOf(proxy);
+                const accounts = accountsOf(proxy);
                 const result = speedResults[proxy.id] || proxy.speed_test;
                 const speed = (measurement: NetworkSpeedResult['download'] | undefined) => !measurement ? '—' : measurement.success ? `${measurement.mbps} Mbps` : 'Failed';
                 return (
@@ -321,15 +354,19 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
                     <p className="mt-1 truncate text-[10px] text-zinc-500">{proxy.geo_source !== 'unknown' && proxy.timezone ? proxy.timezone : 'Timezone not detected'}</p>
                   </td>
                   <td className="px-3 py-2.5">
-                    {inUse(proxy) ? (<div className="flex flex-wrap items-center gap-2">
-                      <button disabled={!proxy.profile_id || !onSelectProfile} onClick={() => proxy.profile_id && onSelectProfile?.(proxy.profile_id)}
-                        title={proxy.profile_id ?? undefined}
+                    {(limit > 1 || accounts.length > 1) && <p className={`mb-1 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium ${
+                      accounts.length > limit ? 'bg-amber-500/10 text-amber-300' : accounts.length === limit ? 'bg-zinc-800 text-zinc-300' : 'bg-sky-500/10 text-sky-300'}`}
+                      title={accounts.length > limit ? 'More accounts than the current limit. They keep this proxy, but no new account can join.' : undefined}>
+                      <Users className="h-3 w-3" aria-label="Accounts" />{accounts.length}/{limit}</p>}
+                    {inUse(proxy) ? (<div className="space-y-1">{accounts.map(({ id, profile: account }) => <div key={id} className="flex flex-wrap items-center gap-2">
+                      <button disabled={!onSelectProfile} onClick={() => onSelectProfile?.(id)} title={id}
                         className="inline-flex items-center gap-1.5 text-[11px] text-blue-300 hover:text-blue-200 disabled:text-zinc-400">
-                        <Lock className="h-3 w-3" />{accountName(proxy) || proxy.profile_id || 'Assigned'}
+                        <Lock className="h-3 w-3" />{account?.name || id}
                       </button>
-                      {account && <span className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] ${isAndroid(account) ? 'bg-teal-500/10 text-teal-300' : 'bg-violet-500/10 text-violet-300'}`}>
-                        {isAndroid(account) ? <Smartphone className="h-3 w-3" aria-hidden="true" /> : <Monitor className="h-3 w-3" aria-hidden="true" />}{isAndroid(account) ? 'Phone' : 'PC'}</span>}
-                    </div>) : <span className="text-[11px] text-zinc-400">Unassigned</span>}
+                      {account && <span title={isAndroid(account) ? 'Phone' : 'PC'} aria-label={isAndroid(account) ? 'Phone' : 'PC'}
+                        className={`inline-flex items-center rounded-md p-1 ${isAndroid(account) ? 'bg-teal-500/10 text-teal-300' : 'bg-violet-500/10 text-violet-300'}`}>
+                        {isAndroid(account) ? <Smartphone className="h-3 w-3" aria-hidden="true" /> : <Monitor className="h-3 w-3" aria-hidden="true" />}</span>}
+                    </div>)}</div>) : <span className="text-[11px] text-zinc-400">Unassigned</span>}
                   </td>
                   <td className="whitespace-nowrap px-3 py-2.5 font-mono text-[11px] text-zinc-400">
                     {proxy.latency_ms !== null ? `${proxy.latency_ms} ms` : '—'}
@@ -363,7 +400,7 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
                         {geoCheckingId === proxy.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <MapPin className="h-3.5 w-3.5" />}
                       </button>
                       <button onClick={() => handleDelete([proxy.id])} disabled={busy || inUse(proxy)}
-                        aria-label={`Delete ${proxy.host}:${proxy.port}`} title={inUse(proxy) ? 'Unassign this proxy from its profile before deleting it' : 'Delete proxy'}
+                        aria-label={`Delete ${proxy.host}:${proxy.port}`} title={inUse(proxy) ? 'Move its accounts to other proxies before deleting it' : 'Delete proxy'}
                         className="rounded p-1.5 text-zinc-500 hover:bg-zinc-800 hover:text-red-400 disabled:opacity-30">
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
@@ -377,7 +414,7 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
                   <p className="text-xs text-zinc-400">{proxies.length === 0 ? 'Your proxy pool is empty.' : folder !== ALL_FOLDERS ? 'No proxies in this folder match your filters.' : 'No proxies match your search.'}</p>
                   {proxies.length === 0 ? (
                     <button onClick={() => setIsImportOpen(true)} disabled={busy} className="mt-3 text-xs text-blue-300 hover:text-blue-200">Import your first proxies</button>
-                  ) : <button onClick={() => { setSearch(''); setFilter('all'); setFolder(ALL_FOLDERS); }} className="mt-3 text-xs text-blue-300 hover:text-blue-200">Clear filters</button>}
+                  ) : <button onClick={() => { setSearch(''); setFilter('all'); location.reset(); setFolder(ALL_FOLDERS); }} className="mt-3 text-xs text-blue-300 hover:text-blue-200">Clear filters</button>}
                 </td></tr>
               )}
             </tbody>

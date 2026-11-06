@@ -256,7 +256,7 @@ def legacy_network_to_v2(network: dict[str, Any], profile_id: str) -> dict[str, 
         (
             proxy
             for proxy in load_proxy_pool()
-            if proxy.get("profile_id") == profile_id
+            if profile_id in (proxy.get("profile_ids") or [])
             or (proxy.get("host") == host and str(proxy.get("port")) == str(port))
         ),
         None,

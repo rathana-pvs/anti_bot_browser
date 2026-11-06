@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { AlertTriangle, Check, ChevronDown } from 'lucide-react';
 import { AccountStageOverride, BehaviorMode, Profile, ProfileUpdateRequest, ReelTemplateSelection, RequestedEnvironment, ResourceLimits, reelTemplateLabel } from '../../types/profile';
-import { formatProxyGeography, ProxyItem } from '../../types/proxy';
+import { accountLimit, formatProxyGeography, hasRoom, proxyHolders, proxyUsageLabel, ProxyItem } from '../../types/proxy';
 import { SCREEN_RESOLUTIONS, getHostTimezone } from '../../services/fingerprintPool';
 import { fetchProfileDefaults } from '../../services/api';
 import { fetchLiveSettings, saveLiveSettings, LiveSettings } from '../../services/live';
@@ -10,6 +10,7 @@ import { ProxySpeedTest } from '../ProxySpeedTest';
 import { useTimezoneConfirmation } from '../TimezoneConfirmationDialog';
 import { Button } from '../ui/Button';
 import { Select } from '../ui/Select';
+import { useProxyLocationFilter } from '../ProxyLocationFilter';
 
 const DEFAULT_LIVE: LiveSettings = { server_url: 'rtmps://live-api-s.facebook.com:443/rtmp/', producer_url: 'https://www.facebook.com/live/producer/', key_saved: false };
 const input = 'mt-1.5 w-full rounded-control border border-zinc-800 bg-zinc-950 px-3 py-2 text-xs text-zinc-100 outline-none focus:border-blue-500';
@@ -107,9 +108,11 @@ export function ProfileSettings({ profile, onSave, proxies = [], groups = [] }: 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile.id, resetKey]);
 
+  const poolChoices = proxies.filter((proxy) => (hasRoom(proxy) && proxy.group !== 'Poor proxy') || proxyHolders(proxy).includes(profile.id) || proxy.id === profile.network.proxy_id);
+  const location = useProxyLocationFilter(poolChoices, networkChoice);
+
   if (!environment) return null;
 
-  const poolChoices = proxies.filter((proxy) => (!proxy.assigned && !proxy.profile_id && proxy.group !== 'Poor proxy') || proxy.profile_id === profile.id || proxy.id === profile.network.proxy_id);
   const selectedPoolProxy = poolChoices.find((proxy) => proxy.id === networkChoice);
   const originalNetworkChoice = profile.network.mode === 'pool' && profile.network.proxy_id
     ? profile.network.proxy_id : profile.network.proxy_host ? 'custom' : 'direct';
@@ -198,10 +201,11 @@ export function ProfileSettings({ profile, onSave, proxies = [], groups = [] }: 
       </Section>
 
       <Section id="settings-network" title="Network" description="How this account’s browser connects to the internet.">
+        {location.controls({ icon: true })}
         <Select value={networkChoice} onValueChange={(value) => { changeNetwork(value); setSaved(false); }} ariaLabel="Network connection"
           options={[
             { value: 'direct', label: 'Direct connection' },
-            ...poolChoices.map((proxy) => ({ value: proxy.id, label: `${proxy.host}:${proxy.port} — ${formatProxyGeography(proxy)}` })),
+            ...location.filtered.map((proxy) => ({ value: proxy.id, label: `${proxy.host}:${proxy.port} — ${formatProxyGeography(proxy)}${accountLimit(proxy) > 1 ? ` · ${proxyUsageLabel(proxy)}` : ''}` })),
             { value: 'custom', label: 'Custom proxy' },
           ]} />
         {selectedPoolProxy && <p className="text-[11px] text-zinc-400">{formatProxyGeography(selectedPoolProxy)}</p>}

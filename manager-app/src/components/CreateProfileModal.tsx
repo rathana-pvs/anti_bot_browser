@@ -8,6 +8,7 @@ import { formatProxyGeography, freeProxies, isPoorProxy, proxyOptionLabel, Proxy
 import { SavedProxyCheck } from './SavedProxyCheck';
 import { RESOLUTION_OPTIONS, getHostTimezone } from '../services/fingerprintPool';
 import { Select } from './ui/Select';
+import { useProxyLocationFilter } from './ProxyLocationFilter';
 import { useTimezoneConfirmation } from './TimezoneConfirmationDialog';
 import { AndroidDevice } from '../types/device';
 import { PhoneAccountForm, PhoneAccountRequest } from './devices/PhoneAccountForm';
@@ -126,6 +127,8 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
       timezone: choice === 'direct' ? getHostTimezone() : firstAvailable?.timezone || null,
     }));
   }, [isOpen, proxies, isSaving]);
+
+  const location = useProxyLocationFilter(freeProxies(proxies), networkChoice);
 
   if (!isOpen) return null;
 
@@ -258,10 +261,11 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
           )}
             <div className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
               <div className="flex items-center gap-1.5 font-medium text-zinc-300"><Globe className="h-3.5 w-3.5" />Network</div>
+              {location.controls({ icon: true })}
               <Select value={networkChoice} onValueChange={handleNetworkChange}
                 ariaLabel="Network connection"
                 options={[
-                  ...availableProxies.map((proxy) => ({ value: proxy.id, label: proxyOptionLabel(proxy) })),
+                  ...location.filtered.map((proxy) => ({ value: proxy.id, label: proxyOptionLabel(proxy) })),
                   { value: 'custom', label: 'Custom proxy' },
                   { value: 'direct', label: 'Direct connection' },
                 ]} />

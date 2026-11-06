@@ -8,6 +8,7 @@ import { checkProfile, checkProfileFacebookResponse, checkProfileProxySpeed, Fac
 import { Button } from '../ui/Button';
 import { cn } from '../ui/cn';
 import { FAILED_STATUSES, describe, formatTime, kindLabel } from '../queue/queueModel';
+import { ProxyShareBadge } from './ProxyShareBadge';
 import { AccountActivity, AccountTab, STATUS_LABEL, STATUS_TONE, TONE_CLASS, browserNotes, isAndroid, liveSignal, networkSignal, openItemSignals, phoneStatus } from './accountModel';
 import { STAGE_META, StageBadge, StageView, refreshAccountHealth, restartEnds, stageView, todayCount, useAccountHealth } from './accountHealth';
 import { Alert } from '../ui/Alert';
@@ -17,8 +18,8 @@ import { PhoneSetupCard } from '../devices/PhoneSetupCard';
 
 const card = 'rounded-xl border border-zinc-800 bg-zinc-950/40 p-4';
 
-export function AccountOverview({ profile, proxies, devices, activity, onOpenQueue, onOpenTab, onToggleHold, onOpenDevice, onChanged }: {
-  profile: Profile; proxies: ProxyItem[]; devices: AndroidDevice[]; activity: AccountActivity;
+export function AccountOverview({ profile, proxies, profiles, devices, activity, onOpenQueue, onOpenTab, onToggleHold, onOpenDevice, onChanged }: {
+  profile: Profile; proxies: ProxyItem[]; profiles?: Profile[]; devices: AndroidDevice[]; activity: AccountActivity;
   /** Opens the queue for this account, with one item's details open when given. */
   onOpenQueue: (executionId?: string) => void;
   onOpenTab: (tab: AccountTab) => void; onToggleHold: () => void;
@@ -79,7 +80,7 @@ export function AccountOverview({ profile, proxies, devices, activity, onOpenQue
     </section>
 
     {android ? <PhoneSide profile={profile} proxies={proxies} devices={devices} onOpenTab={onOpenTab} onChanged={onChanged} />
-      : <NetworkChecks profile={profile} />}
+      : <NetworkChecks profile={profile} proxyShare={<ProxyShareBadge profile={profile} proxies={proxies} profiles={profiles} />} />}
 
     <section className={cn(card, 'lg:col-span-2')} aria-labelledby="overview-work">
       <div className="mb-3 flex items-center justify-between">
@@ -161,7 +162,7 @@ function WorkItem({ item, label, tone }: { item: QueueExecutionItem; label: stri
   </li>;
 }
 
-function NetworkChecks({ profile }: { profile: Profile }) {
+function NetworkChecks({ profile, proxyShare }: { profile: Profile; proxyShare: React.ReactNode }) {
   const [facebook, setFacebook] = useState<FacebookResponseResult | null>(null);
   const [facebookBusy, setFacebookBusy] = useState(false);
   const [facebookError, setFacebookError] = useState<string | null>(null);
@@ -206,7 +207,8 @@ function NetworkChecks({ profile }: { profile: Profile }) {
   return <section className={card} aria-labelledby="overview-network">
     <h3 id="overview-network" className="mb-3 text-sm font-semibold text-zinc-100">Network</h3>
     <dl className="grid grid-cols-[8rem_minmax(0,1fr)] gap-y-2 text-zinc-400">
-      <dt>Connection</dt><dd className="break-all text-zinc-200">{network.proxy_host ? `Proxy · ${network.proxy_host}:${network.proxy_port}` : 'Direct'}</dd>
+      <dt>Connection</dt><dd className="flex flex-wrap items-center gap-2 break-all text-zinc-200">{network.proxy_host ? `Proxy · ${network.proxy_host}:${network.proxy_port}` : 'Direct'}
+        {proxyShare}</dd>
       <dt>Timezone</dt><dd className="text-zinc-200">{profile.effective_environment?.timezone || profile.requested_environment?.timezone || profile.fingerprint.timezone}</dd>
       {preflight && <><dt>Last start check</dt><dd className={preflight.startsWith('passed:') ? 'text-emerald-300' : 'text-red-300'}>{preflight.startsWith('passed:') ? 'Passed' : preflight}</dd></>}
       {network.proxy_host && <>

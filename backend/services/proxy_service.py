@@ -112,6 +112,7 @@ def import_proxies_from_text(text: str) -> dict:
                         "type": "socks5",
                         "assigned": False,
                         "profile_id": None,
+                        "profile_ids": [],
                         "latency_ms": None,
                         "last_checked": None,
                         "timezone": None,
@@ -142,32 +143,98 @@ def update_proxy_metadata(proxy_ids: list[str], **changes) -> dict:
         return {"updated_ids": updated, "missing_ids": sorted(wanted - set(updated))}
 
 
+DEFAULT_ACCOUNT_LIMIT = 1
+MAX_ACCOUNT_LIMIT = 20
+
+
+def _settings_file() -> Path:
+    return PROXY_POOL_FILE.with_name("proxy_settings.json")
+
+
+def account_limit() -> int:
+    """How many accounts one proxy may serve. 1 keeps every account on its own proxy."""
+    try:
+        value = json.loads(_settings_file().read_text(encoding="utf-8")).get("accounts_per_proxy")
+    except (OSError, ValueError, AttributeError):
+        return DEFAULT_ACCOUNT_LIMIT
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= MAX_ACCOUNT_LIMIT:
+        return DEFAULT_ACCOUNT_LIMIT
+    return value
+
+
+def set_account_limit(value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= MAX_ACCOUNT_LIMIT:
+        raise ValueError(f"Accounts per proxy must be a whole number from 1 to {MAX_ACCOUNT_LIMIT}.")
+    with _proxy_assignment_lock:
+        path = _settings_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"accounts_per_proxy": value}), encoding="utf-8")
+        tmp.replace(path)
+    return value
+
+
+def holders(proxy: dict) -> list[str]:
+    """The accounts using this proxy, oldest first."""
+    ids = proxy.get("profile_ids")
+    if isinstance(ids, list):
+        return [pid for pid in ids if pid]
+    return [proxy["profile_id"]] if proxy.get("profile_id") else []
+
+
+def has_room(proxy: dict, profile_id: str, limit: int | None = None) -> bool:
+    """True when the account already uses the proxy or the proxy is below the limit."""
+    current = holders(proxy)
+    return profile_id in current or len(current) < (account_limit() if limit is None else limit)
+
+
+def _full_message(proxy: dict, limit: int) -> str:
+    return (f"Proxy {proxy.get('host')}:{proxy.get('port')} already serves {len(holders(proxy))} "
+            f"{'account' if limit == 1 else 'accounts'}, the limit per proxy. Choose another proxy "
+            f"or raise the limit on the Proxies page.")
+
+
+def _set_holders(proxy: dict, ids: list[str]) -> None:
+    ids = list(dict.fromkeys(ids))
+    proxy["profile_ids"] = ids
+    proxy["profile_id"] = ids[0] if ids else None
+    proxy["assigned"] = bool(ids)
+
+
+def _add_holder(pool: list, entry: dict, profile_id: str) -> None:
+    """Moves the account to `entry`, leaving every other proxy it held."""
+    for proxy in pool:
+        if proxy is not entry and profile_id in holders(proxy):
+            _set_holders(proxy, [pid for pid in holders(proxy) if pid != profile_id])
+    if profile_id not in holders(entry):
+        _set_holders(entry, holders(entry) + [profile_id])
+
+
 def assign_proxy(profile_id: str) -> dict | None:
+    """Gives the account a pool proxy with room, preferring the least shared one."""
     with _proxy_assignment_lock:
         pool = load_proxy_pool()
-        for proxy in pool:
-            if not (proxy.get("assigned") or proxy.get("profile_id")) and proxy.get("group") != "Poor proxy":
-                proxy["assigned"] = True
-                proxy["profile_id"] = profile_id
-                save_proxy_pool(pool)
-                return proxy
-        return None
+        limit = account_limit()
+        choices = [p for p in pool if p.get("group") != "Poor proxy" and not p.get("held_by_phone")
+                   and has_room(p, profile_id, limit)]
+        if not choices:
+            return None
+        proxy = min(choices, key=lambda p: len(holders(p)))
+        _add_holder(pool, proxy, profile_id)
+        save_proxy_pool(pool)
+        return proxy
 
 def assign_proxy_by_id(profile_id: str, proxy_id: str) -> dict:
-    """Atomically reserve one explicit pool proxy for a profile."""
+    """Atomically reserve one explicit pool proxy for a profile, within the per-proxy limit."""
     with _proxy_assignment_lock:
         pool = load_proxy_pool()
         selected = next((p for p in pool if p.get("id") == proxy_id), None)
         if not selected:
             raise ValueError("Selected proxy does not exist")
-        if (selected.get("assigned") or selected.get("profile_id")) and selected.get("profile_id") != profile_id:
-            raise ValueError("Selected proxy is already assigned")
-        for proxy in pool:
-            if proxy.get("profile_id") == profile_id and proxy.get("id") != proxy_id:
-                proxy["assigned"] = False
-                proxy["profile_id"] = None
-        selected["assigned"] = True
-        selected["profile_id"] = profile_id
+        limit = account_limit()
+        if not has_room(selected, profile_id, limit):
+            raise ValueError(_full_message(selected, limit))
+        _add_holder(pool, selected, profile_id)
         save_proxy_pool(pool)
         return dict(selected)
 
@@ -184,14 +251,15 @@ def hold_phone_proxy(profile_id: str, host: str, port: int, username: str, passw
     """Reserve a phone account's proxy for it, adding the proxy to the pool when it is missing.
 
     Without a password (a secondary PC) the entry is a placeholder marked `held_by_phone`: this
-    PC cannot use it, but never gives it to another account. With a password it becomes a normal
-    pool entry. One account, one proxy: an entry another account holds is refused.
+    PC cannot use it, but keeps it for this account. With a password it becomes a normal pool
+    entry. An entry already serving as many accounts as the per-proxy limit allows is refused.
     """
     with _proxy_assignment_lock:
         pool = load_proxy_pool()
         entry = next((p for p in pool if p.get("host") == host and str(p.get("port")) == str(port)), None)
-        if entry and (entry.get("assigned") or entry.get("profile_id")) and entry.get("profile_id") != profile_id:
-            raise ValueError(f"Proxy {host}:{port} is already used by another account on this PC.")
+        limit = account_limit()
+        if entry and not has_room(entry, profile_id, limit):
+            raise ValueError(_full_message(entry, limit))
         if entry is None:
             entry = {"id": f"proxy_{int(time.time() * 1000)}_{str(time.time())[-4:]}", "host": host, "port": int(port),
                      "username": username or "", "password": "", "type": "socks5", "latency_ms": None,
@@ -207,12 +275,7 @@ def hold_phone_proxy(profile_id: str, host: str, port: int, username: str, passw
             entry["exit_ip"] = exit_ip
         if timezone_name and not entry.get("timezone"):
             entry["timezone"] = timezone_name
-        for proxy in pool:
-            if proxy.get("profile_id") == profile_id and proxy is not entry:
-                proxy["assigned"] = False
-                proxy["profile_id"] = None
-        entry["assigned"] = True
-        entry["profile_id"] = profile_id
+        _add_holder(pool, entry, profile_id)
         save_proxy_pool(pool)
         return dict(entry)
 
@@ -222,38 +285,29 @@ def release_proxy(profile_id: str) -> bool:
         pool = load_proxy_pool()
         released = False
         for proxy in pool:
-            if proxy.get("profile_id") == profile_id:
-                proxy["assigned"] = False
-                proxy["profile_id"] = None
+            if profile_id in holders(proxy):
+                _set_holders(proxy, [pid for pid in holders(proxy) if pid != profile_id])
                 released = True
         if released:
             save_proxy_pool(pool)
         return released
 
 def sync_proxy_assignment(profile_id: str, host: str, port: int | str | None) -> dict | None:
+    """Records which pool proxy the account's saved network uses. It mirrors the saved config,
+    so it never refuses on the per-proxy limit."""
     with _proxy_assignment_lock:
         pool = load_proxy_pool()
         modified = False
-
-        # Release any existing proxy that was assigned to this profile but no longer matches
-        for proxy in pool:
-            if proxy.get("profile_id") == profile_id:
-                if not host or proxy.get("host") != host or str(proxy.get("port")) != str(port):
-                    proxy["assigned"] = False
-                    proxy["profile_id"] = None
-                    modified = True
-
         matched = None
         if host and port:
-            for proxy in pool:
-                if proxy.get("host") == host and str(proxy.get("port")) == str(port):
-                    if not proxy.get("assigned") or proxy.get("profile_id") != profile_id:
-                        proxy["assigned"] = True
-                        proxy["profile_id"] = profile_id
-                        modified = True
-                    matched = proxy
-                    break
-
+            matched = next((p for p in pool if p.get("host") == host and str(p.get("port")) == str(port)), None)
+        for proxy in pool:
+            if proxy is not matched and profile_id in holders(proxy):
+                _set_holders(proxy, [pid for pid in holders(proxy) if pid != profile_id])
+                modified = True
+        if matched is not None and profile_id not in holders(matched):
+            _set_holders(matched, holders(matched) + [profile_id])
+            modified = True
         if modified:
             save_proxy_pool(pool)
         return matched
@@ -280,7 +334,7 @@ def delete_proxies(proxy_ids: list[str]) -> dict:
                 kept.append(proxy)
                 continue
             found.add(proxy_id)
-            if proxy.get("assigned") or proxy.get("profile_id"):
+            if holders(proxy):
                 blocked.append(proxy_id)
                 kept.append(proxy)
             else:
