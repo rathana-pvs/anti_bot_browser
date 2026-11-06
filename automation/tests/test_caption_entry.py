@@ -16,29 +16,12 @@ def session():
     return BehaviorSession('medium', 321, 'attempt')
 
 
-def test_short_caption_both_choices_and_independent_streams():
-    behavior = session()
-    with patch.object(behavior, 'stream', return_value=Mock(random=lambda: .1)):
-        assert choose_entry_plan('a short caption', 'caption', behavior).method == 'type'
-    with patch.object(behavior, 'stream', return_value=Mock(random=lambda: .9)):
-        assert choose_entry_plan('a short caption', 'caption', behavior).method == 'paste'
-    first, second = session(), session()
-    first.stream('mouse').random()
-    assert choose_entry_plan('a short caption', 'caption', first) == choose_entry_plan('a short caption', 'caption', second)
-    assert first.typing_speed() == first.typing_speed()
-
-
-@pytest.mark.parametrize('words', [100, 101, 300])
-def test_long_captions_paste_without_random_draw(words):
+@pytest.mark.parametrize('words', [1, 5, 23, 99, 100, 300])
+def test_captions_of_any_length_paste_without_random_draw(words):
     behavior = session()
     with patch.object(behavior, 'stream', side_effect=AssertionError('Do not draw')):
-        assert choose_entry_plan('word ' * words, 'caption', behavior).method == 'paste'
-
-
-def test_99_words_eligible_for_typing():
-    behavior = session()
-    with patch.object(behavior, 'stream', return_value=Mock(random=lambda: .1)):
-        assert choose_entry_plan(' '.join(['word'] * 99), 'caption', behavior).method == 'type'
+        plan = choose_entry_plan(' '.join(['word'] * words), 'caption', behavior)
+    assert (plan.method, plan.reason, plan.wpm) == ('paste', 'always_paste', None)
 
 
 @pytest.mark.parametrize('text', ['See HTTPS://example.com/a?b=1.', 'www.example.com', 'visit example.com/path', 'https://例子.中国/a', 'example.xn--p1ai'])

@@ -90,16 +90,11 @@ class BehaviorSessionTests(unittest.TestCase):
             self.assertTrue(load_behavior_session("profile_002", "r", profiles_root=root).natural)
             self.assertTrue(load_behavior_session("profile_missing", "r", profiles_root=root).natural)
 
-    def test_paste_preference_applies_only_with_the_switch_on(self):
-        plain = [choose_entry_plan("short caption", "caption", BehaviorSession("medium", seed, "r")).method
-                 for seed in range(1, 200)]
-        expected = ["type" if BehaviorSession("medium", seed, "r").stream("entry_strategy").random() < 0.5 else "paste"
-                    for seed in range(1, 200)]
-        self.assertEqual(plain, expected)
-        heavy_paster = next(seed for seed in range(1, 2000) if Persona.from_seed(seed).paste_preference > 0.75)
-        session = BehaviorSession("medium", heavy_paster, "r", natural=True)
-        methods = [choose_entry_plan("short caption", "caption", session).method for _ in range(200)]
-        self.assertGreater(methods.count("paste"), 120)
+    def test_captions_paste_with_the_switch_on_or_off(self):
+        for natural in (False, True):
+            for seed in range(1, 50):
+                session = BehaviorSession("medium", seed, "r", natural=natural)
+                self.assertEqual(choose_entry_plan("short caption", "caption", session).method, "paste")
 
 
 if __name__ == "__main__":
