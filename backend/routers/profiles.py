@@ -9,7 +9,7 @@ from typing import Literal
 from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 from backend.services.profile_groups import list_groups, create_group, rename_group, delete_group
-from backend.services import account_hold
+from backend.services import account_activity, account_hold
 from backend.services.account_health import DAILY_POST_LIMITS, OVERRIDE_STAGES, all_health
 from backend.services.queue_service import load_posting_queue
 
@@ -357,10 +357,12 @@ def update_profile(profile_id: str, request: ProfileUpdateRequest):
             # A direct connection is this PC's own place.
             before_zone = (get_host_timezone() if before_network.get("mode") == "direct"
                            else (original.get("requested_environment") or {}).get("timezone"))
+            now = datetime.now(timezone.utc)
             account_hold.note_proxy_change(
-                existing, datetime.now(timezone.utc),
+                existing, now,
                 account_hold.place_of(before_network, pool, before_zone),
-                account_hold.place_of(existing["network"], pool, (existing.get("requested_environment") or {}).get("timezone")))
+                account_hold.place_of(existing["network"], pool, (existing.get("requested_environment") or {}).get("timezone")),
+                account_activity.last_active(profile_id, original, now))
         existing["configuration_revision"] = int(existing.get("configuration_revision") or 1) + 1
         existing["updated_at"] = utc_now()
         if runtime_changed:

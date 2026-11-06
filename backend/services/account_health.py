@@ -259,7 +259,9 @@ def compute(config: dict, entries: list[dict], now: datetime | None = None) -> d
                       daily_limit=min(limit, DAILY_POST_LIMITS["warming_up"]),
                       proxy_restart={"since": window["since"].isoformat(), "until": window["until"].isoformat(),
                                      "visited": visited, "to": window.get("to"),
-                                     "travel_until": window["travel_until"].isoformat() if window.get("travel_until") else None},
+                                     "travel_until": window["travel_until"].isoformat() if window.get("travel_until") else None,
+                                     "travel_hours": window.get("travel_hours"), "rest_hours": window.get("rest_hours"),
+                                     "last_active": window["last_active"].isoformat() if window.get("last_active") else None},
                       reason=(f"New proxy: travelling{' to ' + window['to'] if window.get('to') else ''}. Nothing runs until "
                               "the trip is over." if window.get("travel_until") else "New proxy: restarting gently. " + (
                           "The first visit from the new IP went fine." if visited

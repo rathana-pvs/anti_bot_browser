@@ -405,6 +405,9 @@ async def run_profile_action(profile_id: str, action: str) -> dict:
         raise RuntimeError(sanitize_profile_action_error(profile_id, raw_error))
     if action == "start" and original_status != "running":
         record_effective_profile_environment(profile_id)
+    if action == "stop" and original_status != "stopped":
+        from backend.services.account_activity import note_active
+        note_active(profile_id)
     return {"success": True, "message": proc.stdout.strip()}
 
 

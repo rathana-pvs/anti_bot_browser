@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArrowRight, Loader2, RefreshCw, ShieldCheck } from 'lucide-react';
-import { Profile } from '../../types/profile';
+import { AccountHealth, Profile } from '../../types/profile';
 import { ProxyItem } from '../../types/proxy';
 import { QueueExecutionItem } from '../../types/automation';
 import { AndroidDevice } from '../../types/device';
@@ -68,9 +68,7 @@ export function AccountOverview({ profile, proxies, profiles, devices, activity,
             </li>)}</ul>
           </div>}
           {stage.stage !== 'on_hold' && stage.health?.proxy_restart && <p className="text-amber-300/90">
-            {stage.health.proxy_restart.travel_until
-              ? <>Travelling{stage.health.proxy_restart.to ? ` to ${stage.health.proxy_restart.to}` : ''} after the proxy change: nothing runs until {travelEnds(stage.health)}. Then posts wait for the first warming visit from the new IP.</>
-              : <>Back to normal {restartEnds(stage.health)}.{stage.health.proxy_restart.visited ? '' : ' Posts wait for the first warming visit from the new IP.'}</>}</p>}
+            {restartSummary(stage.health.proxy_restart, travelEnds(stage.health), restartEnds(stage.health))}</p>}
           <p className="text-zinc-500">{STAGE_META[stage.stage].suggestion}{stage.health?.manual ? ' Set by hand in Settings.' : ''}</p>
           {!android && <AccountCheck profile={profile} stage={stage} recent={activity.recent} onOpenQueue={onOpenQueue} />}
         </dd>
@@ -290,4 +288,18 @@ function PhoneSide({ profile, proxies, devices, onOpenTab, onChanged }: {
 function needsProxy(profile: Profile, proxies: ProxyItem[]) {
   const proxy = profile.network.mode === 'pool' ? proxies.find(p => p.id === profile.network.proxy_id) : undefined;
   return !proxy || (proxy.held_by_phone && !proxy.password);
+}
+
+const hoursText = (hours: number) => hours < 1 ? `${Math.max(1, Math.round(hours * 60))} min` : `${Math.round(hours * 10) / 10} h`;
+
+/** What the rest after a proxy change means now: travelling, or why no rest was needed. */
+function restartSummary(restart: NonNullable<AccountHealth['proxy_restart']>, travelEnd: string, restartEnd: string) {
+  const to = restart.to ? ` to ${restart.to}` : '';
+  const away = restart.last_active ? hoursText((Date.parse(restart.since) - Date.parse(restart.last_active)) / 3600000) : null;
+  const wait = restart.visited ? '' : ' Posts wait for the first warming visit from the new IP.';
+  if (restart.travel_until) {
+    return `Travelling${to}: nothing runs until ${travelEnd}.${away ? ` The ${hoursText(restart.travel_hours ?? 0)} trip counts from the last activity, ${away} before the change.` : ''} Then posts wait for the first warming visit.`;
+  }
+  if (restart.rest_hours === 0 && away) return `No rest needed: last active ${away} before the change, enough to travel${to}.${wait} Back to normal ${restartEnd}.`;
+  return `Back to normal ${restartEnd}.${wait}`;
 }

@@ -157,6 +157,8 @@ def open_account(profile_id: str, job: bool = False) -> dict:
                 # The timezone belongs to the phone, so side-by-side accounts must agree.
                 android_devices.set_timezone(serial, zone, client=client)
                 zone_set = zone
+        from backend.services.account_activity import note_active
+        note_active(profile_id)
         privacy = apply_privacy(profile_id, client, serial, user_id, language)
         if job and privacy["blocking"]:
             # Fail closed: automation never runs Facebook while it could still learn the real location.

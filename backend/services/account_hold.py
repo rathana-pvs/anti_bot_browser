@@ -116,26 +116,38 @@ def travel_hours(before: dict | None, after: dict | None, now: datetime | None =
     return TRAVEL_SAME_ZONE if gap == 0 else min(TRAVEL_ABROAD, max(3, 2 * gap))
 
 
-def _start_restart(account: dict, now: datetime, hours: float | None = None, to: str | None = None) -> None:
+def _start_restart(account: dict, now: datetime, hours: float | None = None, to: str | None = None,
+                   last_active: datetime | None = None) -> None:
+    """The trip counts from when the account was last on Facebook: time already spent away
+    counts as travel. Unknown activity counts from now, to be safe."""
     pending = account.get("proxy_restart") or {}
     hours = pending.get("travel_hours", 0) if hours is None else hours
     to = pending.get("to") if to is None else to
+    if last_active is None:
+        last_active = _parse(pending.get("last_active"))
+    start = min(last_active, now) if last_active else now
+    arrives = max(now, start + timedelta(hours=hours))
     account["proxy_restart"] = {"since": now.isoformat(),
                                 "until": (now + timedelta(hours=max(RESTART_HOURS, hours))).isoformat(),
-                                "travel_until": (now + timedelta(hours=hours)).isoformat(),
-                                "travel_hours": hours, "to": to}
+                                "travel_until": arrives.isoformat(), "travel_hours": hours, "to": to,
+                                "last_active": last_active.isoformat() if last_active else None,
+                                "rest_hours": round((arrives - now).total_seconds() / 3600, 2)}
 
 
-def note_proxy_change(config: dict, now: datetime, before: dict | None = None, after: dict | None = None) -> None:
+def note_proxy_change(config: dict, now: datetime, before: dict | None = None, after: dict | None = None,
+                      last_active: datetime | None = None) -> None:
     """A new proxy restarts the account gently, now or when its hold is released. `before` and
-    `after` are the old and new places (see travel_hours)."""
+    `after` are the old and new places (see travel_hours); `last_active` is when the account was
+    last on Facebook (see account_activity)."""
     account = config.setdefault("account", {})
     hours = travel_hours(before, after, now)
     to = ", ".join(v for v in ((after or {}).get("city"), (after or {}).get("country_code")) if v) or None
     if on_hold(config):
-        account["proxy_restart"] = {"pending": True, "travel_hours": hours, "to": to}
+        # On hold nothing runs, so the account stays as idle as it was when the proxy changed.
+        account["proxy_restart"] = {"pending": True, "travel_hours": hours, "to": to,
+                                    "last_active": last_active.isoformat() if last_active else None}
     else:
-        _start_restart(account, now, hours, to)
+        _start_restart(account, now, hours, to, last_active)
 
 
 def place_of(network: dict | None, pool: dict, fallback_timezone: str | None = None) -> dict | None:
@@ -175,7 +187,9 @@ def restart(config: dict, now: datetime) -> dict | None:
     if not since or not until or until <= now:
         return None
     travel = _parse(value.get("travel_until"))
-    return {"since": since, "until": until, "travel_until": travel if travel and travel > now else None, "to": value.get("to")}
+    return {"since": since, "until": until, "travel_until": travel if travel and travel > now else None, "to": value.get("to"),
+            "travel_hours": value.get("travel_hours"), "rest_hours": value.get("rest_hours"),
+            "last_active": _parse(value.get("last_active"))}
 
 
 def visited_since(entries, since: datetime) -> bool:

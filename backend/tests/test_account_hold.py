@@ -195,3 +195,22 @@ def test_no_post_visit_or_cloud_job_starts_while_travelling():
     for post, execution in [({"type": "photo"}, item()), ({"type": "warming"}, item()),
                             ({"type": "photo"}, {**item(), "cloud_attempt_id": "a1"})]:
         assert not admits(execution, post, value, NOW_MS, dict)
+
+
+@pytest.mark.parametrize("idle_hours,rest", [(10, 0), (2, 6), (0, 8), (None, 8)])
+def test_the_trip_counts_from_the_last_activity(idle_hours, rest):
+    value = config()
+    last = NOW - timedelta(hours=idle_hours) if idle_hours is not None else None
+    note_proxy_change(value, NOW, NEW_YORK, LOS_ANGELES, last_active=last)
+    saved = value["account"]["proxy_restart"]
+    assert saved["rest_hours"] == rest
+    assert (account_hold.travelling_until(value, NOW) is None) == (rest == 0)
+
+
+def test_time_on_hold_counts_as_time_away():
+    value = config()
+    hold(value, "", NOW - timedelta(hours=6))
+    note_proxy_change(value, NOW - timedelta(hours=5), NEW_YORK, LONDON, last_active=NOW - timedelta(hours=8))
+    release(value, NOW)
+    # 20 h trip from the last activity 8 h ago: 12 h left at release.
+    assert account_hold.travelling_until(value, NOW) == NOW + timedelta(hours=12)

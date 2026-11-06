@@ -41,6 +41,8 @@ def account(tmp_path, monkeypatch):
     monkeypatch.setattr(android_network, "PROFILES_DIR", root)
     monkeypatch.setattr(android_devices, "PROFILES_DIR", root)
     monkeypatch.setattr(proxy_service, "PROXY_POOL_FILE", pool)
+    from backend.services import account_activity
+    monkeypatch.setattr(account_activity, "ACTIVITY_FILE", tmp_path / "account_activity.json")
     phone = FakePhone()
     monkeypatch.setattr(android_network, "_client", lambda: phone)
     return phone, root / "profile_020" / "config.json"
