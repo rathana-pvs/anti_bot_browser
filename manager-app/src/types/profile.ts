@@ -164,7 +164,8 @@ export interface AccountHealth {
   /** History items behind an attention or resting stage. */
   evidence?: { execution_id: string; at: string; kind: string; status: string; error: string }[];
   /** The 24-hour gentle restart after a proxy change. */
-  proxy_restart?: { since: string; until: string; visited: boolean };
+  /** After a proxy change: travelling (nothing runs) until `travel_until`, then posts wait for one visit until `until`. */
+  proxy_restart?: { since: string; until: string; visited: boolean; to?: string | null; travel_until?: string | null };
 }
 
 /** A phone account's network, from the last check run inside its Android user. */

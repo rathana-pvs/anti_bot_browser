@@ -15,10 +15,11 @@ import re
 import socket
 import threading
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from backend.config import DATA_DIR, PROFILES_DIR
-from backend.services import android_devices, android_network, proxy_service
+from backend.services import account_hold, android_devices, android_network, proxy_service
 from backend.services.adb_client import AdbClient, AdbError
 from backend.services.android_devices import CONTROL_USER_ID, DeviceNotFound, _client
 from backend.services.android_network import AGENT_PACKAGE, STATUS_TIMEOUT_S, AgentRefused, agent_call
@@ -191,12 +192,19 @@ def _free_profile_id(wanted: str | None) -> str | None:
     return None
 
 
-def _link_proxy(profile_id: str, entry: dict) -> None:
-    """Point the account's network at its reserved pool entry."""
+def _link_proxy(profile_id: str, entry: dict, previous: dict | None = None) -> None:
+    """Point the account's network at its reserved pool entry. Replacing a proxy (`previous`)
+    starts the rest a person would need to get from the old proxy's place to the new one."""
     path = PROFILES_DIR / profile_id / "config.json"
     with android_network._write_lock:
         config = json.loads(path.read_text(encoding="utf-8"))
         config["network"] = android_devices._reserved_network(entry)
+        if previous and previous.get("id") != entry.get("id"):
+            pool = {previous.get("id"): previous, entry.get("id"): entry}
+            account_hold.note_proxy_change(
+                config, datetime.now(timezone.utc),
+                account_hold.place_of({"mode": "pool", "proxy_id": previous.get("id")}, pool, previous.get("timezone")),
+                account_hold.place_of({"mode": "pool", "proxy_id": entry.get("id")}, pool, entry.get("timezone")))
         atomic_write_json(path, config)
 
 
@@ -346,7 +354,7 @@ def replace_proxy(profile_id: str, proxy_id: str) -> dict:
     if not tried.get("applied"):
         raise AdbError("Traffic didn't get through this proxy, so the phone kept its old one.")
     entry = proxy_service.assign_proxy_by_id(profile_id, proxy_id)
-    _link_proxy(profile_id, entry)
+    _link_proxy(profile_id, entry, previous)
     # A placeholder only kept the old proxy from being given away; it can't be used without its password.
     if previous and previous.get("held_by_phone") and not previous.get("password") and previous["id"] != proxy_id:
         proxy_service.delete_proxy(previous["id"])

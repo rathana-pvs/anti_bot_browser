@@ -10,7 +10,7 @@ import { cn } from '../ui/cn';
 import { FAILED_STATUSES, describe, formatTime, kindLabel } from '../queue/queueModel';
 import { ProxyShareBadge } from './ProxyShareBadge';
 import { AccountActivity, AccountTab, STATUS_LABEL, STATUS_TONE, TONE_CLASS, browserNotes, isAndroid, liveSignal, networkSignal, openItemSignals, phoneStatus } from './accountModel';
-import { STAGE_META, StageBadge, StageView, refreshAccountHealth, restartEnds, stageView, todayCount, useAccountHealth } from './accountHealth';
+import { STAGE_META, StageBadge, StageView, refreshAccountHealth, restartEnds, travelEnds, stageView, todayCount, useAccountHealth } from './accountHealth';
 import { Alert } from '../ui/Alert';
 import { DeviceChip } from './DeviceChip';
 import { PhoneNetworkCard } from '../devices/PhoneNetworkCard';
@@ -68,7 +68,9 @@ export function AccountOverview({ profile, proxies, profiles, devices, activity,
             </li>)}</ul>
           </div>}
           {stage.stage !== 'on_hold' && stage.health?.proxy_restart && <p className="text-amber-300/90">
-            Back to normal {restartEnds(stage.health)}.{stage.health.proxy_restart.visited ? '' : ' Posts wait for the first warming visit from the new IP.'}</p>}
+            {stage.health.proxy_restart.travel_until
+              ? <>Travelling{stage.health.proxy_restart.to ? ` to ${stage.health.proxy_restart.to}` : ''} after the proxy change: nothing runs until {travelEnds(stage.health)}. Then posts wait for the first warming visit from the new IP.</>
+              : <>Back to normal {restartEnds(stage.health)}.{stage.health.proxy_restart.visited ? '' : ' Posts wait for the first warming visit from the new IP.'}</>}</p>}
           <p className="text-zinc-500">{STAGE_META[stage.stage].suggestion}{stage.health?.manual ? ' Set by hand in Settings.' : ''}</p>
           {!android && <AccountCheck profile={profile} stage={stage} recent={activity.recent} onOpenQueue={onOpenQueue} />}
         </dd>

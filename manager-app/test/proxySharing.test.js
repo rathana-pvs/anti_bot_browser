@@ -5,7 +5,7 @@ import ts from 'typescript';
 
 const source = readFileSync(new URL('../src/types/proxy.ts', import.meta.url), 'utf8');
 const { outputText } = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext } });
-const { ANY_LOCATION, filterByLocation, freeProxies, hasRoom, proxyLocations, proxyHolders, proxyOptionLabel, proxyUsageLabel } =
+const { ANY_LOCATION, filterByLocation, freeProxies, nearestFirst, nearnessLabel, hasRoom, proxyLocations, proxyHolders, proxyOptionLabel, proxyUsageLabel } =
   await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`);
 
 const proxy = (id, holders, limit, extra = {}) => ({ id, host: '203.0.113.1', port: 1080, profile_ids: holders,
@@ -49,4 +49,20 @@ test('filtering by state or city skips unknown locations but keeps the current c
   assert.deepEqual(filterByLocation(pool, ANY_LOCATION, 'Los Angeles').map(p => p.id), ['a']);
   assert.deepEqual(filterByLocation(pool, 'New York', ANY_LOCATION, 'a').map(p => p.id), ['a', 'c']);
   assert.equal(filterByLocation(pool, ANY_LOCATION, ANY_LOCATION).length, 4);
+});
+
+const place = (id, city, region, timezone, latitude, longitude, country_code = 'US') =>
+  ({ id, city, region, timezone, latitude, longitude, country_code, geo_source: 'proxy_exit_lookup' });
+
+test('replacement proxies near the current one come first', () => {
+  const current = place('now', 'New York', 'New York', 'America/New_York', 40.71, -74.0);
+  const list = [place('la', 'Los Angeles', 'California', 'America/Los_Angeles', 34.05, -118.24),
+    place('bos', 'Boston', 'Massachusetts', 'America/New_York', 42.36, -71.06),
+    place('bk', 'Brooklyn', 'New York', 'America/New_York', 40.68, -73.94),
+    place('ny2', 'New York', 'New York', 'America/New_York', 40.75, -73.99)];
+  assert.deepEqual(nearestFirst(list, current).map(p => p.id), ['ny2', 'bk', 'bos', 'la']);
+  assert.equal(nearnessLabel(current, list[3]), 'same city');
+  assert.equal(nearnessLabel(current, list[2]), 'same state');
+  assert.match(nearnessLabel(current, list[1]), /^same time zone · ≈ 3\d\d km$/);
+  assert.match(nearnessLabel(current, list[0]), /km away$/);
 });

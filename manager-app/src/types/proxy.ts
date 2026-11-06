@@ -157,6 +157,42 @@ export function filterByLocation(proxies: ProxyItem[], state: string, city: stri
     (city === ANY_LOCATION || (p.geo_source !== 'unknown' && p.city === city))));
 }
 
+const located2 = (p: ProxyItem) => p.geo_source !== 'unknown';
+
+/** Great-circle distance between two proxies' exit locations, when both are known. */
+export function distanceKm(a: ProxyItem, b: ProxyItem): number | null {
+  if (!located2(a) || !located2(b) || a.latitude == null || a.longitude == null || b.latitude == null || b.longitude == null) return null;
+  const rad = (d: number) => d * Math.PI / 180;
+  const dLat = rad(b.latitude - a.latitude), dLon = rad(b.longitude - a.longitude);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.latitude)) * Math.cos(rad(b.latitude)) * Math.sin(dLon / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.sqrt(h));
+}
+
+/** How close `proxy` is to `from`: 0 same city, 1 same state, 2 same timezone, 3 elsewhere, 4 unknown. */
+function nearTier(from: ProxyItem, proxy: ProxyItem) {
+  if (!located2(from) || !located2(proxy)) return 4;
+  const same = (key: 'city' | 'region' | 'timezone') => Boolean(from[key]) && from[key] === proxy[key] && from.country_code === proxy.country_code;
+  return same('city') ? 0 : same('region') ? 1 : same('timezone') ? 2 : 3;
+}
+
+/** "same city", "same state", "same time zone" or "≈ 330 km", for picker labels. */
+export function nearnessLabel(from: ProxyItem | undefined, proxy: ProxyItem): string | null {
+  if (!from || from.id === proxy.id) return null;
+  const tier = nearTier(from, proxy);
+  if (tier === 0) return 'same city';
+  if (tier === 1) return 'same state';
+  const km = distanceKm(from, proxy);
+  if (tier === 2) return km == null ? 'same time zone' : `same time zone · ≈ ${Math.round(km)} km`;
+  return km == null ? null : `≈ ${Math.round(km).toLocaleString()} km away`;
+}
+
+/** Proxies nearest to `from` first, so a replacement keeps the account where Facebook knows it. */
+export function nearestFirst(proxies: ProxyItem[], from: ProxyItem | undefined): ProxyItem[] {
+  if (!from || !located2(from)) return proxies;
+  const key = (p: ProxyItem) => [nearTier(from, p), distanceKm(from, p) ?? Number.MAX_VALUE] as const;
+  return [...proxies].sort((a, b) => { const [ta, da] = key(a), [tb, db] = key(b); return ta - tb || da - db; });
+}
+
 /** The pool proxy an account uses, if any. */
 export const proxyOfProfile = (profile: { network: { mode?: string; proxy_id?: string | null } }, proxies: ProxyItem[]) =>
   profile.network.mode === 'pool' && profile.network.proxy_id ? proxies.find(p => p.id === profile.network.proxy_id) : undefined;

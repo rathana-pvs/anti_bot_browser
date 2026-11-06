@@ -90,7 +90,7 @@ def test_a_proxy_changed_on_hold_restarts_on_release():
     value = config()
     hold(value, "", NOW - timedelta(hours=5))
     note_proxy_change(value, NOW - timedelta(hours=4))
-    assert value["account"]["proxy_restart"] == {"pending": True}
+    assert value["account"]["proxy_restart"]["pending"] is True
     release(value, NOW)
     window = account_hold.restart(value, NOW)
     assert window["since"] == NOW and window["until"] == NOW + timedelta(hours=24)
@@ -149,3 +149,49 @@ def test_the_dispatcher_skips_accounts_on_hold(tmp_path, monkeypatch):
     assert ordered_due_executions(queue) == []
     profiles.release_profile("profile_001")
     assert len(ordered_due_executions(queue)) == 1
+
+
+NEW_YORK = {"city": "New York", "region": "New York", "country_code": "US", "timezone": "America/New_York"}
+BROOKLYN = {"city": "Brooklyn", "region": "New York", "country_code": "US", "timezone": "America/New_York"}
+MIAMI = {"city": "Miami", "region": "Florida", "country_code": "US", "timezone": "America/New_York"}
+LOS_ANGELES = {"city": "Los Angeles", "region": "California", "country_code": "US", "timezone": "America/Los_Angeles"}
+LONDON = {"city": "London", "region": "England", "country_code": "GB", "timezone": "Europe/London"}
+
+
+@pytest.mark.parametrize("before,after,hours", [
+    (NEW_YORK, NEW_YORK, 1), (NEW_YORK, BROOKLYN, 1),
+    (NEW_YORK, MIAMI, 4), (NEW_YORK, LOS_ANGELES, 8), (NEW_YORK, LONDON, 20),
+    # Only timezones known: about two hours per hour of difference.
+    ({"timezone": "America/New_York"}, {"timezone": "America/Los_Angeles"}, 6),
+    # This PC's own connection in Phnom Penh to a US proxy: the longest trip.
+    ({"timezone": "Asia/Phnom_Penh"}, NEW_YORK, 20),
+    (None, NEW_YORK, 0),
+])
+def test_the_rest_follows_how_far_the_account_moved(before, after, hours):
+    assert account_hold.travel_hours(before, after, NOW) == hours
+
+
+def test_nothing_runs_while_travelling_then_posts_wait_for_a_visit():
+    value = config()
+    note_proxy_change(value, NOW, NEW_YORK, LOS_ANGELES)
+    assert account_hold.is_paused(value, NOW + timedelta(hours=7)) == "travelling"
+    assert account_hold.is_paused(value, NOW + timedelta(hours=8, minutes=1)) is None
+    window = account_hold.restart(value, NOW + timedelta(hours=1))
+    assert window["to"] == "Los Angeles, US" and window["travel_until"] == NOW + timedelta(hours=8)
+    assert window["until"] == NOW + timedelta(hours=24)
+
+
+def test_a_trip_started_on_hold_begins_when_released():
+    value = config()
+    hold(value, "", NOW - timedelta(hours=5))
+    note_proxy_change(value, NOW - timedelta(hours=4), NEW_YORK, LONDON)
+    release(value, NOW)
+    assert account_hold.travelling_until(value, NOW) == NOW + timedelta(hours=20)
+
+
+def test_no_post_visit_or_cloud_job_starts_while_travelling():
+    value = config()
+    note_proxy_change(value, NOW - timedelta(hours=1), NEW_YORK, LOS_ANGELES)
+    for post, execution in [({"type": "photo"}, item()), ({"type": "warming"}, item()),
+                            ({"type": "photo"}, {**item(), "cloud_attempt_id": "a1"})]:
+        assert not admits(execution, post, value, NOW_MS, dict)

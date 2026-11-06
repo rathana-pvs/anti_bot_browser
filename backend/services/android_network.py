@@ -125,6 +125,11 @@ def open_account(profile_id: str, job: bool = False) -> dict:
     """
     _, runtime, proxy = _account(profile_id)
     serial, user_id = runtime["device_serial"], runtime["android_user_id"]
+    if job and not proxy:
+        # Automation never reaches Facebook through the phone's own internet: that is this PC's
+        # real IP and location.
+        return {"ready": False, "reason": "This account has no proxy, so it would use the phone's own internet. Choose a proxy for it first.",
+                "switch": None, "stopped_users": [], "timezone_set": None, "network": None}
     if proxy and not proxy.get("timezone"):
         raise ValueError("This account's proxy timezone is unknown. Check its location on the Proxies page first.")
     isolate = android_devices.one_account_at_a_time(serial)

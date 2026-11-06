@@ -250,6 +250,30 @@ def assign_proxy_by_id(profile_id: str, proxy_id: str) -> dict:
         save_proxy_pool(pool)
         return dict(selected)
 
+_pool_cache: dict = {"key": None, "by_id": {}}
+
+
+def pool_by_id() -> dict[str, dict]:
+    """The pool keyed by proxy id, re-read only when the file changes. For frequent lookups
+    such as each account's timezone in the scheduler."""
+    try:
+        stat = PROXY_POOL_FILE.stat()
+        key = (str(PROXY_POOL_FILE), stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return {}
+    if _pool_cache["key"] != key:
+        _pool_cache.update(key=key, by_id={p.get("id"): p for p in load_proxy_pool()})
+    return _pool_cache["by_id"]
+
+
+def proxy_timezone(proxy_id: str | None) -> str | None:
+    """The timezone estimated from a pool proxy's exit IP, if known."""
+    proxy = pool_by_id().get(proxy_id) if proxy_id else None
+    if not proxy or proxy.get("geo_source") == "unknown":
+        return None
+    return proxy.get("timezone") or None
+
+
 def find_proxy(host: str, port: int, username: str) -> dict | None:
     """The pool entry for a phone's proxy, matched on host, port and username: providers often
     serve many proxies from one gateway address that differ only by username."""

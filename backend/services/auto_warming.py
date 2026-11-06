@@ -16,7 +16,7 @@ import time
 from datetime import datetime, timezone
 
 from backend.config import DATA_DIR, PROFILES_DIR
-from backend.services import account_health, active_hours
+from backend.services import account_health, account_hold, active_hours
 from backend.services.profile_service import atomic_write_json
 
 AUTO_BATCH_PREFIX = "auto_warming_"
@@ -103,6 +103,12 @@ def candidates(queue: dict, configs: dict, health: dict, history: dict, now_ms: 
         if automation.get("enabled") is False and automation.get("reason") != "android_automation_unavailable":
             continue
         if not active_hours.persona_hours_admit(config, now_ms):
+            continue
+        if account_hold.travelling_until(config, datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)):
+            # Between places after a proxy change: no visit until the trip is over.
+            continue
+        if phone and not (config.get("network") or {}).get("proxy_id"):
+            # Without a proxy a visit would use the phone's own internet; opening refuses it anyway.
             continue
         if phone:
             from backend.services import android_jobs

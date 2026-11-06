@@ -31,9 +31,22 @@ export function restingLeft(until: string | null | undefined) {
 }
 
 export function stageLabel(view: StageView) {
+  if (view.health?.proxy_restart?.travel_until) return `${STAGE_META[view.stage].label} · travelling`;
   if (view.stage === 'warming_up' && view.health?.proxy_restart) return `${STAGE_META.warming_up.label} · new proxy`;
   const left = view.stage === 'resting' ? restingLeft(view.health?.until) : '';
   return left ? `${STAGE_META[view.stage].label} · ${left}` : STAGE_META[view.stage].label;
+}
+
+const whenLabel = (iso: string) => {
+  const date = new Date(iso);
+  const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return date.toDateString() === new Date().toDateString() ? `today ${time}` : `tomorrow ${time}`;
+};
+
+/** "today 14:00" style end of the trip after a proxy change, while it lasts. */
+export function travelEnds(health?: AccountHealth) {
+  const until = health?.proxy_restart?.travel_until;
+  return until ? whenLabel(until) : '';
 }
 
 /** "tomorrow 14:00" style end of a proxy restart. */

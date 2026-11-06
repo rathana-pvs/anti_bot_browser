@@ -13,7 +13,7 @@ from backend.services import account_hold
 from backend.services.account_health import DAILY_POST_LIMITS, OVERRIDE_STAGES, all_health
 from backend.services.queue_service import load_posting_queue
 
-from backend.config import CPU_THREADS, PROFILES_DIR, TOTAL_MEMORY_GB, FALLBACK_TIMEZONE
+from backend.config import CPU_THREADS, PROFILES_DIR, TOTAL_MEMORY_GB, FALLBACK_TIMEZONE, get_host_timezone
 from backend.models.profile import NetworkIntent, ProfileCreateRequest, ProfileUpdateRequest
 from backend.services.docker_service import (
     get_container_stats, get_container_status, get_profile_disk_usage,
@@ -352,7 +352,15 @@ def update_profile(profile_id: str, request: ProfileUpdateRequest):
             or original.get("resources") != existing.get("resources")
         )
         if request.network is not None and account_hold.proxy_changed(original.get("network"), existing["network"]):
-            account_hold.note_proxy_change(existing, datetime.now(timezone.utc))
+            pool = {p.get("id"): p for p in load_proxy_pool()}
+            before_network = original.get("network") or {}
+            # A direct connection is this PC's own place.
+            before_zone = (get_host_timezone() if before_network.get("mode") == "direct"
+                           else (original.get("requested_environment") or {}).get("timezone"))
+            account_hold.note_proxy_change(
+                existing, datetime.now(timezone.utc),
+                account_hold.place_of(before_network, pool, before_zone),
+                account_hold.place_of(existing["network"], pool, (existing.get("requested_environment") or {}).get("timezone")))
         existing["configuration_revision"] = int(existing.get("configuration_revision") or 1) + 1
         existing["updated_at"] = utc_now()
         if runtime_changed:

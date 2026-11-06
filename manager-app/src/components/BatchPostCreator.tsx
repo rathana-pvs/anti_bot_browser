@@ -5,7 +5,7 @@ import type { ReadMoreDraft } from '../services/websites';
 import { CaptionHookEditor, HookDraft, hookIsApproved } from "./CaptionHookEditor";
 import { LivePlaybackSettings, LivePlaybackMode } from './LivePlaybackSettings';
 import { GroupedProfileSelector } from './GroupedProfileSelector';
-import { StageBadge, restartEnds, stageView, useAccountHealth } from './accounts/accountHealth';
+import { StageBadge, restartEnds, travelEnds, stageView, useAccountHealth } from './accounts/accountHealth';
 import { WarmingSettings, defaultWarmingOptions, warmupChoice, warmupOptions } from './WarmingSettings';
 import { MediaLightbox, LightboxMedia } from './MediaLightbox';
 import React, { useState, useEffect, useMemo } from 'react';
@@ -510,6 +510,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
         ? [{ profile: p, view, note: `Visited ${Math.max(1, Math.round(minutes))} min ago; another visit this soon looks busy.` }] : [];
     }
     if (view.stage === 'new' || view.stage === 'resting') return [{ profile: p, view, note: view.reason }];
+    if (view.health?.proxy_restart?.travel_until) return [{ profile: p, view, note: `Travelling after a proxy change: nothing runs for it until ${travelEnds(view.health)}, so its posts wait.` }];
     if (view.health?.proxy_restart) return [{ profile: p, view, note: `Restarted after a proxy change. Posting before ${restartEnds(view.health)} is riskier${
       view.health.proxy_restart.visited ? '' : '; its posts wait for the first warming visit from the new IP'}.` }];
     const left = view.health ? view.health.daily_limit - view.health.posts_today : Infinity;

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Gauge, Loader2, ShieldCheck } from 'lucide-react';
 import { Profile } from '../../types/profile';
-import { ProxyItem, freeProxies, proxyOptionLabel, savedSpeedSummary } from '../../types/proxy';
+import { ProxyItem, freeProxies, nearestFirst, nearnessLabel, proxyOptionLabel, savedSpeedSummary } from '../../types/proxy';
 import { AndroidDevice } from '../../types/device';
 import { AccountNetworkStatus, fetchAccountNetwork, replaceAccountProxy, verifyAccountNetwork } from '../../services/devices';
 import { NetworkSpeedResult, testSavedProxySpeed } from '../../services/api';
@@ -27,7 +27,8 @@ export function PhoneNetworkCard({ profile, proxies, devices, onChanged, canChan
   const [testing, setTesting] = useState(false);
   const [tested, setTested] = useState<NetworkSpeedResult | null>(null);
   const [testError, setTestError] = useState('');
-  const choices = freeProxies(proxies).filter(item => item.password);
+  // Nearest to the current proxy first: a replacement close by keeps the account where Facebook knows it.
+  const choices = nearestFirst(freeProxies(proxies).filter(item => item.password), proxy);
   const [replacement, setReplacement] = useState('');
   const location = useProxyLocationFilter(choices, replacement);
   const [replacing, setReplacing] = useState(false);
@@ -131,7 +132,7 @@ export function PhoneNetworkCard({ profile, proxies, devices, onChanged, canChan
       {location.controls({ icon: true })}
       <div className="flex flex-wrap items-center gap-2">
         <div className="min-w-[14rem] flex-1"><Select value={replacement} onValueChange={setReplacement} ariaLabel="New proxy"
-          placeholder="Pick a free proxy" options={location.filtered.map(item => ({ value: item.id, label: proxyOptionLabel(item) }))} /></div>
+          placeholder="Pick a free proxy" options={location.filtered.map(item => ({ value: item.id, label: [proxyOptionLabel(item), nearnessLabel(proxy, item)].filter(Boolean).join(' · ') }))} /></div>
         <Button size="sm" loading={replacing} disabled={!replacement} onClick={() => void replace()}>Use this proxy</Button>
       </div>
       <p className="text-[11px] text-zinc-500">The phone tries it first and keeps its current proxy if traffic doesn’t get through.</p>

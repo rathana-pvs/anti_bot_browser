@@ -32,7 +32,13 @@ DEFAULT_HOURS = (8, 14)
 
 
 def account_zone(config: dict):
-    zone_name = (config.get("fingerprint") or {}).get("timezone") or (config.get("requested_environment") or {}).get("timezone")
+    """The account's local time: its proxy's timezone, estimated from the exit IP, so sleep, active
+    hours and rest days follow where Facebook sees it. Phone accounts store this PC's timezone,
+    which must never shape their day. Without a known proxy timezone, the saved one is used."""
+    from backend.services import proxy_service
+    network = config.get("network") or {}
+    zone_name = (proxy_service.proxy_timezone(network.get("proxy_id")) if network.get("mode") == "pool" else None) \
+        or (config.get("fingerprint") or {}).get("timezone") or (config.get("requested_environment") or {}).get("timezone")
     try:
         return ZoneInfo(zone_name) if zone_name else timezone.utc
     except (ZoneInfoNotFoundError, ValueError):

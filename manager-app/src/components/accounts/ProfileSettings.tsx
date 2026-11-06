@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { AlertTriangle, Check, ChevronDown } from 'lucide-react';
 import { AccountStageOverride, BehaviorMode, Profile, ProfileUpdateRequest, ReelTemplateSelection, RequestedEnvironment, ResourceLimits, reelTemplateLabel } from '../../types/profile';
-import { accountLimit, formatProxyGeography, hasRoom, proxyHolders, proxyUsageLabel, ProxyItem } from '../../types/proxy';
+import { accountLimit, formatProxyGeography, hasRoom, nearestFirst, nearnessLabel, proxyHolders, proxyUsageLabel, ProxyItem } from '../../types/proxy';
 import { SCREEN_RESOLUTIONS, getHostTimezone } from '../../services/fingerprintPool';
 import { fetchProfileDefaults } from '../../services/api';
 import { fetchLiveSettings, saveLiveSettings, LiveSettings } from '../../services/live';
@@ -108,7 +108,9 @@ export function ProfileSettings({ profile, onSave, proxies = [], groups = [] }: 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile.id, resetKey]);
 
-  const poolChoices = proxies.filter((proxy) => (hasRoom(proxy) && proxy.group !== 'Poor proxy') || proxyHolders(proxy).includes(profile.id) || proxy.id === profile.network.proxy_id);
+  const currentProxy = profile.network.mode === 'pool' ? proxies.find(p => p.id === profile.network.proxy_id) : undefined;
+  // Nearest to the current proxy first: a replacement close by keeps the account where Facebook knows it.
+  const poolChoices = nearestFirst(proxies.filter((proxy) => (hasRoom(proxy) && proxy.group !== 'Poor proxy') || proxyHolders(proxy).includes(profile.id) || proxy.id === profile.network.proxy_id), currentProxy);
   const location = useProxyLocationFilter(poolChoices, networkChoice);
 
   if (!environment) return null;
@@ -205,12 +207,13 @@ export function ProfileSettings({ profile, onSave, proxies = [], groups = [] }: 
         <Select value={networkChoice} onValueChange={(value) => { changeNetwork(value); setSaved(false); }} ariaLabel="Network connection"
           options={[
             { value: 'direct', label: 'Direct connection' },
-            ...location.filtered.map((proxy) => ({ value: proxy.id, label: `${proxy.host}:${proxy.port} — ${formatProxyGeography(proxy)}${accountLimit(proxy) > 1 ? ` · ${proxyUsageLabel(proxy)}` : ''}` })),
+            ...location.filtered.map((proxy) => ({ value: proxy.id, label: `${proxy.host}:${proxy.port} — ${formatProxyGeography(proxy)}${accountLimit(proxy) > 1 ? ` · ${proxyUsageLabel(proxy)}` : ''}${nearnessLabel(currentProxy, proxy) ? ` · ${nearnessLabel(currentProxy, proxy)}` : ''}` })),
             { value: 'custom', label: 'Custom proxy' },
           ]} />
         {selectedPoolProxy && <p className="text-[11px] text-zinc-400">{formatProxyGeography(selectedPoolProxy)}</p>}
         {networkChanged && <p className="text-[11px] text-amber-300/90">
-          A new proxy restarts this account gently for 24 hours: warming visits first, posts after.
+          A new proxy first rests the account for as long as a trip there would take (1 h in the same city or state, up to 20 h
+          for another country), then warming visits come before posts, for up to 24 hours. A proxy near the current one keeps the rest short.
           {!profile.account?.on_hold && ' Tip: put the account on hold before changing its proxy, and release it once the browser looks right.'}</p>}
         {networkChoice === 'custom' && <div className="grid grid-cols-3 gap-2">
           <input required value={customHost} onChange={(e) => setCustomHost(e.target.value)} placeholder="Proxy host" aria-label="Proxy host" className={`${input} col-span-2 mt-0`} />

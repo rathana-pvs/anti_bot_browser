@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from backend.config import PROFILES_DIR
+from backend.services import account_hold
 from backend.services.queue_service import (
     find_queue_execution, load_posting_queue, save_posting_queue, with_queue_claim_lock,
 )
@@ -49,8 +50,11 @@ class QueueAdapter:
         config = json.loads(path.read_text(encoding='utf-8'))
         if config.get('automation', {}).get('enabled') is False:
             raise ValueError('Local automation is disabled for this account')
-        if (config.get('account') or {}).get('on_hold'):
+        paused = account_hold.is_paused(config)
+        if paused == 'on_hold':
             raise ValueError('Account is on hold on this worker')
+        if paused == 'travelling':
+            raise ValueError("Account is travelling to its new proxy's location on this worker")
         return profile
 
     def submit(self, attempt, media_filename):

@@ -240,3 +240,9 @@ def test_wrong_proxy_fails_at_once_without_waiting(two_users, account):
     result = android_network.open_account("profile_020")
     assert result["ready"] is False and "1.2.3.4:1080" in result["reason"]
     assert all(method != "check" for *_, method in two_users.calls)
+
+
+def test_automation_never_opens_a_phone_account_without_a_proxy(monkeypatch):
+    monkeypatch.setattr(android_network, "_account", lambda pid: ({}, {"device_serial": "PIXEL", "android_user_id": 11}, None))
+    result = android_network.open_account("profile_020", job=True)
+    assert result["ready"] is False and "phone's own internet" in result["reason"]

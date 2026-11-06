@@ -258,10 +258,12 @@ def compute(config: dict, entries: list[dict], now: datetime | None = None) -> d
         result.update(stage="warming_up" if growth != "new" else "new", until=window["until"].isoformat(),
                       daily_limit=min(limit, DAILY_POST_LIMITS["warming_up"]),
                       proxy_restart={"since": window["since"].isoformat(), "until": window["until"].isoformat(),
-                                     "visited": visited},
-                      reason="New proxy: restarting gently. " + (
+                                     "visited": visited, "to": window.get("to"),
+                                     "travel_until": window["travel_until"].isoformat() if window.get("travel_until") else None},
+                      reason=(f"New proxy: travelling{' to ' + window['to'] if window.get('to') else ''}. Nothing runs until "
+                              "the trip is over." if window.get("travel_until") else "New proxy: restarting gently. " + (
                           "The first visit from the new IP went fine." if visited
-                          else "Posts wait for one warming visit from the new IP while Auto warming is on."))
+                          else "Posts wait for one warming visit from the new IP while Auto warming is on.")))
         limit = result["daily_limit"]
 
     pushback = next((entry for entry in reversed(entries)

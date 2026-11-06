@@ -193,7 +193,8 @@ PHONE = {"kind": "android_user", "device_serial": "PHONE1", "android_user_id": 1
 
 
 def phone_config():
-    return config("phone_1", runtime=PHONE, automation={"enabled": False, "reason": "android_automation_unavailable"})
+    return config("phone_1", runtime=PHONE, automation={"enabled": False, "reason": "android_automation_unavailable"},
+                  network={"mode": "pool", "proxy_id": "proxy_1"})
 
 
 def test_phone_accounts_get_visits_when_their_phone_can_take_one(monkeypatch):
@@ -232,3 +233,11 @@ def test_a_running_visit_ends_for_work_on_its_phone_only(monkeypatch):
     assert auto_warming.yield_phone_for_post(running, "PHONE1") is False
     assert auto_warming.yield_phone_for_post(running, "PHONE2") is True
     assert asked == [("phone_2", "post_needs_phone", None)]
+
+
+def test_a_phone_account_without_a_proxy_gets_no_visit(monkeypatch):
+    from backend.services import android_jobs
+    monkeypatch.setattr(android_jobs, "can_take_auto_visit", lambda cfg: True)
+    own_network = config("phone_1", runtime=PHONE, automation={"enabled": False, "reason": "android_automation_unavailable"},
+                         network={"mode": "direct", "proxy_id": None})
+    assert candidates(queue(), {"phone_1": own_network}, {"phone_1": {"stage": "ready"}}, {}, NOW_MS) == []

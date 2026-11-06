@@ -91,3 +91,14 @@ def test_phone_with_active_hours_off_starts_at_the_scheduled_time(tmp_path, monk
     warming = queue(scheduled_ms=outside - 60000)
     warming["daily_batches"][0]["posts"][0]["type"] = "warming"
     assert ordered_due_executions(warming, outside) == []
+
+
+def test_an_account_lives_on_its_proxy_time_not_this_pc_time(monkeypatch):
+    from backend.services import proxy_service
+    monkeypatch.setattr(proxy_service, "pool_by_id", lambda: {"p1": {"id": "p1", "timezone": "America/Los_Angeles", "geo_source": "proxy_exit_lookup"}})
+    phone = {"runtime": {"kind": "android_user"}, "fingerprint": {"timezone": "Asia/Phnom_Penh"},
+             "network": {"mode": "pool", "proxy_id": "p1"}}
+    assert str(active_hours.account_zone(phone)) == "America/Los_Angeles"
+    # Without a known proxy timezone the saved one is used.
+    monkeypatch.setattr(proxy_service, "pool_by_id", lambda: {})
+    assert str(active_hours.account_zone(phone)) == "Asia/Phnom_Penh"

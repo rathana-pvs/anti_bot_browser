@@ -652,9 +652,12 @@ def claim_queue_execution(execution_id: str, kind: str = "publisher") -> dict:
         if target_exec.get("status") == "cancelled":
             raise RuntimeError("Execution was cancelled")
 
-        from backend.services.account_hold import is_on_hold
-        if is_on_hold(target_exec.get("profile_id", "")):
+        from backend.services.account_hold import paused_reason
+        paused = paused_reason(target_exec.get("profile_id", ""))
+        if paused == "on_hold":
             raise RuntimeError("Account is on hold")
+        if paused == "travelling":
+            raise RuntimeError("Account is travelling to its new proxy's location")
 
         from backend.services.queue_network_recovery import proxy_measurement_active
         if proxy_measurement_active(queue, target_exec, time.time()):
