@@ -1,3 +1,12 @@
+# Version 2.0.5
+
+- Wait for the selected Android user's VPN to become ready before checking a new
+  proxy, improving proxy changes on phone accounts.
+
+**Linux only.** After installing, run **Settings → Setup and repair → Install /
+update runtime** when prompted. Existing profiles, sessions, and settings remain
+in persistent app storage.
+
 # Version 2.0.4
 
 - Check several proxies at once with timed speed samples, filter by state and
