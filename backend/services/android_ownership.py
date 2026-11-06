@@ -14,6 +14,7 @@ import json
 import re
 import socket
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -263,6 +264,33 @@ def _with_user(client: AdbClient, serial: str, user_id: int, action):
                 pass
 
 
+VPN_START_TIMEOUT_S = 20
+
+
+def _wait_for_vpn(client: AdbClient, serial: str, user_id: int, timeout: float = VPN_START_TIMEOUT_S,
+                  sleep=None, clock=None) -> None:
+    """A user just started in the background answers within a second, and Android's always-on VPN
+    comes up about two seconds later (Pixel 7 Pro, Android 17). Trying a proxy before that fails
+    with "The VPN is not running in this Android user"."""
+    sleep, clock = sleep or time.sleep, clock or time.monotonic
+    deadline = clock() + timeout
+    while True:
+        try:
+            if agent_call(client, serial, user_id, "status", STATUS_TIMEOUT_S).get("service_running"):
+                return
+        except (AdbError, AgentRefused):
+            pass  # The app may not answer until the user has finished starting.
+        if clock() >= deadline:
+            raise AdbError("The companion app's VPN didn't start in this Android user. Open the account on the "
+                           "phone once, then try again.")
+        sleep(1)
+
+
+def _try_proxy(client: AdbClient, serial: str, user_id: int, entry: dict) -> dict:
+    _wait_for_vpn(client, serial, user_id)
+    return agent_call(client, serial, user_id, "try_config", TRY_TIMEOUT_S, _proxy_args(entry))
+
+
 def _proxy_args(entry: dict) -> dict:
     return {"host": entry["host"], "port": int(entry["port"]),
             "username": entry.get("username") or "", "password": entry.get("password") or ""}
@@ -318,8 +346,7 @@ def _take_over_account(client: AdbClient, serial: str, user_id: int, info: dict,
     same = _with_user(client, serial, user_id, lambda: agent_call(
         client, serial, user_id, "same_proxy", STATUS_TIMEOUT_S, _proxy_args(match)))
     if not same.get("same"):
-        tried = _with_user(client, serial, user_id, lambda: agent_call(
-            client, serial, user_id, "try_config", TRY_TIMEOUT_S, _proxy_args(match)))
+        tried = _with_user(client, serial, user_id, lambda: _try_proxy(client, serial, user_id, match))
         if not tried.get("applied"):
             return {**result, "status": "needs_proxy",
                     "reason": "This PC's version of the proxy did not work, so the phone kept its old one. Choose another proxy."}
@@ -349,8 +376,7 @@ def replace_proxy(profile_id: str, proxy_id: str) -> dict:
     if not proxy_service.has_room(entry, profile_id):
         raise ValueError("Selected proxy already serves as many accounts as the limit per proxy allows.")
     with android_devices.phone_lock(serial):
-        tried = _with_user(client, serial, user_id, lambda: agent_call(
-            client, serial, user_id, "try_config", TRY_TIMEOUT_S, _proxy_args(entry)))
+        tried = _with_user(client, serial, user_id, lambda: _try_proxy(client, serial, user_id, entry))
     if not tried.get("applied"):
         raise AdbError("Traffic didn't get through this proxy, so the phone kept its old one.")
     entry = proxy_service.assign_proxy_by_id(profile_id, proxy_id)
