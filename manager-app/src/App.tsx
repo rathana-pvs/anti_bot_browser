@@ -39,6 +39,7 @@ import { createDeviceUser, importDeviceUser, startAccountSetup } from './service
 import type { PhoneAccountRequest } from './components/devices/PhoneAccountForm';
 import { AccountPage } from './components/accounts/AccountPage';
 import { MoveToGroupDialog } from './components/accounts/MoveToGroupDialog';
+import { ChangeProxyDialog } from './components/accounts/ChangeProxyDialog';
 import { AccountHandlers, FolderHandlers, ProfileAction } from './components/accounts/accountActions';
 import { refreshAccountHealth } from './components/accounts/accountHealth';
 import { FolderNameDialog, FolderDialogState } from './components/accounts/FolderNameDialog';
@@ -81,6 +82,7 @@ export const App: React.FC = () => {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [moveTargets, setMoveTargets] = useState<Profile[] | null>(null);
   const [folderDialog, setFolderDialog] = useState<FolderDialogState>(null);
+  const [changeProxyFor, setChangeProxyFor] = useState<Profile | null>(null);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [campaignAttention, setCampaignAttention] = useState(0);
   const [queueRequest, setQueueRequest] = useState<{ profileId?: string; executionId?: string; key: number } | null>(null);
@@ -303,6 +305,7 @@ export const App: React.FC = () => {
 
   const handlers: AccountHandlers = {
     toggleHold: (profile) => { void toggleHold(profile); },
+    changeProxy: setChangeProxyFor,
     openQueue,
     clearFailures: (profile, before) => { void clearFailures(profile, before); },
     open: openAccountPage,
@@ -504,6 +507,9 @@ export const App: React.FC = () => {
       <FolderNameDialog state={folderDialog} onSubmit={submitFolderName} onClose={() => setFolderDialog(null)} />
 
       <MoveToGroupDialog profiles={moveTargets} groups={profileGroups} onMove={moveProfiles} onClose={() => setMoveTargets(null)} />
+
+      {changeProxyFor && <ChangeProxyDialog profile={changeProxyFor} onClose={() => setChangeProxyFor(null)}
+        onChanged={(message) => { showToast(message, 'success'); refreshAccountHealth(); void loadData(); }} />}
 
       <SettingsModal
         onRequestOpen={() => setIsSettingsOpen(true)}

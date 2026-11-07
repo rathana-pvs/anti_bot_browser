@@ -358,6 +358,100 @@ export async function updateAccountsPerProxy(accountsPerProxy: number): Promise<
   return res.json();
 }
 
+export interface ProxyChoice {
+  id: string; host: string; port: number; username: string; type: string; group?: string;
+  country?: string | null; country_code?: string | null; region?: string | null; city?: string | null; timezone?: string | null;
+  geo_source?: string; latency_ms: number | null; reachable?: boolean | null; rating?: import('../types/proxy').ProxyRating;
+  replaced_by?: string | null; replaced_by_address?: string | null; replaced_from?: string | null; accounts: number;
+  travel_hours?: number; rest_hours?: number; suggested?: boolean; same_country?: boolean;
+}
+
+export interface ProxyChangeOptions {
+  profile_id: string;
+  phone: boolean;
+  /** Set while the account runs: the change is refused until it stops. */
+  running_reason: string | null;
+  current: ProxyChoice | null;
+  current_network: { mode: string; host: string | null; port: number | null };
+  last_active: string | null;
+  options: ProxyChoice[];
+}
+
+export async function fetchProxyChangeOptions(profileId: string): Promise<ProxyChangeOptions> {
+  const res = await fetch(`${API_BASE}/profiles/${encodeURIComponent(profileId)}/proxy-change`);
+  if (!res.ok) throw await apiError(res, 'Could not read the proxy choices');
+  return res.json();
+}
+
+/** Moves the account to another proxy already in the pool. Refused while the account runs. */
+export async function changeAccountProxy(profileId: string, proxyId: string): Promise<ProxyChangeOptions> {
+  const res = await fetch(`${API_BASE}/profiles/${encodeURIComponent(profileId)}/proxy-change`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ proxy_id: proxyId }),
+  });
+  if (!res.ok) throw await apiError(res, 'Could not change the proxy');
+  return res.json();
+}
+
+export interface ProxySettings {
+  accounts_per_proxy: number;
+  webshare_key_set: boolean;
+  webshare_key_hint: string | null;
+}
+
+export async function fetchProxySettings(): Promise<ProxySettings> {
+  const res = await fetch(`${API_BASE}/proxies/settings`);
+  if (!res.ok) throw await apiError(res, 'Could not read proxy settings');
+  return res.json();
+}
+
+/** Saves the Webshare API key on this PC after Webshare accepts it. An empty key removes it. */
+export async function saveWebshareKey(key: string): Promise<ProxySettings> {
+  const res = await fetch(`${API_BASE}/proxies/settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ webshare_api_key: key }),
+  });
+  if (!res.ok) throw await apiError(res, 'Could not save the Webshare API key');
+  return res.json();
+}
+
+export interface WebshareReplaceResult {
+  proxy_id: string;
+  old?: string;
+  new?: string;
+  new_id?: string;
+  country_code?: string | null;
+  /** Accounts still on the old proxy, now marked replaced. */
+  accounts?: string[];
+  error: string | null;
+}
+
+export interface WebshareReplaceRun {
+  state: 'idle' | 'running' | 'finished';
+  run_id?: string;
+  total?: number;
+  done?: number;
+  running_id?: string | null;
+  results?: WebshareReplaceResult[];
+}
+
+/** Asks Webshare for a new IP in the same country for each proxy, then moves its accounts there. */
+export async function startWebshareReplace(proxyIds: string[]): Promise<WebshareReplaceRun> {
+  const res = await fetch(`${API_BASE}/proxies/webshare/replace`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ proxy_ids: proxyIds }),
+  });
+  if (!res.ok) throw await apiError(res, 'Could not start the Webshare replacement');
+  return res.json();
+}
+
+export async function fetchWebshareReplace(): Promise<WebshareReplaceRun> {
+  const res = await fetch(`${API_BASE}/proxies/webshare/replace`);
+  if (!res.ok) throw await apiError(res, 'Could not read the Webshare replacement');
+  return res.json();
+}
+
 export async function importProxies(text: string, group = ''): Promise<{ added: number; total: number; status_checked: number; online: number; offline: number; geo_checked: number; geo_failed: number }> {
   const res = await fetch(`${API_BASE}/proxies/import`, {
     method: 'POST',

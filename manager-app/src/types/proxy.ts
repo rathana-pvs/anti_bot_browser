@@ -37,6 +37,12 @@ export interface ProxyItem {
   geo_checked_at?: string | null;
   geo_last_error?: string | null;
   last_checked: string | null;
+  /** Webshare gave this proxy's IP away: its accounts still need moving to another proxy. */
+  replaced_by?: string | null;
+  replaced_by_address?: string | null;
+  replaced_at?: string | null;
+  /** Set on the new proxy: the address it replaced. */
+  replaced_from?: string | null;
 }
 
 /** good: both ways ≥ 1 Mbps · slow: working, a direction under 1 Mbps · timeout: a direction got nothing through · dead: unreachable. */
@@ -117,7 +123,8 @@ export const accountLimit = (proxy: ProxyItem) => Math.max(1, proxy.account_limi
 /** True when the account already uses the proxy or the proxy is below its account limit. */
 export function hasRoom(proxy: ProxyItem, profileId?: string) {
   const holders = proxyHolders(proxy);
-  return (profileId !== undefined && holders.includes(profileId)) || holders.length < accountLimit(proxy);
+  if (profileId !== undefined && holders.includes(profileId)) return true;
+  return !proxy.replaced_by && holders.length < accountLimit(proxy);
 }
 
 /** "2/3 accounts", for pickers and badges. */

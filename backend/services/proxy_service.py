@@ -228,6 +228,7 @@ def assign_proxy(profile_id: str) -> dict | None:
         pool = load_proxy_pool()
         limit = account_limit()
         choices = [p for p in pool if p.get("group") != "Poor proxy" and not p.get("held_by_phone")
+                   and not p.get("replaced_by")
                    and has_room(p, profile_id, limit)]
         if not choices:
             return None
@@ -243,6 +244,9 @@ def assign_proxy_by_id(profile_id: str, proxy_id: str) -> dict:
         selected = next((p for p in pool if p.get("id") == proxy_id), None)
         if not selected:
             raise ValueError("Selected proxy does not exist")
+        if selected.get("replaced_by") and profile_id not in holders(selected):
+            raise ValueError(f"Proxy {selected.get('host')}:{selected.get('port')} was replaced at Webshare and no "
+                             f"longer works. Change to {selected.get('replaced_by_address') or 'another proxy'} instead.")
         limit = account_limit()
         if not has_room(selected, profile_id, limit):
             raise ValueError(_full_message(selected, limit))

@@ -18,7 +18,7 @@ from backend.services.proxy_service import (
     account_limit,
     set_account_limit,
 )
-from backend.services import proxy_check
+from backend.services import proxy_check, webshare_service
 
 router = APIRouter(prefix="/api/proxies", tags=["proxies"])
 
@@ -113,6 +113,8 @@ class CheckRequest(BaseModel):
 
 @router.post("/check", status_code=202)
 def start_proxy_check(request: CheckRequest):
+    if webshare_service.runner.running():
+        raise HTTPException(status_code=409, detail="Wait for the Webshare replacement to finish first.")
     try:
         return proxy_check.runner.start(request.proxy_ids, request.force)
     except RuntimeError as exc:
@@ -143,10 +145,12 @@ def get_proxies():
 class ProxySettings(BaseModel):
     model_config = ConfigDict(extra='forbid')
     accounts_per_proxy: int | None = None
+    # "" removes the saved key. The key itself is never sent back.
+    webshare_api_key: str | None = Field(default=None, max_length=200)
 
 
 def _settings():
-    return {"accounts_per_proxy": account_limit()}
+    return {"accounts_per_proxy": account_limit(), **webshare_service.key_status()}
 
 
 @router.get("/settings")
@@ -159,9 +163,30 @@ def update_proxy_settings(request: ProxySettings):
     try:
         if request.accounts_per_proxy is not None:
             set_account_limit(request.accounts_per_proxy)
+        if request.webshare_api_key is not None:
+            webshare_service.set_api_key(request.webshare_api_key)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except webshare_service.WebshareError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _settings()
+
+
+@router.post("/webshare/replace", status_code=202)
+def start_webshare_replace(request: ProxySelection):
+    if proxy_check.runner.status().get("state") == "running":
+        raise HTTPException(status_code=409, detail="Wait for the proxy check to finish first.")
+    try:
+        return webshare_service.runner.start(request.proxy_ids)
+    except webshare_service.WebshareError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/webshare/replace")
+def webshare_replace_status():
+    return webshare_service.runner.status()
 
 @router.post("/import")
 def import_proxies(payload: dict = Body(...)):

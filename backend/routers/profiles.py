@@ -9,7 +9,7 @@ from typing import Literal
 from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 from backend.services.profile_groups import list_groups, create_group, rename_group, delete_group
-from backend.services import account_activity, account_hold
+from backend.services import account_activity, account_hold, proxy_change
 from backend.services.account_health import DAILY_POST_LIMITS, OVERRIDE_STAGES, all_health
 from backend.services.queue_service import load_posting_queue
 
@@ -301,6 +301,10 @@ def update_profile(profile_id: str, request: ProfileUpdateRequest):
     if android and any(value is not None for value in (
             request.network, request.requested_environment, request.resources, request.automation)):
         raise HTTPException(status_code=400, detail="Network, environment, resources and automation are not editable for Android phone profiles yet.")
+    if request.network is not None and proxy_change.network_changes(existing.get("network"), request.network.model_dump()):
+        reason = proxy_change.running_reason(profile_id, existing)
+        if reason:
+            raise HTTPException(status_code=409, detail=reason)
     phone_details_changed = android and any(
         value is not None and value != existing.get(key) for key, value in (("name", request.name), ("group", request.group)))
     if phone_details_changed:
@@ -380,6 +384,35 @@ def update_profile(profile_id: str, request: ProfileUpdateRequest):
             except Exception:
                 pass
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+class ProxyChangeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    proxy_id: str = Field(min_length=1, max_length=120)
+
+
+@router.get("/{profile_id}/proxy-change")
+def proxy_change_options(profile_id: str):
+    if not (_profile_dir(profile_id) / "config.json").exists():
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return proxy_change.options(profile_id)
+
+
+@router.post("/{profile_id}/proxy-change")
+def change_proxy(profile_id: str, request: ProxyChangeRequest):
+    """Moves the account to another pool proxy, by hand and never while it runs."""
+    if not (_profile_dir(profile_id) / "config.json").exists():
+        raise HTTPException(status_code=404, detail="Profile not found")
+    try:
+        proxy_change.change(profile_id, request.proxy_id, lambda pid, proxy_id: update_profile(
+            pid, ProfileUpdateRequest(network=NetworkIntent(mode="pool", proxy_id=proxy_id))))
+    except proxy_change.AccountRunning as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return proxy_change.options(profile_id)
 
 
 class HoldRequest(BaseModel):

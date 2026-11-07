@@ -9,6 +9,10 @@ import type { HealthSignal } from './accountModel';
 
 /** Use the saved test for this account's selected pool proxy, never another proxy. */
 export function networkSignal(profile: Profile, proxies: ProxyItem[] = []): HealthSignal {
+  const own = profile.network?.mode === 'pool' ? proxies.find(p => p.id === profile.network.proxy_id) : undefined;
+  if (own?.replaced_by) return { label: 'Proxy replaced', tone: 'bad', detail: own.replaced_by_address ? `New: ${own.replaced_by_address}` : undefined,
+    hint: `${own.host}:${own.port} was replaced at Webshare and no longer works. Change this account's proxy (right-click → Change proxy)`
+      + `${own.replaced_by_address ? `, for example to ${own.replaced_by_address},` : ''} when it can rest after the change.` };
   if (profile.runtime?.kind === 'android_user') {
     const reserved = profile.network.mode === 'pool' ? proxies.find(p => p.id === profile.network.proxy_id) : undefined;
     const check = profile.android_network;

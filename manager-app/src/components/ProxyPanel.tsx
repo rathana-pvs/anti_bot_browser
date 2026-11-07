@@ -1,13 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { accountLimit, formatProxyGeography, hasRoom, ProxyItem, proxyHolders, proxyIpListText, qualityRank } from '../types/proxy';
 import { checkProxyGeography, importProxies, refreshProxyStatuses, testProxyPing, deleteSelectedProxies, saveProxyList, updateAccountsPerProxy } from '../services/api';
-import { Download, Globe, Plus, Trash2, Activity, MapPin, X, Loader2, Search, Lock, Folder, Gauge, Monitor, Smartphone, Users } from 'lucide-react';
+import { Download, Globe, Plus, Trash2, Activity, MapPin, X, Loader2, Search, Lock, Folder, Gauge, Monitor, Smartphone, Users, RefreshCw } from 'lucide-react';
 import { useAppDialog } from './ui/AppDialogProvider';
 import { Checkbox } from './ui/Checkbox';
 import { Select } from './ui/Select';
 import { SortButton, sortRows, useSort } from './ui/sort';
 import { useProxyLocationFilter } from './ProxyLocationFilter';
 import { CheckRunBar, ProxyQualityCell, useProxyCheckRun } from './ProxyCheck';
+import { useWebshare, WebshareButton, WebshareRunBar } from './WebshareReplace';
 import { FolderList, ALL_FOLDERS } from './accounts/FolderList';
 import { isAndroid } from './accounts/accountModel';
 import { PROXY_FOLDERS } from '../types/proxy';
@@ -48,7 +49,8 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
   const location = useProxyLocationFilter(proxies);
   const inLocation = new Set(location.filtered.map(p => p.id));
   const [isDeleting, setIsDeleting] = useState(false);
-  const busy = isDeleting || isImporting || isRefreshingStatus || checkRun.running;
+  const webshare = useWebshare(onRefresh);
+  const busy = isDeleting || isImporting || isRefreshingStatus || checkRun.running || webshare.running;
   const inUse = (proxy: ProxyItem) => proxyHolders(proxy).length > 0;
   const accountsOf = (proxy: ProxyItem) => proxyHolders(proxy).map(id => ({ id, profile: profiles.find(profile => profile.id === id) }));
   const { sort, toggle } = useSort<ProxySortKey>();
@@ -243,6 +245,7 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
                 options={ACCOUNT_LIMIT_OPTIONS.map(n => ({ value: String(n), label: String(n) }))} />
             </div>
           </label>
+          <WebshareButton keySet={webshare.keySet} disabled={busy} onClick={webshare.openKey} />
           <button onClick={() => void checkProxies()} disabled={busy || !proxies.length}
             title="Connection, Facebook, exit IP and speed, several proxies at once. Skips proxies that worked in the last 24 hours; Poor ones are always checked again."
             className="flex items-center gap-1.5 rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-40">
@@ -274,6 +277,7 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
       </div>
       <CheckRunBar run={checkRun.run} showSummary={checkRun.showSummary} onStop={() => void checkRun.stop()} onDismiss={checkRun.dismiss}
         onCheckSkipped={() => void checkProxies(undefined, true)} />
+      <WebshareRunBar run={webshare.run} />
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-surface">
         <div className="flex flex-wrap items-center gap-2 border-b border-border p-3">
           <div className="relative min-w-40 flex-1">
@@ -294,6 +298,12 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
                 className="flex items-center gap-1.5 rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800">
                 <Download className="h-3.5 w-3.5" />Export IPs ({selectedIds.size})
               </button>
+              {webshare.keySet && <button disabled={busy || proxies.filter(p => selectedIds.has(p.id)).every(p => p.replaced_by)}
+                onClick={() => { const ids = [...selectedIds]; void webshare.replace(ids, new Set(proxies.filter(p => selectedIds.has(p.id)).flatMap(proxyHolders)).size); }}
+                title="Replace: Webshare gives each selected proxy a new IP in the same country. Accounts stay put until you change their proxy."
+                className="flex items-center gap-1.5 rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-40">
+                <RefreshCw className="h-3.5 w-3.5" />Replace IP · Webshare ({selectedIds.size})
+              </button>}
               <button onClick={() => setSelectedIds(new Set())} disabled={busy} className="px-2 py-1.5 text-xs text-zinc-400 hover:text-white disabled:opacity-40">Clear selection</button>
               <button onClick={() => handleDelete([...selectedIds])} disabled={busy || !proxies.some(p => selectedIds.has(p.id) && !inUse(p))}
                 className="flex items-center gap-1.5 rounded-md border border-red-900/60 bg-red-950/30 px-3 py-1.5 text-xs text-red-300 hover:bg-red-950/60 disabled:opacity-40">
@@ -346,6 +356,11 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
                         title={proxy.last_checked ? `Last checked ${new Date(proxy.last_checked).toLocaleString()}` : 'Not checked yet'}
                         className={`h-1.5 w-1.5 shrink-0 rounded-full ${proxy.reachable === true ? 'bg-emerald-400' : proxy.reachable === false ? 'bg-red-400' : 'bg-zinc-600'}`} />
                       <span className="select-text font-mono text-[11px] text-zinc-200">{proxy.host}:{proxy.port}</span>
+                      {proxy.replaced_by && <span title={`Replaced at Webshare${proxy.replaced_at ? ` on ${new Date(proxy.replaced_at).toLocaleString()}` : ''}. It no longer works and takes no new account. Change the proxy of each account on it (right-click the account → Change proxy).`}
+                        className="rounded-md border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 text-[10px] font-medium text-red-300">
+                        Replaced{proxy.replaced_by_address ? ` → ${proxy.replaced_by_address}` : ''}</span>}
+                      {proxy.replaced_from && !proxy.replaced_by && <span title={`New IP for ${proxy.replaced_from}`}
+                        className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300">New</span>}
                     </div>
                     <p className="mt-1 pl-3.5 text-[10px] text-zinc-500">{proxy.username || 'No authentication'} · {proxy.type.toUpperCase()}</p>
                   </td>
@@ -417,6 +432,7 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
       </div>
 
       </div>
+      {webshare.keyDialog}
       {/* Import Modal */}
       {isImportOpen && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">

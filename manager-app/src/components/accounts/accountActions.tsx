@@ -1,4 +1,4 @@
-import { Copy, Eye, Eraser, FolderInput, FolderMinus, FolderPlus, Hand, ListChecks, Pause, PencilLine, Play, Settings2, Square, Trash2, ExternalLink } from 'lucide-react';
+import { Copy, Eye, Eraser, Shuffle, FolderInput, FolderMinus, FolderPlus, Hand, ListChecks, Pause, PencilLine, Play, Settings2, Square, Trash2, ExternalLink } from 'lucide-react';
 import { Profile } from '../../types/profile';
 import type { ActionMenuItem } from '../ui/ActionMenu';
 import { isAndroid, type AccountTab } from './accountModel';
@@ -17,6 +17,17 @@ export interface AccountHandlers {
   clearFailures: (profile: Profile, before?: number) => void;
   /** Puts the account on hold (asks for an optional note), or releases it. */
   toggleHold: (profile: Profile) => void;
+  /** Change: move the account to another proxy already in the pool. */
+  changeProxy: (profile: Profile) => void;
+}
+
+const browserOpen = (profile: Profile) => profile.status === 'running' || profile.status === 'paused';
+
+function changeProxyItem(profile: Profile, handlers: AccountHandlers): ActionMenuItem {
+  const open = !isAndroid(profile) && browserOpen(profile);
+  return { label: 'Change proxy…', icon: <Shuffle className={icon} />, disabled: open,
+    hint: open ? 'Stop the browser first.' : 'Move this account to another proxy in the pool.',
+    onSelect: () => handlers.changeProxy(profile) };
 }
 
 export interface FolderHandlers {
@@ -36,6 +47,7 @@ export function accountMenu(profile: Profile, handlers: AccountHandlers, { inclu
     if (includeOpen) items.push({ label: 'Open', icon: <ExternalLink className={icon} />, onSelect: () => handlers.open(profile.id, 'overview') });
     items.push(
       { label: 'Show in queue', icon: <ListChecks className={icon} />, onSelect: () => handlers.openQueue(profile.id), divider: includeOpen },
+      changeProxyItem(profile, handlers),
       { label: 'Move to folder…', icon: <FolderInput className={icon} />, onSelect: () => handlers.moveToGroup([profile]) },
       { label: 'Copy account ID', icon: <Copy className={icon} />, onSelect: () => handlers.copyId(profile) },
       { label: 'Delete', icon: <Trash2 className={icon} />, danger: true, divider: true, onSelect: () => handlers.remove([profile]) },
@@ -62,7 +74,8 @@ export function accountMenu(profile: Profile, handlers: AccountHandlers, { inclu
       ? { label: 'Release hold', icon: <Play className={icon} />, hint: 'Automatic posts and warming start again.', onSelect: () => handlers.toggleHold(profile) }
       : { label: 'Put on hold…', icon: <Hand className={icon} />, hint: 'Stops posts, warming and cloud jobs, e.g. before changing the proxy.', onSelect: () => handlers.toggleHold(profile) },
     { label: 'Clear old failures…', icon: <Eraser className={icon} />, hint: 'Removes failed-before-posting items. Unconfirmed posts are never removed.', onSelect: () => handlers.clearFailures(profile, failureCutoff) },
-    { label: 'Edit settings', icon: <Settings2 className={icon} />, onSelect: () => handlers.open(profile.id, 'settings'), divider: true },
+    { ...changeProxyItem(profile, handlers), divider: true },
+    { label: 'Edit settings', icon: <Settings2 className={icon} />, onSelect: () => handlers.open(profile.id, 'settings') },
     { label: 'Move to folder…', icon: <FolderInput className={icon} />, onSelect: () => handlers.moveToGroup([profile]) },
     { label: 'Copy account ID', icon: <Copy className={icon} />, onSelect: () => handlers.copyId(profile) },
     { label: 'Delete', icon: <Trash2 className={icon} />, danger: true, divider: true, onSelect: () => handlers.remove([profile]) },

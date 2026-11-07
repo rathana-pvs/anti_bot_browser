@@ -7,7 +7,7 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.security import websocket_token_valid
-from backend.services import android_devices, android_live, android_network, android_ownership, android_setup
+from backend.services import android_devices, android_live, android_network, android_ownership, android_setup, proxy_change
 from backend.services.adb_client import AdbError, AdbUnavailable
 
 
@@ -145,6 +145,13 @@ def confirm_login(profile_id: str):
 
 @router.post("/accounts/{profile_id}/proxy")
 def replace_proxy(profile_id: str, request: ProxyChangeRequest):
+    # Changing a phone account's proxy switches the phone to it, so never while a job runs.
+    try:
+        reason = proxy_change.running_reason(profile_id)
+    except (OSError, ValueError):
+        reason = None
+    if reason:
+        raise HTTPException(status_code=409, detail=reason)
     return _call(lambda: android_ownership.replace_proxy(profile_id, request.proxy_id))
 
 

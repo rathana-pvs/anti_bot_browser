@@ -82,7 +82,9 @@ def normalize_proxy(proxy):
     proxy['speed_quality'] = quality
     proxy.pop('last_speed_quality', None)
     # Poor proxy holds only proxies that time out or cannot be reached.
-    group = ('Used' if proxy['profile_ids'] else 'Poor proxy' if quality == 'check_failed' else 'Available')
+    # A proxy Webshare replaced no longer works, whatever its last check said.
+    group = ('Used' if proxy['profile_ids'] else
+             'Poor proxy' if quality == 'check_failed' or proxy.get('replaced_by') else 'Available')
     old = proxy.get('group')
     if old and old.casefold() not in {name.casefold() for name in FOLDERS}:
         proxy.setdefault('legacy_group', old)

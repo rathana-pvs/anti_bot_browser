@@ -80,3 +80,6 @@ data/resources/
 # Phone records and this PC's identity (written per machine)
 data/android_devices.json
 data/pc_identity.json
+
+# Webshare API key (local only)
+/data/webshare.json
