@@ -123,6 +123,44 @@ def test_a_proxy_not_on_webshare_is_refused(pool, monkeypatch):
         webshare_service.replace_one('other', sleep=lambda s: None)
 
 
+class AlreadySwapped(FakeWebshare):
+    """1.1.1.1 was swapped to 3.3.3.3 and then to 2.2.2.2 before this run, over two pages."""
+
+    def __call__(self, method, path, key=None, **kwargs):
+        self.calls.append((method, path, kwargs))
+        if path == '/v2/proxy/list/':
+            ip = kwargs['params'].get('proxy_address')
+            row = {'proxy_address': '2.2.2.2', 'port': 7000, 'username': 'u', 'password': 'pw2', 'country_code': 'US'}
+            return {'results': [row] if ip == '2.2.2.2' else []}
+        if path == '/v2/proxy/list/replaced/':
+            if kwargs['params']['page'] == 1:
+                return {'next': 'more', 'results': [
+                    {'proxy': '3.3.3.3', 'proxy_port': 6500, 'replaced_with': '2.2.2.2', 'replaced_with_port': 7000,
+                     'created_at': '2026-11-07T14:00:00Z'}]}
+            return {'next': None, 'results': [
+                {'proxy': '1.1.1.1', 'proxy_port': 6000, 'replaced_with': '3.3.3.3', 'replaced_with_port': 6500,
+                 'created_at': '2026-11-07T13:50:00Z'}]}
+        raise AssertionError(path)
+
+
+def test_a_proxy_webshare_already_swapped_is_caught_up_without_a_new_swap(pool, monkeypatch):
+    fake = AlreadySwapped()
+    monkeypatch.setattr(webshare_service, '_request', fake)
+    result = webshare_service.replace_one('old', sleep=lambda s: None)
+    assert not any(p == '/v3/proxy/replace/' for m, p, kw in fake.calls)  # nothing new is swapped
+    assert result['already_replaced'] is True and result['new'] == '2.2.2.2:7000'
+    proxies = pool()
+    assert proxies[result['new_id']]['password'] == 'pw2'
+    assert proxies['old']['replaced_by'] == result['new_id']
+
+
+def test_a_swapped_proxy_with_no_account_is_removed_once_caught_up(pool, monkeypatch):
+    monkeypatch.setattr(webshare_service, '_request', AlreadySwapped())
+    proxy_service.update_proxy_metadata(['old'], profile_ids=[], profile_id=None, assigned=False)
+    result = webshare_service.replace_one('old', sleep=lambda s: None)
+    assert 'old' not in pool() and result['new_id'] in pool()
+
+
 def test_run_continues_after_one_proxy_fails(pool):
     webshare_service.set_api_key('abcdefgh1234', verify=lambda key: None)
     run = webshare_service.ReplaceRun()

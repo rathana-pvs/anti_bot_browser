@@ -136,12 +136,53 @@ def _wait_for(replacement_id: int, sleep=time.sleep, timeout: float = REPLACE_TI
         sleep(POLL_SECONDS)
 
 
-def _replaced_with(replacement_id: int, ip: str) -> tuple[str, int]:
-    data = _request("GET", "/v2/proxy/list/replaced/", params={"proxy_list_replacement": replacement_id})
-    row = next((r for r in data.get("results") or [] if r.get("proxy") == ip), None)
-    if not row or not row.get("replaced_with"):
-        raise WebshareError("Webshare finished, but didn't say which proxy replaced this one.")
+REPLACED_PAGES = 20
+MAX_HOPS = 5
+
+
+def _replaced_rows(**params) -> list[dict]:
+    """Rows of Webshare's replaced-proxy list, following its pages."""
+    rows, page = [], 1
+    while page <= REPLACED_PAGES:
+        data = _request("GET", "/v2/proxy/list/replaced/", params={**params, "page": page, "page_size": 100})
+        rows += data.get("results") or []
+        if not data.get("next"):
+            break
+        page += 1
+    return rows
+
+
+def _latest(rows: list[dict], ip: str, port: int | None = None) -> tuple[str, int] | None:
+    matches = [r for r in rows if r.get("proxy") == ip and r.get("replaced_with")
+               and (port is None or r.get("proxy_port") in (None, port))]
+    if not matches:
+        return None
+    row = max(matches, key=lambda r: r.get("created_at") or "")
     return row["replaced_with"], int(row["replaced_with_port"])
+
+
+def _replaced_with(replacement_id: int, ip: str) -> tuple[str, int]:
+    found = _latest(_replaced_rows(proxy_list_replacement=replacement_id), ip) or _latest(_replaced_rows(), ip)
+    if not found:
+        raise WebshareError("Webshare finished, but didn't say which proxy replaced this one.")
+    return found
+
+
+def already_replaced(ip: str, port: int | None) -> tuple[str, int, dict] | None:
+    """The proxy that now stands in for an IP Webshare already swapped (by an earlier run that
+    stopped before adding it, the dashboard or auto-replace), following a chain of swaps to the
+    one still in the account. None when Webshare never replaced it."""
+    rows = _replaced_rows()
+    current, current_port = ip, port
+    for _ in range(MAX_HOPS):
+        nxt = _latest(rows, current, current_port)
+        if not nxt:
+            return None
+        current, current_port = nxt
+        found = find_webshare_proxy(current)
+        if found:
+            return current, current_port, found
+    return None
 
 
 # --- Replacement --------------------------------------------------------------------------------
@@ -156,11 +197,23 @@ def replace_one(proxy_id: str, sleep=time.sleep) -> dict:
     ip = old["host"]
     found = find_webshare_proxy(ip)
     if not found:
-        raise WebshareError(f"{ip} isn't one of your Webshare proxies.")
+        # Webshare may have swapped it already; then only the pool is behind, and is caught up.
+        earlier = already_replaced(ip, old.get("port"))
+        if not earlier:
+            raise WebshareError(f"{ip} isn't one of your Webshare proxies.")
+        new_ip, new_port, fresh = earlier
+        return {**_adopt(old, new_ip, new_port, fresh, {}), "already_replaced": True,
+                "country_code": fresh.get("country_code")}
     replacement = _replace(ip, found.get("country_code"))
     _wait_for(int(replacement["id"]), sleep=sleep)
     new_ip, new_port = _replaced_with(int(replacement["id"]), ip)
-    fresh = find_webshare_proxy(new_ip) or {}
+    return {**_adopt(old, new_ip, new_port, find_webshare_proxy(new_ip) or {}, found),
+            "country_code": found.get("country_code")}
+
+
+def _adopt(old: dict, new_ip: str, new_port: int, fresh: dict, found: dict) -> dict:
+    """Adds the new proxy to the pool as Available; the old one keeps its accounts, marked replaced."""
+    proxy_id, ip = old["id"], old["host"]
     username = fresh.get("username") or found.get("username") or old.get("username") or ""
     password = fresh.get("password") or found.get("password") or old.get("password") or ""
 
@@ -182,7 +235,7 @@ def replace_one(proxy_id: str, sleep=time.sleep) -> dict:
     else:
         proxy_service.delete_proxy(proxy_id)
     return {"proxy_id": proxy_id, "old": f"{ip}:{old.get('port')}", "new": new_address, "new_id": new_id,
-            "country_code": found.get("country_code"), "accounts": accounts}
+            "accounts": accounts}
 
 
 def _now() -> str:

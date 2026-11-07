@@ -424,6 +424,8 @@ export interface WebshareReplaceResult {
   country_code?: string | null;
   /** Accounts still on the old proxy, now marked replaced. */
   accounts?: string[];
+  /** Webshare had already swapped this IP; only the pool was caught up. */
+  already_replaced?: boolean;
   error: string | null;
 }
 

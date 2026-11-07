@@ -41,7 +41,7 @@ export function useWebshare(onRefresh: () => void) {
     const waiting = replaced.reduce((n, r) => n + (r.accounts || []).length, 0);
     const lines = results.map(r => r.error
       ? `✗ ${r.old || r.proxy_id}: ${r.error}`
-      : `✓ ${r.old} → ${r.new}${(r.accounts || []).length ? ` · ${(r.accounts || []).length} account(s) marked Proxy replaced` : ''}`);
+      : `✓ ${r.old} → ${r.new}${r.already_replaced ? ' (Webshare had already swapped it; added the new IP)' : ''}${(r.accounts || []).length ? ` · ${(r.accounts || []).length} account(s) marked Proxy replaced` : ''}`);
     if (waiting) lines.push('', 'New proxies are in Available. Change the proxy of each marked account (right-click → Change proxy) when it can rest.');
     void showAlert(lines.join('\n'), {
       title: `Replaced ${replaced.length} of ${results.length} ${results.length === 1 ? 'proxy' : 'proxies'}`,
