@@ -47,13 +47,13 @@ class SkipPersonalProfileTests(unittest.TestCase):
         task.set_outcome = Mock(return_value=False)
         return task
 
-    def test_the_personal_profile_stops_the_job_before_anything_is_done(self):
+    def test_the_personal_profile_continues_too(self):
         task = self.task(["Sor R", "1 friend", "Add to story"])
         with patch("skills.session.time.sleep"):
-            self.assertFalse(SessionCheck(task).verify("https://www.facebook.com/me"))
-        self.assertEqual(task.session_check_status, "personal_profile")
-        SessionCheck(task).skip_unverified()
-        self.assertEqual(task.set_outcome.call_args.args[0], "skipped_personal_profile")
+            self.assertTrue(SessionCheck(task).verify("https://www.facebook.com/me"))
+        self.assertEqual(task.session_check_status, "authenticated")
+        self.assertEqual(task.facebook_identity, "personal")
+        # Older results keep their status name.
         self.assertEqual(PublicationStatus("skipped_personal_profile"), PublicationStatus.SKIPPED_PERSONAL_PROFILE)
 
     def test_the_page_continues(self):

@@ -145,15 +145,9 @@ def test_stage_override_is_validated(tmp_path, monkeypatch):
     assert "Account stage" in error.value.detail
 
 
-def test_a_page_account_showing_the_personal_profile_needs_attention():
+def test_showing_the_personal_profile_needs_no_attention():
     personal = dict(entry(2), identity="personal")
-    health = compute(config(), posts(12) + [personal], NOW)
-    assert health["stage"] == "attention"
-    assert "personal profile" in health["reason"]
-    back_on_page = dict(entry(1), identity="page")
-    assert compute(config(), posts(12) + [personal, back_on_page], NOW)["stage"] == "ready"
-    # A run that could not tell keeps the last known identity.
-    assert compute(config(), posts(12) + [personal, entry(1)], NOW)["stage"] == "attention"
+    assert compute(config(), posts(12) + [personal], NOW)["stage"] == "ready"
 
 
 def test_history_keeps_the_identity(tmp_path, monkeypatch):

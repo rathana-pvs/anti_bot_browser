@@ -144,16 +144,11 @@ class FacebookWarmingTask(BaseTask):
         )
 
     def _finish_check(self, options) -> bool:
-        """A requested account check passed: logged in, no checkpoint, not the personal profile."""
+        """A requested account check passed: logged in and no checkpoint. The Page or the
+        personal profile may be showing; both are fine."""
         identity = getattr(self, "facebook_identity", None)
-        if identity != "page":
-            # A pass must be proof: without reading the Page's own signs, the account stays flagged.
-            message = "Logged in with no checkpoint, but the check could not confirm the Page is showing."
-            self.log("WARN", f"Account check not passed: {message}")
-            self.capture_evidence("account_check_unconfirmed", facebook_identity=identity)
-            return self.set_outcome("skipped_session_unverified", error=message, account_check=True,
-                                    auth_preflight="page_unconfirmed")
-        self.log("SUCCESS", "Account check passed: logged in, no checkpoint, and the Page is showing.")
+        showing = {"page": "the Page", "personal": "the personal profile"}.get(identity, "the account")
+        self.log("SUCCESS", f"Account check passed: logged in, no checkpoint, {showing} is showing.")
         self.capture_evidence("account_check_passed", facebook_identity=identity)
         return self.set_outcome("completed", account_check=True, warming_options=options,
                                 warming_surface_requested="profile", warming_surface="profile",

@@ -244,14 +244,7 @@ def compute(config: dict, entries: list[dict], now: datetime | None = None) -> d
         result.update(stage="attention", reason=reason,
                       evidence=_evidence(checkpoint))
         return result
-    # Pages post as the Page; a session that showed the personal profile
-    # means the browser switched away from the Page.
-    identified = next((entry for entry in reversed(entries) if entry.get("identity")), None)
-    if identified and identified["identity"] == "personal":
-        result.update(stage="attention",
-                      reason="Facebook was showing the personal profile instead of the Page. Switch back to the Page in the browser.",
-                      evidence=_evidence(identified))
-        return result
+    # Showing the personal profile instead of the Page is fine and needs no attention.
     window = account_hold.restart(config, now)
     if window:
         visited = account_hold.visited_since(entries, window["since"])

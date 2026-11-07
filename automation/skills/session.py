@@ -248,11 +248,8 @@ class SessionCheck:
         except Exception as exc:
             task.log("DEBUG", f"Could not tell whether Facebook shows the Page or the personal profile: {exc}")
         if getattr(task, "facebook_identity", None) == "personal":
-            # Anything done now would happen as the personal profile, and its
-            # name must never be learned as the Page's.
-            task.session_check_status = "personal_profile"
-            task.log("WARN", "Facebook is showing the personal profile, not the Page; this profile will be skipped.")
-            return False
+            # The personal profile is a normal place to work from; the job carries on.
+            task.log("INFO", "Facebook is showing the personal profile; continuing.")
         self._remember_profile(target_url)
         return True
 

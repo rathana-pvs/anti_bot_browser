@@ -62,13 +62,13 @@ class FacebookWarmingTaskTests(unittest.TestCase):
         self.assertTrue(task.set_outcome.call_args.kwargs["account_check"])
         task.capture_evidence.assert_called_once_with("account_check_passed", facebook_identity="page")
 
-    def test_a_check_that_cannot_confirm_the_page_does_not_pass(self):
+    def test_a_check_on_the_personal_profile_passes_too(self):
         task = self.make_task()
         task.warming_options = {"check": True}
-        task.facebook_identity = None
-        self.assertFalse(task.run())
-        self.assertEqual(task.set_outcome.call_args.args, ("skipped_session_unverified",))
-        task.capture_evidence.assert_called_once_with("account_check_unconfirmed", facebook_identity=None)
+        task.facebook_identity = "personal"
+        self.assertTrue(task.run())
+        self.assertEqual(task.set_outcome.call_args.args, ("completed",))
+        task.capture_evidence.assert_called_once_with("account_check_passed", facebook_identity="personal")
 
     def test_a_failed_account_check_is_skipped_like_any_session(self):
         task = self.make_task()

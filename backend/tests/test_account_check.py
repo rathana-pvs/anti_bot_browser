@@ -34,8 +34,7 @@ def test_a_passed_check_moves_the_account_out_of_attention():
     passed = {"at": "2026-10-31T14:00:00+00:00", "kind": "warming", "status": "completed", "error": "", "identity": "page"}
     assert compute(config, [checkpoint, passed], NOW)["stage"] != "attention"
     personal = dict(checkpoint, status="skipped_personal_profile", identity="personal")
-    assert compute(config, [personal], NOW)["stage"] == "attention"
-    assert compute(config, [personal, passed], NOW)["stage"] != "attention"
+    assert compute(config, [personal], NOW)["stage"] != "attention"
 
 
 @pytest.fixture
