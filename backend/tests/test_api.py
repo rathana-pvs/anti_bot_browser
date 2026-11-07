@@ -118,6 +118,111 @@ def test_proxies_list_and_import(client):
     data = import_res.json()
     assert "added" in data
 
+def test_scheduled_batch_spreads_accounts_and_shows_when_each_starts(client):
+    from datetime import datetime, timedelta, timezone
+    start = datetime.now(timezone.utc) + timedelta(hours=2)
+    payload = {
+        "name": "Spread batch", "target_profiles": ["profile_001"], "start_now": False,
+        "schedule_window": {"start_time": "09:00", "end_time": "21:00", "profile_stagger_seconds": 30,
+                            "batch_iteration_delay_seconds": 0, "session_preparation_mode": "off",
+                            "start_now": False, "start_at": start.isoformat(), "spread_minutes": 30,
+                            "follow_active_hours": False},
+        "posts": [{"type": "photo", "media_file": "", "base_caption": "Spread", "ai_spin": False}],
+    }
+    res = client.post("/api/queue/batch", json=payload)
+    assert res.status_code == 200, res.text
+    batch = res.json()["batch"]
+    assert batch["schedule_window"]["follow_active_hours"] is False and batch["schedule_window"]["spread_minutes"] == 30
+    at = datetime.fromisoformat(batch["posts"][0]["executions"][0]["scheduled_at"])
+    assert start <= at < start + timedelta(minutes=30)
+
+    item = next(e for e in client.get("/api/queue").json()["executions"] if e["batch_id"] == batch["batch_id"])
+    assert item["wait_reason"] == "scheduled"
+    assert datetime.fromisoformat(item["expected_start_at"]) == at
+
+    payload["schedule_window"]["start_at"] = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+    past = client.post("/api/queue/batch", json=payload)
+    assert past.status_code == 400 and "already passed" in past.json()["detail"]
+
+    preview = client.post("/api/queue/schedule-preview", json={
+        "profile_ids": ["profile_001", "missing"], "schedule_window": {"start_at": start.isoformat(), "spread_minutes": 30}})
+    assert preview.status_code == 200, preview.text
+    assert [a["profile_id"] for a in preview.json()["accounts"]] in (["profile_001"], [])
+
+
+def test_follow_active_hours_batch_is_planned_without_a_time(client):
+    window = {"timing": "auto", "batch_iteration_delay_seconds": 0, "session_preparation_mode": "off",
+              "start_time": "09:00", "end_time": "21:00", "profile_stagger_seconds": 30}
+    preview = client.post("/api/queue/schedule-preview", json={
+        "profile_ids": ["profile_001"], "posts_per_account": 2, "schedule_window": window})
+    assert preview.status_code == 200, preview.text
+    body = preview.json()
+    assert body["timing"] == "auto" and body["plan"]["max_posts_per_day"] == 5
+    res = client.post("/api/queue/batch", json={
+        "name": "Planned", "target_profiles": ["profile_001"],
+        "schedule_window": {**window, "plan_seed": body["plan_seed"]},
+        "posts": [{"type": "photo", "media_file": "", "base_caption": f"Planned {i}", "ai_spin": False} for i in range(2)],
+    })
+    assert res.status_code == 200, res.text
+    batch = res.json()["batch"]
+    assert batch["schedule_window"]["timing"] == "auto"
+    times = sorted(e["scheduled_at"] for post in batch["posts"] for e in post["executions"])
+    from datetime import datetime
+    first, second = (datetime.fromisoformat(t) for t in times)
+    assert (second - first).total_seconds() >= 2 * 3600
+    accounts = {a["profile_id"]: a for a in body["accounts"]}
+    if "profile_001" in accounts and accounts["profile_001"]["planned_at"]:
+        assert [datetime.fromisoformat(t) for t in accounts["profile_001"]["planned_at"]] == [first, second]
+
+    settings = client.put("/api/settings/posting-plan", json={"max_posts_per_day": 0})
+    assert settings.status_code == 400
+    assert client.put("/api/settings/posting-plan", json={"max_posts_per_day": 4}).json()["max_posts_per_day"] == 4
+    client.put("/api/settings/posting-plan", json={"max_posts_per_day": 5})
+
+
+def test_api_edit_reports_jobs_that_started_while_editing(client):
+    from datetime import datetime, timedelta, timezone
+    start = datetime.now(timezone.utc) + timedelta(hours=3)
+    window = {"timing": "exact", "start_at": start.isoformat(), "spread_minutes": 0,
+              "batch_iteration_delay_seconds": 0, "session_preparation_mode": "off"}
+    created = client.post("/api/queue/batch", json={
+        "name": "Edit me", "target_profiles": ["profile_001"], "schedule_window": window,
+        "posts": [{"type": "photo", "media_file": "", "base_caption": "Hello", "ai_spin": False}]})
+    assert created.status_code == 200, created.text
+    batch_id = created.json()["batch_id"]
+    info = client.get(f"/api/queue/batch/{batch_id}/edit").json()
+    assert info["changeable"] == info["total"] == 1
+    post_id = info["batch"]["posts"][0]["post_id"]
+
+    from backend.services.queue_service import load_posting_queue, save_posting_queue
+    queue = load_posting_queue()
+    for batch in queue["daily_batches"]:
+        if batch["batch_id"] == batch_id:
+            batch["posts"][0]["executions"][0]["status"] = "running"
+    save_posting_queue(queue)
+
+    res = client.put(f"/api/queue/batch/{batch_id}", json={
+        "name": "Edited", "posts": [{"post_id": post_id, "base_caption": "Changed"}],
+        "expected_ids": info["changeable_ids"]})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["jobs_changed"] == 0 and [s["execution_id"] for s in body["started_while_editing"]] == info["changeable_ids"]
+    assert body["batch"]["name"] == "Edited" and body["batch"]["posts"][0]["base_caption"] == "Hello"
+
+    assert client.post(f"/api/queue/batch/{batch_id}/pause").json()["paused"] is True
+    assert client.post(f"/api/queue/batch/{batch_id}/resume").json()["paused"] is False
+    past = client.put(f"/api/queue/batch/{batch_id}", json={
+        "schedule_window": {"timing": "exact", "start_at": (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()}})
+    assert past.status_code == 400
+    assert client.put("/api/queue/batch/missing", json={"name": "x"}).status_code == 404
+    queue = load_posting_queue()
+    for batch in queue["daily_batches"]:
+        if batch["batch_id"] == batch_id:
+            batch["posts"][0]["executions"][0]["status"] = "stopped"
+    save_posting_queue(queue)
+    assert client.delete(f"/api/queue/batch/{batch_id}").status_code == 200
+
+
 def test_queue_endpoints(client):
     res = client.get("/api/queue")
     assert res.status_code == 200

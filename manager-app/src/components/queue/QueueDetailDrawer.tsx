@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  AlertTriangle, Bug, Check, ExternalLink, Eye, Link2, Lock, MessageCircle, Play, RotateCcw, Square, Trash2, UserRound, X,
+  AlertTriangle, Bug, Check, ExternalLink, Eye, Link2, Lock, MessageCircle, Pencil, Play, RotateCcw, Square, Trash2, UserRound, X,
 } from 'lucide-react';
 import { QueueExecutionItem } from '../../types/automation';
 import { Profile } from '../../types/profile';
@@ -11,7 +11,7 @@ import { QueueThumb } from './QueueRow';
 import { EvidenceViewer } from './EvidenceViewer';
 import {
   ACTIVE_STATUSES, FAILED_STATUSES, UNCERTAIN_STATUSES, commentNeedsRetry, describe, formatTime,
-  humanStage, isInterruptedRetry, kindLabel, recoveryCancellable, statusLabel,
+  humanStage, isInterruptedRetry, kindLabel, recoveryCancellable, statusLabel, waitText,
 } from './queueModel';
 
 export interface DrawerActions {
@@ -26,6 +26,8 @@ export interface DrawerActions {
   report: (item: QueueExecutionItem) => void;
   preview: (item: QueueExecutionItem) => void;
   openImage: (url: string, label: string) => void;
+  /** A waiting job's own time or caption. */
+  edit?: (item: QueueExecutionItem) => void;
 }
 
 function browserViewerUrl(profile?: Profile) {
@@ -71,6 +73,8 @@ export function QueueDetailDrawer({ item, profile, profileName, actions, onClose
 
       <section className={`rounded-xl border p-3 ${uncertain ? 'border-amber-800/70 bg-amber-950/20' : failed ? 'border-red-900/70 bg-red-950/20' : 'border-zinc-800 bg-zinc-900/40'}`}>
         <p className="font-semibold text-zinc-200">{statusLabel(item.status)}{item.stage && !['published', 'cancelled'].includes(item.status) ? ` · ${humanStage(item.stage)}` : ''}</p>
+        {waitText(item) && <p className="mt-1 font-medium text-sky-300">{waitText(item)}</p>}
+        {waitText(item) && item.expected_start_at && item.wait_reason !== 'scheduled' && <p className="mt-0.5 text-[11px] text-zinc-500">Due {formatTime(item.scheduled_at)}. The start is an estimate; the queue starts it as soon as it can.</p>}
         <p className="mt-1 leading-relaxed text-zinc-400">{describe(item)}</p>
         {item.comment_status === 'needs_review' && <p className="mt-2 text-amber-300">The Live comment needs review{item.comment_error_code ? ` (${item.comment_error_code.replace(/_/g, ' ')})` : ''}. Check Facebook before submitting it again.</p>}
         {item.comment_status === 'confirmed' && <p className="mt-2 text-zinc-400">{item.completion_reason === 'comment_verified' ? 'Live ended after the comment was verified.' : 'Live comment confirmed.'}</p>}
@@ -94,6 +98,7 @@ export function QueueDetailDrawer({ item, profile, profileName, actions, onClose
 
       <div className="flex flex-wrap gap-2">
         {item.status === 'pending' && <Button size="sm" onClick={() => actions.runNow(item)}><Play className="h-3 w-3" />Run now</Button>}
+        {item.status === 'pending' && actions.edit && <Button size="sm" variant="outline" onClick={() => actions.edit?.(item)}><Pencil className="h-3.5 w-3.5" />Edit</Button>}
         {canRerun && <Button size="sm" variant="outline" onClick={() => actions.runNow(item)}><RotateCcw className="h-3.5 w-3.5" />{failed || isInterruptedRetry(item) ? 'Retry' : uncertain ? 'Re-run anyway' : 'Re-run now'}</Button>}
         {commentNeedsRetry(item) && <Button size="sm" variant="outline" onClick={() => actions.retryComment(item)} loading={item.comment_retry_status === 'running'}><MessageCircle className="h-3.5 w-3.5" />Retry comment only</Button>}
         {item.post_type === 'live' && item.status === 'running' && <Button size="sm" variant="outline" onClick={() => actions.stopLive(item)}><Square className="h-3 w-3" />Stop Live</Button>}

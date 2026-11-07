@@ -8,6 +8,7 @@ import { GroupedProfileSelector } from './GroupedProfileSelector';
 import { StageBadge, restartEnds, travelEnds, stageView, useAccountHealth } from './accounts/accountHealth';
 import { WarmingSettings, defaultWarmingOptions, warmupChoice, warmupOptions } from './WarmingSettings';
 import { MediaLightbox, LightboxMedia } from './MediaLightbox';
+import { BatchSchedule, SPREAD_OPTIONS, defaultStart, startFrom, startProblem } from './BatchSchedule';
 import React, { useState, useEffect, useMemo } from 'react';
 import { Profile } from '../types/profile';
 import { CreateBatchParams, WarmingOptions } from '../types/automation';
@@ -125,25 +126,25 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
 
   // Execution & Timing Settings
   const [executionMode, setExecutionMode] = useState<'now' | 'scheduled'>(() => {
-    return localStorage.getItem(storageKey('start_now')) === 'true' ? 'now' : 'now';
+    return localStorage.getItem(storageKey('start_now')) === 'false' ? 'scheduled' : 'now';
   });
 
-  const [startTime, setStartTime] = useState(() => {
-    return localStorage.getItem(storageKey('start_time')) || '09:00';
+  // A full day and time on this PC; the saved clock comes back on the next day it is still ahead.
+  const [startDay, setStartDay] = useState(() => defaultStart(localStorage.getItem(storageKey('start_time')) || '09:00'));
+  const startTime = startDay.time;
+  const [spreadMinutes, setSpreadMinutes] = useState(() => {
+    const saved = Number(localStorage.getItem(storageKey('spread_minutes')));
+    return SPREAD_OPTIONS.some(option => Number(option.value) === saved) ? saved : 30;
   });
+  const [followActiveHours, setFollowActiveHours] = useState(() => localStorage.getItem(storageKey('follow_hours_choice')) === 'true');
+  const [planSeed, setPlanSeed] = useState<number | null>(null);
+  const [planProblem, setPlanProblem] = useState<string | null>(null);
+  const timing: 'now' | 'auto' | 'exact' = executionMode === 'now' ? 'now' : followActiveHours ? 'auto' : 'exact';
 
   const [endTime] = useState(() => {
     return localStorage.getItem(storageKey('end_time')) || '21:00';
   });
 
-  const [staggerSeconds, setStaggerSeconds] = useState(() => {
-    const saved = localStorage.getItem(storageKey('stagger_seconds'));
-    if (saved !== null) {
-      const parsed = parseInt(saved, 10);
-      return Number.isNaN(parsed) ? 60 : Math.max(10, parsed);
-    }
-    return 60;
-  });
 
   const [iterationDelaySeconds, setIterationDelaySeconds] = useState(() => {
     const saved = localStorage.getItem(storageKey('iteration_delay_seconds'));
@@ -254,12 +255,13 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
   useEffect(() => {
     localStorage.setItem(storageKey('start_time'), startTime);
     localStorage.setItem(storageKey('end_time'), endTime);
-    localStorage.setItem(storageKey('stagger_seconds'), String(staggerSeconds));
+    localStorage.setItem(storageKey('spread_minutes'), String(spreadMinutes));
+    localStorage.setItem(storageKey('follow_hours_choice'), String(followActiveHours));
     localStorage.setItem(storageKey('iteration_delay_seconds'), String(iterationDelaySeconds));
     localStorage.setItem(storageKey('ai_spin'), String(aiSpinAll));
     localStorage.setItem(storageKey('start_now'), String(executionMode === 'now'));
     localStorage.setItem(storageKey('preparation_mode'), preparationMode);
-  }, [startTime, endTime, staggerSeconds, iterationDelaySeconds, aiSpinAll, executionMode, preparationMode]);
+  }, [startTime, endTime, spreadMinutes, followActiveHours, iterationDelaySeconds, aiSpinAll, executionMode, preparationMode]);
 
   // Bulk Media Upload Handler
   const importMedia = async (files: File[]) => {
@@ -427,6 +429,8 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
   const problems = useMemo(() => {
     const list: string[] = [];
     if (selectedProfileIds.length === 0) list.push('Choose at least one account.');
+    const timeProblem = timing === 'exact' ? startProblem(startDay.date, startDay.time) : timing === 'auto' ? planProblem : null;
+    if (timeProblem) list.push(timeProblem);
     if (warmupMode) return list;
     if (posts.length === 0) list.push(liveMode ? 'Add at least one video.' : 'Add at least one post.');
     if (posts.some(p => p.type === 'live' && (!(p.title || '').trim() || !p.caption.trim()))) list.push('Enter a title and caption for each Live video.');
@@ -440,7 +444,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
     if (readMore) list.push(readMore);
     if (posts.some(p => !hookIsApproved(p.caption, p.media_file, p.type, p.hook))) list.push('Preview and approve each caption hook, or keep the original caption.');
     return list;
-  }, [selectedProfileIds.join(','), warmupMode, liveMode, posts, playbackMode, loopVideo, durationMinutes]);
+  }, [selectedProfileIds.join(','), warmupMode, liveMode, posts, playbackMode, loopVideo, durationMinutes, timing, startDay, planProblem]);
 
   const handleSubmitBatch = async () => {
     setErrorMsg(null);
@@ -459,7 +463,10 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
         schedule_window: {
           start_time: startTime,
           end_time: endTime,
-          profile_stagger_seconds: staggerSeconds,
+          profile_stagger_seconds: 60,
+          timing,
+          ...(timing === 'auto' ? (planSeed ? { plan_seed: planSeed } : {}) : { spread_minutes: spreadMinutes }),
+          ...(timing === 'exact' ? { start_at: startFrom(startDay.date, startDay.time)!.toISOString() } : {}),
           batch_iteration_delay_seconds: iterationDelaySeconds,
           session_preparation_mode: liveMode || warmupMode ? 'off' : preparationMode,
           start_now: startNow,
@@ -518,7 +525,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
   });
 
 
-  const startLabel = executionMode === 'now' ? 'Starts now' : `Starts at ${startTime}`;
+  const startLabel = timing === 'now' ? 'Starts now' : timing === 'auto' ? 'Planned in each account’s active hours' : `Starts ${startFrom(startDay.date, startDay.time)?.toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }) ?? startTime}`;
   const submitLabel = `${executionMode === 'now' ? 'Start' : 'Schedule'} ${totalExecutions} ${warmupMode ? 'warm-up' : liveMode ? 'broadcast' : 'job'}${totalExecutions === 1 ? '' : 's'}`;
   const sectionTitle = 'text-[11px] font-semibold text-zinc-400 uppercase tracking-wider';
   const card = 'p-4 rounded-2xl bg-zinc-900/60 border border-zinc-800/80';
@@ -821,20 +828,10 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
 
           <div className={`${card} space-y-3`}>
             <span className={sectionTitle}>When</span>
-            <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-zinc-950 border border-zinc-800">
-              {(['now', 'scheduled'] as const).map(option => <button key={option} type="button" onClick={() => setExecutionMode(option)}
-                className={`py-2 px-3 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-all ${executionMode === option ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}>
-                {option === 'now' ? <Zap className="w-3.5 h-3.5" /> : <Calendar className="w-3.5 h-3.5" />}
-                <span>{option === 'now' ? 'Start now' : 'Schedule'}</span>
-              </button>)}
-            </div>
-            {executionMode === 'scheduled' && (
-              <label className="block text-xs text-zinc-400">
-                <span className="mb-1 block">First job at</span>
-                <input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)}
-                  className="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-white focus:outline-none focus:border-blue-500" />
-              </label>
-            )}
+            <BatchSchedule profileIds={selectedProfileIds} postsPerAccount={warmupMode ? 1 : Math.max(1, posts.length)}
+              mode={executionMode} onMode={setExecutionMode} onPlan={(seed, issue) => { setPlanSeed(seed); setPlanProblem(issue); }}
+              date={startDay.date} time={startDay.time} onStart={(date, time) => setStartDay({ date, time })}
+              spread={spreadMinutes} onSpread={setSpreadMinutes} follow={followActiveHours} onFollow={setFollowActiveHours} />
             {!liveMode && !warmupMode && (
               <div className="space-y-1.5">
                 <span className="block text-xs text-zinc-400">Warm up before posting</span>
@@ -853,17 +850,11 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
             <div className="pt-1 border-t border-zinc-800/80">
               <button type="button" onClick={() => setShowAdvanced(!showAdvanced)} aria-expanded={showAdvanced}
                 className="w-full flex items-center justify-between text-xs text-zinc-400 hover:text-zinc-200 transition-colors py-1">
-                <span>Pacing · {staggerSeconds}s between accounts · {iterationDelaySeconds}s rest</span>
+                <span>Pacing · {iterationDelaySeconds}s rest between an account’s posts</span>
                 {showAdvanced ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
               </button>
               {showAdvanced && (
                 <div className="space-y-3 pt-3 text-xs">
-                  <label className="block">
-                    <span className="block text-zinc-400 mb-1">Seconds between accounts starting</span>
-                    <input type="number" min={10} max={3600} step={10} value={staggerSeconds}
-                      onChange={(e) => { const val = parseInt(e.target.value, 10); setStaggerSeconds(Number.isNaN(val) ? 60 : Math.max(10, val)); }}
-                      className="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-white focus:outline-none focus:border-blue-500" />
-                  </label>
                   <label className="block">
                     <span className="block text-zinc-400 mb-1">Seconds each account rests between jobs</span>
                     <input type="number" min={0} max={3600} step={10} value={iterationDelaySeconds}

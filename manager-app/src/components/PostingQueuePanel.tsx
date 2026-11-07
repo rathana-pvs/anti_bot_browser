@@ -1,11 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Clock, Copy, Download, ExternalLink, Eye, Loader2, MessageCircle, Play, Plus,
+  AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Clock, Copy, Download, ExternalLink, Eye, Loader2, MessageCircle, Pause, Pencil, Play, Plus,
   RotateCcw, Search, ShieldAlert, Square, Trash2, User, X,
 } from 'lucide-react';
 import { DailyBatch, QueueDataResponse, QueueExecutionItem } from '../types/automation';
 import { Profile } from '../types/profile';
 import { AppendBatchPostsDialog } from './AppendBatchPostsDialog';
+import { EditBatchDialog } from './EditBatchDialog';
+import { EditJobDialog } from './queue/EditJobDialog';
 import { MediaLightbox, LightboxMedia } from './MediaLightbox';
 import { stopLive } from '../services/live';
 import { useAppDialog } from './ui/AppDialogProvider';
@@ -26,7 +28,7 @@ import {
 } from './queue/queueModel';
 import {
   backfillExecutionPermalink, cancelAllQueuePosts, cancelNetworkRecovery, deleteBatch, deleteExecution, fetchQueue,
-  getSharedMediaUrl, rerunBatch, resolveUncertainExecution, retryExecutionComment, runExecutionNow,
+  getSharedMediaUrl, rerunBatch, resolveUncertainExecution, retryExecutionComment, runExecutionNow, setBatchPaused,
 } from '../services/api';
 
 interface PostingQueuePanelProps {
@@ -76,6 +78,8 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
   const [batchBusy, setBatchBusy] = useState(false);
   const [lightbox, setLightbox] = useState<LightboxMedia | null>(null);
   const [appendBatch, setAppendBatch] = useState<DailyBatch | null>(null);
+  const [editBatch, setEditBatch] = useState<DailyBatch | null>(null);
+  const [editJob, setEditJob] = useState<QueueExecutionItem | null>(null);
   const [report, setReport] = useState<{ open: boolean; item: QueueExecutionItem | null; batch?: DailyBatch }>({ open: false, item: null });
   const lastAttention = useRef(0);
   const menu = useContextMenu();
@@ -268,6 +272,15 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
     finally { setBatchBusy(false); await loadQueue(); }
   };
 
+  const togglePause = async (batch: DailyBatch) => {
+    setBatchBusy(true);
+    try {
+      const result = await setBatchPaused(batch.batch_id, !batch.paused);
+      showToast(result.paused ? `Paused “${batch.name}”. Jobs already working finish; nothing new starts.` : `Resumed “${batch.name}”.`, 'success');
+    } catch (err) { fail(err, batch.paused ? 'Couldn’t resume this batch.' : 'Couldn’t pause this batch.'); }
+    finally { setBatchBusy(false); await loadQueue(); }
+  };
+
   const removeBatch = async (batch: DailyBatch) => {
     if (!await showConfirm(`Remove “${batch.name}” and all its queue records?`, { title: 'Remove batch', confirmLabel: 'Remove batch', variant: 'danger' })) return;
     try {
@@ -288,6 +301,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
       onOpenAccount(item.profile_id);
     } : undefined,
     runNow, retryComment, stopLive: stopLiveItem, cancelRecovery, addPermalink, resolve, remove, preview,
+    edit: (item) => setEditJob(item),
     report: (item) => setReport({ open: true, item }),
     openImage: (url, label) => setLightbox({ url, type: 'photo', name: label }),
   };
@@ -298,6 +312,15 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
     if (stats.attention > 0 || stats.waiting > 0 || stats.done < stats.total) {
       menuItems.push({ label: 'Re-run safe retries in batch', icon: <RotateCcw className="h-3.5 w-3.5" />, onSelect: () => rerun(activeBatch), disabled: batchBusy,
         hint: 'Published posts stay done. Unconfirmed posts need review first.' });
+    }
+    if (stats.waiting > 0 || activeBatch.paused) {
+      menuItems.push(
+        { label: 'Edit batch…', icon: <Pencil className="h-3.5 w-3.5" />, onSelect: () => setEditBatch(activeBatch),
+          hint: 'Changes only jobs that haven’t started.' },
+        { label: activeBatch.paused ? 'Resume batch' : 'Pause batch', icon: activeBatch.paused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />,
+          disabled: batchBusy, onSelect: () => togglePause(activeBatch),
+          hint: activeBatch.paused ? undefined : 'Nothing new starts; jobs already working finish.' },
+      );
     }
     if (stats.attention === 0 && stats.active + stats.waiting > 0 && !isLiveBatch(activeBatch)) {
       menuItems.push({ label: 'Add posts to batch', icon: <Plus className="h-3.5 w-3.5" />, onSelect: () => setAppendBatch(activeBatch) });
@@ -320,6 +343,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
     const items: ActionMenuItem[] = [{ label: 'View details', icon: <Eye className={icon} />, onSelect: () => setSelectedId(item.execution_id) }];
     if (uncertain) items.push({ label: item.post_type === 'live' ? 'Confirm outcome…' : 'Was it posted?…', icon: <ShieldAlert className={icon} />, onSelect: () => setSelectedId(item.execution_id) });
     if (item.status === 'pending') items.push({ label: 'Run now', icon: <Play className={icon} />, onSelect: () => runNow(item) });
+    if (item.status === 'pending') items.push({ label: 'Edit job…', icon: <Pencil className={icon} />, onSelect: () => setEditJob(item) });
     if (['failed', 'failed_before_publish'].includes(item.status) || isInterruptedRetry(item)) items.push({ label: 'Retry', icon: <RotateCcw className={icon} />, onSelect: () => runNow(item) });
     if (uncertain && item.post_type !== 'live') items.push({ label: 'Re-run anyway', icon: <RotateCcw className={icon} />, onSelect: () => runNow(item) });
     if (item.status.startsWith('skipped')) items.push({ label: 'Re-run', icon: <RotateCcw className={icon} />, onSelect: () => runNow(item) });
@@ -387,6 +411,12 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
       ) : (
         <div className={cn('grid min-h-0 flex-1 gap-4', selected ? 'lg:grid-cols-[minmax(0,1fr)_22rem]' : 'grid-cols-1')}>
           <div className="min-h-0 space-y-4 overflow-y-auto pb-4 pr-1">
+            {activeBatch?.paused && <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-800/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-100">
+              <Pause className="h-3.5 w-3.5" />
+              <span className="flex-1">This batch is paused. Nothing new starts until you resume it; jobs already working finish.</span>
+              <Button size="sm" variant="outline" onClick={() => setEditBatch(activeBatch)}><Pencil className="h-3.5 w-3.5" />Edit</Button>
+              <Button size="sm" onClick={() => togglePause(activeBatch)} loading={batchBusy}><Play className="h-3 w-3" />Resume</Button>
+            </div>}
             {filtered.length === 0 && <EmptyState title="Nothing matches these filters" description="Try another type, batch, or search." />}
 
             {sections.attention.length > 0 && <Section title="Needs you" count={sections.attention.length} tone="warning" icon={<AlertTriangle className="h-3.5 w-3.5" />}>
@@ -421,6 +451,9 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
       )}
 
       {appendBatch && <AppendBatchPostsDialog batch={appendBatch} onClose={() => setAppendBatch(null)} onAppended={loadQueue} />}
+      {editBatch && <EditBatchDialog batch={editBatch} profileName={profileName} onClose={() => setEditBatch(null)} onSaved={loadQueue} />}
+      {editJob && <EditJobDialog item={editJob} profileName={profileName(editJob.profile_id)} onClose={() => setEditJob(null)}
+        onSaved={async () => { showToast('Job changed.', 'success'); await loadQueue(); }} />}
       <SupportReportDialog open={report.open} item={report.item} batch={report.batch} profileName={report.item ? profileName(report.item.profile_id) : undefined}
         onClose={() => setReport({ open: false, item: null })}
         onSaved={(location) => { setReport({ open: false, item: null }); showToast(`Support ZIP saved to ${location}. Review it before sending.`, 'success'); }}

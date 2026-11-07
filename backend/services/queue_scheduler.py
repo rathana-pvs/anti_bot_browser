@@ -1,3 +1,4 @@
+import random
 import time
 from datetime import datetime, timezone
 
@@ -57,6 +58,33 @@ def compute_execution_schedule(
     # Scheduled time gates the batch itself. Once that gate opens, the
     # completion-based iteration delay serializes each profile's posts in order.
     return max(now_ms + 60000, window_start_ms + profile_index * stagger_ms)
+
+SPREAD_CHOICES_MINUTES = (0, 15, 30, 60, 120, 240)
+# With no spread, accounts still start a varying 45–120 s apart.
+QUICK_GAP_SECONDS = (45, 120)
+
+
+def spread_offsets_ms(count: int, spread_minutes: int, rand=random.random) -> list[float]:
+    """Random start offsets, in order, for `count` accounts inside `spread_minutes`.
+
+    Each account gets its own slice of the window and a random moment inside it, so starts never
+    line up like a clock and two accounts are always at least half a slice apart (1 min at most).
+    With no spread, consecutive starts are a random 45–120 s apart.
+    """
+    if count <= 0:
+        return []
+    if spread_minutes <= 0:
+        low, high = QUICK_GAP_SECONDS
+        offsets, at = [0.0], 0.0
+        for _ in range(count - 1):
+            at += (low + rand() * (high - low)) * 1000
+            offsets.append(at)
+        return offsets
+    window_ms = spread_minutes * 60_000
+    slot_ms = window_ms / count
+    gap_ms = min(60_000, slot_ms / 2)
+    return [index * slot_ms + rand() * (slot_ms - gap_ms) for index in range(count)]
+
 
 def is_lease_active(lease: dict | None, now_ms: float | None = None) -> bool:
     if not lease or not isinstance(lease, dict):

@@ -853,6 +853,133 @@ export async function createBatch(
   return res.json();
 }
 
+export type BatchTiming = 'now' | 'auto' | 'exact';
+
+export interface SchedulePreviewAccount {
+  profile_id: string;
+  name: string;
+  timezone: string | null;
+  awake_hours: [number, number] | null;
+  awake_at_start: boolean;
+  awake_at_end: boolean;
+  /** Follow active hours: the times the plan would pick for this account's posts. */
+  planned_at?: string[];
+  error?: string;
+}
+
+export interface PostingPlanSettings {
+  min_gap_hours: number;
+  max_gap_hours: number;
+  max_posts_per_day: number;
+}
+
+export interface SchedulePreview {
+  timing: BatchTiming | null;
+  plan_seed: number;
+  plan: PostingPlanSettings;
+  start_at: string;
+  end_at: string;
+  accounts: SchedulePreviewAccount[];
+}
+
+/** What the chosen timing means for each account, before the batch is made. */
+export async function fetchSchedulePreview(
+  profileIds: string[],
+  scheduleWindow: { timing: BatchTiming; start_at?: string; spread_minutes?: number },
+  postsPerAccount = 1,
+  excludeBatchId?: string,
+): Promise<SchedulePreview> {
+  const res = await fetch(`${API_BASE}/queue/schedule-preview`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ profile_ids: profileIds, posts_per_account: postsPerAccount, schedule_window: scheduleWindow,
+      ...(excludeBatchId ? { exclude_batch_id: excludeBatchId } : {}) }),
+  });
+  if (!res.ok) throw await apiError(res, 'Could not check the start time');
+  return res.json();
+}
+
+export interface BatchEditInfo {
+  batch: import('../types/automation').DailyBatch;
+  total: number;
+  changeable: number;
+  changeable_ids: string[];
+  /** Why a post's content can't be edited, by post id (null when it can). */
+  content_locked: Record<string, string | null>;
+}
+
+export interface BatchPostChange {
+  post_id: string;
+  base_caption?: string;
+  first_comment?: string;
+  media_file?: string;
+  ai_spin?: boolean;
+}
+
+export interface BatchChanges {
+  name?: string;
+  batch_iteration_delay_seconds?: number;
+  session_preparation_mode?: 'off' | 'brief' | 'extended';
+  posts?: BatchPostChange[];
+  schedule_window?: { timing: BatchTiming; start_at?: string; spread_minutes?: number; plan_seed?: number };
+  /** The changeable jobs the form showed, so the answer can name any that started meanwhile. */
+  expected_ids?: string[];
+}
+
+export interface BatchEditResult {
+  success: boolean;
+  changes: string[];
+  jobs_changed: number;
+  started_while_editing: { execution_id: string; profile_id: string | null }[];
+}
+
+export async function fetchBatchEditInfo(batchId: string): Promise<BatchEditInfo> {
+  const res = await fetch(`${API_BASE}/queue/batch/${encodeURIComponent(batchId)}/edit`);
+  if (!res.ok) throw await apiError(res, 'Could not load the batch');
+  return res.json();
+}
+
+export async function updateBatch(batchId: string, changes: BatchChanges): Promise<BatchEditResult> {
+  const res = await fetch(`${API_BASE}/queue/batch/${encodeURIComponent(batchId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(changes),
+  });
+  if (!res.ok) throw await apiError(res, 'Could not save the batch');
+  return res.json();
+}
+
+export async function setBatchPaused(batchId: string, paused: boolean): Promise<{ batch_id: string; paused: boolean }> {
+  const res = await fetch(`${API_BASE}/queue/batch/${encodeURIComponent(batchId)}/${paused ? 'pause' : 'resume'}`, { method: 'POST' });
+  if (!res.ok) throw await apiError(res, paused ? 'Could not pause the batch' : 'Could not resume the batch');
+  return res.json();
+}
+
+/** One account's own start time (ISO) or caption. */
+export async function updateExecution(executionId: string, changes: { scheduled_at?: string; caption?: string }): Promise<{ success: boolean; changes: string[] }> {
+  const res = await fetch(`${API_BASE}/queue/execution/${encodeURIComponent(executionId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(changes),
+  });
+  if (!res.ok) throw await apiError(res, 'Could not change this job');
+  return res.json();
+}
+
+export async function fetchPostingPlan(): Promise<PostingPlanSettings> {
+  const res = await fetch(`${API_BASE}/settings/posting-plan`);
+  if (!res.ok) throw await apiError(res, 'Failed to load posting plan settings');
+  return res.json();
+}
+
+export async function updatePostingPlan(changes: Partial<PostingPlanSettings>): Promise<PostingPlanSettings> {
+  const res = await fetch(`${API_BASE}/settings/posting-plan`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(changes),
+  });
+  if (!res.ok) throw await apiError(res, 'Failed to save posting plan settings');
+  return res.json();
+}
+
 export async function appendPostsToBatch(
   batchId: string,
   posts: import('../types/automation').AppendBatchPostInput[]

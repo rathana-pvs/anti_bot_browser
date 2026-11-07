@@ -135,6 +135,29 @@ def batch_has_review_hold(batch: dict | None) -> bool:
         for execution in post.get("executions", [])
     )
 
+def execution_start_ms(batch: dict, execution: dict, batch_start_ms: float, profile_ranks: dict, profile_stagger_ms: float) -> float:
+    """When an item may first start. A batch with a spread gives each account its own random
+    start (its scheduled_at); older batches start accounts a fixed gap apart from the first."""
+    window = batch.get("schedule_window") or {}
+    if window.get("spread_minutes") is not None or window.get("timing") == "auto" or execution.get("time_set_by_user"):
+        own = parse_iso_time(execution.get("scheduled_at"))
+        if own > 0:
+            return own
+    return batch_start_ms + profile_ranks.get(execution.get("profile_id"), 0) * profile_stagger_ms
+
+
+def batch_timing(batch: dict) -> tuple[float, dict, float]:
+    """The batch's first start, account order and fixed gap, as ordered_due_executions uses them."""
+    profile_order = batch.get("profile_execution_order") or batch.get("target_profiles") or []
+    starts = [parse_iso_time(execution.get("scheduled_at")) for post in batch.get("posts", [])
+              for execution in post.get("executions", [])]
+    try:
+        gap_ms = max(0, int((batch.get("schedule_window") or {}).get("profile_stagger_seconds", 0))) * 1000
+    except (TypeError, ValueError):
+        gap_ms = 0
+    return min((value for value in starts if value > 0), default=0.0), {pid: i for i, pid in enumerate(profile_order)}, gap_ms
+
+
 def ordered_due_executions(queue: dict | None, now_ms: float | None = None) -> list:
     from backend.services import account_hold, active_hours
 
@@ -151,6 +174,8 @@ def ordered_due_executions(queue: dict | None, now_ms: float | None = None) -> l
             loaded_history.append(_load_history())
         return loaded_history[0]
     for batch_idx, batch in enumerate((queue or {}).get("daily_batches", [])):
+        if batch.get("paused"):  # a paused batch starts nothing new; Run now still works
+            continue
         profile_order = batch.get("profile_execution_order") or batch.get("target_profiles") or []
         profile_ranks = {pid: idx for idx, pid in enumerate(profile_order)}
         all_batch_executions = [
@@ -174,8 +199,7 @@ def ordered_due_executions(queue: dict | None, now_ms: float | None = None) -> l
                 # Recovery gates only this execution, not other posts on its account.
                 if not retry_admitted(execution, now_ms / 1000):
                     continue
-                profile_rank = profile_ranks.get(execution.get("profile_id"), 0)
-                sched_time = batch_start_ms + profile_rank * profile_stagger_ms
+                sched_time = execution_start_ms(batch, execution, batch_start_ms, profile_ranks, profile_stagger_ms)
                 if sched_time > now_ms:
                     continue
                 config = active_hours._profile_config(execution.get("profile_id", ""), profile_configs)
@@ -183,6 +207,11 @@ def ordered_due_executions(queue: dict | None, now_ms: float | None = None) -> l
                     continue
                 if not active_hours.admits(execution, batch, sched_time, now_ms, profile_configs, post):
                     continue
+                # Follow active hours batches also keep each account's gap and daily limit.
+                if (batch.get("schedule_window") or {}).get("timing") == "auto" and post.get("type") != "warming":
+                    from backend.services import posting_plan
+                    if not posting_plan.admits(execution, queue, config, now_ms):
+                        continue
 
                 due.append({
                     "execution": execution,

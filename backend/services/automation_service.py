@@ -1696,6 +1696,24 @@ def heartbeat_scheduler_leases():
 _is_dispatching = False
 
 
+def replan_overdue_posts():
+    """Gives overdue Follow active hours items that can't start a fresh planned time."""
+    from backend.services import posting_plan
+
+    def replan():
+        queue = load_posting_queue()
+        moved = posting_plan.replan_overdue(queue, time.time() * 1000)
+        if moved:
+            save_posting_queue(queue)
+            print(f"[Queue Dispatcher] Re-planned {len(moved)} item(s) to keep each account's gap: {', '.join(moved)}")
+    try:
+        with_queue_claim_lock(replan)
+    except RuntimeError:
+        pass  # a claim is in progress; the next pass tries again
+    except Exception as error:
+        print(f"[Queue Dispatcher] Could not re-plan overdue items: {error}")
+
+
 def _reserve_dispatch_slot(reservations: dict, kind: str, profile_id: str, config: dict, workload: str = 'post') -> bool:
     """Reserve capacity inside one dispatcher pass before async claims can run."""
     if profile_id in reservations["profiles"]:
@@ -1761,6 +1779,7 @@ async def dispatch_pending_queue():
     _is_dispatching = True
     try:
         recover_stale_queue_executions("dispatcher_stale_lease")
+        replan_overdue_posts()
         scheduler_cfg = get_scheduler_config()
         queue_snapshot = load_posting_queue()
         # Auto warming visits always come after every post that is due.

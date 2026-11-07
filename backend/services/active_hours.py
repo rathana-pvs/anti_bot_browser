@@ -61,17 +61,55 @@ def within_active_hours(config: dict, now_ms: float) -> bool:
     return persona_hours_admit(config, now_ms)
 
 
+def applies(execution: dict, batch: dict, config: dict, post: dict | None = None) -> bool:
+    """Whether this item keeps to its account's waking hours at all."""
+    if execution.get("cloud_attempt_id") or execution.get("status") != "pending":
+        return False
+    window = batch.get("schedule_window") or {}
+    if window.get("start_now") is True:
+        return False
+    if (post or {}).get("type") == "warming":  # warming always keeps to them
+        return True
+    # The batch's "Follow active hours" switch: off means the schedule picked on this PC wins.
+    if window.get("follow_active_hours") is False:
+        return False
+    runtime = config.get("runtime") or {}
+    if runtime.get("kind") == "android_user":
+        from backend.services.android_devices import follows_active_hours
+        if not follows_active_hours(runtime.get("device_serial") or ""):
+            return False
+    return True
+
+
 def admits(execution: dict, batch: dict, due_ms: float, now_ms: float, cache: dict, post: dict | None = None) -> bool:
     if execution.get("cloud_attempt_id") or execution.get("status") != "pending":
         return True
-    if (batch.get("schedule_window") or {}).get("start_now") is True:
-        return True
-    if now_ms - due_ms >= MAX_HOLD_MS:
+    # A planned (Follow active hours) batch waits for the real morning; others at most MAX_HOLD_MS.
+    if now_ms - due_ms >= MAX_HOLD_MS and (batch.get("schedule_window") or {}).get("timing") != "auto":
         return True
     config = _profile_config(execution.get("profile_id", ""), cache)
-    runtime = config.get("runtime") or {}
-    if runtime.get("kind") == "android_user" and (post or {}).get("type") != "warming":  # warming always keeps to them
-        from backend.services.android_devices import follows_active_hours
-        if not follows_active_hours(runtime.get("device_serial") or ""):
-            return True
+    if not applies(execution, batch, config, post):
+        return True
     return within_active_hours(config, now_ms)
+
+
+def waking_hours(config: dict) -> tuple[int, int] | None:
+    """(start hour, length) of the account's day in its own zone, or None when it has no persona."""
+    seed = config.get("behavior_seed")
+    if not isinstance(seed, int) or isinstance(seed, bool) or seed < 1:
+        return None
+    return Persona.from_seed(seed).active_hours
+
+
+def next_awake_ms(config: dict, from_ms: float) -> float:
+    """The first moment at or after `from_ms` when the account is awake."""
+    if within_active_hours(config, from_ms):
+        return from_ms
+    zone = account_zone(config)
+    local = datetime.fromtimestamp(from_ms / 1000, tz=zone).replace(minute=0, second=0, microsecond=0)
+    for hours in range(1, 25):
+        candidate = local.timestamp() * 1000 + hours * 3600_000
+        if within_active_hours(config, candidate):
+            # Wall-clock hour start in the zone (DST-safe enough for an hourly window).
+            return datetime.fromtimestamp(candidate / 1000, tz=zone).replace(minute=0, second=0, microsecond=0).timestamp() * 1000
+    return from_ms

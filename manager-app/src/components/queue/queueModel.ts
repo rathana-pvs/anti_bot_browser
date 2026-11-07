@@ -99,6 +99,45 @@ export function formatTime(iso?: string | null) {
     : `${date.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${time}`;
 }
 
+/** "Phoenix" from "America/Phoenix". */
+export function zonePlace(zone?: string | null) {
+  return zone ? (zone.split('/').pop() || zone).replace(/_/g, ' ') : '';
+}
+
+/** The clock in another timezone, e.g. "04:26". */
+export function clockIn(zone?: string | null, at: Date = new Date()) {
+  if (!zone) return '';
+  try { return at.toLocaleTimeString([], { timeZone: zone, hour: '2-digit', minute: '2-digit' }); } catch { return ''; }
+}
+
+const hourLabel = (hour: number) => `${String(hour).padStart(2, '0')}:00`;
+
+/** When a waiting item is expected to start and why, in words. Null when there is nothing to add. */
+export function waitText(item: QueueExecutionItem): string | null {
+  if (!['pending', 'ready'].includes(item.status) || !item.wait_reason) return null;
+  const at = item.expected_start_at ? formatTime(item.expected_start_at) : '';
+  const place = zonePlace(item.account_timezone);
+  const there = place ? `${clockIn(item.account_timezone)} in ${place}` : '';
+  const day = item.awake_hours ? ` (awake ${hourLabel(item.awake_hours[0])}–${hourLabel(item.awake_hours[1])})` : '';
+  switch (item.wait_reason) {
+    case 'scheduled': return `Starts ${at}`;
+    case 'planned': return `Planned ${at}${place && item.expected_start_at ? ` · ${clockIn(item.account_timezone, new Date(item.expected_start_at))} in ${place}` : ''}`;
+    case 'replanning': return 'Getting a new time to keep the gap between this account’s posts';
+    case 'active_hours': return `Starts ~${at} · waiting for the account's morning${there ? `, now ${there}` : ''}${day}`;
+    case 'active_hours_limit': return `Starts ~${at} · latest start (8 h limit), still night for the account${there ? `, now ${there}` : ''}`;
+    case 'travelling': return `Starts ~${at} · travelling after a proxy change`;
+    case 'on_hold': return 'On hold · starts after you release the account';
+    case 'waiting_for_visit': return 'Waits for a warm-up visit after the proxy change';
+    case 'previous_post': return `Starts after this account's previous post${at ? `, not before ${at}` : ''}`;
+    case 'rest_between_posts': return `Starts ~${at} · resting between posts`;
+    case 'waiting_for_slot': return 'Due · waiting for a free slot';
+    case 'starting': return 'Starting soon';
+    case 'prepared': return 'Warm-up done · waiting for a publishing slot';
+    case 'paused': return 'Batch paused · starts after you resume it';
+    default: return null;
+  }
+}
+
 /** Time on one line; the date goes above it when it isn't today. */
 export function timeParts(iso?: string | null): { day: string | null; time: string } {
   if (!iso) return { day: null, time: '' };

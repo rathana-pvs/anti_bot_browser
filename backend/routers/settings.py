@@ -34,6 +34,19 @@ def update_ocr_engine(payload: dict = Body(...)):
     return get_resource_mode()
 
 
+@router.get("/posting-plan")
+def get_posting_plan():
+    return settings_manager.posting_plan
+
+
+@router.put("/posting-plan")
+def update_posting_plan(payload: dict = Body(...)):
+    try:
+        return settings_manager.update_posting_plan(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.get("/auto-warming")
 def get_auto_warming():
     from backend.services import auto_warming

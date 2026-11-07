@@ -6,7 +6,7 @@ import { Button } from '../ui/Button';
 import { cn } from '../ui/cn';
 import {
   ACTIVE_STATUSES, FAILED_STATUSES, UNCERTAIN_STATUSES, commentNeedsRetry, describe, timeParts,
-  hasOpenRecovery, isInterruptedRetry, isVideoFile, itemKind, kindLabel, statusLabel,
+  hasOpenRecovery, isInterruptedRetry, isVideoFile, itemKind, kindLabel, statusLabel, waitText,
 } from './queueModel';
 
 export interface QueueRowActions {
@@ -91,8 +91,11 @@ export function QueueRow({ item, profileName, selected, actions, busy, onContext
       selected ? 'bg-blue-950/30' : 'hover:bg-zinc-900/60')}>
     <span className={cn('whitespace-nowrap font-mono text-xs', timeTone)}>
       {active ? 'now' : (() => {
-        const { day, time } = timeParts(item.published_at || item.scheduled_at);
-        return <>{day && <span className="block text-[10px] text-zinc-500">{day}</span>}{time}</>;
+        // A waiting item shows when it is expected to start, not when it was due.
+        const estimate = !item.published_at && item.expected_start_at && item.wait_reason !== 'scheduled';
+        const { day, time } = timeParts(item.published_at || (estimate ? item.expected_start_at : null) || item.scheduled_at);
+        return <span title={estimate ? `Due ${new Date(item.scheduled_at).toLocaleString()}` : undefined}>
+          {day && <span className="block text-[10px] text-zinc-500">{day}</span>}{estimate ? '~' : ''}{time}</span>;
       })()}
     </span>
     <QueueThumb item={item} onPreview={() => actions.preview(item)} />
@@ -105,6 +108,7 @@ export function QueueRow({ item, profileName, selected, actions, busy, onContext
       <p className={cn('mt-0.5 truncate text-xs', failed ? 'text-red-300/90' : uncertain ? 'text-amber-200/90' : 'text-zinc-400')}>
         {active && <Loader2 className="mr-1 inline w-3 h-3 animate-spin text-blue-400" />}{describe(item)}
       </p>
+      {waitText(item) && <p className="mt-0.5 truncate text-[11px] text-sky-300/80">{waitText(item)}</p>}
       {hasOpenRecovery(item) && <NetworkRecoveryStatus recovery={item.network_recovery} />}
     </div>
     <div className="flex shrink-0 items-center" onClick={(e) => e.stopPropagation()}>{action}</div>

@@ -193,6 +193,35 @@ class ResourceSettingsManager:
             self._settings["updated_at"] = datetime.now(timezone.utc).isoformat()
             self._save()
 
+    POSTING_PLAN_DEFAULTS = {"min_gap_hours": 2.0, "max_gap_hours": 4.0, "max_posts_per_day": 5}
+
+    @property
+    def posting_plan(self) -> dict:
+        """How auto-planned posts (Follow active hours) are spaced on each account."""
+        saved = self._settings.get("posting_plan")
+        return {**self.POSTING_PLAN_DEFAULTS, **(saved if isinstance(saved, dict) else {})}
+
+    def update_posting_plan(self, payload: dict) -> dict:
+        value = self.posting_plan
+        for key, low, high in (("min_gap_hours", 0.5, 12), ("max_gap_hours", 0.5, 12)):
+            if key in payload:
+                number = payload[key]
+                if isinstance(number, bool) or not isinstance(number, (int, float)) or not low <= number <= high:
+                    raise ValueError(f"{key} must be between {low} and {high} hours")
+                value[key] = float(number)
+        if "max_posts_per_day" in payload:
+            limit = payload["max_posts_per_day"]
+            if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20:
+                raise ValueError("max_posts_per_day must be a whole number from 1 to 20")
+            value["max_posts_per_day"] = limit
+        if value["max_gap_hours"] < value["min_gap_hours"]:
+            raise ValueError("The longest gap can't be shorter than the shortest gap")
+        with self._lock:
+            self._settings["posting_plan"] = value
+            self._settings["updated_at"] = datetime.now(timezone.utc).isoformat()
+            self._save()
+        return value
+
     @property
     def ocr_engine(self) -> str:
         value = self._settings.get("ocr_engine", DEFAULT_ENGINE)

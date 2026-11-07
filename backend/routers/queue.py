@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import math
+import random
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,7 +13,7 @@ from fastapi import APIRouter, HTTPException, Body
 from fastapi.responses import FileResponse
 
 from backend.config import PROFILES_DIR
-from backend.services import android_jobs
+from backend.services import active_hours, android_jobs, batch_edit, posting_plan, queue_eta
 from backend.services.execution_evidence import resolve_execution_evidence
 from backend.services.caption_hook import prepare_scheduled_post
 from backend.services.website_service import snapshot_post, execution_variant
@@ -32,6 +33,8 @@ from backend.services.queue_safety import (
 )
 from backend.services.queue_scheduler import (
     compute_execution_schedule,
+    SPREAD_CHOICES_MINUTES,
+    spread_offsets_ms,
     can_acquire_scheduler_slot,
 )
 from backend.services.profile_pipeline import (
@@ -136,6 +139,15 @@ def get_queue():
     }
 
     scheduler = current_scheduler_snapshot(queue)
+    try:
+        busy = (scheduler.get("available") or {}).get("total", 1) <= 0
+        timing = queue_eta.explain(queue, time.time() * 1000, busy=busy)
+    except Exception as error:  # an estimate must never break the queue view
+        print(f"[Queue] Could not estimate start times: {error}")
+        timing = {}
+    for item in all_executions:
+        if item.get("execution_id") in timing:
+            item.update(timing[item["execution_id"]])
     return {
         "queue_version": queue.get("queue_version", "2.0"),
         "stats": stats,
@@ -144,6 +156,128 @@ def get_queue():
         "batches": queue.get("daily_batches", []),
         "executions": all_executions,
     }
+
+@router.post("/schedule-preview")
+def schedule_preview(payload: dict = Body(...)):
+    """What the chosen timing means for each selected account before the batch is made: its
+    local time and waking hours, and for Follow active hours the times the plan would pick.
+    Passing the returned plan_seed when creating the batch gives the same plan while nothing
+    else in the queue changed."""
+    profile_ids = payload.get("profile_ids")
+    if not isinstance(profile_ids, list) or not all(isinstance(pid, str) for pid in profile_ids) or len(profile_ids) > 500:
+        raise HTTPException(status_code=400, detail="profile_ids must be a list of profile ids")
+    window = payload.get("schedule_window") or {}
+    try:
+        choice = parse_schedule_choice(window, window.get("start_now") is True)
+        posts_each = int(payload.get("posts_per_account") or 1)
+    except (TypeError, ValueError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from None
+    posts_each = max(1, min(posts_each, 50))
+    seed = random.randrange(1, 2**31)
+    now_ms = time.time() * 1000
+    start_ms = choice["start_at"].timestamp() * 1000 if choice["start_at"] else now_ms
+    end_ms = start_ms + (choice["spread_minutes"] or 0) * 60_000
+    queue = load_posting_queue() if choice["timing"] == "auto" else None
+    # Editing a batch: its own jobs that haven't started are the ones being planned again.
+    replanned: dict[str, set] = {}
+    if queue is not None and isinstance(payload.get("exclude_batch_id"), str):
+        for batch in queue.get("daily_batches", []):
+            if batch.get("batch_id") == payload["exclude_batch_id"]:
+                for post in batch.get("posts", []):
+                    for execution in post.get("executions", []):
+                        if batch_edit.can_change(execution):
+                            replanned.setdefault(execution.get("profile_id"), set()).add(execution["execution_id"])
+    plan = posting_plan.settings()
+    cache: dict = {}
+    accounts = []
+    for pid in dict.fromkeys(profile_ids):
+        if not (PROFILES_DIR / pid / "config.json").is_file():
+            continue
+        config = active_hours._profile_config(pid, cache)
+        hours = active_hours.waking_hours(config)
+        entry = {
+            "profile_id": pid,
+            "name": config.get("name") or pid,
+            "timezone": getattr(active_hours.account_zone(config), "key", None),
+            "awake_hours": [hours[0], (hours[0] + hours[1]) % 24] if hours else None,
+            "awake_at_start": active_hours.within_active_hours(config, start_ms),
+            "awake_at_end": active_hours.within_active_hours(config, end_ms),
+        }
+        if choice["timing"] == "auto":
+            try:
+                times = plan_account(queue, pid, config, now_ms, posts_each, seed, plan, replanned.get(pid))
+                entry["planned_at"] = [datetime.fromtimestamp(at / 1000, tz=timezone.utc).isoformat() for at in times]
+            except posting_plan.NoRoom as error:
+                entry["planned_at"], entry["error"] = [], str(error)
+        accounts.append(entry)
+    return {"timing": choice["timing"], "plan_seed": seed, "plan": plan,
+            "start_at": datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc).isoformat(),
+            "end_at": datetime.fromtimestamp(end_ms / 1000, tz=timezone.utc).isoformat(), "accounts": accounts}
+
+
+def plan_account(queue, profile_id, config, now_ms, count, seed, plan, exclude=None) -> list[float]:
+    """`count` auto-planned times for one account, each kept apart from the ones before it.
+    `exclude` leaves the account's jobs that are being planned again out of the way."""
+    rand = random.Random(f"{seed}:{profile_id}")
+    times: list[float] = []
+    for _ in range(count):
+        times.append(posting_plan.plan_time(queue, profile_id, config, now_ms, rand, plan, extra=times, exclude=exclude))
+    return sorted(times)
+
+
+MAX_SCHEDULE_AHEAD_DAYS = 30
+# A start a moment in the past (the form was open a while) still counts as "now".
+PAST_START_GRACE_SECONDS = 120
+TIMINGS = ("now", "auto", "exact")
+
+
+def parse_schedule_choice(schedule_window: dict, start_now: bool, now: datetime | None = None) -> dict:
+    """How the batch is timed: {timing, start_at, spread_minutes, follow_active_hours}.
+
+    - "now": every account starts right away, whatever the hour.
+    - "auto" (Schedule with Follow active hours): no time is entered; each account's posts are
+      planned inside its own waking day, with the gap and daily limit.
+    - "exact" (Schedule without it): the full date and time picked on this PC (ISO with offset),
+      for every account. A time that has passed is refused instead of running at once.
+    An older client sends none of these: timing is None and the old fixed gap is used.
+    """
+    now = now or datetime.now(timezone.utc)
+    timing = schedule_window.get("timing")
+    if timing is not None and timing not in TIMINGS:
+        raise ValueError("timing must be now, auto or exact")
+    if start_now:
+        timing = "now"
+    elif timing == "now":
+        start_now = True
+
+    spread_minutes = schedule_window.get("spread_minutes")
+    if spread_minutes is not None:
+        if isinstance(spread_minutes, bool) or not isinstance(spread_minutes, int) or spread_minutes not in SPREAD_CHOICES_MINUTES:
+            raise ValueError(f"spread_minutes must be one of {', '.join(map(str, SPREAD_CHOICES_MINUTES))}")
+
+    if timing == "auto":
+        return {"timing": "auto", "start_at": None, "spread_minutes": None, "follow_active_hours": True}
+
+    start_at = None
+    raw = schedule_window.get("start_at")
+    if timing == "exact" or (not start_now and raw):
+        if not raw:
+            raise ValueError("Pick the date and time to start.")
+        try:
+            start_at = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError:
+            raise ValueError("The start time is not a valid date and time.") from None
+        if start_at.tzinfo is None:
+            raise ValueError("The start time needs a timezone offset.")
+        if (now - start_at).total_seconds() > PAST_START_GRACE_SECONDS:
+            raise ValueError("That start time has already passed. Pick a later time or use Start now.")
+        if (start_at - now).days >= MAX_SCHEDULE_AHEAD_DAYS:
+            raise ValueError(f"Schedule at most {MAX_SCHEDULE_AHEAD_DAYS} days ahead.")
+        timing = "exact"
+    # An exact time is followed as given; "now" never waits either.
+    follow = timing is None
+    return {"timing": timing, "start_at": start_at, "spread_minutes": spread_minutes, "follow_active_hours": follow}
+
 
 @router.post("/batch")
 async def create_batch(payload: dict = Body(...)):
@@ -245,6 +379,17 @@ async def create_batch(payload: dict = Body(...)):
     if preparation_mode not in ("off", "brief", "extended"):
         raise HTTPException(status_code=400, detail="session_preparation_mode must be 'off', 'brief', or 'extended'")
 
+    try:
+        choice = parse_schedule_choice(
+            schedule_window, payload.get("start_now") is True or schedule_window.get("start_now") is True)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from None
+    timing, start_at, spread_minutes, follow_active_hours = (
+        choice["timing"], choice["start_at"], choice["spread_minutes"], choice["follow_active_hours"])
+    plan_seed = schedule_window.get("plan_seed")
+    if not isinstance(plan_seed, int) or isinstance(plan_seed, bool):
+        plan_seed = random.randrange(1, 2**31)
+
     accepted_profiles = []
     skipped_profiles = []
 
@@ -269,7 +414,7 @@ async def create_batch(payload: dict = Body(...)):
             "skipped": skipped_profiles,
         })
 
-    is_start_now = payload.get("start_now") is True or schedule_window.get("start_now") is True
+    is_start_now = timing == "now" or payload.get("start_now") is True or schedule_window.get("start_now") is True
 
     previous_batch = (queue.get("daily_batches") or [None])[0]
     previous_order = (previous_batch.get("profile_execution_order") or previous_batch.get("target_profiles") or []) if previous_batch else []
@@ -280,6 +425,18 @@ async def create_batch(payload: dict = Body(...)):
     for pid in accepted_profiles:
         order = list(range(len(posts)))
         posting_orders[pid] = order
+
+    spread_offsets = spread_offsets_ms(len(profile_execution_order), spread_minutes) if spread_minutes is not None else None
+    # Follow active hours: each account's posts get their own planned times (gap and daily limit).
+    planned = {}
+    if timing == "auto":
+        plan, plan_cache, plan_now = posting_plan.settings(), {}, time.time() * 1000
+        for pid in profile_execution_order:
+            try:
+                planned[pid] = plan_account(queue, pid, active_hours._profile_config(pid, plan_cache), plan_now,
+                                            len(posts), plan_seed, plan)
+            except posting_plan.NoRoom as error:
+                raise HTTPException(status_code=409, detail=f"{pid}: {error}") from None
 
     now = datetime.now()
     try:
@@ -293,6 +450,8 @@ async def create_batch(payload: dict = Body(...)):
 
     if is_start_now:
         window_start = now
+    elif start_at:
+        window_start = start_at.astimezone().replace(tzinfo=None)
     else:
         window_start = now.replace(hour=start_h, minute=start_m, second=0, microsecond=0)
 
@@ -323,6 +482,12 @@ async def create_batch(payload: dict = Body(...)):
                 window_start_ms=window_start.timestamp() * 1000,
                 jitter_ms=jitter,
             )
+            if timing == "auto":
+                sched_ms = planned[pid][slot_idx]
+            elif spread_offsets is not None:
+                # The account's own start: the chosen moment (or now) plus its random place in the spread.
+                start_ms = time.time() * 1000 if is_start_now else max(time.time() * 1000, start_at.timestamp() * 1000)
+                sched_ms = start_ms + spread_offsets[p_idx]
             sched_dt = datetime.fromtimestamp(sched_ms / 1000, tz=timezone.utc)
 
             spun_caption = generate_spun_caption(post.get("base_caption", ""), p_idx, pid) if post.get("ai_spin") is not False else post.get("base_caption", "")
@@ -376,6 +541,10 @@ async def create_batch(payload: dict = Body(...)):
             "session_preparation_mode": preparation_mode,
             "start_now": is_start_now,
             "execution_flow": "resource_bounded",
+            "follow_active_hours": follow_active_hours,
+            **({"timing": timing} if timing else {}),
+            **({"start_at": start_at.isoformat()} if start_at else {}),
+            **({"spread_minutes": spread_minutes} if spread_minutes is not None else {}),
         },
         "posting_order_per_profile": posting_orders,
         "posts": formatted_posts,
@@ -465,6 +634,16 @@ async def append_batch_posts(batch_id: str, payload: dict = Body(...)):
             except (TypeError, ValueError):
                 pass
         batch_start = min(existing_schedule_times, default=now)
+        # With a spread, each account keeps its own start for the posts added later.
+        own_start = {}
+        if (batch.get("schedule_window") or {}).get("spread_minutes") is not None:
+            for execution in existing_executions:
+                try:
+                    at = datetime.fromisoformat(str(execution.get("scheduled_at") or "").replace("Z", "+00:00"))
+                except (TypeError, ValueError):
+                    continue
+                pid = execution.get("profile_id")
+                own_start[pid] = min(own_start.get(pid, at), at)
         appended_posts = []
         existing_post_count = len(batch.get("posts", []))
 
@@ -482,7 +661,7 @@ async def append_batch_posts(batch_id: str, payload: dict = Body(...)):
                 executions.append({
                     "execution_id": execution_id,
                     "profile_id": profile_id,
-                    "scheduled_at": batch_start.isoformat(),
+                    "scheduled_at": own_start.get(profile_id, batch_start).isoformat(),
                     "batch_iteration_index": next_iteration,
                     "spun_caption": spun_caption,
                     "status": "pending",
@@ -534,6 +713,131 @@ async def append_batch_posts(batch_id: str, payload: dict = Body(...)):
     except RuntimeError:
         pass
     return result
+
+def _find_batch(queue, batch_id):
+    batch = next((item for item in queue.get("daily_batches", []) if item.get("batch_id") == batch_id), None)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    return batch
+
+
+def _dispatch_soon():
+    try:
+        asyncio.get_running_loop().create_task(dispatch_pending_queue())
+    except RuntimeError:
+        pass
+
+
+def _set_paused(batch_id: str, paused: bool):
+    def change():
+        queue = load_posting_queue()
+        result = batch_edit.set_paused(_find_batch(queue, batch_id), paused)
+        if not save_posting_queue(queue):
+            raise HTTPException(status_code=500, detail="Could not save the batch")
+        return result
+    return with_queue_claim_lock(change)
+
+
+@router.post("/batch/{batch_id}/pause")
+async def pause_batch(batch_id: str):
+    """Nothing new in the batch starts until it is resumed; jobs already working finish."""
+    return _set_paused(batch_id, True)
+
+
+@router.post("/batch/{batch_id}/resume")
+async def resume_batch(batch_id: str):
+    result = _set_paused(batch_id, False)
+    _dispatch_soon()
+    return result
+
+
+@router.get("/batch/{batch_id}/edit")
+def batch_edit_info(batch_id: str):
+    """What the edit form needs: the batch and which of its jobs can still change."""
+    queue = load_posting_queue()
+    batch = _find_batch(queue, batch_id)
+    locked = {post.get("post_id"): batch_edit.content_locked(post) for post in batch.get("posts", [])}
+    return {"batch": batch, **batch_edit.summary(batch), "content_locked": locked}
+
+
+@router.put("/batch/{batch_id}")
+async def update_batch(batch_id: str, payload: dict = Body(...)):
+    """Edits the jobs that haven't started. `expected_ids` (the changeable jobs the form showed)
+    lets the answer name the ones that started while the form was open; they keep what they had."""
+    window = payload.get("schedule_window")
+    choice = None
+    if window is not None:
+        if not isinstance(window, dict):
+            raise HTTPException(status_code=400, detail="schedule_window must be an object")
+        try:
+            choice = parse_schedule_choice(window, window.get("start_now") is True)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from None
+        if choice["timing"] is None:
+            raise HTTPException(status_code=400, detail="Choose Start now, Follow active hours or a start time.")
+    seed = window.get("plan_seed") if window else None
+    if not isinstance(seed, int) or isinstance(seed, bool):
+        seed = random.randrange(1, 2**31)
+    expected = payload.get("expected_ids") or []
+
+    def change():
+        queue = load_posting_queue()
+        batch = _find_batch(queue, batch_id)
+        plan, cache, now_ms = posting_plan.settings(), {}, time.time() * 1000
+
+        def plan_times(pid, count, exclude):
+            return plan_account(queue, pid, active_hours._profile_config(pid, cache), now_ms, count, seed, plan, exclude)
+
+        try:
+            result = batch_edit.apply(batch, payload, choice=choice, plan_times=plan_times, offsets=spread_offsets_ms)
+        except batch_edit.EditError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from None
+        except posting_plan.NoRoom as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
+        if result["changes"] and not save_posting_queue(queue):
+            raise HTTPException(status_code=500, detail="Could not save the batch")
+        still = set(batch_edit.summary(batch)["changeable_ids"])
+        names = {e["execution_id"]: e.get("profile_id") for p in batch.get("posts", []) for e in p.get("executions", [])}
+        started = [{"execution_id": eid, "profile_id": names.get(eid)} for eid in expected
+                   if isinstance(eid, str) and eid not in still]
+        return {"success": True, **result, "started_while_editing": started, "batch": batch}
+
+    result = with_queue_claim_lock(change)
+    _dispatch_soon()
+    return result
+
+
+@router.put("/execution/{execution_id}")
+async def update_execution(execution_id: str, payload: dict = Body(...)):
+    """One account's own start time (`scheduled_at`, ISO with offset) or caption."""
+    scheduled_at = None
+    if payload.get("scheduled_at") is not None:
+        try:
+            choice = parse_schedule_choice({"timing": "exact", "start_at": payload["scheduled_at"]}, False)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from None
+        scheduled_at = choice["start_at"]
+    caption = payload.get("caption")
+    if caption is not None and not isinstance(caption, str):
+        raise HTTPException(status_code=400, detail="caption must be text")
+
+    def change():
+        queue = load_posting_queue()
+        match = find_queue_execution(queue, execution_id)
+        if not match:
+            raise HTTPException(status_code=404, detail="Execution not found")
+        try:
+            labels = batch_edit.edit_job(match["execution"], match["post"], scheduled_at=scheduled_at, caption=caption)
+        except batch_edit.EditError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
+        if labels and not save_posting_queue(queue):
+            raise HTTPException(status_code=500, detail="Could not save the job")
+        return {"success": True, "changes": labels, "execution": match["execution"]}
+
+    result = with_queue_claim_lock(change)
+    _dispatch_soon()
+    return result
+
 
 @router.delete("/batch/{batch_id}")
 def delete_batch(batch_id: str):

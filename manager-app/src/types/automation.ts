@@ -87,6 +87,11 @@ export interface QueueExecutionItem {
   spun_caption: string;
   first_comment?: string | null;
   scheduled_at: string;
+  /** Estimated start of a waiting item, from the same checks the scheduler uses. */
+  expected_start_at?: string | null;
+  wait_reason?: QueueWaitReason;
+  account_timezone?: string | null;
+  awake_hours?: [number, number] | null;
   status: 'pending' | 'running' | 'published' | 'failed' | 'failed_before_publish' | 'failed_after_publish' | 'uncertain' | string;
   stage?: string | null;
   stage_history?: Array<{
@@ -218,10 +223,18 @@ export interface DailyBatch {
     batch_iteration_delay_seconds?: number;
     session_preparation_mode?: 'off' | 'brief' | 'extended';
     start_now?: boolean;
+    start_at?: string;
+    spread_minutes?: number;
+    follow_active_hours?: boolean;
+    timing?: 'now' | 'auto' | 'exact';
   };
   profile_execution_order?: string[];
   posting_order_per_profile?: Record<string, number[]>;
   posts: QueuePostItem[];
+  /** Nothing new in the batch starts while it is paused. */
+  paused?: boolean;
+  paused_at?: string;
+  edit_history?: { at: string; changes: string[]; jobs: number }[];
 }
 
 export interface QueueDataResponse {
@@ -380,6 +393,10 @@ export interface AdaptiveLimitsUpdate {
   reserve_percent?: number;
 }
 
+export type QueueWaitReason = 'scheduled' | 'planned' | 'replanning' | 'active_hours' | 'active_hours_limit' | 'travelling' | 'on_hold'
+  | 'waiting_for_visit' | 'previous_post' | 'rest_between_posts' | 'network_recovery' | 'waiting_for_slot' | 'starting' | 'prepared'
+  | 'paused';
+
 export interface CreateBatchParams {
   name: string;
   target_profiles: string[];
@@ -392,6 +409,16 @@ export interface CreateBatchParams {
     batch_iteration_delay_seconds?: number;
     session_preparation_mode?: 'off' | 'brief' | 'extended';
     start_now?: boolean;
+    /** Full start date and time picked on this PC, ISO with offset. */
+    start_at?: string;
+    /** Each account starts at a random moment inside this many minutes (0: 45–120 s apart). */
+    spread_minutes?: number;
+    /** Off: start at the scheduled time even when it is night for the account. */
+    follow_active_hours?: boolean;
+    /** now: right away · auto: Follow active hours, planned per account · exact: start_at for all. */
+    timing?: 'now' | 'auto' | 'exact';
+    /** From the schedule preview, so the batch gets the plan the form showed. */
+    plan_seed?: number;
   };
   posts: {
     read_more?: { preparation_id: string; captions?: Record<string, string> };

@@ -3,6 +3,7 @@ import { Select } from './ui/Select';
 import { AppUpdates } from './AppUpdates';
 import { ResourceModeControl } from './ResourceModeControl';
 import { AutoWarmingControl } from './AutoWarmingControl';
+import { PostingPlanControl } from './PostingPlanControl';
 import { StorageControl } from './StorageControl';
 import { WebsiteConnectionsSettings } from './WebsiteConnectionsSettings';
 import { MANAGE_WEBSITE_CONNECTIONS } from '../services/websites';
@@ -208,6 +209,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                 <p className="text-xs leading-5 text-zinc-400">Resource mode sets how many browsers can run, warm up, and post at the same time. Auto picks a level from this computer’s memory and CPU.</p>
                 <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4"><ResourceModeControl /></div>
                 <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4"><AutoWarmingControl /></div>
+                <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4"><PostingPlanControl /></div>
               </div>
             ) : section === 'storage' ? (
               <div className="max-w-xl"><StorageControl /></div>
