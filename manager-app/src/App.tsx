@@ -10,6 +10,7 @@ import {
   deleteProfileGroup,
   createProfile,
   updateProfile,
+  AccountBusyError,
   executeProfileAction,
   deleteProfile,
   deleteExecution,
@@ -194,14 +195,39 @@ export const App: React.FC = () => {
     setBusyIds((current) => new Set([...current, ...targets.map((p) => p.id)]));
     setProfileActionError(null);
     const failures: ProfileActionError[] = [];
+    const working: { profile: Profile; job: string }[] = [];
+    const runOne = async (profile: Profile, force = false) => {
+      try {
+        await executeProfileAction(profile.id, action, { force });
+      } catch (err: any) {
+        if (err instanceof AccountBusyError && !force) working.push({ profile, job: err.job });
+        else failures.push({ profileId: profile.id, profileName: profile.name, action, reason: err?.message || `Couldn’t ${action} this account` });
+      }
+    };
     // One at a time, so local resource admission sees each start in order.
     for (const profile of targets) {
-      try {
-        await executeProfileAction(profile.id, action);
-      } catch (err: any) {
-        failures.push({ profileId: profile.id, profileName: profile.name, action, reason: err?.message || `Couldn’t ${action} this account` });
-      } finally {
+      await runOne(profile);
+      if (!working.some((w) => w.profile.id === profile.id)) {
         setBusyIds((current) => { const next = new Set(current); next.delete(profile.id); return next; });
+      }
+    }
+    // Accounts in the middle of a job are stopped only after asking: stopping ends the job and it fails.
+    if (working.length) {
+      const confirmed = await showConfirm(
+        working.length === 1
+          ? `${working[0].profile.name} is in the middle of ${working[0].job}. Stopping it now ends the job and it fails.`
+          : `${working.length} accounts are in the middle of a job: ${working.map((w) => `${w.profile.name} (${w.job.replace(/^an? /, '')})`).join(', ')}. Stopping them now ends those jobs and they fail.`,
+        { title: working.length === 1 ? 'Stop during a job?' : 'Stop during jobs?', confirmLabel: 'Stop anyway', cancelLabel: 'Let it finish', variant: 'danger' },
+      );
+      for (const { profile } of working) {
+        if (confirmed) await runOne(profile, true);
+        setBusyIds((current) => { const next = new Set(current); next.delete(profile.id); return next; });
+      }
+      if (!confirmed) {
+        await loadData();
+        const stopped = targets.length - working.length - failures.length;
+        if (targets.length > 1) showToast(`Stopped ${stopped} of ${targets.length}. Left ${working.length} running to finish ${working.length === 1 ? 'its job' : 'their jobs'}.`, failures.length ? 'error' : 'success');
+        return;
       }
     }
     await loadData();

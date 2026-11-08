@@ -232,15 +232,25 @@ export async function releaseProfileHold(profileId: string): Promise<Profile> {
   return res.json();
 }
 
+/** Stop was refused because the account is in the middle of a job; `job` says which, e.g. "a warm-up". */
+export class AccountBusyError extends Error {
+  constructor(message: string, readonly job: string) { super(message); }
+}
+
 export async function executeProfileAction(
   profileId: string,
-  action: 'start' | 'stop' | 'pause' | 'unpause'
+  action: 'start' | 'stop' | 'pause' | 'unpause',
+  options: { force?: boolean } = {},
 ): Promise<{ success: boolean; message: string }> {
   const res = await fetch(`${API_BASE}/profiles/${profileId}/action`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action }),
+    body: JSON.stringify(options.force ? { action, force: true } : { action }),
   });
+  if (res.status === 409) {
+    const detail = await res.clone().json().then(body => body?.detail, () => null);
+    if (detail?.code === 'account_busy') throw new AccountBusyError(detail.error, detail.job);
+  }
   if (!res.ok) {
     throw await apiError(res, `Failed to ${action} profile`);
   }

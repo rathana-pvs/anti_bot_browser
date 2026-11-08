@@ -317,3 +317,26 @@ def test_spa_dashboard(client):
     assert res.status_code == 200
     assert "html" in res.headers.get("content-type", "").lower()
 
+
+
+def test_stop_asks_first_when_the_account_is_in_the_middle_of_a_job(client, monkeypatch):
+    from backend.routers import profiles as profiles_router
+    from backend.services import automation_service
+
+    stopped = []
+
+    async def fake_action(profile_id, action):
+        stopped.append((profile_id, action))
+        return {"success": True, "message": ""}
+
+    monkeypatch.setattr(profiles_router, "run_profile_action", fake_action)
+    monkeypatch.setitem(automation_service.active_automation_tasks, "profile_990",
+                        {"task": "warming", "status": "running", "lifecycle_active": True})
+    refused = client.post("/api/profiles/profile_990/action", json={"action": "stop"})
+    assert refused.status_code == 409
+    assert refused.json()["detail"]["code"] == "account_busy" and refused.json()["detail"]["job"] == "a warm-up"
+    assert stopped == []
+    assert client.post("/api/profiles/profile_990/action", json={"action": "stop", "force": True}).status_code == 200
+    automation_service.active_automation_tasks["profile_990"]["status"] = "completed"
+    assert client.post("/api/profiles/profile_990/action", json={"action": "stop"}).status_code == 200
+    assert stopped == [("profile_990", "stop"), ("profile_990", "stop")]

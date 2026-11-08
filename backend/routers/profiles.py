@@ -534,6 +534,14 @@ async def profile_action(profile_id: str, payload: dict = Body(...)):
     action = payload.get("action")
     if action not in ("start", "stop", "pause", "unpause"):
         raise HTTPException(status_code=400, detail="Invalid action")
+    if action == "stop" and payload.get("force") is not True:
+        from backend.services.automation_service import running_job
+        job = running_job(profile_id)
+        if job:
+            # Stopping the browser mid-job fails the job with a confusing error, so ask first.
+            raise HTTPException(status_code=409, detail={
+                "code": "account_busy", "job": job,
+                "error": f"This account is in the middle of {job}. Stopping it now ends the job and it fails."})
     try:
         return await run_profile_action(profile_id, action)
     except ValueError as exc:

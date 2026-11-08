@@ -221,6 +221,18 @@ def is_task_process_active(record: dict | None) -> bool:
     proc = record.get("process")
     return bool(proc and proc.returncode is None)
 
+JOB_NAMES = {"warming": "a warm-up", "comment": "a comment", "preparation": "getting a post ready",
+             "live": "a live video", "reel": "a reel post"}
+
+
+def running_job(profile_id: str) -> str | None:
+    """What the account is doing right now, e.g. "a warm-up", or None when it is idle."""
+    record = active_automation_tasks.get(profile_id)
+    if not is_task_process_active(record):
+        return None
+    return JOB_NAMES.get(record.get("task"), "a post")
+
+
 def active_in_memory_scheduler_leases() -> list[dict]:
     leases = []
     for record in active_automation_tasks.values():
