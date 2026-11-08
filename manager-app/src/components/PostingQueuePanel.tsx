@@ -74,6 +74,8 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
   const [nextLimit, setNextLimit] = useState(NEXT_PAGE);
   const [finishedLimit, setFinishedLimit] = useState(FINISHED_PAGE);
   const [finishedOpen, setFinishedOpen] = useState(false);
+  const [attentionOpen, setAttentionOpen] = useRememberedOpen('queue_attention_open');
+  const [nextOpen, setNextOpen] = useRememberedOpen('queue_next_open');
   const [busyId, setBusyId] = useState<string | null>(null);
   const [batchBusy, setBatchBusy] = useState(false);
   const [lightbox, setLightbox] = useState<LightboxMedia | null>(null);
@@ -419,7 +421,8 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
             </div>}
             {filtered.length === 0 && <EmptyState title="Nothing matches these filters" description="Try another type, batch, or search." />}
 
-            {sections.attention.length > 0 && <Section title="Needs you" count={sections.attention.length} tone="warning" icon={<AlertTriangle className="h-3.5 w-3.5" />}>
+            {sections.attention.length > 0 && <Section title="Needs you" count={sections.attention.length} tone="warning" icon={<AlertTriangle className="h-3.5 w-3.5" />}
+              collapsible open={attentionOpen} onToggle={() => setAttentionOpen(!attentionOpen)}>
               {renderRows(sections.attention)}
             </Section>}
 
@@ -427,7 +430,8 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
               {renderRows(sections.now)}
             </Section>}
 
-            {sections.next.length > 0 && <Section title="Up next" count={sections.next.length} icon={<Clock className="h-3.5 w-3.5" />}>
+            {sections.next.length > 0 && <Section title="Up next" count={sections.next.length} icon={<Clock className="h-3.5 w-3.5" />}
+              collapsible open={nextOpen} onToggle={() => setNextOpen(!nextOpen)}>
               {renderRows(sections.next.slice(0, nextLimit))}
               {sections.next.length > nextLimit && <ShowMore remaining={sections.next.length - nextLimit} onClick={() => setNextLimit(nextLimit + NEXT_PAGE * 2)} />}
             </Section>}
@@ -463,6 +467,18 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
     </div>
   );
 };
+
+/** Open by default; the viewer's choice is remembered on this computer. */
+function useRememberedOpen(key: string): [boolean, (open: boolean) => void] {
+  const [open, setOpen] = useState(() => {
+    try { return localStorage.getItem(key) !== 'false'; } catch { return true; }
+  });
+  const change = (next: boolean) => {
+    setOpen(next);
+    try { localStorage.setItem(key, String(next)); } catch { /* not remembered, still works */ }
+  };
+  return [open, change];
+}
 
 const isLiveBatch = (batch: DailyBatch) => batch.posts.length > 0 && batch.posts.every(post => post.type === 'live');
 
