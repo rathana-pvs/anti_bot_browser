@@ -329,7 +329,21 @@ export const App: React.FC = () => {
     }
   };
 
+  const renameAccount = async (profile: Profile) => {
+    const name = (await showPrompt('Choose a new name for this account.', { title: `Rename ${profile.name}`, confirmLabel: 'Rename', defaultValue: profile.name, placeholder: 'Account name' }))?.trim();
+    if (!name || name === profile.name) return;
+    try {
+      await updateProfile(profile.id, { name });
+      showToast(`Renamed to ${name}.`, 'success');
+    } catch (err: any) {
+      showToast(err?.message || 'Couldn’t rename this account.', 'error');
+    } finally {
+      await loadData();
+    }
+  };
+
   const handlers: AccountHandlers = {
+    rename: (profile) => { void renameAccount(profile); },
     toggleHold: (profile) => { void toggleHold(profile); },
     changeProxy: setChangeProxyFor,
     openQueue,

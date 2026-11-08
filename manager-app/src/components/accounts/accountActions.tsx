@@ -11,6 +11,8 @@ export interface AccountHandlers {
   moveToGroup: (profiles: Profile[]) => void;
   remove: (profiles: Profile[]) => void;
   copyId: (profile: Profile) => void;
+  /** Asks for a new name and saves it. */
+  rename: (profile: Profile) => void;
   /** Opens the Queue showing only this account's items. */
   openQueue: (profileId: string) => void;
   /** Removes failed-before-posting items older than `before` (all of them when omitted). */
@@ -40,6 +42,9 @@ export interface FolderHandlers {
 
 const icon = 'h-3.5 w-3.5';
 
+const renameItem = (profile: Profile, handlers: AccountHandlers): ActionMenuItem =>
+  ({ label: 'Rename…', icon: <PencilLine className={icon} />, onSelect: () => handlers.rename(profile) });
+
 /** The same list backs the ⋯ button and the right-click menu, so they never drift apart. */
 export function accountMenu(profile: Profile, handlers: AccountHandlers, { includeOpen = true, failureCutoff }: { includeOpen?: boolean; failureCutoff?: number } = {}): ActionMenuItem[] {
   const items: ActionMenuItem[] = [];
@@ -48,6 +53,7 @@ export function accountMenu(profile: Profile, handlers: AccountHandlers, { inclu
     items.push(
       { label: 'Show in queue', icon: <ListChecks className={icon} />, onSelect: () => handlers.openQueue(profile.id), divider: includeOpen },
       changeProxyItem(profile, handlers),
+      renameItem(profile, handlers),
       { label: 'Move to folder…', icon: <FolderInput className={icon} />, onSelect: () => handlers.moveToGroup([profile]) },
       { label: 'Copy account ID', icon: <Copy className={icon} />, onSelect: () => handlers.copyId(profile) },
       { label: 'Delete', icon: <Trash2 className={icon} />, danger: true, divider: true, onSelect: () => handlers.remove([profile]) },
@@ -75,6 +81,7 @@ export function accountMenu(profile: Profile, handlers: AccountHandlers, { inclu
       : { label: 'Put on hold…', icon: <Hand className={icon} />, hint: 'Stops posts, warming and cloud jobs, e.g. before changing the proxy.', onSelect: () => handlers.toggleHold(profile) },
     { label: 'Clear old failures…', icon: <Eraser className={icon} />, hint: 'Removes failed-before-posting items. Unconfirmed posts are never removed.', onSelect: () => handlers.clearFailures(profile, failureCutoff) },
     { ...changeProxyItem(profile, handlers), divider: true },
+    renameItem(profile, handlers),
     { label: 'Edit settings', icon: <Settings2 className={icon} />, onSelect: () => handlers.open(profile.id, 'settings') },
     { label: 'Move to folder…', icon: <FolderInput className={icon} />, onSelect: () => handlers.moveToGroup([profile]) },
     { label: 'Copy account ID', icon: <Copy className={icon} />, onSelect: () => handlers.copyId(profile) },
