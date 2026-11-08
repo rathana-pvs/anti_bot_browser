@@ -150,7 +150,14 @@ def test_scheduled_batch_spreads_accounts_and_shows_when_each_starts(client):
     assert [a["profile_id"] for a in preview.json()["accounts"]] in (["profile_001"], [])
 
 
-def test_follow_active_hours_batch_is_planned_without_a_time(client):
+def test_follow_active_hours_batch_is_planned_without_a_time(client, monkeypatch):
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from backend.routers import queue as queue_router
+
+    # Comparing the seeded plans requires the same lower time bound in both requests.
+    now = datetime(2026, 11, 8, 12, tzinfo=timezone.utc).timestamp()
+    monkeypatch.setattr(queue_router, "time", SimpleNamespace(time=lambda: now))
     window = {"timing": "auto", "batch_iteration_delay_seconds": 0, "session_preparation_mode": "off",
               "start_time": "09:00", "end_time": "21:00", "profile_stagger_seconds": 30}
     preview = client.post("/api/queue/schedule-preview", json={
@@ -167,7 +174,6 @@ def test_follow_active_hours_batch_is_planned_without_a_time(client):
     batch = res.json()["batch"]
     assert batch["schedule_window"]["timing"] == "auto"
     times = sorted(e["scheduled_at"] for post in batch["posts"] for e in post["executions"])
-    from datetime import datetime
     first, second = (datetime.fromisoformat(t) for t in times)
     assert (second - first).total_seconds() >= 2 * 3600
     accounts = {a["profile_id"]: a for a in body["accounts"]}

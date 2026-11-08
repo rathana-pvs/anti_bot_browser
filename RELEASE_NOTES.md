@@ -1,3 +1,17 @@
+# Version 2.2.0
+
+- Rename an account directly from its account menu.
+- Collapse the Needs you and Up next sections in the posting queue.
+- Ask for confirmation before Stop ends an account's running job.
+- Keep screenshots from every Live step together in one folder per job.
+- Give phone Reels longer to appear before adding the comment, and keep phone
+  screenshots with their job.
+- Show the failed phone command and exit code when ADB reports an error.
+
+**Linux only.** After installing, run **Settings → Setup and repair → Install /
+update runtime** when prompted. Existing profiles, sessions, and settings remain
+in persistent app storage.
+
 # Version 2.1.0
 
 - Plan posting times, see estimated job start times, and edit or pause batches
