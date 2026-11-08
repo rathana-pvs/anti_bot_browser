@@ -1,3 +1,19 @@
+# Version 2.1.0
+
+- Plan posting times, see estimated job start times, and edit or pause batches
+  from the posting queue.
+- Replace proxy IPs through Webshare or manually change an account's proxy.
+  If Webshare already replaced an IP, sync its current replacement without
+  requesting another swap.
+- Sort account and proxy lists, reject duplicate account names, and open accounts
+  directly to Screen.
+- Count rest after a proxy change from the account's last Facebook activity.
+- Continue account checks and warming when Facebook shows the personal profile.
+
+**Linux only.** After installing, run **Settings → Setup and repair → Install /
+update runtime** when prompted. Existing profiles, sessions, and settings remain
+in persistent app storage.
+
 # Version 2.0.5
 
 - Wait for the selected Android user's VPN to become ready before checking a new
