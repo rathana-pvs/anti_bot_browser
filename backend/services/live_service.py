@@ -345,6 +345,24 @@ async def command(*args, timeout=30):
             await proc.wait()
 
 
+def live_evidence_folder(record, profile_id):
+    """The Live job's one screenshot folder, made at its first browser step. Every step (ready,
+    live, ended, comment, check) saves into it, so the job shows them together and in order."""
+    root = (PROFILES_DIR / profile_id / 'automation_evidence').resolve()
+    current = Path(record['evidence_dir']).resolve() if record.get('evidence_dir') else None
+    if current and current.parent == root and current.is_dir():
+        return str(current)
+    if not record:
+        return None
+    directory = root / (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S_%fZ') + '_live')
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    update(record, evidence_dir=str(directory))
+    return str(directory)
+
+
 async def browser_action(profile_id, action, producer_url, stop_event, *, prepared_settings=None):
     helper = AUTOMATION_RUNNER.parent / 'live_browser.py'
     record = automation.active_automation_tasks.get(profile_id, {})
@@ -356,6 +374,9 @@ async def browser_action(profile_id, action, producer_url, stop_event, *, prepar
         details['comment_after_end'] = record.get('end_before_comment') is True
     worker_env = automation.automation_worker_env()
     worker_env['AUTOMATION_BEHAVIOR_RUN_ID'] = str(record.get('session_id') or profile_id)
+    folder = live_evidence_folder(record, profile_id)
+    if folder:
+        worker_env['LIVE_EVIDENCE_DIR'] = folder
     proc = await asyncio.create_subprocess_exec(str(AUTOMATION_PYTHON), str(helper), '--profile', profile_id,
             '--action', action, '--producer-url', producer_url,
             '--brain-package', record['brain_package'], '--brain-digest', pin['digest'], cwd=str(ROOT_DIR),
@@ -406,7 +427,7 @@ async def browser_action(profile_id, action, producer_url, stop_event, *, prepar
         if not isinstance(result, dict):
             raise RuntimeError('Facebook Live verification failed')
         raw_evidence = result.get('evidence_dir')
-        if isinstance(raw_evidence, str):
+        if isinstance(raw_evidence, str) and not folder:  # the job's own folder, once made, stays its folder
             directory = Path(raw_evidence).resolve()
             expected = (PROFILES_DIR / profile_id / 'automation_evidence').resolve()
             if directory.parent == expected and directory.is_dir():

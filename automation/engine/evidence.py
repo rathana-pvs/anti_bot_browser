@@ -16,12 +16,20 @@ from .runtime_paths import profiles_dir
 class EvidenceRecorder:
     """Persist screenshots and metadata for a single automation execution."""
 
-    def __init__(self, profile_id: str, task_name: str):
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
-        safe_task = re.sub(r"[^a-zA-Z0-9_-]+", "_", task_name).strip("_") or "task"
+    def __init__(self, profile_id: str, task_name: str, directory: str | None = None):
+        """`directory` continues a folder an earlier step of the same job started (a Live job's
+        steps run as separate processes); it must be one of this profile's evidence folders."""
         root = profiles_dir() / profile_id / "automation_evidence"
-        self.run_id = f"{stamp}_{safe_task}"
-        self.directory = os.path.join(root, self.run_id)
+        if directory:
+            if os.path.realpath(os.path.dirname(os.path.realpath(directory))) != os.path.realpath(root):
+                raise ValueError("Evidence folder is outside this profile's evidence")
+            self.directory = os.path.realpath(directory)
+            self.run_id = os.path.basename(self.directory)
+        else:
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
+            safe_task = re.sub(r"[^a-zA-Z0-9_-]+", "_", task_name).strip("_") or "task"
+            self.run_id = f"{stamp}_{safe_task}"
+            self.directory = os.path.join(root, self.run_id)
         os.makedirs(self.directory, exist_ok=True)
         context = os.environ.get('AUTOMATION_EVIDENCE_CONTEXT')
         if context:
@@ -35,7 +43,8 @@ class EvidenceRecorder:
                 json.dump({key: attempt[key] for key in ('execution_id', 'lease_id', 'owner_token')}, stream)
                 stream.flush()
                 os.fsync(stream.fileno())
-        self._sequence = 0
+        # Numbering carries on after the screenshots already in a continued folder.
+        self._sequence = len([name for name in os.listdir(self.directory) if name.endswith(".png")])
 
     @staticmethod
     def _safe_name(value: str) -> str:

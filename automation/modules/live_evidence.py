@@ -12,6 +12,17 @@ SAFE_LABELS = frozenset({
 })
 
 
+def screenshot_label(action, status, state=None):
+    """`start`+`confirmed` → `live_confirmed`; a failed `comment` → `comment_not_confirmed`."""
+    if status != 'failed':
+        if action == 'inspect':
+            return {'live': 'check_still_live', 'ended': 'check_live_ended'}.get(state, 'check_live_unconfirmed')
+        return {'prepare': 'ready_to_go_live', 'start': 'live_confirmed', 'end': 'live_ended',
+                'comment': 'comment_confirmed'}.get(action, action)
+    return {'comment': 'comment_not_confirmed', 'start': 'go_live_failed', 'end': 'end_live_failed',
+            'prepare': 'live_setup_failed', 'inspect': 'check_failed'}.get(action, action + '_failed')
+
+
 class LiveFailureEvidence:
     def __init__(self, profile_id):
         self.profile_id = profile_id
@@ -38,12 +49,13 @@ class LiveFailureEvidence:
             'controls': controls, 'checks': checks or {},
         })
 
-    def save(self, action, status='failed'):
+    def save(self, action, status='failed', state=None, directory=None):
+        """Saves the last frame the step looked at. `directory` is the Live job's own folder, so all
+        of its steps' screenshots show together, in order."""
         if self.observation is None:
             return None
         image, metadata = self.observation
-        recorder = EvidenceRecorder(self.profile_id, 'live_' + action)
-        label = 'comment_confirmed' if action == 'comment' and status == 'confirmed' else 'browser_screenshot'
-        recorder.capture(label, image, metadata)
+        recorder = EvidenceRecorder(self.profile_id, 'live_' + action, directory=directory)
+        recorder.capture(screenshot_label(action, status, state), image, metadata)
         recorder.write_result(status, action=action, redacted=False)
         return recorder.directory

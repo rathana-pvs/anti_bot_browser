@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'automation'))
-from modules.live_evidence import LiveFailureEvidence
+from modules.live_evidence import LiveFailureEvidence, screenshot_label
 
 
 @pytest.mark.parametrize('source,template', [
@@ -25,9 +25,10 @@ def test_full_frame_is_saved_even_without_recognized_controls(tmp_path, monkeypa
     evidence.observe(image, [], source, {'template_id': template})
     assert not (tmp_path / 'profiles').exists()
     directory = Path(evidence.save(source))
-    saved = cv2.imread(str(directory / '01_browser_screenshot.png'))
+    stem = '01_' + screenshot_label(source, 'failed')
+    saved = cv2.imread(str(directory / f'{stem}.png'))
     np.testing.assert_array_equal(saved, image)
-    metadata = json.loads((directory / '01_browser_screenshot.json').read_text())
+    metadata = json.loads((directory / f'{stem}.json').read_text())
     assert metadata['redaction'] == 'none'
     assert metadata['checks'] == {'template_id': template}
     assert json.loads((directory / 'result.json').read_text())['redacted'] is False
@@ -42,7 +43,7 @@ def test_observation_copies_frame_and_latest_frame_replaces_previous(tmp_path, m
     evidence.observe(image, [], 'inspect')
     image[:] = 0  # Later screenshot-buffer reuse must not change evidence.
     directory = Path(evidence.save('inspect'))
-    assert (cv2.imread(str(directory / '01_browser_screenshot.png')) == 180).all()
+    assert (cv2.imread(str(directory / '01_check_failed.png')) == 180).all()
 
 
 def test_metadata_keeps_controls_without_copying_arbitrary_ocr(tmp_path, monkeypatch):
@@ -54,10 +55,10 @@ def test_metadata_keeps_controls_without_copying_arbitrary_ocr(tmp_path, monkeyp
         {'text': 'FB-PRIVATE-STREAM-KEY', 'bounds': [40, 20, 120, 27]},
     ], 'prepare')
     directory = Path(evidence.save('prepare'))
-    metadata = json.loads((directory / '01_browser_screenshot.json').read_text())
+    metadata = json.loads((directory / '01_live_setup_failed.json').read_text())
     assert [c['label'] for c in metadata['controls']] == ['save']
     assert 'PRIVATE' not in json.dumps(metadata)
-    np.testing.assert_array_equal(cv2.imread(str(directory / '01_browser_screenshot.png')), image)
+    np.testing.assert_array_equal(cv2.imread(str(directory / '01_live_setup_failed.png')), image)
 
 
 def test_no_observation_does_not_create_empty_evidence(tmp_path, monkeypatch):
@@ -94,7 +95,7 @@ def test_confirmed_comment_returns_evidence_without_changing_success(monkeypatch
     monkeypatch.setattr(sys, 'stdout', output)
     live_browser.main()
     result = json.loads(output.getvalue())
-    task.failure_evidence.save.assert_called_once_with('comment', status='confirmed')
+    task.failure_evidence.save.assert_called_once_with('comment', status='confirmed', state='commented', directory=None)
     task.run.assert_called_once()  # Evidence failure must never repost.
     assert result['success'] is True
     assert result['state'] == 'commented'
@@ -148,7 +149,7 @@ def test_read_only_inspection_retains_evidence_without_changing_result(monkeypat
     result = json.loads(output.getvalue())
     assert result['success'] is True
     assert result['state'] == state
-    task.failure_evidence.save.assert_called_once_with('inspect', status='observed')
+    task.failure_evidence.save.assert_called_once_with('inspect', status='observed', state=state, directory=None)
     assert result.get('evidence_capture_failed', False) == capture_fails
     assert ('evidence_dir' in result) != capture_fails
 
@@ -169,3 +170,44 @@ def test_comment_failure_returns_fixed_reason_code(monkeypatch):
     result = json.loads(output.getvalue())
     assert result['failure_code'] == 'entry_deadline_exceeded'
     assert 'PRIVATE COMMENT' not in output.getvalue()
+
+
+@pytest.mark.parametrize('action,state', [('prepare', 'prepared'), ('start', 'live'), ('end', 'ended')])
+def test_each_live_step_that_worked_saves_into_the_job_folder(monkeypatch, action, state):
+    import live_browser
+
+    task = Mock()
+    task.run.return_value = {'success': True, 'state': state}
+    task.failure_evidence.save.return_value = '/profile/automation_evidence/job_live'
+    monkeypatch.setattr(live_browser, 'FacebookLiveTask', Mock(return_value=task))
+    monkeypatch.setenv('LIVE_EVIDENCE_DIR', '/profile/automation_evidence/job_live')
+    monkeypatch.setattr(sys, 'argv', ['live_browser', '--profile', 'profile_009', '--action', action,
+                                    '--producer-url', 'https://www.facebook.com/live/producer/'])
+    monkeypatch.setattr(sys, 'stdin', StringIO('{}'))
+    monkeypatch.setattr(sys, 'stdout', StringIO())
+    live_browser.main()
+    task.failure_evidence.save.assert_called_once_with(
+        action, status='confirmed', state=state, directory='/profile/automation_evidence/job_live')
+
+
+def test_one_live_job_keeps_every_step_in_order_with_clear_names(tmp_path, monkeypatch):
+    monkeypatch.setenv('AUTOMAT_FB_ROOT', str(tmp_path))
+    job = tmp_path / 'profiles' / 'profile_009' / 'automation_evidence' / '20261108T000000_000000Z_live'
+    job.mkdir(parents=True)
+    for action, status, state in [('prepare', 'confirmed', 'prepared'), ('start', 'confirmed', 'live'),
+                                  ('end', 'confirmed', 'ended'), ('comment', 'failed', None),
+                                  ('inspect', 'observed', 'ended')]:
+        evidence = LiveFailureEvidence('profile_009')  # each step is its own process
+        evidence.observe(np.zeros((10, 10, 3), dtype=np.uint8), [], action)
+        assert evidence.save(action, status, state=state, directory=str(job)) == str(job)
+    assert sorted(path.name for path in job.glob('*.png')) == [
+        '01_ready_to_go_live.png', '02_live_confirmed.png', '03_live_ended.png',
+        '04_comment_not_confirmed.png', '05_check_live_ended.png']
+
+
+def test_a_folder_outside_the_profile_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setenv('AUTOMAT_FB_ROOT', str(tmp_path))
+    evidence = LiveFailureEvidence('profile_009')
+    evidence.observe(np.zeros((10, 10, 3), dtype=np.uint8), [], 'start')
+    with pytest.raises(ValueError):
+        evidence.save('start', 'confirmed', state='live', directory=str(tmp_path / 'elsewhere'))

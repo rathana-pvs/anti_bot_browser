@@ -1064,7 +1064,10 @@ async def test_browser_failure_links_only_own_profile_evidence(sandbox, monkeypa
         with pytest.raises(RuntimeError, match='composer_unconfirmed'):
             await live.browser_action(PROFILE, 'prepare', SETTINGS['producer_url'], asyncio.Event())
     public = live.read_json(live.state_path(PROFILE))
-    assert public.get('evidence_dir') == (str(directory) if inside_profile else None)
+    # The job's own folder is made before its first step; a folder outside the profile never replaces it.
+    job_folder = Path(public['evidence_dir'])
+    assert job_folder.parent == (live.PROFILES_DIR / PROFILE / 'automation_evidence').resolve()
+    assert job_folder.name.endswith('_live') and job_folder != directory.resolve()
 
 
 @run_async_test

@@ -1,6 +1,7 @@
 """CLI adapter for the template-driven Facebook Live task."""
 import argparse
 import json
+import os
 import sys
 
 from engine.live_brain import pinned_live_brain
@@ -20,6 +21,7 @@ def main():
     output = sys.stdout
     sys.stdout = sys.stderr
     task = None
+    job_folder = os.environ.get('LIVE_EVIDENCE_DIR') or None  # the Live job's own screenshot folder
     try:
         if bool(args.brain_package) != bool(args.brain_digest):
             raise RuntimeError('A Live workflow pin requires both package and digest')
@@ -29,19 +31,19 @@ def main():
         details = json.loads(sys.stdin.read(65536) or '{}')
         task.comment_after_end = details.get('comment_after_end') is True
         result = task.run(args.action, args.producer_url, title=details.get('title', ''), caption=details.get('caption', ''), pinned_comment=details.get('pinned_comment'))
-        # Inspection is read-only and is requested after the sender stops or
-        # another browser helper is cancelled. Retain even an unconfirmed frame.
-        comment_confirmed = (args.action == 'comment' and
-                             result.get('success') is True and result.get('state') == 'commented')
-        if args.action == 'inspect' or comment_confirmed:
+        # Each step that worked keeps the frame it confirmed: ready, live, ended, the comment, and
+        # the read-only inspection (kept even when it saw neither live nor ended).
+        # The comment's last observation is the frame where the posted comment matched.
+        saved = {'prepare': 'prepared', 'start': 'live', 'end': 'ended', 'comment': 'commented'}
+        worked = result.get('success') is True and result.get('state') == saved.get(args.action)
+        if args.action == 'inspect' or worked:
             try:
-                # The comment helper's last observation is the frame where the
-                # posted comment matched. Save it before container cleanup.
                 directory = task.failure_evidence.save(
-                    args.action, status='confirmed' if comment_confirmed else 'observed')
+                    args.action, status='observed' if args.action == 'inspect' else 'confirmed',
+                    state=result.get('state'), directory=job_folder)
                 if directory:
                     result['evidence_dir'] = directory
-                elif comment_confirmed:
+                elif args.action == 'comment':
                     result['evidence_capture_failed'] = True
             except Exception:
                 result['evidence_capture_failed'] = True
@@ -54,7 +56,7 @@ def main():
             result['failure_code'] = code
         if task is not None and args.action != 'finish':
             try:
-                directory = task.failure_evidence.save(args.action)
+                directory = task.failure_evidence.save(args.action, directory=job_folder)
                 if directory:
                     result['evidence_dir'] = directory
             except Exception:
