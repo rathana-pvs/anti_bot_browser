@@ -41,3 +41,17 @@ def test_apply_privacy_refuses_odd_input():
     client = adb_client.AdbClient.__new__(adb_client.AdbClient)
     with pytest.raises(ValueError):
         client.apply_privacy("PIXEL", 10, language="en-US; reboot")
+
+
+def test_a_silent_failure_names_the_command_and_exit_code(monkeypatch):
+    class Done:
+        returncode, stdout, stderr = 137, "", ""
+
+    monkeypatch.setattr(adb_client.subprocess, "run", lambda *a, **k: Done())
+    client = adb_client.AdbClient(binary="adb")
+    with pytest.raises(adb_client.AdbError) as error:
+        client._execute(["-s", "SERIAL1", "shell", "uiautomator", "dump", "/sdcard/x.xml"])
+    assert str(error.value) == "ADB failed with exit code 137: shell uiautomator dump /sdcard/x.xml"
+    Done.stderr = "Killed"
+    with pytest.raises(adb_client.AdbError, match=r"^Killed \(shell uiautomator dump"):
+        client._execute(["-s", "SERIAL1", "shell", "uiautomator", "dump", "/sdcard/x.xml"])

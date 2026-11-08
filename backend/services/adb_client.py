@@ -288,6 +288,13 @@ def canonical_serial(serial: str) -> str:
         return serial
 
 
+def _describe(args: list[str], limit: int = 160) -> str:
+    """The command that failed, without the device serial, short enough for an error line."""
+    command = args[2:] if args[:1] == ["-s"] else args
+    text = " ".join(command) or "adb"
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
 class AdbClient:
     def __init__(self, binary: str | None = None, timeout: float = DEFAULT_TIMEOUT):
         self.binary = binary or adb_path()
@@ -308,11 +315,13 @@ class AdbClient:
                 timeout=timeout or self.timeout, check=False,
             )
         except subprocess.TimeoutExpired as exc:
-            raise AdbError(f"ADB timed out: {' '.join(args[:3])}") from exc
+            raise AdbError(f"ADB timed out: {_describe(args)}") from exc
         except OSError as exc:
             raise AdbUnavailable(f"ADB could not be started: {exc}") from exc
         if result.returncode != 0:
-            raise AdbError((result.stderr or result.stdout).strip() or f"ADB failed: {' '.join(args[:3])}")
+            detail = (result.stderr or result.stdout).strip()
+            raise AdbError(f"{detail} ({_describe(args)})" if detail
+                           else f"ADB failed with exit code {result.returncode}: {_describe(args)}")
         return result.stdout
 
     def shell(self, serial: str, *command: str, timeout: float | None = None) -> str:
