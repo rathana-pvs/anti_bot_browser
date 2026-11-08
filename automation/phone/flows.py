@@ -47,6 +47,26 @@ PHOTO_PROMPT = "Say something about this photo"
 VIDEO_PROMPT = "Say something about this video"
 # Seconds before each of the three looks for a new post on the profile; a reel can take a while.
 COMMENT_WAITS = (30, 25, 25)
+# A reel can take minutes after its upload bar goes before Facebook shows it on the profile.
+REEL_COMMENT_WAITS = (30, 60, 120, 120)
+
+
+def comment_waits(kind: str) -> tuple[float, ...]:
+    """Seconds before each look for the post: the first from the publish, the rest from the look before."""
+    return REEL_COMMENT_WAITS if kind == "reel" else COMMENT_WAITS
+
+
+def comment_looks(kind: str, published_ago: float) -> tuple[float, ...]:
+    """The looks still ahead for a comment job that starts `published_ago` s after the publish.
+    Looks already missed become one look now; the later ones keep their times."""
+    times, total = [], 0.0
+    for wait in comment_waits(kind):
+        total += wait
+        times.append(total)
+    ahead = [t for t in times if t > published_ago]
+    if len(ahead) < len(times):
+        ahead.insert(0, published_ago)
+    return tuple(b - a for a, b in zip([0.0, *ahead], ahead))
 PUBLISH_CONFIRM_TIMEOUT_S = 180
 # How long a greyed-out publish button may stay grey before the job fails without tapping it.
 PUBLISH_ENABLE_TIMEOUT_S = 180
@@ -655,16 +675,19 @@ class Flows:
         _, tab, _ = await self.wait_for("profile", ["Posts", "All"], exact=True, timeout=timeout)
         await dev.tap(tab)
 
-    async def find_and_comment(self, item: PostItem, published_at: float, waits=COMMENT_WAITS,
+    async def find_and_comment(self, item: PostItem, published_at: float, waits=None,
                                max_age_minutes: float | None = None) -> int:
-        """Profile, Posts, newest first: this job's post, then its comment icon. Three looks with a
-        refresh between them; then the comment is skipped. Returns the look that found the post."""
+        """Profile, Posts, newest first: this job's post, then its comment icon. A few looks with a
+        refresh between them (more for a reel); then the comment is skipped. Returns the look that
+        found the post. Each look that misses keeps a screenshot of the profile it saw."""
         dev = self.device
+        waits = comment_waits(item.kind) if waits is None else waits
         for attempt, _ in enumerate(waits, 1):
             remaining = published_at + sum(waits[:attempt]) - dev.now()
             if remaining > 0:
                 await dev.sleep(remaining)
-            allowed = max_age_minutes if max_age_minutes is not None else (dev.now() - published_at) / 60 + 2
+            # Facebook may date the post from the publish tap, before the upload finished.
+            allowed = max_age_minutes if max_age_minutes is not None else (dev.now() - published_at) / 60 + 4
             if attempt == 1:
                 await self.open_feed()
                 await self.open_profile()
@@ -675,7 +698,6 @@ class Flows:
                 return attempt
             self.log(event="retry", step="find post", attempt=attempt,
                      next_wait=waits[attempt] if attempt < len(waits) else None)
-        dev.snapshot("comment_skipped")
         raise StepFailed(f"comment skipped: the post did not show on the profile after {len(waits)} looks")
 
     async def refresh_profile(self) -> None:
@@ -712,6 +734,7 @@ class Flows:
                 icon = dev.find_icon("comment", below=anchor[1])
                 if icon:
                     self.log(event="found", step="post", attempt=attempt, scroll=scroll)
+                    dev.snapshot("comment_post_found")
                     await dev.tap(icon)
                     try:
                         await self.wait_for("comment sheet", COMMENT_BOX, timeout=6)
@@ -725,8 +748,10 @@ class Flows:
                     if age is not None and age > allowed_minutes and not near_pin(line.point[1]):
                         self.log(event="stop", step="find post", attempt=attempt,
                                  reason=f"reached a post {age} min old")
+                        dev.snapshot(f"comment_look_{attempt}_post_not_there")
                         return False
             await self.scroll(dev.pt(540, 1700), dev.pt(540, 1150))
+        dev.snapshot(f"comment_look_{attempt}_post_not_there")
         return False
 
     async def write_comment(self, item: PostItem) -> None:
@@ -750,10 +775,12 @@ class Flows:
         await dev.tap(send)
         if key:
             try:
-                await self.wait_for("comment shown", [key[:16]], timeout=15)
+                await self.wait_for("comment shown", [key[:16]], timeout=15, evidence=False)
             except StepFailed as unseen:
+                dev.snapshot("comment_not_confirmed")
                 raise CommentUncertain(str(unseen)) from unseen
         else:
             await dev.sleep(3)
+        dev.snapshot("comment_posted")
         for _ in range(3):
             await dev.key(KEY_BACK)

@@ -18,7 +18,7 @@ from typing import Callable
 from backend.services.adb_client import AdbError
 
 from phone.device import KEY_HOME, PhoneError, media_mime
-from phone.flows import COMMENT_WAITS, AccountBlocked, CommentUncertain, Flows, PostItem, PublishUncertain, StepFailed
+from phone.flows import comment_looks, AccountBlocked, CommentUncertain, Flows, PostItem, PublishUncertain, StepFailed
 
 
 EXTENSION = {"image/jpeg": ".jpg", "image/png": ".png", "video/mp4": ".mp4"}
@@ -82,18 +82,16 @@ async def run_post(device, item: PostItem, media_path: str, log: Callable[..., N
 
 async def run_comment(device, item: PostItem, log: Callable[..., None], *, published_ago: float | None = None) -> dict:
     """The first comment of an already published post: a follow-up job. `published_ago` is the time
-    since the publish tap: the three looks keep their timing when it is recent; a later start looks
-    at once and allows posts as old as that. Without it, the post is looked for at any age."""
+    since the publish was confirmed: the looks keep their timing, and looks already missed become one
+    look now. Without it, the post is looked for at any age."""
     flows = Flows(device, log)
     result: dict = {"status": "published", "kind": item.kind, "stage": "comment"}
     try:
         if published_ago is None:
             result.update(await _comment(flows, item, device.now(), waits=(0, 25, 25), max_age_minutes=10 ** 6))
-        elif published_ago < COMMENT_WAITS[0]:
-            result.update(await _comment(flows, item, device.now() - published_ago))
         else:
-            result.update(await _comment(flows, item, device.now(), waits=(0, 25, 25),
-                                         max_age_minutes=published_ago / 60 + 4))
+            result.update(await _comment(flows, item, device.now() - published_ago,
+                                         waits=comment_looks(item.kind, published_ago)))
     except AccountBlocked as blocked:
         result.update(comment="blocked", reason=str(blocked), account_blocked=True)
     finally:
@@ -136,7 +134,7 @@ async def run_warming(device, options: dict, log: Callable[..., None],
     return result
 
 
-async def _comment(flows: Flows, item: PostItem, published_at: float, waits=COMMENT_WAITS,
+async def _comment(flows: Flows, item: PostItem, published_at: float, waits=None,
                    max_age_minutes: float | None = None) -> dict:
     try:
         looks = await flows.find_and_comment(item, published_at, waits, max_age_minutes)

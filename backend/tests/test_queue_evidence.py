@@ -167,3 +167,14 @@ def test_new_run_records_durable_attempt_identity_before_any_screenshot(tmp_path
     recorder = evidence_module.EvidenceRecorder('profile-1', 'FacebookReelTask')
     from pathlib import Path
     assert json.loads((Path(recorder.directory) / 'attempt.json').read_text()) == context
+
+
+def test_a_later_comment_screenshot_comes_after_the_upload_ones(evidence):
+    import os
+    _, run = evidence
+    (run / "comment_posted.png").write_bytes(b"png-3")
+    os.utime(run / "01_composer.png", (100, 100))
+    os.utime(run / "02_post_clicked.png", (200, 200))
+    os.utime(run / "comment_posted.png", (300, 300))
+    assert queue_router.list_execution_evidence("exec-1")["images"] == [
+        "01_composer.png", "02_post_clicked.png", "comment_posted.png"]

@@ -1226,10 +1226,9 @@ def list_execution_evidence(execution_id: str):
     directory = _execution_evidence_dir(execution_id)
     if directory is None:
         return {"images": []}
-    images = sorted(
-        path.name for path in directory.glob("*.png")
-        if path.is_file() and not path.is_symlink()
-    )
+    # In the order they were taken, so a follow-up's screenshots (a phone's first comment) come last.
+    shots = [path for path in directory.glob("*.png") if path.is_file() and not path.is_symlink()]
+    images = [path.name for path in sorted(shots, key=lambda path: (path.stat().st_mtime, path.name))]
     response = {"images": images}
     diagnostic_file = directory / 'diagnostics.json'
     if diagnostic_file.is_file() and not diagnostic_file.is_symlink() and diagnostic_file.stat().st_size <= 16384:

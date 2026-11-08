@@ -187,6 +187,8 @@ def test_due_comment_runs_with_its_publish_time(world, monkeypatch):
     args = world["runs"][0]
     assert args[args.index("--task") + 1] == "comment"
     assert 35 <= float(args[args.index("--published-ago") + 1]) <= 60
+    # The comment's screenshots land in the post's own folder, which the job panel shows.
+    assert args[args.index("--evidence-dir") + 1].endswith("/automation_evidence/e1")
     assert execution(world)["first_comment_status"] == "submitted_verified"
     assert android_devices.job_on(SERIAL) is None
 
@@ -313,3 +315,16 @@ def test_auto_visits_only_use_a_set_up_idle_connected_primary_phone(monkeypatch)
     store["devices"][serial]["role"] = "primary"
     Client.connected = [{"serial": serial, "state": "offline"}]
     assert not android_jobs.can_take_auto_visit(config)
+
+
+def test_a_reel_comment_is_timed_from_when_the_upload_was_confirmed(world, monkeypatch):
+    _published(world, tapped_seconds_ago=120)
+    execution(world)["published_at"] = (datetime.now(timezone.utc) - timedelta(seconds=30)).isoformat()
+    runner(monkeypatch, world, [], {"status": "published", "comment": "posted"})
+
+    async def go():
+        assert android_jobs.dispatch_comments(set()) == ["e1"]
+        await asyncio.sleep(0.05)
+    asyncio.run(go())
+    args = world["runs"][0]
+    assert 25 <= float(args[args.index("--published-ago") + 1]) <= 40

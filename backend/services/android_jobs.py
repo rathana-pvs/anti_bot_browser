@@ -497,10 +497,12 @@ async def run_comment(execution_id: str, runtime: dict, post: dict) -> None:
                     "--kind", "reel" if post.get("type") == "reel" else "photo",
                     "--caption", execution.get("spun_caption") or post.get("base_caption") or "",
                     "--comment", execution.get("first_comment", post.get("first_comment")) or "",
-                    "--evidence-dir", str(PROFILES_DIR / profile_id / "automation_evidence" / f"{execution_id}_comment")]
-            tapped = execution.get("publish_tapped_at")
-            if tapped and not execution.get("phone_comment_any_age"):
-                args += ["--published-ago", str(max(0, int(time.time() - datetime.fromisoformat(tapped).timestamp())))]
+                    # The post's own folder, so the job shows its comment screenshots after the upload ones.
+                    "--evidence-dir", str(PROFILES_DIR / profile_id / "automation_evidence" / execution_id)]
+            # The looks are timed from when the upload was confirmed; a reel's upload can take minutes.
+            confirmed = execution.get("published_at") or execution.get("publish_tapped_at")
+            if confirmed and not execution.get("phone_comment_any_age"):
+                args += ["--published-ago", str(max(0, int(time.time() - datetime.fromisoformat(confirmed).timestamp())))]
             result = await _run_runner(args, record, lambda e: sent.append(True) if e.get("event") == "about_to_comment" else None)
     except Exception as error:
         result = {"comment": "uncertain" if sent else "not_started", "comment_reason": f"{type(error).__name__}: {error}"}

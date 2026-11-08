@@ -15,6 +15,7 @@ sys.path.insert(1, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from phone import screen  # noqa: E402
 from phone.flows import (AccountBlocked, Flows, NotAReel, PostItem, PublishUncertain, StepFailed)  # noqa: E402
 from phone import device as phone_device, job  # noqa: E402
+from phone import flows as flows_module  # noqa: E402
 from phone.screen import Line  # noqa: E402
 
 
@@ -637,7 +638,7 @@ class FindPostTests(unittest.TestCase):
         self.assertFalse(run(flows.scan_profile(PostItem("photo", "Morning coffee test"), 3, 1)))
         self.assertEqual(events[-1]["reason"], "reached a post 120 min old")
 
-    def test_three_looks_then_skip(self):
+    def _looks(self, kind, **kwargs):
         device = FakeDevice()
         flows = Flows(device, lambda **e: None)
         looks = []
@@ -651,9 +652,30 @@ class FindPostTests(unittest.TestCase):
         with patch.object(flows, "scan_profile", nothing), patch.object(flows, "open_feed", noop), \
                 patch.object(flows, "open_profile", noop), patch.object(flows, "refresh_profile", noop):
             with self.assertRaises(StepFailed):
-                run(flows.find_and_comment(PostItem("reel", "Clip", "hi"), published_at=0.0))
-        self.assertEqual([attempt for attempt, _ in looks], [1, 2, 3])
-        self.assertEqual([round(t) for _, t in looks], [30, 55, 80])
+                run(flows.find_and_comment(PostItem(kind, "Clip", "hi"), **kwargs))
+        return [round(t) for _, t in looks]
+
+    def test_a_photo_gets_three_looks_then_skip(self):
+        self.assertEqual(self._looks("photo", published_at=0.0), [30, 55, 80])
+
+    def test_a_reel_is_looked_for_at_30_s_then_1_2_and_2_min_later(self):
+        self.assertEqual(self._looks("reel", published_at=0.0), [30, 90, 210, 330])
+
+    def test_a_late_comment_job_looks_now_then_keeps_the_later_looks(self):
+        self.assertEqual(flows_module.comment_looks("reel", 20), (30, 60, 120, 120))
+        self.assertEqual(flows_module.comment_looks("reel", 100), (100, 110, 120))
+        self.assertEqual(flows_module.comment_looks("photo", 500), (500,))
+
+    def test_each_missed_look_and_the_found_post_leave_a_screenshot(self):
+        device = FakeDevice([lines(("Old caption", 700), ("3h", 760))])
+        flows = Flows(device, lambda **e: None)
+        self.assertFalse(run(flows.scan_profile(PostItem("reel", "Morning coffee test"), 3, 2)))
+        self.assertIn(("snapshot", "comment_look_2_post_not_there"), device.actions)
+        device = FakeDevice([lines(("Morning coffee test", 450)), lines(("Write a comment...", 1100))])
+        device.icons["comment"] = (60.0, 600.0)
+        flows = Flows(device, lambda **e: None)
+        self.assertTrue(run(flows.scan_profile(PostItem("reel", "Morning coffee test"), 3, 1)))
+        self.assertIn(("snapshot", "comment_post_found"), device.actions)
 
 
 class KeyboardTests(unittest.TestCase):
