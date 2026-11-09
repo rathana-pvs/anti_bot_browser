@@ -1,3 +1,11 @@
+# Version 2.2.4
+
+- Let video creation and preview renders proceed without waiting for free RAM.
+  The app still limits when renders start based on CPU load and start spacing.
+
+**Linux only.** After installing, run **Settings → Setup and repair → Install /
+update runtime** when prompted.
+
 # Version 2.2.3
 
 - Keep the app responsive during scheduled posts by batching Docker status checks
