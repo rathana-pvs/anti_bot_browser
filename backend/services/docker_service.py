@@ -224,6 +224,30 @@ def get_container_status(profile_id: str, *, strict: bool = False) -> str:
             raise
         return "stopped"
 
+def get_container_statuses() -> dict | None:
+    """Status of every profile container from one docker call; None if docker failed.
+
+    Use this instead of get_container_status in a loop: while containers start,
+    each docker call can take seconds.
+    """
+    try:
+        output = subprocess.check_output(
+            ["docker", "ps", "-a", "--filter", "name=^/isolated_", "--format={{.Names}}\t{{.Status}}"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except Exception:
+        return None
+    statuses = {}
+    for line in output.splitlines():
+        name, _, status = line.strip().partition("\t")
+        if not name.startswith("isolated_"):
+            continue
+        statuses[name.removeprefix("isolated_")] = (
+            "paused" if "Paused" in status else "running" if "Up" in status else "stopped")
+    return statuses
+
 def count_running_profile_containers() -> int:
     try:
         output = subprocess.check_output(

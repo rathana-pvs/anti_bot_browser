@@ -246,3 +246,52 @@ def test_an_interrupted_warming_visit_is_stopped_not_uncertain():
     assert not repair_interrupted_warming(old)
     post = {'status': 'uncertain', 'stage_history': [{'reason': 'manager_restart_recovery', 'interrupted_stage': 'running'}]}
     assert not repair_interrupted_warming(post)
+
+
+def test_recovery_reads_docker_once_and_never_while_holding_the_queue_lock(tmp_path, monkeypatch):
+    import threading
+    executions = [{'execution_id': f'exec-{i}', 'profile_id': f'profile-{i}', 'status': 'ready',
+                   'stage': 'ready', 'preparation_status': 'ready'} for i in range(4)]
+    queue = {'daily_batches': [{'posts': [{'type': 'post', 'executions': executions}]}]}
+    monkeypatch.setattr(queue_service, 'QUEUE_FILE', tmp_path / 'queue.json')
+    assert queue_service.save_posting_queue(queue)
+    monkeypatch.setattr(svc, 'load_posting_queue', queue_service.load_posting_queue)
+    monkeypatch.setattr(svc, 'save_posting_queue', queue_service.save_posting_queue)
+    monkeypatch.setattr(svc, 'active_automation_tasks', {})
+    monkeypatch.setattr(svc.lifecycle, 'snapshot', lambda: {
+        f'profile-{i}': {'state': 'handoff'} for i in range(4)})
+    lock_free_during_docker = []
+
+    def bulk():
+        result = []
+        probe = threading.Thread(target=lambda: result.append(
+            svc._QUEUE_IO_LOCK.acquire(blocking=False) and (svc._QUEUE_IO_LOCK.release() or True)))
+        probe.start(); probe.join()
+        lock_free_during_docker.append(result[0])
+        return {'profile-0': 'running', 'profile-1': 'paused'}
+
+    bulk_mock = Mock(side_effect=bulk)
+    single = Mock(return_value='running')
+    monkeypatch.setattr(svc, 'get_container_statuses', bulk_mock)
+    monkeypatch.setattr(svc, 'get_container_status', single)
+    seen = []
+    monkeypatch.setattr(svc, 'recover_preparation_attempt',
+                        lambda execution, statuses=None: seen.append(statuses) or False)
+
+    svc.recover_stale_queue_executions()
+
+    assert bulk_mock.call_count == 1 and single.call_count == 0
+    assert lock_free_during_docker == [True]
+    assert seen and all(s == {'profile-0': 'running', 'profile-1': 'paused',
+                              'profile-2': 'stopped', 'profile-3': 'stopped'} for s in seen)
+
+
+def test_container_statuses_come_from_one_docker_call(monkeypatch):
+    from backend.services import docker_service
+    calls = []
+    monkeypatch.setattr(docker_service.subprocess, 'check_output', lambda cmd, **_: calls.append(cmd) or (
+        'isolated_a\tUp 3 minutes\nisolated_b\tUp 1 hour (Paused)\nisolated_c\tExited (0) 2 hours ago\nother\tUp\n'))
+    assert docker_service.get_container_statuses() == {'a': 'running', 'b': 'paused', 'c': 'stopped'}
+    assert len(calls) == 1
+    monkeypatch.setattr(docker_service.subprocess, 'check_output', Mock(side_effect=OSError('docker down')))
+    assert docker_service.get_container_statuses() is None

@@ -25,6 +25,7 @@ from backend.config import (
 )
 from backend.services.docker_service import (
     get_container_status,
+    get_container_statuses,
     count_running_profile_containers,
     claim_container_start_admission,
     automation_worker_env,
@@ -236,7 +237,7 @@ def running_job(profile_id: str) -> str | None:
 
 def active_in_memory_scheduler_leases() -> list[dict]:
     leases = []
-    for record in active_automation_tasks.values():
+    for record in list(active_automation_tasks.values()):
         if is_task_process_active(record) and is_lease_active(record.get("scheduler_lease")):
             leases.append(record["scheduler_lease"])
     return leases
@@ -1516,8 +1517,11 @@ async def _delayed_dispatch(delay_ms: int = 100):
         print(f"Delayed dispatch error: {err}")
 
 # Background loops
-def recover_preparation_attempt(execution):
-    """Reuse only a matching completed attempt with a live, fenced handoff."""
+def recover_preparation_attempt(execution, container_statuses: dict | None = None):
+    """Reuse only a matching completed attempt with a live, fenced handoff.
+
+    container_statuses holds statuses read before the queue lock was taken, so
+    a slow Docker daemon is never waited on while the lock is held."""
     attempt = execution
     if execution.get('status') == 'ready' and not execution.get('scheduler_lease'):
         attempt = dict(execution, scheduler_lease=execution.get('last_scheduler_lease'))
@@ -1534,7 +1538,8 @@ def recover_preparation_attempt(execution):
                     and owner.get('execution_id') == context['execution_id']
                     and owner.get('manager_id') == MANAGER_INSTANCE_ID
                     and min(owner.get('heartbeat_expires_at', 0), owner.get('hard_deadline_at', 0)) > now
-                    and get_container_status(execution['profile_id']) == 'running')
+                    and ((container_statuses or {}).get(execution['profile_id'])
+                         or get_container_status(execution['profile_id'])) == 'running')
     if reusable and execution.get('status') == 'ready':
         return False
     execution['last_active_stage'] = execution.get('stage')
@@ -1562,19 +1567,49 @@ def recover_preparation_attempt(execution):
     return True
 
 
+def _handoff_container_statuses() -> dict:
+    """Container status of every account whose prepared browser may be reused.
+
+    Read before the queue lock: while several containers start, each docker
+    call can take seconds, and nothing else may read the queue meanwhile.
+    """
+    try:
+        queue = load_posting_queue()
+        owners = lifecycle.snapshot()
+        live_lease_ids = {l["lease_id"] for l in active_in_memory_scheduler_leases()}
+        candidates = [execution for batch in queue.get("daily_batches", [])
+                      for post in batch.get("posts", []) for execution in post.get("executions", [])
+                      if execution.get("status") == "ready"]
+        candidates += find_stale_running_executions(queue, live_lease_ids)
+        profile_ids = {execution.get("profile_id") for execution in candidates
+                       if (owners.get(execution.get("profile_id")) or {}).get("state") == "handoff"}
+        profile_ids.discard(None)
+        if not profile_ids:
+            return {}
+        if len(profile_ids) > 1:
+            bulk = get_container_statuses()
+            if bulk is not None:
+                return {pid: bulk.get(pid, "stopped") for pid in profile_ids}
+        return {pid: get_container_status(pid) for pid in profile_ids}
+    except Exception as err:
+        print(f"Could not read container statuses for recovery: {err}")
+        return {}
+
+
 def recover_stale_queue_executions(reason: str = "expired_scheduler_lease"):
+    container_statuses = _handoff_container_statuses()
     # Also runs from the heartbeat thread: keep its read-modify-write atomic.
     with _QUEUE_IO_LOCK:
-        _recover_stale_queue_executions_locked(reason)
+        _recover_stale_queue_executions_locked(reason, container_statuses)
 
 
-def _recover_stale_queue_executions_locked(reason: str):
+def _recover_stale_queue_executions_locked(reason: str, container_statuses: dict):
     try:
         queue = load_posting_queue()
         modified = False
         live_lease_ids = {l["lease_id"] for l in active_in_memory_scheduler_leases()}
         live_comment_retries = {
-            r["queue_execution_id"] for r in active_automation_tasks.values()
+            r["queue_execution_id"] for r in list(active_automation_tasks.values())
             if is_task_process_active(r) and r.get("comment_retry") is True
         }
 
@@ -1611,7 +1646,7 @@ def _recover_stale_queue_executions_locked(reason: str):
             match = find_queue_execution(queue, exec_item.get('execution_id'))
             post_type = match['post'].get('type') if match else None
             if (not recover_completed_publication(PROFILES_DIR, exec_item, post_type)
-                    and not recover_preparation_attempt(exec_item)):
+                    and not recover_preparation_attempt(exec_item, container_statuses)):
                 apply_interrupted_execution_recovery(exec_item)
             exec_item["scheduler_recovery_reason"] = reason
             exec_item["last_scheduler_lease"] = stale_lease
@@ -1629,7 +1664,7 @@ def _recover_stale_queue_executions_locked(reason: str):
                             or (record and record.get('queue_execution_id') == execution.get('execution_id')
                                 and is_task_process_active(record))):
                         continue
-                    if recover_preparation_attempt(execution):
+                    if recover_preparation_attempt(execution, container_statuses):
                         execution['scheduler_recovery_reason'] = 'prepared_session_unavailable'
                         modified = True
 
@@ -1805,7 +1840,7 @@ async def dispatch_pending_queue():
         return
     _is_dispatching = True
     try:
-        recover_stale_queue_executions("dispatcher_stale_lease")
+        await asyncio.to_thread(recover_stale_queue_executions, "dispatcher_stale_lease")
         replan_overdue_posts()
         scheduler_cfg = get_scheduler_config()
         queue_snapshot = await asyncio.to_thread(load_posting_queue)

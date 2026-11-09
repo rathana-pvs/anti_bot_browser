@@ -16,7 +16,7 @@ from backend.services.queue_service import load_posting_queue
 from backend.config import CPU_THREADS, PROFILES_DIR, TOTAL_MEMORY_GB, FALLBACK_TIMEZONE, get_host_timezone
 from backend.models.profile import NetworkIntent, ProfileCreateRequest, ProfileUpdateRequest
 from backend.services.docker_service import (
-    get_container_stats, get_container_status, get_profile_disk_usage,
+    get_container_stats, get_container_status, get_container_statuses, get_profile_disk_usage,
     paste_text_to_container, remove_container, run_profile_action,
 )
 from backend.services import android_ownership
@@ -204,6 +204,9 @@ def get_profile_defaults():
 def list_profiles():
     PROFILES_DIR.mkdir(parents=True, exist_ok=True)
     profiles = []
+    # One docker call for every account: one call each took minutes while a
+    # scheduled batch was starting several containers.
+    statuses = get_container_statuses()
     for entry in PROFILES_DIR.iterdir():
         if not entry.is_dir() or entry.name == "shared_media":
             continue
@@ -214,7 +217,7 @@ def list_profiles():
             data = json.loads(config_path.read_text(encoding="utf-8"))
             data, _ = migrate_profile(data, entry)
             profile_id = data.get("id", entry.name)
-            data["status"] = get_container_status(profile_id)
+            data["status"] = statuses.get(profile_id, "stopped") if statuses is not None else get_container_status(profile_id)
             stats = get_container_stats(f"isolated_{profile_id}")
             if stats:
                 data["cpu_usage"] = stats.get("cpu")
