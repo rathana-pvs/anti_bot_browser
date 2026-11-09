@@ -20,10 +20,10 @@ def sample(memory=40.0, cpu=20.0, psi=None, available_mb=None, total_mb=32000, c
     }
 
 
-def test_split_matches_the_old_fixed_modes():
-    assert split_limit(2) == (1, 2, 2)
-    assert split_limit(4) == (2, 3, 4)
-    assert split_limit(6) == (3, 5, 6)
+def test_preparing_and_posting_share_one_pool():
+    assert split_limit(2) == (2, 2, 2)
+    assert split_limit(4) == (4, 4, 4)
+    assert split_limit(6) == (6, 6, 6)
     assert split_limit(1) == (1, 1, 1)
 
 

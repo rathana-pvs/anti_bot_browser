@@ -43,10 +43,11 @@ class Decision:
 def split_limit(limit: int) -> tuple[int, int, int]:
     """Publishers, preparers and containers for a parallel-job limit.
 
-    Matches the old fixed modes: 2 -> 1/2/2, 4 -> 2/3/4, 6 -> 3/5/6.
+    Preparing and posting share one pool: every job slot can do either step,
+    so a prepared account never waits for a separate posting slot.
     """
     limit = max(1, int(limit))
-    return max(1, limit // 2), max(1, min(limit, limit - 1 if limit > 2 else limit)), limit
+    return limit, limit, limit
 
 
 class AdaptiveController:
@@ -159,8 +160,6 @@ class AdaptiveController:
         elif state != "pressure" and since_last_start_ms < spacing:
             reason = "spacing container starts"
         publishers, preparers, containers = split_limit(self.limit)
-        if self.mode == 'extreme':
-            publishers = preparers = self.limit
         self.last = Decision(
             state=state, limit=self.limit, max_publishers=publishers, max_preparers=preparers,
             max_containers=containers, ceiling=ceiling, start_spacing_ms=spacing, room_for_one=room_for_one,

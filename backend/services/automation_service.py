@@ -37,6 +37,7 @@ from backend.services.queue_scheduler import (
     scheduler_snapshot,
     can_acquire_scheduler_slot,
     claim_execution_lease,
+    preparation_has_room,
     refresh_execution_lease,
     release_execution_lease,
     worker_silence_timeout_ms,
@@ -1781,12 +1782,10 @@ def _reserve_dispatch_slot(reservations: dict, kind: str, profile_id: str, confi
     """Reserve capacity inside one dispatcher pass before async claims can run."""
     if profile_id in reservations["profiles"]:
         return False
+    # Preparing and posting share one pool of job slots.
     if reservations["total"] >= config["max_total_automation_tasks"]:
         return False
     key = "publishers" if kind == "publisher" else "preparers"
-    limit_key = "max_publishers" if kind == "publisher" else "max_preparers"
-    if reservations[key] >= config[limit_key]:
-        return False
     work_key = 'live' if workload == 'live' else 'posts'
     work_limit = 'max_live_publishers' if workload == 'live' else 'max_post_publishers'
     if kind == 'publisher' and reservations.get(work_key, 0) >= config.get(work_limit, config['max_publishers']):
@@ -1845,9 +1844,11 @@ async def dispatch_pending_queue():
         replan_overdue_posts()
         scheduler_cfg = get_scheduler_config()
         queue_snapshot = await asyncio.to_thread(load_posting_queue)
-        # Auto warming visits always come after every post that is due.
+        # Auto warming visits always come after every post that is due, and a
+        # prepared account posts before another account starts preparing.
         due_executions = sorted(ordered_due_executions(queue_snapshot, time.time() * 1000),
-                                key=lambda execution: bool(execution.get("auto_warming")))
+                                key=lambda execution: (bool(execution.get("auto_warming")),
+                                                       execution.get("status") != "ready"))
 
         initial_slots = scheduler_snapshot(
             queue_snapshot,
@@ -1861,6 +1862,8 @@ async def dispatch_pending_queue():
             "total": initial_slots["total"],
             'posts': initial_slots.get('posts', initial_slots['publishers']),
             'live': initial_slots.get('live', 0),
+            # Preparations started in this pass, before the queue shows them.
+            'new_preparations': 0,
         }
 
         from backend.services import auto_warming
@@ -1944,7 +1947,10 @@ async def dispatch_pending_queue():
                 asyncio.create_task(_run_dispatched_queue_task(exec_id, phone_slot))
                 continue
 
-            if needs_prep and count_buffered_preparations(current_q, exec_id) >= scheduler_cfg["max_preparers"]:
+            if needs_prep and not preparation_has_room(
+                count_buffered_preparations(current_q, exec_id) + reservations['new_preparations'],
+                reservations['posts'], scheduler_cfg,
+            ):
                 continue
 
             container_running = await asyncio.to_thread(get_container_status, pid) == 'running'
@@ -1983,6 +1989,8 @@ async def dispatch_pending_queue():
                                              else min(cooldown_retry_ms, spacing_ms))
                     continue
 
+            if needs_prep:
+                reservations['new_preparations'] += 1
             print(f"[Queue Dispatcher] Claiming {slot_kind} slot for {exec_id} on profile {pid}...")
             asyncio.create_task(_run_dispatched_queue_task(exec_id, slot_kind))
         if cooldown_retry_ms is not None:

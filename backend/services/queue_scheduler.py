@@ -3,7 +3,8 @@ import time
 from datetime import datetime, timezone
 
 DEFAULT_SCHEDULER_CONFIG = {
-    "max_publishers": 1,
+    # Preparing and posting share one pool of job slots.
+    "max_publishers": 2,
     "max_preparers": 2,
     "max_total_automation_tasks": 2,
     "max_active_profile_containers": 2,
@@ -133,16 +134,19 @@ def scheduler_snapshot(
     preparers = len([l for l in leases if l.get("kind") == "preparer"])
     live = sum(l.get('kind') == 'publisher' and l.get('workload') == 'live' for l in leases)
     posts = publishers - live
+    # One pool: any free job slot can prepare or post. Post and Live caps
+    # (Custom mode) still limit how many accounts are in the posting step.
+    free = max(0, config["max_total_automation_tasks"] - len(leases))
 
     return {
         "config": dict(config),
         "active": {"publishers": publishers, "posts": posts, "live": live, "preparers": preparers, "total": len(leases)},
         "available": {
-            "publishers": max(0, config["max_publishers"] - publishers),
-            'posts': max(0, config.get('max_post_publishers', config['max_publishers']) - posts),
-            'live': max(0, config.get('max_live_publishers', config['max_publishers']) - live),
-            "preparers": max(0, config["max_preparers"] - preparers),
-            "total": max(0, config["max_total_automation_tasks"] - len(leases)),
+            "publishers": min(free, max(0, config["max_publishers"] - publishers)),
+            'posts': min(free, max(0, config.get('max_post_publishers', config['max_publishers']) - posts)),
+            'live': min(free, max(0, config.get('max_live_publishers', config['max_publishers']) - live)),
+            "preparers": min(free, max(0, config["max_preparers"] - preparers)),
+            "total": free,
         },
         "leases": leases,
     }
@@ -166,18 +170,28 @@ def can_acquire_scheduler_slot(
     snapshot = scheduler_snapshot(queue, additional_leases, config, now_ms)
     if any(l.get("profile_id") == profile_id for l in snapshot["leases"]):
         return {"allowed": False, "reason": "profile_busy", "snapshot": snapshot}
+    # Preparation and posting draw from the same job slots.
     if snapshot["active"]["total"] >= config["max_total_automation_tasks"]:
         return {"allowed": False, "reason": "total_capacity_reached", "snapshot": snapshot}
-    if kind == "publisher" and snapshot["active"]["publishers"] >= config["max_publishers"]:
-        return {"allowed": False, "reason": "publisher_capacity_reached", "snapshot": snapshot}
     workload_key = 'live' if workload == 'live' else 'posts'
     limit_key = 'max_live_publishers' if workload == 'live' else 'max_post_publishers'
     if kind == 'publisher' and snapshot['active'][workload_key] >= config.get(limit_key, config['max_publishers']):
         return {'allowed': False, 'reason': f'{workload_key}_capacity_reached', 'snapshot': snapshot}
-    if kind == "preparer" and snapshot["active"]["preparers"] >= config["max_preparers"]:
-        return {"allowed": False, "reason": "preparer_capacity_reached", "snapshot": snapshot}
 
     return {"allowed": True, "reason": "slot_available", "snapshot": snapshot}
+
+def preparation_has_room(buffered_preparations: int, active_posts: int, config: dict | None = None) -> bool:
+    """Whether one more post may start preparing.
+
+    Accounts that are preparing or prepared are on their way to the posting
+    step, so together with the posts already publishing they stay within the
+    post cap. A prepared account then always has a posting slot to move into
+    instead of idling until its browser is stopped.
+    """
+    if config is None:
+        config = DEFAULT_SCHEDULER_CONFIG
+    cap = config.get("max_post_publishers", config["max_publishers"])
+    return buffered_preparations + active_posts < cap
 
 def claim_execution_lease(
     queue: dict | None,

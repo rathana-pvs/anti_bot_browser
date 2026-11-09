@@ -9,6 +9,7 @@ import pytest
 from fastapi import HTTPException
 
 from backend.routers import queue as queue_router
+from backend.services.queue_scheduler import DEFAULT_SCHEDULER_CONFIG
 
 
 def test_failed_retry_queues_when_preparation_buffer_is_occupied(monkeypatch):
@@ -33,7 +34,7 @@ def test_failed_retry_queues_when_preparation_buffer_is_occupied(monkeypatch):
         "find_queue_execution",
         lambda _queue, _execution_id: {"execution": execution, "post": post, "batch": batch},
     )
-    monkeypatch.setattr(queue_router, "get_scheduler_config", lambda: {"max_preparers": 1, "max_active_profile_containers": 2})
+    monkeypatch.setattr(queue_router, "get_scheduler_config", lambda: {**DEFAULT_SCHEDULER_CONFIG, "max_publishers": 1, "max_post_publishers": 1, "max_preparers": 1})
     monkeypatch.setattr(queue_router, "count_buffered_preparations", lambda *_args: 1)
     monkeypatch.setattr(queue_router, "save_posting_queue", save_queue)
 
@@ -76,7 +77,7 @@ def test_failed_retry_reuses_ready_preparation(monkeypatch):
         lambda _queue, _execution_id: {"execution": execution, "post": post, "batch": batch},
     )
     monkeypatch.setattr(queue_router, "batch_iteration_availability", lambda *_args, **_kwargs: {"allowed": True})
-    monkeypatch.setattr(queue_router, "get_scheduler_config", lambda: {"max_preparers": 1, "max_active_profile_containers": 2})
+    monkeypatch.setattr(queue_router, "get_scheduler_config", lambda: {**DEFAULT_SCHEDULER_CONFIG, "max_publishers": 1, "max_post_publishers": 1, "max_preparers": 1})
     monkeypatch.setattr(queue_router, "count_buffered_preparations", lambda *_args: 99)
     monkeypatch.setattr(queue_router, "get_container_status", lambda *_args: "running")
     monkeypatch.setattr(queue_router, "save_posting_queue", save_queue)
@@ -120,7 +121,7 @@ def test_unverified_outcome_can_be_retried_directly(monkeypatch, status):
         lambda _queue, _execution_id: {"execution": execution, "post": post, "batch": batch},
     )
     monkeypatch.setattr(queue_router, "batch_iteration_availability", lambda *_args, **_kwargs: {"allowed": True})
-    monkeypatch.setattr(queue_router, "get_scheduler_config", lambda: {"max_preparers": 1, "max_active_profile_containers": 2})
+    monkeypatch.setattr(queue_router, "get_scheduler_config", lambda: {**DEFAULT_SCHEDULER_CONFIG, "max_publishers": 1, "max_post_publishers": 1, "max_preparers": 1})
     monkeypatch.setattr(queue_router, "count_buffered_preparations", lambda *_args: 0)
     monkeypatch.setattr(queue_router, "get_container_status", lambda *_args: "running")
     monkeypatch.setattr(queue_router, "save_posting_queue", save_queue)

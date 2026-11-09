@@ -131,9 +131,9 @@ export const ResourceModeControl: React.FC = () => {
           </div>}
           <p className="text-[11px] text-zinc-500">Profile starts are at least 10 seconds apart in every mode. Lowering limits lets active jobs finish; new jobs wait.</p>
           <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-zinc-400">
+            <dt title="Each job slot prepares and posts; a prepared account posts without waiting for another slot.">Job slots</dt><dd className="text-right text-zinc-200">{settings.limits.max_total_automation_tasks}</dd>
             <dt>Post slots</dt><dd className="text-right text-zinc-200">{settings.limits.max_post_publishers}</dd>
             <dt>Live slots</dt><dd className="text-right text-zinc-200">{settings.limits.max_live_publishers}</dd>
-            <dt>Prepare slots</dt><dd className="text-right text-zinc-200">{settings.limits.max_preparers}</dd>
             <dt>Containers</dt><dd className="text-right text-zinc-200">{settings.runtime.active_profile_containers}/{settings.limits.max_active_profile_containers}</dd>
             <dt>RAM usage</dt><dd className="text-right text-zinc-200">{settings.runtime.memory_used_percent}%</dd>
             <dt>CPU usage</dt><dd className="text-right text-zinc-200">{settings.runtime.sustained_cpu_percent}%</dd>

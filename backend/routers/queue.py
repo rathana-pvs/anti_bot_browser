@@ -38,6 +38,8 @@ from backend.services.queue_scheduler import (
     SPREAD_CHOICES_MINUTES,
     spread_offsets_ms,
     can_acquire_scheduler_slot,
+    preparation_has_room,
+    scheduler_snapshot,
 )
 from backend.services.profile_pipeline import (
     shuffled_profile_order,
@@ -1096,11 +1098,15 @@ async def run_execution_now(execution_id: str):
                 )
 
     scheduler_cfg = get_scheduler_config()
-    if needs_prep and count_buffered_preparations(queue, execution_id) >= scheduler_cfg["max_preparers"]:
+    if needs_prep and not preparation_has_room(
+        count_buffered_preparations(queue, execution_id),
+        scheduler_snapshot(queue, active_in_memory_scheduler_leases(), scheduler_cfg)["active"]["posts"],
+        scheduler_cfg,
+    ):
         if is_manual_retry:
-            deferred_reason = "waiting for a preparation slot"
+            deferred_reason = "waiting for a free job slot"
         else:
-            raise HTTPException(status_code=409, detail="All preparation buffers are currently occupied.")
+            raise HTTPException(status_code=409, detail="Every job slot is busy preparing or posting.")
 
     pid = target_exec["profile_id"]
     phone = android_jobs.phone_of(pid)  # a phone has no container; it waits only for the phone itself

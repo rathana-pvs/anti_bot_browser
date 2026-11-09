@@ -250,10 +250,11 @@ class ResourceSettingsManager:
     def get_snapshot(self) -> dict:
         custom = self.custom_limits
         total = custom['max_parallel'] if self.resource_mode == 'custom' else 2
+        # Preparing and posting share one pool of job slots.
         limits = {
-            'max_publishers': total if self.resource_mode == 'custom' else max(1, total // 2),
-            'max_post_publishers': min(total, custom['max_posts']) if self.resource_mode == 'custom' else max(1, total // 2),
-            'max_live_publishers': min(total, custom['max_live']) if self.resource_mode == 'custom' else max(1, total // 2),
+            'max_publishers': total,
+            'max_post_publishers': min(total, custom['max_posts']) if self.resource_mode == 'custom' else total,
+            'max_live_publishers': min(total, custom['max_live']) if self.resource_mode == 'custom' else total,
             'max_preparers': total, 'max_total_automation_tasks': total,
             'max_active_profile_containers': total,
         }

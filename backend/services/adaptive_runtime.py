@@ -47,16 +47,15 @@ def tick() -> Decision:
     leases = _running_leases()
     since_last_start = time.time() * 1000 - docker_service.last_queue_container_start_at
     publishers = sum(1 for lease in leases if lease.get("kind") == "publisher" and lease.get('workload') != 'live')
-    all_publishers = sum(lease.get('kind') == 'publisher' for lease in leases)
-    publisher_limit = controller.limit if settings_manager.resource_mode == 'extreme' else max(1, controller.limit // 2)
-    _decision = controller.decide(_sample, running_jobs=len(leases), since_last_start_ms=since_last_start,
-                                  demand=all_publishers >= publisher_limit)
+    # Preparing and posting share one pool, so the job count alone shows demand.
+    _decision = controller.decide(_sample, running_jobs=len(leases), since_last_start_ms=since_last_start)
+    post_cap = min(_decision.limit, custom['max_posts']) if settings_manager.resource_mode == 'custom' else _decision.limit
     signal = NEUTRAL_SIGNAL
     if adaptive_enabled():
         signal = {
             "hold": _decision.hold,
             "elastic_scale": _decision.elastic_scale,
-            "publish_slots_full": publishers >= min(_decision.limit, custom['max_posts']) if settings_manager.resource_mode == 'custom' else publishers >= _decision.max_publishers,
+            "publish_slots_full": publishers >= post_cap,
             "reason": _decision.reason,
         }
     _write_signal({**signal, "updated_at": time.time()})
