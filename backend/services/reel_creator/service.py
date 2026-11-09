@@ -354,12 +354,14 @@ class ReelCreator:
         if live_service.CONTROLS or any(task.get('status') in ('running', 'preparing')
                                        for task in list(automation_service.active_automation_tasks.values())):
             return 'Waiting for automation or Live to finish'
-        memory = psutil.virtual_memory().percent
+        # Video create and preview renders are not gated on system RAM: a render
+        # that needs memory should get it, not wait. Only CPU and start spacing
+        # throttle admission here (passing 0 for memory keeps those checks).
         cpu = docker_service.sustained_cpu_percent()
-        decision = resource_admission_decision(memory, cpu, self.memory_paused)
-        self.memory_paused = decision['memoryPaused']
+        decision = resource_admission_decision(0.0, cpu, False)
+        self.memory_paused = False
         if not decision['allowed']:
-            return 'Waiting for available memory' if self.memory_paused else 'Waiting for available CPU'
+            return 'Waiting for available CPU'
         return None
 
     def start(self):
@@ -492,11 +494,11 @@ class ReelCreator:
                     else:
                         pressured = None
                     try:
+                        # Record peak RSS for telemetry, but do not cap a render by
+                        # RAM: it is allowed to use as much memory as it needs.
                         rss = sum(p.memory_info().rss for p in [owned, *owned.children(recursive=True)] if p.is_running())
                         if rss > current.get('peak_rss_bytes', 0) + 4 * 1024 * 1024:
                             self.store.update(job['id'], peak_rss_bytes=rss)
-                        if rss > 768 * 1024 * 1024:
-                            raise Interrupted('Render exceeded its memory budget. Try a smaller image.')
                     except psutil.NoSuchProcess:
                         pass
                     if error_file.stat().st_size > 1024 * 1024:
