@@ -64,6 +64,7 @@ from backend.services.queue_service import (
     persist_queue_execution_evidence,
     apply_interrupted_execution_recovery,
     complete_queue_preparation,
+    _QUEUE_IO_LOCK,
 )
 
 from backend.services import container_lifecycle as lifecycle
@@ -358,7 +359,7 @@ async def run_profile_lifecycle_action(profile_id: str, action: str, timeout_sec
 
 async def ensure_profile_container_ready(profile_id: str) -> dict:
     lifecycle.mark_used(profile_id, lifecycle.OWNER_TOKEN.get())
-    original_status = get_container_status(profile_id)
+    original_status = await asyncio.to_thread(get_container_status, profile_id)
     if original_status == "paused":
         await run_profile_lifecycle_action(profile_id, "unpause")
     elif original_status != "running":
@@ -367,7 +368,7 @@ async def ensure_profile_container_ready(profile_id: str) -> dict:
     deadline = time.time() + 45.0
     container_name = f"isolated_{profile_id}"
     while time.time() < deadline:
-        if get_container_status(profile_id) != "running":
+        if await asyncio.to_thread(get_container_status, profile_id) != "running":
             await asyncio.sleep(0.75)
             continue
         try:
@@ -399,10 +400,10 @@ async def _stop_container_with_retries(profile_id: str) -> dict:
         if delay:
             await asyncio.sleep(delay)
         try:
-            if get_container_status(profile_id, strict=True) == "stopped":
+            if await asyncio.to_thread(get_container_status, profile_id, strict=True) == "stopped":
                 return {"stopped": True, "already_stopped": True, "attempts": attempt}
             await run_profile_lifecycle_action(profile_id, "stop")
-            if get_container_status(profile_id, strict=True) != "stopped":
+            if await asyncio.to_thread(get_container_status, profile_id, strict=True) != "stopped":
                 raise RuntimeError("Container is still running after Stop")
             return {
                 "stopped": True,
@@ -503,7 +504,7 @@ async def launch_manual_automation(
     args = ["-u", str(runner_script), "--profile", profile_id, "--task", task]
 
     brain_id = "facebook_post" if task == "post" else ("facebook_reel" if task == "reel" else None)
-    brain_pin = resolve_brain_pin(brain_id, brain_version) if brain_id else None
+    brain_pin = await asyncio.to_thread(resolve_brain_pin, brain_id, brain_version) if brain_id else None
     if brain_pin:
         args.extend(["--brain-version", brain_pin["directory"]])
     if task == "warming":
@@ -1102,7 +1103,7 @@ async def _execute_queue_item_inner(execution_id: str, scheduler_kind: str = "pu
     args = ["-u", str(runner_script), "--profile", profile_id, "--task", task_type]
 
     brain_id = "facebook_post" if task_type == "post" else ("facebook_reel" if task_type == "reel" else None)
-    brain_pin = resolve_brain_pin(brain_id) if brain_id else None
+    brain_pin = await asyncio.to_thread(resolve_brain_pin, brain_id) if brain_id else None
     if brain_pin:
         args.extend(["--brain-version", brain_pin["directory"]])
         pin_q = load_posting_queue()
@@ -1562,6 +1563,12 @@ def recover_preparation_attempt(execution):
 
 
 def recover_stale_queue_executions(reason: str = "expired_scheduler_lease"):
+    # Also runs from the heartbeat thread: keep its read-modify-write atomic.
+    with _QUEUE_IO_LOCK:
+        _recover_stale_queue_executions_locked(reason)
+
+
+def _recover_stale_queue_executions_locked(reason: str):
     try:
         queue = load_posting_queue()
         modified = False
@@ -1650,6 +1657,15 @@ def queue_attempt_still_active(execution: dict) -> bool:
 
 
 def heartbeat_scheduler_leases():
+    # Runs on the scheduler's thread pool. Holding the queue lock across the
+    # read-modify-write stops it from writing back a stale copy over a stage
+    # (such as publish_clicked) the event loop saved meanwhile.
+    with _QUEUE_IO_LOCK:
+        _heartbeat_scheduler_leases_locked()
+    recover_stale_queue_executions("scheduler_lease_expired")
+
+
+def _heartbeat_scheduler_leases_locked():
     now_ms = time.time() * 1000
     queue = load_posting_queue()
     queue_modified = False
@@ -1703,7 +1719,6 @@ def heartbeat_scheduler_leases():
 
     if queue_modified:
         save_posting_queue(queue)
-    recover_stale_queue_executions("scheduler_lease_expired")
 
 _is_dispatching = False
 
@@ -1793,7 +1808,7 @@ async def dispatch_pending_queue():
         recover_stale_queue_executions("dispatcher_stale_lease")
         replan_overdue_posts()
         scheduler_cfg = get_scheduler_config()
-        queue_snapshot = load_posting_queue()
+        queue_snapshot = await asyncio.to_thread(load_posting_queue)
         # Auto warming visits always come after every post that is due.
         due_executions = sorted(ordered_due_executions(queue_snapshot, time.time() * 1000),
                                 key=lambda execution: bool(execution.get("auto_warming")))
@@ -1830,7 +1845,8 @@ async def dispatch_pending_queue():
             # heartbeats, timeouts and HTTP requests run between candidates.
             await asyncio.sleep(0)
             exec_id = execution["execution_id"]
-            current_q = load_posting_queue()
+            # Read-only snapshot: parsing a multi-MB queue must not stall the event loop.
+            current_q = await asyncio.to_thread(load_posting_queue)
             match = find_queue_execution(current_q, exec_id)
             if not match or match["execution"].get("status") not in ("pending", "ready"):
                 continue

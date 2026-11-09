@@ -69,3 +69,40 @@ def test_dispatched_claim_race_is_consumed_as_a_deferral(monkeypatch):
         "status": "deferred",
         "error": "Scheduler could not claim execution: profile_busy",
     }
+
+
+def test_save_rotates_its_own_last_write_into_the_backup_without_reparsing(tmp_path, monkeypatch):
+    queue_file = tmp_path / "posting_queue.json"
+    backup_file = tmp_path / "posting_queue.json.bak"
+    monkeypatch.setattr(queue_service, "QUEUE_FILE", queue_file)
+    monkeypatch.setattr(queue_service, "_last_written_signature", None)
+    first = {"queue_version": "2.0", "daily_batches": [{"batch_id": "first"}]}
+    second = {"queue_version": "2.0", "daily_batches": [{"batch_id": "second"}]}
+
+    assert queue_service.save_posting_queue(first)
+    reads = []
+    original_read = queue_service._read_queue_file
+    monkeypatch.setattr(queue_service, "_read_queue_file", lambda path: reads.append(path) or original_read(path))
+    assert queue_service.save_posting_queue(second)
+
+    assert reads == []
+    assert json.loads(backup_file.read_text(encoding="utf-8")) == first
+    assert json.loads(queue_file.read_text(encoding="utf-8")) == second
+    assert not list(tmp_path.glob("*.tmp")) and not list(tmp_path.glob(".*.tmp"))
+
+
+def test_save_never_backs_up_a_primary_someone_else_corrupted(tmp_path, monkeypatch):
+    queue_file = tmp_path / "posting_queue.json"
+    backup_file = tmp_path / "posting_queue.json.bak"
+    monkeypatch.setattr(queue_service, "QUEUE_FILE", queue_file)
+    monkeypatch.setattr(queue_service, "_last_written_signature", None)
+    good = {"queue_version": "2.0", "daily_batches": [{"batch_id": "good"}]}
+    assert queue_service.save_posting_queue(good)
+    assert queue_service.save_posting_queue(good)  # backup now holds `good`
+    queue_file.write_text('{"daily_batches": [broken', encoding="utf-8")
+
+    newer = {"queue_version": "2.0", "daily_batches": [{"batch_id": "newer"}]}
+    assert queue_service.save_posting_queue(newer)
+
+    assert json.loads(backup_file.read_text(encoding="utf-8")) == good
+    assert json.loads(queue_file.read_text(encoding="utf-8")) == newer

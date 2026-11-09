@@ -123,18 +123,51 @@ def load_posting_queue() -> dict:
                 print(f"Error loading posting queue backup: {backup_err}")
     return {"queue_version": "2.0", "daily_batches": []}
 
+# Identity of the queue file this process last wrote. While the file on disk
+# still has it, it is known to be valid and can become the backup without
+# being parsed and rewritten (the queue can be many MB, and every save used
+# to read and fsync it twice while blocking the event loop).
+_last_written_signature = None
+
+
+def _file_signature(path: Path):
+    st = os.stat(path)
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def _rotate_known_good_backup(path: Path, backup: Path) -> bool:
+    """Make backup the same file as path by hard link; False when not possible."""
+    try:
+        if _last_written_signature is None or _file_signature(path) != _last_written_signature:
+            return False
+        tmp = backup.with_name(f".{backup.name}.{uuid.uuid4().hex}.tmp")
+        os.link(path, tmp)
+        try:
+            os.replace(tmp, backup)
+        finally:
+            tmp.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
 def save_posting_queue(data: dict) -> bool:
+    global _last_written_signature
     with _QUEUE_IO_LOCK:
         try:
             # Keep the last known-good generation. A corrupt primary is never
             # promoted over an existing valid backup.
-            if QUEUE_FILE.exists():
+            if QUEUE_FILE.exists() and not _rotate_known_good_backup(QUEUE_FILE, _queue_backup_file()):
                 try:
                     previous = _read_queue_file(QUEUE_FILE)
                     _atomic_json_write(_queue_backup_file(), previous)
                 except Exception as backup_err:
                     print(f"Skipping posting queue backup because the current file is invalid: {backup_err}")
             _atomic_json_write(QUEUE_FILE, data)
+            try:
+                _last_written_signature = _file_signature(QUEUE_FILE)
+            except OSError:
+                _last_written_signature = None
             return True
         except Exception as err:
             print(f"Error atomically saving posting_queue.json: {err}")
