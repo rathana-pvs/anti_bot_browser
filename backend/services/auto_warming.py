@@ -10,6 +10,7 @@ the end of the queue, so the dispatcher, slots, evidence and account history
 treat them like any other warm-up.
 """
 
+import asyncio
 import json
 import random
 import time
@@ -241,43 +242,64 @@ def _profile_configs() -> dict:
 _last_choice: dict | None = None
 
 
+def _visit_waiting(queue: dict) -> bool:
+    # One visit starts at a time; running ones may continue side by side.
+    return any(is_auto_batch(batch) and execution.get("status") in {"pending", "ready", "preparing"}
+               for batch, _post, execution in _executions(queue))
+
+
 def plan_once(now: datetime | None = None) -> dict | None:
-    """Start at most one visit now; returns it, or None."""
+    """Start at most one visit now; returns it, or None.
+
+    Choosing reads every account and can take a while, so it works on a copy
+    of the queue. The change itself is made on a fresh copy under the queue
+    lock, after checking the choice again: writing back the old copy would undo
+    whatever posting saved meanwhile (lease heartbeats, recoveries, deletions).
+    """
     global _last_choice
     from backend.services.automation_service import active_in_memory_scheduler_leases
     from backend.services.docker_service import get_scheduler_config
-    from backend.services.queue_service import load_posting_queue, save_posting_queue
+    from backend.services.queue_service import _QUEUE_IO_LOCK, load_posting_queue, save_posting_queue
 
     now = now or datetime.now(timezone.utc)
     now_ms = now.timestamp() * 1000
-    queue = load_posting_queue()
     if not enabled():
-        if expire_unstarted(queue, now_ms, all_pending=True):
-            save_posting_queue(queue)
+        with _QUEUE_IO_LOCK:
+            queue = load_posting_queue()
+            if expire_unstarted(queue, now_ms, all_pending=True):
+                save_posting_queue(queue)
         return None
-    changed = expire_unstarted(queue, now_ms) > 0
+    snapshot = load_posting_queue()
     # Kept current every tick: posts held after a proxy change wait for a visit to show up here.
-    history = account_health.sync_history(queue, now)
-    # One visit starts at a time; running ones may continue side by side.
-    waiting = any(is_auto_batch(batch) and execution.get("status") in {"pending", "ready", "preparing"}
-                  for batch, _post, execution in _executions(queue))
+    history = account_health.sync_history(snapshot, now)
     choice = None
-    if not waiting and _machine_calm():
+    if not _visit_waiting(snapshot) and _machine_calm():
         configs = _profile_configs()
         health = {pid: account_health.compute(config, account_health.entries_for(history, pid), now)
                   for pid, config in configs.items()}
         held = {pid for pid in health if _needs_restart_visit(health, pid)}
-        if spare_capacity(queue, active_in_memory_scheduler_leases(), get_scheduler_config(), now_ms, held):
-            ranked = candidates(queue, configs, health, history, now_ms)
-        else:
-            ranked = []
-        if ranked:
-            choice = ranked[0]
-            add_visit(queue, choice, now, random.Random())
-            changed = True
-            _last_choice = {**choice, "at": now.isoformat()}
-    if changed:
-        save_posting_queue(queue)
+        if spare_capacity(snapshot, active_in_memory_scheduler_leases(), get_scheduler_config(), now_ms, held):
+            ranked = candidates(snapshot, configs, health, history, now_ms)
+            choice = ranked[0] if ranked else None
+    with _QUEUE_IO_LOCK:
+        queue = load_posting_queue()
+        changed = expire_unstarted(queue, now_ms) > 0
+        if choice is not None:
+            pid = choice["profile_id"]
+            # A post may have been claimed or added on this account since the copy was read.
+            still_fits = (not _visit_waiting(queue)
+                          and spare_capacity(queue, active_in_memory_scheduler_leases(), get_scheduler_config(),
+                                             now_ms, held)
+                          and any(item["profile_id"] == pid
+                                  for item in candidates(queue, {pid: configs[pid]}, health, history, now_ms)))
+            if still_fits:
+                add_visit(queue, choice, now, random.Random())
+                changed = True
+                _last_choice = {**choice, "at": now.isoformat()}
+            else:
+                choice = None
+        if changed:
+            save_posting_queue(queue)
     return choice
 
 
@@ -290,7 +312,8 @@ def _machine_calm() -> bool:
 
 async def tick():
     try:
-        choice = plan_once()
+        # Off the event loop: reading every account must not hold up running posts.
+        choice = await asyncio.to_thread(plan_once)
     except Exception as error:
         print(f"Auto warming error: {error}")
         return

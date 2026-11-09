@@ -241,3 +241,72 @@ def test_a_phone_account_without_a_proxy_gets_no_visit(monkeypatch):
     own_network = config("phone_1", runtime=PHONE, automation={"enabled": False, "reason": "android_automation_unavailable"},
                          network={"mode": "direct", "proxy_id": None})
     assert candidates(queue(), {"phone_1": own_network}, {"phone_1": {"stage": "ready"}}, {}, NOW_MS) == []
+
+
+class _Store:
+    """The queue file, with a hook that runs while plan_once is choosing (as another thread would)."""
+
+    def __init__(self, queue):
+        self.queue, self.saves = queue, 0
+
+    def load(self):
+        import copy
+        return copy.deepcopy(self.queue)
+
+    def save(self, queue):
+        import copy
+        self.queue, self.saves = copy.deepcopy(queue), self.saves + 1
+        return True
+
+
+@pytest.fixture
+def planner(monkeypatch):
+    from backend.services import account_health, automation_service, docker_service, queue_service
+
+    def setup(queue, during_choice=lambda store: None):
+        store = _Store(queue)
+        monkeypatch.setattr(queue_service, "load_posting_queue", store.load)
+        monkeypatch.setattr(queue_service, "save_posting_queue", store.save)
+        monkeypatch.setattr(auto_warming, "enabled", lambda: True)
+        monkeypatch.setattr(auto_warming, "_machine_calm", lambda: True)
+        monkeypatch.setattr(auto_warming, "spare_capacity", lambda *args, **kwargs: True)
+        monkeypatch.setattr(account_health, "sync_history", lambda queue, now: {})
+        monkeypatch.setattr(account_health, "compute", lambda config, entries, now: {"stage": "new"})
+        monkeypatch.setattr(automation_service, "active_in_memory_scheduler_leases", lambda: [])
+        monkeypatch.setattr(docker_service, "get_scheduler_config", lambda: {})
+
+        def configs():
+            during_choice(store)
+            return {"profile_001": config()}
+        monkeypatch.setattr(auto_warming, "_profile_configs", configs)
+        return store
+    return setup
+
+
+def _status(store, execution_id):
+    return next(e["status"] for _b, _p, e in auto_warming._executions(store.queue) if e["execution_id"] == execution_id)
+
+
+def test_choosing_a_visit_never_undoes_a_save_made_meanwhile(planner):
+    other = {"execution_id": "e_other", "profile_id": "profile_002", "status": "uncertain", "scheduled_at": at(3)}
+
+    def resolved_by_user(store):
+        store.queue["daily_batches"][0]["posts"][0]["executions"][0]["status"] = "published"
+    store = planner(queue(other), resolved_by_user)
+
+    choice = auto_warming.plan_once(NOW)
+
+    assert choice and choice["profile_id"] == "profile_001"
+    assert _status(store, "e_other") == "published"
+    assert any(auto_warming.is_auto_batch(batch) for batch in store.queue["daily_batches"])
+
+
+def test_no_visit_when_the_account_gets_a_post_while_choosing(planner):
+    def post_claimed(store):
+        store.queue["daily_batches"][0]["posts"][0]["executions"].append(
+            {"execution_id": "e_post", "profile_id": "profile_001", "status": "running", "scheduled_at": at(0)})
+    store = planner(queue(), post_claimed)
+
+    assert auto_warming.plan_once(NOW) is None
+    assert not any(auto_warming.is_auto_batch(batch) for batch in store.queue["daily_batches"])
+    assert _status(store, "e_post") == "running"
