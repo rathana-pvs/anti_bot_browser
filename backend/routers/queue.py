@@ -23,6 +23,8 @@ from backend.services.queue_service import (
     find_queue_execution,
     generate_spun_caption,
     with_queue_claim_lock,
+    DETAIL_FIELDS,
+    execution_details,
 )
 from backend.services.queue_safety import (
     is_execution_deletion_locked,
@@ -148,14 +150,41 @@ def get_queue():
     for item in all_executions:
         if item.get("execution_id") in timing:
             item.update(timing[item["execution_id"]])
+    telemetry_summary = build_queue_telemetry_summary(all_executions)
+    # Logs and telemetry were most of a 14 MB response sent every few seconds;
+    # the detail drawer reads them per item from /execution/{id}/details.
     return {
         "queue_version": queue.get("queue_version", "2.0"),
         "stats": stats,
         "scheduler": scheduler,
-        "telemetry_summary": build_queue_telemetry_summary(all_executions),
-        "batches": queue.get("daily_batches", []),
-        "executions": all_executions,
+        "telemetry_summary": telemetry_summary,
+        "batches": [_batch_without_details(batch) for batch in queue.get("daily_batches", [])],
+        "executions": [_without_details(item) for item in all_executions],
     }
+
+
+def _without_details(execution: dict) -> dict:
+    if not any(key in execution for key in DETAIL_FIELDS):
+        return execution
+    kept = {key: value for key, value in execution.items() if key not in DETAIL_FIELDS}
+    if "logs" in execution:
+        kept["log_count"] = len(execution.get("logs") or [])
+    return kept
+
+
+def _batch_without_details(batch: dict) -> dict:
+    return {**batch, "posts": [{**post, "executions": [_without_details(item) for item in post.get("executions", [])]}
+                               for post in batch.get("posts", [])]}
+
+
+@router.get("/execution/{execution_id}/details")
+def get_execution_details(execution_id: str):
+    """One item's logs and telemetry, which the queue list leaves out."""
+    match = find_queue_execution(load_posting_queue(), execution_id)
+    if not match:
+        raise HTTPException(status_code=404, detail="Execution not found")
+    details = execution_details(match["execution"])
+    return {"execution_id": execution_id, **{key: details.get(key) for key in DETAIL_FIELDS}}
 
 @router.post("/schedule-preview")
 def schedule_preview(payload: dict = Body(...)):

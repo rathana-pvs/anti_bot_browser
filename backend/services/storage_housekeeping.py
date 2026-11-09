@@ -334,7 +334,8 @@ def _batch_finished_before(batch: dict, cutoff: datetime) -> bool:
 
 def archive_queue(now: datetime, dry_run: bool = False) -> dict:
     from backend.services import account_health
-    from backend.services.queue_service import load_posting_queue, save_posting_queue, with_queue_claim_lock
+    from backend.services.queue_service import (_QUEUE_IO_LOCK, hydrate_execution, load_posting_queue,
+                                                remove_orphan_details, save_posting_queue, with_queue_claim_lock)
     cutoff = now - timedelta(days=QUEUE_ARCHIVE_DAYS)
     report = {"batches_archived": 0}
     if dry_run:
@@ -355,7 +356,10 @@ def archive_queue(now: datetime, dry_run: bool = False) -> dict:
             path = ARCHIVE_DIR / f"{month}.json"
             archive = _read_json(path) or {"version": 1, "batches": []}
             if not any(item.get("batch_id") == batch.get("batch_id") for item in archive["batches"]):
-                archive["batches"].append(batch)
+                # The archive keeps each item's logs and telemetry with it.
+                archive["batches"].append({**batch, "posts": [
+                    {**post, "executions": [hydrate_execution(execution) for execution in post.get("executions") or []]}
+                    for post in batch.get("posts") or []]})
             atomic_write_json(path, archive)
         archived = {id(batch) for batch in old}
         queue["daily_batches"] = [batch for batch in queue["daily_batches"] if id(batch) not in archived]
@@ -366,6 +370,10 @@ def archive_queue(now: datetime, dry_run: bool = False) -> dict:
         with_queue_claim_lock(update)
     except RuntimeError as error:
         report["error"] = str(error)
+    else:
+        # Stored details of archived or deleted items.
+        with _QUEUE_IO_LOCK:
+            report["details_removed"] = remove_orphan_details(load_posting_queue())
     return report
 
 

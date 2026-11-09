@@ -744,6 +744,13 @@ export async function fetchQueue(): Promise<import('../types/automation').QueueD
   return res.json();
 }
 
+/** One queue item's logs and telemetry; the queue list leaves them out. */
+export async function fetchExecutionDetails(executionId: string): Promise<{ execution_id: string; logs: string[] | null; telemetry: Record<string, unknown> | null; preparation_telemetry: Record<string, unknown> | null }> {
+  const res = await fetch(`${API_BASE}/queue/execution/${encodeURIComponent(executionId)}/details`);
+  if (!res.ok) throw new Error('Failed to fetch item details');
+  return res.json();
+}
+
 export async function cancelAllQueuePosts(batchId?: string): Promise<{ success: boolean; cancelled: number; message: string }> {
   const endpoint = batchId === undefined ? '/queue/cancel-all' : `/queue/batch/${encodeURIComponent(batchId)}/cancel`;
   const res = await fetch(`${API_BASE}${endpoint}`, { method: 'POST' });

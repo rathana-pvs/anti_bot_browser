@@ -123,6 +123,7 @@ def test_only_old_finished_batches_are_archived(tmp_path, monkeypatch):
     ]}
     saved, synced = [], []
     monkeypatch.setattr(housekeeping, "ARCHIVE_DIR", tmp_path / "archive")
+    monkeypatch.setattr(queue_service, "QUEUE_FILE", tmp_path / "posting_queue.json")
     monkeypatch.setattr(queue_service, "load_posting_queue", lambda: queue)
     monkeypatch.setattr(queue_service, "save_posting_queue", lambda value: saved.append(value) or True)
     monkeypatch.setattr(queue_service, "with_queue_claim_lock", lambda callback: callback())
@@ -240,3 +241,29 @@ def test_manual_evidence_cleanup_waits_for_a_running_cleanup(tmp_path, monkeypat
     with pytest.raises(HTTPException) as error:
         profile_routes.clean_evidence_for_profile("profile_001", {"days": 3})
     assert error.value.status_code == 409
+
+
+def test_archived_items_take_their_stored_logs_and_telemetry_along(tmp_path, monkeypatch):
+    from backend.services import account_health, queue_service
+    old = (datetime.now(timezone.utc) - timedelta(days=40)).isoformat()
+    monkeypatch.setattr(housekeeping, "ARCHIVE_DIR", tmp_path / "archive")
+    monkeypatch.setattr(queue_service, "QUEUE_FILE", tmp_path / "posting_queue.json")
+    monkeypatch.setattr(queue_service, "QUEUE_CLAIM_LOCK_FILE", tmp_path / "claim.lock")
+    monkeypatch.setattr(account_health, "sync_history", lambda q, now: None)
+    queue_service.save_posting_queue({"daily_batches": [
+        {"batch_id": "done", "created_at": old, "posts": [{"executions": [
+            {"execution_id": "a", "status": "published", "published_at": old,
+             "logs": ["posted"], "telemetry": {"total_duration_ms": 5}}]}]},
+        {"batch_id": "new", "posts": [{"executions": [
+            {"execution_id": "c", "status": "published", "published_at": datetime.now(timezone.utc).isoformat(),
+             "logs": ["kept"]}]}]},
+    ]})
+    assert (tmp_path / "queue_details" / "a.json").exists()
+
+    report = housekeeping.archive_queue(datetime.now(timezone.utc))
+
+    assert report["batches_archived"] == 1 and report["details_removed"] == 1
+    archived = json.loads(next((tmp_path / "archive").glob("*.json")).read_text())
+    item = archived["batches"][0]["posts"][0]["executions"][0]
+    assert item["logs"] == ["posted"] and item["telemetry"] == {"total_duration_ms": 5}
+    assert [path.name for path in (tmp_path / "queue_details").iterdir()] == ["c.json"]

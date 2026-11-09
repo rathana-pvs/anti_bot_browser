@@ -106,6 +106,147 @@ def _atomic_json_write(path: Path, data: dict) -> None:
             pass
 
 
+# Finished items' logs and telemetry -------------------------------------------
+# They were most of the queue file (MBs), and every stage change re-read and
+# rewrote all of it. Once an item has finished they move to one file per item
+# in queue_details/; the queue keeps a small telemetry_digest for summaries.
+DETAIL_FIELDS = ("logs", "telemetry", "preparation_telemetry")
+# Still running, or may still be acted on from its inline record.
+INLINE_DETAIL_STATUSES = {"pending", "ready", "preparing", "running", "uncertain", "needs_review"}
+
+
+def _details_dir() -> Path:
+    return QUEUE_FILE.parent / "queue_details"
+
+
+def _details_file(execution_id: str) -> Path | None:
+    if not isinstance(execution_id, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,200}", execution_id) or execution_id.startswith("."):
+        return None
+    return _details_dir() / f"{execution_id}.json"
+
+
+def _read_details(execution_id: str) -> dict:
+    path = _details_file(execution_id)
+    if path is None or not path.exists():
+        return {}
+    try:
+        data = _read_queue_file(path)
+    except Exception as err:
+        print(f"Could not read stored details of {execution_id}: {err}")
+        return {}
+    return {key: data[key] for key in DETAIL_FIELDS if key in data}
+
+
+def telemetry_digest(telemetry) -> dict | None:
+    """The part of a run's telemetry that queue summaries and scorecards read."""
+    if not isinstance(telemetry, dict):
+        return None
+    locators = telemetry.get("locators") if isinstance(telemetry.get("locators"), dict) else {}
+    digest = {
+        "total_duration_ms": telemetry.get("total_duration_ms"),
+        "outcome": telemetry.get("outcome"),
+        "locators": {"tier_counts": locators.get("tier_counts") or {},
+                     "fallback_count": locators.get("fallback_count") or 0},
+    }
+    if isinstance(telemetry.get("semantic_fallbacks"), list):
+        digest["semantic_fallbacks"] = telemetry["semantic_fallbacks"]
+    return digest
+
+
+def execution_details(execution: dict) -> dict:
+    """logs, telemetry and preparation_telemetry, from the record or its stored file."""
+    stored = _read_details(execution.get("execution_id")) if execution.get("details_stored") else {}
+    return {**stored, **{key: execution[key] for key in DETAIL_FIELDS if key in execution}}
+
+
+def hydrate_execution(execution: dict) -> dict:
+    """A copy of the record with its stored logs and telemetry put back."""
+    return {**execution, **execution_details(execution)}
+
+
+def execution_logs(execution: dict) -> list:
+    return list(execution_details(execution).get("logs") or [])
+
+
+def _offload_execution(execution: dict) -> dict:
+    """Store a finished item's details in its own file; returns the record to keep in the queue.
+
+    The file is merged with what an earlier attempt stored (fields this record
+    holds replace it) and is durable before the queue stops holding them. If it
+    cannot be written, the record stays as it was.
+    """
+    if execution.get("status") in INLINE_DETAIL_STATUSES or not any(key in execution for key in DETAIL_FIELDS):
+        return execution
+    path = _details_file(execution.get("execution_id"))
+    if path is None:
+        return execution
+    try:
+        stored = _read_details(execution["execution_id"]) if path.exists() else {}
+        merged = {**stored, **{key: execution[key] for key in DETAIL_FIELDS if key in execution}}
+        _atomic_json_write(path, {"execution_id": execution["execution_id"], **merged})
+    except Exception as err:
+        print(f"Keeping details of {execution.get('execution_id')} in the queue: {err}")
+        return execution
+    kept = {key: value for key, value in execution.items() if key not in DETAIL_FIELDS}
+    kept["details_stored"] = True
+    kept["log_count"] = len(merged.get("logs") or [])
+    if "telemetry" in execution:
+        kept["telemetry_digest"] = telemetry_digest(execution["telemetry"])
+    return kept
+
+
+def _offload_finished_details(data: dict) -> dict:
+    """The queue as it is written: finished items without their bulky details.
+
+    Builds new containers only where something moved, so the caller's queue
+    object is never changed.
+    """
+    batches = data.get("daily_batches")
+    if not isinstance(batches, list):
+        return data
+    new_batches, changed = [], False
+    for batch in batches:
+        posts = batch.get("posts") if isinstance(batch, dict) else None
+        if not isinstance(posts, list):
+            new_batches.append(batch)
+            continue
+        new_posts, batch_changed = [], False
+        for post in posts:
+            executions = post.get("executions") if isinstance(post, dict) else None
+            if not isinstance(executions, list):
+                new_posts.append(post)
+                continue
+            kept = [_offload_execution(execution) if isinstance(execution, dict) else execution
+                    for execution in executions]
+            if any(new is not old for new, old in zip(kept, executions)):
+                new_posts.append({**post, "executions": kept})
+                batch_changed = True
+            else:
+                new_posts.append(post)
+        new_batches.append({**batch, "posts": new_posts} if batch_changed else batch)
+        changed = changed or batch_changed
+    return {**data, "daily_batches": new_batches} if changed else data
+
+
+def remove_orphan_details(queue: dict, keep_ids: set | None = None) -> int:
+    """Delete stored details whose item is no longer in the queue. Call holding _QUEUE_IO_LOCK."""
+    directory = _details_dir()
+    if not directory.is_dir():
+        return 0
+    live = {execution.get("execution_id") for batch in queue.get("daily_batches") or []
+            for post in batch.get("posts") or [] for execution in post.get("executions") or []}
+    live |= keep_ids or set()
+    removed = 0
+    for path in directory.glob("*.json"):
+        if path.stem not in live:
+            try:
+                path.unlink()
+                removed += 1
+            except OSError:
+                pass
+    return removed
+
+
 def load_posting_queue() -> dict:
     with _QUEUE_IO_LOCK:
         try:
@@ -163,7 +304,7 @@ def save_posting_queue(data: dict) -> bool:
                     _atomic_json_write(_queue_backup_file(), previous)
                 except Exception as backup_err:
                     print(f"Skipping posting queue backup because the current file is invalid: {backup_err}")
-            _atomic_json_write(QUEUE_FILE, data)
+            _atomic_json_write(QUEUE_FILE, _offload_finished_details(data))
             try:
                 _last_written_signature = _file_signature(QUEUE_FILE)
             except OSError:
@@ -431,7 +572,7 @@ def create_support_archive(match: dict | None = None, queue: dict | None = None,
     items = []
     for index, entry in enumerate(matches):
         execution = entry["execution"]
-        item_report = build_execution_diagnostic(entry, options)
+        item_report = build_execution_diagnostic({**entry, "execution": hydrate_execution(entry["execution"])}, options)
         item_dir = bundle_dir
         if batch is not None:
             item_id = re.sub(r"[^a-zA-Z0-9_-]", "_", str(execution.get("execution_id") or "item"))

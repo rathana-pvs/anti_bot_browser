@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   AlertTriangle, Bug, Check, ExternalLink, Eye, Link2, Lock, MessageCircle, Pencil, Play, RotateCcw, Square, Trash2, UserRound, X,
 } from 'lucide-react';
 import { QueueExecutionItem } from '../../types/automation';
+import { fetchExecutionDetails } from '../../services/api';
 import { Profile } from '../../types/profile';
 import { NetworkRecoveryStatus } from '../NetworkRecoveryStatus';
 import { Button } from '../ui/Button';
@@ -148,7 +149,15 @@ function CommentAndLinkNotes({ item }: { item: QueueExecutionItem }) {
 
 function Timeline({ item }: { item: QueueExecutionItem }) {
   const stages = item.stage_history || [];
-  const logs = item.logs || [];
+  const [logs, setLogs] = useState<string[]>(item.logs || []);
+  useEffect(() => {
+    if (!item.log_count) { setLogs(item.logs || []); return; }
+    let cancelled = false;
+    fetchExecutionDetails(item.execution_id)
+      .then(details => { if (!cancelled) setLogs(details.logs || []); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [item.execution_id, item.log_count, item.status, item.logs]);
   if (!stages.length && !logs.length) return null;
   return <details className="text-zinc-400" open={ACTIVE_STATUSES.has(item.status)}>
     <summary className="cursor-pointer text-zinc-300">Timeline{logs.length ? ` and logs (${logs.length})` : ''}</summary>

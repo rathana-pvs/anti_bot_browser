@@ -125,6 +125,8 @@ export interface QueueExecutionItem {
   error?: string | null;
   published_at?: string | null;
   logs?: string[];
+  /** How many log lines the item has; the queue list leaves the lines out. */
+  log_count?: number;
   review_status?: 'resolved_published' | 'resolved_not_published' | 'needs_review' | string | null;
   review_note?: string | null;
   reviewed_at?: string | null;

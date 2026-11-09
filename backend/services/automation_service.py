@@ -65,6 +65,7 @@ from backend.services.queue_service import (
     persist_queue_execution_evidence,
     apply_interrupted_execution_recovery,
     complete_queue_preparation,
+    execution_logs,
     _QUEUE_IO_LOCK,
 )
 
@@ -312,7 +313,7 @@ def latest_queue_task_state(profile_id: str) -> dict | None:
         "stopped": "stopped",
     }
 
-    logs = [normalize_stored_log(l, profile_id) for l in (execution.get("logs") or [])[-300:]]
+    logs = [normalize_stored_log(l, profile_id) for l in execution_logs(execution)[-300:]]
 
     return {
         "profile_id": profile_id,
@@ -1494,7 +1495,7 @@ async def _execute_queue_comment_retry_inner(execution_id: str, start_admission_
         apply_comment_retry_result(up_m["execution"], task_record.get("result") or {}, ended_at)
         up_m["execution"]["first_comment_note"] = None if code == 0 else (task_record.get("result", {}).get("error") or f"Comment retry exited with code {code}")
         up_m["execution"]["logs"] = [
-            *(up_m["execution"].get("logs") or []),
+            *execution_logs(up_m["execution"]),
             *[f"[Comment retry] {entry['message']}" for entry in task_record["logs"]],
         ][-500:]
         save_posting_queue(up_q)

@@ -27,7 +27,7 @@ from backend.services.android_devices import ANDROID_RUNTIME, read_profile_runti
 from backend.services.profile_service import atomic_write_json
 from backend.services.queue_safety import apply_warming_result
 from backend.services.queue_scheduler import release_execution_lease
-from backend.services.queue_service import (find_queue_execution, load_posting_queue,
+from backend.services.queue_service import (execution_logs, find_queue_execution, load_posting_queue,
                                             persist_queue_execution_stage, save_posting_queue)
 
 PHONE_RUNNER = AUTOMATION_RUNNER.with_name("phone_runner.py")
@@ -531,7 +531,7 @@ async def run_comment(execution_id: str, runtime: dict, post: dict) -> None:
             if ex["phone_comment_starts"] >= MAX_COMMENT_STARTS:
                 ex["first_comment_status"] = "failed_input_not_found"
             ex["phone_comment_due_at"] = datetime.fromtimestamp(time.time() + 120, tz=timezone.utc).isoformat()
-        ex["logs"] = [*(ex.get("logs") or []), *[f"[Phone comment] {e['message']}" for e in record["logs"]]][-500:]
+        ex["logs"] = [*execution_logs(ex), *[f"[Phone comment] {e['message']}" for e in record["logs"]]][-500:]
     _update(execution_id, None, change)
 
 

@@ -59,8 +59,8 @@ def build_reliability_scorecard(
     uncertain = [item for item in terminal if item.get("status") in UNRESOLVED_STATUSES]
     measured = [
         item for item in terminal
-        if isinstance(item.get("telemetry"), dict)
-        and isinstance(item["telemetry"].get("total_duration_ms"), (int, float))
+        if isinstance(item.get("telemetry") or item.get("telemetry_digest"), dict)
+        and isinstance((item.get("telemetry") or item["telemetry_digest"]).get("total_duration_ms"), (int, float))
     ]
     evidenced = [
         item for item in terminal

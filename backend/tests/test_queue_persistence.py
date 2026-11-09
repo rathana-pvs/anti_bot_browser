@@ -106,3 +106,95 @@ def test_save_never_backs_up_a_primary_someone_else_corrupted(tmp_path, monkeypa
 
     assert json.loads(backup_file.read_text(encoding="utf-8")) == good
     assert json.loads(queue_file.read_text(encoding="utf-8")) == newer
+
+
+def _queue_with(execution):
+    return {"queue_version": "2.0", "daily_batches": [{"batch_id": "b", "posts": [{"type": "post", "executions": [execution]}]}]}
+
+
+def _details_setup(tmp_path, monkeypatch):
+    monkeypatch.setattr(queue_service, "QUEUE_FILE", tmp_path / "posting_queue.json")
+    monkeypatch.setattr(queue_service, "_last_written_signature", None)
+
+
+FULL_TELEMETRY = {"total_duration_ms": 1200, "outcome": "published", "ocr": {"samples": [{"duration_ms": 5}] * 50},
+                  "locators": {"tier_counts": {"ocr": 2}, "fallback_count": 1, "events": [{"x": 1}] * 20},
+                  "steps": [{"step": "x"}] * 30}
+
+
+def test_finished_items_keep_logs_and_telemetry_beside_the_queue(tmp_path, monkeypatch):
+    _details_setup(tmp_path, monkeypatch)
+    execution = {"execution_id": "e1", "status": "published", "logs": ["a", "b"], "telemetry": FULL_TELEMETRY,
+                 "preparation_telemetry": {"total_duration_ms": 10}}
+    queue = _queue_with(execution)
+    assert queue_service.save_posting_queue(queue)
+
+    assert "logs" in execution  # the caller's object is not changed
+    on_disk = json.loads((tmp_path / "posting_queue.json").read_text())["daily_batches"][0]["posts"][0]["executions"][0]
+    assert not any(key in on_disk for key in queue_service.DETAIL_FIELDS)
+    assert on_disk["details_stored"] is True and on_disk["log_count"] == 2
+    assert on_disk["telemetry_digest"] == {"total_duration_ms": 1200, "outcome": "published",
+                                           "locators": {"tier_counts": {"ocr": 2}, "fallback_count": 1}}
+    loaded = queue_service.find_queue_execution(queue_service.load_posting_queue(), "e1")["execution"]
+    assert queue_service.hydrate_execution(loaded)["telemetry"] == FULL_TELEMETRY
+    assert queue_service.execution_logs(loaded) == ["a", "b"]
+
+
+def test_running_items_keep_their_details_inline(tmp_path, monkeypatch):
+    _details_setup(tmp_path, monkeypatch)
+    for status in ("running", "uncertain", "needs_review", "ready"):
+        execution = {"execution_id": f"e-{status}", "status": status, "logs": ["a"], "telemetry": FULL_TELEMETRY}
+        assert queue_service.save_posting_queue(_queue_with(execution))
+        assert queue_service.load_posting_queue()["daily_batches"][0]["posts"][0]["executions"][0]["logs"] == ["a"]
+    assert not (tmp_path / "queue_details").exists()
+
+
+def test_a_later_attempt_replaces_only_the_details_it_wrote(tmp_path, monkeypatch):
+    _details_setup(tmp_path, monkeypatch)
+    queue_service.save_posting_queue(_queue_with(
+        {"execution_id": "e1", "status": "failed", "logs": ["first"], "telemetry": FULL_TELEMETRY}))
+    loaded = queue_service.load_posting_queue()
+    execution = loaded["daily_batches"][0]["posts"][0]["executions"][0]
+    # A comment retry appends to the stored logs and brings no telemetry.
+    execution.update(status="published", logs=[*queue_service.execution_logs(execution), "retry"])
+    queue_service.save_posting_queue(loaded)
+
+    stored = queue_service.load_posting_queue()["daily_batches"][0]["posts"][0]["executions"][0]
+    assert queue_service.execution_logs(stored) == ["first", "retry"]
+    assert queue_service.hydrate_execution(stored)["telemetry"] == FULL_TELEMETRY
+
+
+def test_orphaned_details_are_removed(tmp_path, monkeypatch):
+    _details_setup(tmp_path, monkeypatch)
+    queue_service.save_posting_queue(_queue_with({"execution_id": "e1", "status": "published", "logs": ["a"]}))
+    queue_service.save_posting_queue({"queue_version": "2.0", "daily_batches": [{"batch_id": "x", "posts": [{"executions": [
+        {"execution_id": "e2", "status": "published", "logs": ["b"]}]}]}]})
+    assert queue_service.remove_orphan_details(queue_service.load_posting_queue()) == 1
+    assert [path.name for path in (tmp_path / "queue_details").iterdir()] == ["e2.json"]
+
+
+def test_unsafe_execution_ids_stay_inline(tmp_path, monkeypatch):
+    _details_setup(tmp_path, monkeypatch)
+    queue_service.save_posting_queue(_queue_with({"execution_id": "../evil", "status": "published", "logs": ["a"]}))
+    assert queue_service.load_posting_queue()["daily_batches"][0]["posts"][0]["executions"][0]["logs"] == ["a"]
+
+
+def test_queue_list_leaves_details_out_and_the_drawer_reads_them(tmp_path, monkeypatch):
+    from backend.routers import queue as queue_router
+    _details_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(queue_router, "load_posting_queue", queue_service.load_posting_queue)
+    queue_service.save_posting_queue({"queue_version": "2.0", "daily_batches": [{"batch_id": "b", "posts": [{"type": "post", "executions": [
+        {"execution_id": "done", "status": "published", "scheduled_at": "2026-01-01T00:00:00+00:00",
+         "logs": ["a", "b"], "telemetry": {"total_duration_ms": 7}},
+        {"execution_id": "live", "status": "running", "scheduled_at": "2026-01-01T00:00:00+00:00", "logs": ["c"]},
+    ]}]}]})
+
+    body = queue_router.get_queue()
+
+    for item in [*body["executions"], *body["batches"][0]["posts"][0]["executions"]]:
+        assert not any(key in item for key in queue_service.DETAIL_FIELDS)
+    counts = {item["execution_id"]: item["log_count"] for item in body["executions"]}
+    assert counts == {"done": 2, "live": 1}
+    assert body["telemetry_summary"]["median_execution_duration_ms"] == 7
+    assert queue_router.get_execution_details("done")["logs"] == ["a", "b"]
+    assert queue_router.get_execution_details("live")["logs"] == ["c"]

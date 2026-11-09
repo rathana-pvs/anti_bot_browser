@@ -232,7 +232,7 @@ def test_failed_preparation_keeps_screenshot_directory_and_logs(attempt, monkeyp
     execution = persisted()
     assert execution['status'] == 'failed_before_publish'
     assert execution['evidence_dir'] == result['evidence_dir']
-    assert execution['logs'] == result['logs']
+    assert queue_service.execution_logs(execution) == result['logs']
 
 
 def test_an_interrupted_warming_visit_is_stopped_not_uncertain():

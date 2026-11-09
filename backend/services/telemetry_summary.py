@@ -13,7 +13,15 @@ def percentile(values: list[float], fraction: float) -> float | None:
 def percent(count: int | float, total: int | float) -> float | None:
     return round((count / total) * 100.0, 1) if total > 0 else None
 
+def _with_telemetry(item: dict) -> dict:
+    """Finished items keep only a telemetry_digest in the queue (no OCR samples)."""
+    if item.get("telemetry") or not isinstance(item.get("telemetry_digest"), dict):
+        return item
+    return {**item, "telemetry": item["telemetry_digest"]}
+
+
 def build_queue_telemetry_summary(executions: list) -> dict:
+    executions = [_with_telemetry(item) for item in executions]
     terminal = [
         item for item in executions
         if item.get("status") in ("published", "failed", "failed_before_publish", "failed_after_publish", "uncertain", "needs_review")
