@@ -2,8 +2,9 @@
 
 1. Quick check (about 2 s): connect to the proxy, then Facebook's response and the exit IP through
    it. A proxy that fails here is dead and skips the speed samples.
-2. Speed: two timed samples per direction. Each stops after SAMPLE_SECONDS or its byte cap,
-   whichever comes first, so a slow proxy still gives a number instead of a timeout.
+2. Speed: two timed samples per direction. A download stops after SAMPLE_SECONDS or its byte
+   cap, whichever comes first, so a slow proxy still gives a number. An upload counts only once
+   Cloudflare confirms it received the whole payload; one still sending at the limit timed out.
 3. A run checks as many proxies at once as the account-browser limit, each proxy once.
 
 Results are saved on the proxy as `check` (raw samples) and rated by proxy_quality.rate_check.
@@ -25,11 +26,12 @@ from backend.services import proxy_service
 from backend.services.proxy_quality import GRADES, rate_check
 
 # The time limit also covers the proxy's connect and TLS set-up (1-2 s through a distant proxy).
-SAMPLE_SECONDS = {"download": 5, "upload": 6}
+SAMPLE_SECONDS = {"download": 5, "upload": 8}
 SAMPLES = 2
 DOWNLOAD_CAP = 2_000_000
-# Small enough that most proxies finish it, so Cloudflare confirms what arrived. A sample cut off
-# by the time limit counts what curl sent, which can include bytes still buffered on this PC.
+# Small enough that a proxy uploading at about 0.6 Mbps or more finishes it within the limit.
+# Only a finished upload counts: what curl reports as sent includes bytes still sitting in this
+# PC's and the proxy's buffers, so a proxy that delivers nothing could look like 0.3 Mbps.
 UPLOAD_CAP = 500_000
 # Less than this got through: too little to measure a speed from.
 MIN_SAMPLE_BYTES = 32_000
@@ -78,7 +80,8 @@ def timed_sample(network: dict | None, direction: str, seconds: float | None = N
 
 
 def parse_sample(direction: str, returncode: int, stdout: str) -> dict:
-    """Speed from curl's write-out. A sample cut off by the time limit (exit 28) still counts."""
+    """Speed from curl's write-out. A download cut off by the time limit (exit 28) still counts;
+    an upload must have finished, with Cloudflare's 200 confirming the payload arrived."""
     failure = {"mbps": None, "bytes": 0}
     if returncode not in (0, 28):
         return {**failure, "error": "No traffic got through this proxy"}
@@ -89,15 +92,14 @@ def parse_sample(direction: str, returncode: int, stdout: str) -> dict:
     except ValueError:
         return {**failure, "error": "Speed sample returned no measurement"}
     timed_out = returncode == 28
+    if timed_out and direction == "upload":
+        return {**failure, "error": f"Upload did not finish within {SAMPLE_SECONDS['upload']} s"}
     if timed_out and moved == 0:
         return {**failure, "error": "Timed out before any data got through"}
-    # Cut off mid-transfer, Cloudflare has not answered yet, so there is no status (0) or only
-    # 100 Continue. A finished transfer must end in 200.
-    allowed = {200} | ({0, 100} if timed_out and direction == "upload" else set())
-    if status not in allowed:
+    if status != 200:
         return {**failure, "error": f"Cloudflare returned HTTP {status}"}
-    # Time from the first byte (download) or the start of sending (upload): the proxy's connect
-    # and TLS set-up would otherwise count against short samples.
+    # Time from the first byte (download) or the start of sending until Cloudflare's answer
+    # (upload): the proxy's connect and TLS set-up would otherwise count against short samples.
     start = starttransfer if direction == "download" and starttransfer > 0 else pretransfer
     elapsed = total - start
     if moved < MIN_SAMPLE_BYTES or elapsed <= 0.05:
@@ -139,6 +141,10 @@ def measure(proxy: dict) -> dict:
         network = network_of(proxy)
         for direction in ("download", "upload"):
             for _ in range(SAMPLES):
+                check[direction].append(timed_sample(network, direction))
+            # Cloudflare's speed server stalls now and then while the proxy carries other sites
+            # fine, so one more try before a direction counts as timed out.
+            if not any(sample.get("mbps") is not None for sample in check[direction]):
                 check[direction].append(timed_sample(network, direction))
     check["seconds"] = round(time.monotonic() - started, 1)
     return check

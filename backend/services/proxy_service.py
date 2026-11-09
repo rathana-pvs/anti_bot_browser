@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from backend.config import ROOT_DIR
-from backend.services.proxy_quality import normalize_proxy
+from backend.services.proxy_quality import is_poor, normalize_proxy
 
 PROXY_POOL_FILE = ROOT_DIR / "proxies" / "proxy_pool.json"
 _proxy_assignment_lock = threading.Lock()
@@ -227,9 +227,8 @@ def assign_proxy(profile_id: str) -> dict | None:
     with _proxy_assignment_lock:
         pool = load_proxy_pool()
         limit = account_limit()
-        choices = [p for p in pool if p.get("group") != "Poor proxy" and not p.get("held_by_phone")
-                   and not p.get("replaced_by")
-                   and has_room(p, profile_id, limit)]
+        choices = [p for p in pool if not is_poor(p) and p.get("group") != "Poor proxy"
+                   and not p.get("held_by_phone") and has_room(p, profile_id, limit)]
         if not choices:
             return None
         proxy = min(choices, key=lambda p: len(holders(p)))

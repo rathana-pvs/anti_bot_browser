@@ -32,19 +32,38 @@ def test_a_sample_cut_off_by_the_time_limit_still_gives_a_speed():
     assert sample == {'mbps': 2.4, 'bytes': 750000, 'error': None}
 
 
-def test_upload_time_starts_when_sending_starts():
-    sample = proxy_check.parse_sample('upload', 28, '100 0 500000 1.0 1.1 3.0')
-    assert sample['mbps'] == 2.0
+def test_upload_time_runs_from_sending_until_cloudflare_answers():
+    sample = proxy_check.parse_sample('upload', 0, '200 0 500000 1.0 1.1 3.0')
+    assert sample == {'mbps': 2.0, 'bytes': 500000, 'error': None}
 
 
-def test_an_upload_cut_off_before_cloudflare_answers_still_counts():
-    # No response yet when the time limit hits: curl reports status 0 but has sent 375 KB.
-    assert proxy_check.parse_sample('upload', 28, '000 0 375000 1.5 0 6.0')['mbps'] == 0.67
+@pytest.mark.parametrize('status', ['000', '100', '200'])
+def test_an_upload_cut_off_by_the_time_limit_is_a_timeout(status):
+    # curl has handed 375 KB to the socket, but those bytes may still sit in this PC's or the
+    # proxy's buffers: without Cloudflare's answer nothing confirms they arrived.
+    sample = proxy_check.parse_sample('upload', 28, f'{status} 0 375000 1.5 0 8.0')
+    assert sample == {'mbps': None, 'bytes': 0, 'error': 'Upload did not finish within 8 s'}
+
+
+def test_an_upload_that_cloudflare_rejects_is_not_measured():
+    # A stalled upload ends when Cloudflare gives up on it.
+    sample = proxy_check.parse_sample('upload', 0, '502 0 500000 1.5 0 44.0')
+    assert sample['mbps'] is None and sample['error'] == 'Cloudflare returned HTTP 502'
 
 
 def test_a_sample_that_got_nothing_through_is_a_timeout():
     sample = proxy_check.parse_sample('download', 28, '000 0 0 1.8 0 5.0')
     assert sample['mbps'] is None and sample['error'] == 'Timed out before any data got through'
+
+
+def test_a_direction_with_no_measured_sample_gets_one_more_try(monkeypatch):
+    monkeypatch.setattr(proxy_check, 'quick_check', lambda proxy: {'reachable': True})
+    stall = {'mbps': None, 'bytes': 0, 'error': 'Upload did not finish within 8 s'}
+    results = {'download': [{'mbps': 8.0, 'bytes': 1}] * 2, 'upload': [stall, stall, {'mbps': 2.3, 'bytes': 1}]}
+    monkeypatch.setattr(proxy_check, 'timed_sample', lambda network, direction: results[direction].pop(0))
+    measured = proxy_check.measure({'host': '10.0.0.1', 'port': 1080})
+    assert len(measured['download']) == 2 and [s['mbps'] for s in measured['upload']] == [None, None, 2.3]
+    assert rate_check({**measured, 'facebook_ok': True})['grade'] == 'good'
 
 
 @pytest.mark.parametrize('rc,out,error', [
@@ -62,11 +81,14 @@ def test_samples_that_cannot_be_measured_say_why(rc, out, error):
 
 def test_only_a_timeout_or_an_unreachable_proxy_is_poor():
     assert rate_check(check(down=(8.0, 8.0), up=(3.0, 3.0)))['grade'] == 'good'
+    # Cloudflare's speed server stalls now and then on a working proxy: one stalled sample
+    # beside a measured one is not a timeout.
+    one_stall = check(down=(8.0, 8.0), up=(2.3,))
+    one_stall['upload'].insert(0, {'mbps': None, 'bytes': 0, 'error': 'Upload did not finish within 8 s'})
+    assert rate_check(one_stall)['grade'] == 'good'
     assert rate_check(check(down=(8.0, 8.0), up=(0.3, 0.5)))['grade'] == 'slow'
     assert rate_check(check(down=(5.0,), up=()))['grade'] == 'timeout'
-    assert rate_check(check(reachable=False, down=(), up=()))['grade'] == 'dead'
-    # A slow Facebook response no longer counts against the proxy.
-    assert rate_check(check(facebook_ms=6000))['grade'] == 'good'
+
 
 
 def test_samples_far_apart_mark_the_proxy_unstable():

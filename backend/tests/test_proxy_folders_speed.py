@@ -142,6 +142,14 @@ def test_automatic_assignment_skips_poor_proxies(client):
     assert proxy_service.assign_proxy('profile_002')['group'] == 'Used'
 
 
+def test_automatic_assignment_skips_a_timed_out_proxy_that_has_accounts(client, monkeypatch):
+    monkeypatch.setattr(proxy_service, 'account_limit', lambda: 3)
+    proxy_service.update_proxy_metadata(['a'], speed_test=result(4, None))
+    proxy_service.update_proxy_metadata(['b'], speed_test=result(None, None))
+    assert proxy_service.load_proxy_pool()[0]['group'] == 'Used'
+    assert proxy_service.assign_proxy('profile_002') is None
+
+
 def test_first_timeout_moves_available_proxy_to_poor_and_retest_recovers(client):
     session, _ = client
     assert session.get('/api/proxies').json()[1]['group'] == 'Available'

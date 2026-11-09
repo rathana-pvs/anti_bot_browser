@@ -70,6 +70,12 @@ def normalize_holders(proxy):
     return proxy
 
 
+def is_poor(proxy):
+    """A proxy that timed out, cannot be reached or was replaced, whichever folder it is in: one
+    with accounts stays in Used, but no further account should join it."""
+    return proxy.get('speed_quality') == 'check_failed' or bool(proxy.get('replaced_by'))
+
+
 def normalize_proxy(proxy):
     normalize_holders(proxy)
     if isinstance(proxy.get('check'), dict):

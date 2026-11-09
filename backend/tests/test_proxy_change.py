@@ -49,6 +49,21 @@ def test_options_put_the_webshare_replacement_first_and_skip_replaced_and_full_p
     assert new['rest_hours'] < de['rest_hours']
 
 
+
+def test_options_skip_a_timed_out_proxy_that_already_has_accounts(setup, monkeypatch):
+    monkeypatch.setattr(proxy_service, 'account_limit', lambda: 3)
+    pool = proxy_service.load_proxy_pool()
+    stall = {'mbps': None, 'bytes': 0, 'error': 'Upload did not finish within 8 s'}
+    for proxy in pool:
+        if proxy['id'] == 'full':
+            proxy['check'] = {'reachable': True, 'facebook_ok': True, 'download': [{'mbps': 7.0, 'bytes': 1}],
+                              'upload': [stall, stall, stall]}
+    proxy_service.save_proxy_pool(pool)
+    full = next(p for p in proxy_service.load_proxy_pool() if p['id'] == 'full')
+    assert full['group'] == 'Used' and full['speed_quality'] == 'check_failed'
+    assert [o['id'] for o in proxy_change.options('pc1', NOW)['options']] == ['new', 'de']
+
+
 @pytest.mark.parametrize('status', ['running', 'paused'])
 def test_an_open_browser_blocks_the_change(setup, status):
     setup['container'] = status

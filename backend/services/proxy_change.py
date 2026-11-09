@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 
 from backend.config import PROFILES_DIR
 from backend.services import account_activity, account_hold, proxy_service
+from backend.services.proxy_quality import is_poor
 
 
 class AccountRunning(ValueError):
@@ -95,7 +96,7 @@ def options(profile_id: str, now: datetime | None = None) -> dict:
     limit = proxy_service.account_limit()
     choices = []
     for proxy in pool:
-        if proxy is current or proxy.get("replaced_by") or proxy.get("group") == "Poor proxy":
+        if proxy is current or is_poor(proxy) or proxy.get("group") == "Poor proxy":
             continue
         if proxy.get("held_by_phone") and not proxy.get("password"):
             continue
