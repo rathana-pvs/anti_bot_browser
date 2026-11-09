@@ -1,3 +1,18 @@
+# Version 2.2.3
+
+- Keep the app responsive during scheduled posts by batching Docker status checks
+  and reducing queue reads and writes.
+- Load finished job logs on demand from the job details drawer. The queue keeps
+  its summaries while storing full logs and telemetry separately.
+- Share job slots between preparation and posting, and give prepared accounts
+  priority when they are ready to post.
+- Prevent Auto warming from overwriting queue changes made by posting or recovery.
+- Count proxy upload speed only when the test server confirms receipt of the full
+  payload. Exclude timed-out, unreachable, and replaced proxies from new assignments.
+
+**Linux only.** After installing, run **Settings → Setup and repair → Install /
+update runtime** when prompted.
+
 # Version 2.2.0
 
 - Rename an account directly from its account menu.
