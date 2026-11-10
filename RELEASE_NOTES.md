@@ -1,3 +1,12 @@
+# Version 2.2.5
+
+- Filter the posting queue by date: Today, Last 3 days or Last 7 days.
+- Clear the "Restart needed" badge once warming or posting starts the account's
+  browser with the new proxy or settings. Before, only a manual Start cleared it.
+
+**Linux only.** After installing, run **Settings → Setup and repair → Install /
+update runtime** when prompted.
+
 # Version 2.2.4
 
 - Let video creation and preview renders proceed without waiting for free RAM.
