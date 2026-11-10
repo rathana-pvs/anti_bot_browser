@@ -300,7 +300,7 @@ def test_render_cancel_and_idempotent_requests(creator, reel):
 
 def test_pressured_render_waits_in_the_queue_and_resumes(creator, reel):
     from backend.services.reel_creator.reel import RenderInput
-    reason = ['Waiting for automation or Live to finish']
+    reason = ['App maintenance or shutdown']
     creator.admission = lambda: reason[0]
     job = creator.enqueue(RenderInput(request_id='4' * 32, reel=reel, kind='preview'))
     creator._render(creator.store.claim())
@@ -314,7 +314,7 @@ def test_pressured_render_waits_in_the_queue_and_resumes(creator, reel):
 def test_render_that_keeps_getting_pressured_stops(creator, reel):
     from backend.services.reel_creator.reel import RenderInput
     from backend.services.reel_creator.service import MAX_REQUEUES
-    creator.admission = lambda: 'Waiting for automation or Live to finish'
+    creator.admission = lambda: 'App maintenance or shutdown'
     job = creator.enqueue(RenderInput(request_id='5' * 32, reel=reel, kind='preview'))
     creator.store.update(job['id'], requeues=MAX_REQUEUES)
     creator._render(creator.store.claim())
@@ -1442,3 +1442,12 @@ def test_gemini_usage_is_logged_as_counts_only(caplog):
                                              'candidates': [{'content': 'private article words'}]})
     assert 'action=caption' in caplog.text and 'input=900' in caplog.text and 'output=80' in caplog.text
     assert 'private article words' not in caplog.text
+
+
+def test_renders_do_not_wait_for_automation_or_live(creator, monkeypatch):
+    from backend.services import automation_service, docker_service, live_service
+    monkeypatch.setattr(automation_service, 'active_automation_tasks', {'profile_001': {'status': 'running'}})
+    monkeypatch.setattr(live_service, 'CONTROLS', {'profile_002': object()})
+    monkeypatch.setattr(docker_service, 'sustained_cpu_percent', lambda: 10.0)
+    creator.admission = None
+    assert creator.pressure() is None

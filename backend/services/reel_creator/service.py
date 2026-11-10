@@ -347,16 +347,13 @@ class ReelCreator:
     def pressure(self):
         if self.admission:
             return self.admission()
-        from backend.services import automation_service, container_lifecycle, docker_service, live_service
+        from backend.services import container_lifecycle, docker_service
         from backend.services.resource_service import resource_admission_decision
         if container_lifecycle.UPDATE_MAINTENANCE or container_lifecycle.SHUTTING_DOWN:
             return 'App maintenance or shutdown'
-        if live_service.CONTROLS or any(task.get('status') in ('running', 'preparing')
-                                       for task in list(automation_service.active_automation_tasks.values())):
-            return 'Waiting for automation or Live to finish'
-        # Video create and preview renders are not gated on system RAM: a render
-        # that needs memory should get it, not wait. Only CPU and start spacing
-        # throttle admission here (passing 0 for memory keeps those checks).
+        # Renders run alongside automation and Live at low priority. They are not
+        # gated on system RAM either: only CPU and start spacing throttle admission
+        # here (passing 0 for memory keeps those checks).
         cpu = docker_service.sustained_cpu_percent()
         decision = resource_admission_decision(0.0, cpu, False)
         self.memory_paused = False
@@ -489,7 +486,7 @@ class ReelCreator:
                     reason = None if recovery else self.pressure()
                     if reason:
                         pressured = pressured or time.monotonic()
-                        if 'automation' in reason or 'maintenance' in reason or time.monotonic() - pressured > 5:
+                        if 'maintenance' in reason or time.monotonic() - pressured > 5:
                             raise Pressured(reason)
                     else:
                         pressured = None
@@ -628,7 +625,7 @@ class ReelCreator:
         reason = self.pressure()
         if reason:
             state['pressured'] = state.get('pressured') or time.monotonic()
-            if 'automation' in reason or 'maintenance' in reason or time.monotonic() - state['pressured'] > 5:
+            if 'maintenance' in reason or time.monotonic() - state['pressured'] > 5:
                 raise Pressured(reason)
         else:
             state['pressured'] = None
