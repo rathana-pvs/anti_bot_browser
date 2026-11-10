@@ -29,6 +29,7 @@ from backend.services.docker_service import (
     count_running_profile_containers,
     claim_container_start_admission,
     automation_worker_env,
+    record_effective_profile_environment,
     get_scheduler_config,
     CONTAINER_START_SPACING_MS,
 )
@@ -384,6 +385,9 @@ async def ensure_profile_container_ready(profile_id: str) -> dict:
             stdout_b, _ = await asyncio.wait_for(chk.communicate(), timeout=3.0)
             window_id = stdout_b.decode("utf-8", errors="replace").strip()
             if window_id:
+                if original_status not in ("running", "paused"):
+                    # A fresh container runs the saved settings, so "Restart needed" no longer applies.
+                    await asyncio.to_thread(record_effective_profile_environment, profile_id)
                 return {"started": original_status != "running", "status": "running"}
         except asyncio.CancelledError:
             if 'chk' in locals() and chk.returncode is None:

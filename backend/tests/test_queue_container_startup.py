@@ -84,3 +84,22 @@ def test_queue_worker_reaches_container_startup(monkeypatch, worker, post_type, 
         assert record["container_started_by_queue"] is True
         assert result["success"] is True
         assert execution["status"] == ("ready" if worker == "preparation" else status)
+
+
+@pytest.mark.parametrize("before, records", [("stopped", True), ("running", False), ("paused", False)])
+def test_automation_start_clears_restart_needed(monkeypatch, before, records):
+    """A container that automation starts fresh runs the saved settings."""
+    import backend.services.automation_service as svc
+
+    statuses = iter([before, "running", "running"])
+    monkeypatch.setattr(svc, "get_container_status", lambda *_a, **_k: next(statuses, "running"))
+    monkeypatch.setattr(svc, "run_profile_lifecycle_action", AsyncMock(return_value=""))
+    monkeypatch.setattr(svc.lifecycle, "mark_used", lambda *_a: None)
+    chk = SimpleNamespace(communicate=AsyncMock(return_value=(b"12345\n", b"")), returncode=0)
+    monkeypatch.setattr(svc.asyncio, "create_subprocess_exec", AsyncMock(return_value=chk))
+    recorded = []
+    monkeypatch.setattr(svc, "record_effective_profile_environment", recorded.append)
+
+    asyncio.run(svc.ensure_profile_container_ready("profile-test"))
+
+    assert recorded == (["profile-test"] if records else [])
