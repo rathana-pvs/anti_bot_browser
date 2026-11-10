@@ -805,7 +805,8 @@ class Plan:
             y += tag_height
         bottom = px(y)
         if block:
-            lines, bottom = self._headline(hl, hs, WHITE, px(LEFT), px(y), .15, stroke=max(2, px(5)), shadow=False)
+            # Hot News text fades in where it stands; it does not slide up.
+            lines, bottom = self._headline(hl, hs, WHITE, px(LEFT), px(y), .15, anim='fade', stroke=max(2, px(5)), shadow=False)
             out += lines
         if hl:
             widest = max(text_width(line, hs, self.type['head'][0]) for line in hl)
@@ -813,7 +814,7 @@ class Plan:
                                px(LEFT), bottom + px(10), .15 + len(hl) * .12, .5, 'wipe', role='headline'))
             bottom += px(52)
         if sticker:
-            out.append(Element(sticker, px(LEFT), bottom, .6, .5, 'rise', role='detail'))
+            out.append(Element(sticker, px(LEFT), bottom, .6, .5, 'fade', role='detail'))
         if out and high:
             shift = px(self.limit) - max(e.y + e.tile.height for e in out)
             for element in out:

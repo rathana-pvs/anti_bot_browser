@@ -829,7 +829,7 @@ def test_stat_quote_and_end_scenes_render_in_every_look(look):
         plan.frame(plan.settled(index))
     elements = plan.scene_elements[1]
     figure = max((e for e in elements if e.anim == 'pop'), key=lambda e: e.tile.height)
-    lines = [e for e in elements if e.anim == 'rise' and plan.px(20) < e.tile.width < plan.W * .95]   # headline lines, not straps
+    lines = [e for e in elements if e.anim in ('rise', 'fade') and plan.px(20) < e.tile.width < plan.W * .95]   # headline lines, not straps
     assert figure.tile.height > max(e.tile.height for e in lines)               # the figure is the biggest type on the card
     highlighted = Plan(value, 360, {}, None).frame(plan.settled(0)).tobytes()
     plain = Plan(value.model_copy(update=dict(scenes=[value.scenes[0].model_copy(update=dict(highlight=''))])), 360, {}, None)
@@ -1451,3 +1451,12 @@ def test_renders_do_not_wait_for_automation_or_live(creator, monkeypatch):
     monkeypatch.setattr(docker_service, 'sustained_cpu_percent', lambda: 10.0)
     creator.admission = None
     assert creator.pressure() is None
+
+
+def test_hot_news_text_fades_in_without_sliding_up(creator, reel):
+    reel.look = 'hot'
+    images, logo, _ = creator.validate_assets(reel)
+    elements = Plan(reel, 360, images, logo).scene_elements[0]
+    text = [e for e in elements if e.role in ('headline', 'detail') and e.anim != 'wipe']  # the wipe is the underline bar
+    assert {e.role for e in text} == {'headline', 'detail'}
+    assert all(e.anim == 'fade' for e in text)
