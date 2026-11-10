@@ -118,8 +118,17 @@ export function AccountsPage({ profiles, proxies, devices, groups, executions, h
   });
   const toggleAll = () => setSelected(allVisibleSelected ? new Set() : new Set(visible.map(p => p.id)));
 
+  const clearSelection = () => setSelected(new Set());
+  // Deleted accounts must not linger in the selection count.
+  useEffect(() => {
+    setSelected(current => {
+      const kept = new Set([...current].filter(id => profiles.some(p => p.id === id)));
+      return kept.size === current.size ? current : kept;
+    });
+  }, [profiles]);
+
   const rowMenu = (profile: Profile) => selected.has(profile.id) && selected.size > 1
-    ? { items: bulkMenu(selectedProfiles, handlers), title: `${selected.size} accounts` }
+    ? { items: bulkMenu(selectedProfiles, handlers, clearSelection), title: `${selected.size} accounts` }
     : { items: accountMenu(profile, handlers, { failureCutoff: periodStart(period) }), title: profile.name };
   const menuForFolder = (name: string) => folderMenu(name, profiles.filter(p => p.group === name), handlers, folderHandlers);
   const blankMenu = [{ label: 'New folder…', icon: <FolderPlus className="h-3.5 w-3.5" />, onSelect: folderHandlers.create }];
@@ -132,7 +141,10 @@ export function AccountsPage({ profiles, proxies, devices, groups, executions, h
   };
   const dropAccounts = (ids: string[], target: string) => {
     const moving = profiles.filter(p => ids.includes(p.id) && (p.group || '') !== target);
-    if (moving.length) folderHandlers.moveTo(moving, target);
+    if (!moving.length) return;
+    // Dropping the selection somewhere is the end of that selection.
+    const draggedSelection = ids.some(id => selected.has(id));
+    void folderHandlers.moveTo(moving, target).then(done => { if (done && draggedSelection) clearSelection(); });
   };
 
   if (!profiles.length) {
@@ -198,9 +210,9 @@ export function AccountsPage({ profiles, proxies, devices, groups, executions, h
               ? <div className="col-[2/-1] flex flex-wrap items-center gap-1">
                   <span className="mr-1 text-xs font-medium">{selected.size} selected</span>
                   <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
-                    {bulkMenu(selectedProfiles, handlers).map(item => <Button key={item.label} size="sm" variant="ghost" disabled={item.disabled}
+                    {bulkMenu(selectedProfiles, handlers, clearSelection).map(item => <Button key={item.label} size="sm" variant="ghost" disabled={item.disabled}
                       className={item.danger ? 'text-red-300 hover:text-red-200' : 'text-blue-100'} onClick={item.onSelect}>{item.icon}{item.label}</Button>)}
-                    <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())} aria-label="Clear selection"><X className="h-3.5 w-3.5" /></Button>
+                    <Button size="sm" variant="ghost" onClick={clearSelection} aria-label="Clear selection"><X className="h-3.5 w-3.5" /></Button>
                   </div>
                 </div>
               : <>

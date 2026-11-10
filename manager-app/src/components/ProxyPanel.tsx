@@ -181,12 +181,12 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
       );
       if (!confirmed) return;
       const result = await deleteSelectedProxies(ids);
-      const removed = new Set([...result.deleted_ids, ...result.missing_ids]);
-      setSelectedIds((current) => new Set([...current].filter((id) => !removed.has(id))));
+      // The delete is done, so the selection is too, including any assigned proxies that were kept.
+      setSelectedIds(new Set());
       onRefresh();
       if (result.blocked_ids.length) {
         await showAlert(`Deleted ${result.deleted_ids.length} proxies. ${result.blocked_ids.length} assigned proxies were kept.`, {
-          title: 'Proxy selection updated', variant: 'warning',
+          title: 'Some proxies were kept', variant: 'warning',
         });
       } else if (result.deleted_ids.length) {
         await showAlert(`Deleted ${result.deleted_ids.length} ${result.deleted_ids.length === 1 ? 'proxy' : 'proxies'}.`, { variant: 'success' });

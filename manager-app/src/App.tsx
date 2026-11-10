@@ -82,6 +82,9 @@ export const App: React.FC = () => {
   const { devices, reload: reloadDevices } = useDevices();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [moveTargets, setMoveTargets] = useState<Profile[] | null>(null);
+  // Settles the bulk "Move to folder" request: true once moved, false when the dialog is cancelled.
+  const moveDone = React.useRef<((moved: boolean) => void) | null>(null);
+  const settleMove = (moved: boolean) => { moveDone.current?.(moved); moveDone.current = null; };
   const [folderDialog, setFolderDialog] = useState<FolderDialogState>(null);
   const [changeProxyFor, setChangeProxyFor] = useState<Profile | null>(null);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
@@ -190,8 +193,9 @@ export const App: React.FC = () => {
     setPage('devices');
   }, []);
 
-  const runProfiles = async (targets: Profile[], action: ProfileAction) => {
-    if (!targets.length) return;
+  /** Resolves true once the action has run (some accounts may have failed or been left running). */
+  const runProfiles = async (targets: Profile[], action: ProfileAction): Promise<boolean> => {
+    if (!targets.length) return false;
     setBusyIds((current) => new Set([...current, ...targets.map((p) => p.id)]));
     setProfileActionError(null);
     const failures: ProfileActionError[] = [];
@@ -227,7 +231,7 @@ export const App: React.FC = () => {
         await loadData();
         const stopped = targets.length - working.length - failures.length;
         if (targets.length > 1) showToast(`Stopped ${stopped} of ${targets.length}. Left ${working.length} running to finish ${working.length === 1 ? 'its job' : 'their jobs'}.`, failures.length ? 'error' : 'success');
-        return;
+        return true;
       }
     }
     await loadData();
@@ -238,17 +242,19 @@ export const App: React.FC = () => {
     } else if (targets.length > 1) {
       showToast(`${ACTION_VERB[action]} ${targets.length} accounts.`, 'success');
     }
+    return true;
   };
 
-  const removeProfiles = async (targets: Profile[]) => {
-    if (!targets.length) return;
+  /** Resolves false when the user cancels, true once deletion has run. */
+  const removeProfiles = async (targets: Profile[]): Promise<boolean> => {
+    if (!targets.length) return false;
     const confirmed = await showConfirm(
       targets.length === 1
         ? `Delete “${targets[0].name}”? Its browser data, cookies, and saved sessions are deleted too. This can’t be undone.`
         : `Delete ${targets.length} accounts? Their browser data, cookies, and saved sessions are deleted too. This can’t be undone.`,
       { title: targets.length === 1 ? 'Delete account' : 'Delete accounts', confirmLabel: 'Delete', variant: 'danger' },
     );
-    if (!confirmed) return;
+    if (!confirmed) return false;
     const failures: string[] = [];
     const deleted = new Set<string>();
     for (const profile of targets) {
@@ -258,6 +264,7 @@ export const App: React.FC = () => {
     setOpenAccount((current) => current && deleted.has(current.id) ? null : current);
     await loadData();
     if (failures.length) await showAlert(`Couldn’t delete: ${failures.join(' · ')}`, { title: 'Delete failed', variant: 'danger' });
+    return true;
   };
 
   const moveProfiles = async (targets: Profile[], group: string, isNew: boolean) => {
@@ -349,9 +356,13 @@ export const App: React.FC = () => {
     openQueue,
     clearFailures: (profile, before) => { void clearFailures(profile, before); },
     open: openAccountPage,
-    run: (targets, action) => { void runProfiles(targets, action); },
-    moveToGroup: setMoveTargets,
-    remove: (targets) => { void removeProfiles(targets); },
+    run: runProfiles,
+    moveToGroup: (targets) => {
+      settleMove(false);
+      setMoveTargets(targets);
+      return new Promise<boolean>((resolve) => { moveDone.current = resolve; });
+    },
+    remove: removeProfiles,
     copyId: (profile) => {
       writeHostClipboardText(profile.id)
         .then(() => showToast('Account ID copied.', 'success'))
@@ -398,7 +409,7 @@ export const App: React.FC = () => {
     rename: (name) => setFolderDialog({ mode: 'rename', name }),
     remove: (name) => { void deleteFolder(name); },
     // Errors are already shown as a toast by moveProfiles.
-    moveTo: (targets, folder) => { void moveProfiles(targets, folder, false).catch(() => undefined); },
+    moveTo: (targets, folder) => moveProfiles(targets, folder, false).then(() => true, () => false),
   };
 
   const handleCreate = async (profileData: ProfileCreateRequest) => {
@@ -546,7 +557,8 @@ export const App: React.FC = () => {
 
       <FolderNameDialog state={folderDialog} onSubmit={submitFolderName} onClose={() => setFolderDialog(null)} />
 
-      <MoveToGroupDialog profiles={moveTargets} groups={profileGroups} onMove={moveProfiles} onClose={() => setMoveTargets(null)} />
+      <MoveToGroupDialog profiles={moveTargets} groups={profileGroups} onMove={async (targets, group, isNew) => { await moveProfiles(targets, group, isNew); settleMove(true); }}
+        onClose={() => { settleMove(false); setMoveTargets(null); }} />
 
       {changeProxyFor && <ChangeProxyDialog profile={changeProxyFor} onClose={() => setChangeProxyFor(null)}
         onChanged={(message) => { showToast(message, 'success'); refreshAccountHealth(); void loadData(); }} />}

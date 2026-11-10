@@ -7,9 +7,10 @@ export type ProfileAction = 'start' | 'stop' | 'pause' | 'unpause';
 
 export interface AccountHandlers {
   open: (profileId: string, tab?: AccountTab) => void;
-  run: (profiles: Profile[], action: ProfileAction) => void;
-  moveToGroup: (profiles: Profile[]) => void;
-  remove: (profiles: Profile[]) => void;
+  /** The bulk actions resolve true once they have run, false when the user cancelled. */
+  run: (profiles: Profile[], action: ProfileAction) => Promise<boolean>;
+  moveToGroup: (profiles: Profile[]) => Promise<boolean>;
+  remove: (profiles: Profile[]) => Promise<boolean>;
   copyId: (profile: Profile) => void;
   /** Asks for a new name and saves it. */
   rename: (profile: Profile) => void;
@@ -37,7 +38,7 @@ export interface FolderHandlers {
   rename: (folder: string) => void;
   remove: (folder: string) => void;
   /** Direct move, used by drag and drop. `folder` is '' for no folder. */
-  moveTo: (profiles: Profile[], folder: string) => void;
+  moveTo: (profiles: Profile[], folder: string) => Promise<boolean>;
 }
 
 const icon = 'h-3.5 w-3.5';
@@ -92,15 +93,17 @@ export function accountMenu(profile: Profile, handlers: AccountHandlers, { inclu
 
 const countLabel = (verb: string, count: number) => count ? `${verb} ${count} account${count === 1 ? '' : 's'}` : `${verb} accounts`;
 
-export function bulkMenu(profiles: Profile[], handlers: AccountHandlers): ActionMenuItem[] {
+/** `onDone` runs after an action has finished, not when it was cancelled, so the caller can clear its selection. */
+export function bulkMenu(profiles: Profile[], handlers: AccountHandlers, onDone: () => void = () => {}): ActionMenuItem[] {
   const count = profiles.length;
+  const then = (action: Promise<boolean>) => { void action.then(done => { if (done) onDone(); }); };
   const startable = profiles.filter(p => !isAndroid(p) && (p.status === 'stopped' || p.status === 'error'));
   const stoppable = profiles.filter(p => !isAndroid(p) && (p.status === 'running' || p.status === 'paused'));
   return [
-    { label: countLabel('Start', startable.length), icon: <Play className={icon} />, disabled: !startable.length, onSelect: () => handlers.run(startable, 'start') },
-    { label: countLabel('Stop', stoppable.length), icon: <Square className={icon} />, disabled: !stoppable.length, onSelect: () => handlers.run(stoppable, 'stop') },
-    { label: `Move ${count} to folder…`, icon: <FolderInput className={icon} />, divider: true, onSelect: () => handlers.moveToGroup(profiles) },
-    { label: countLabel('Delete', count), icon: <Trash2 className={icon} />, danger: true, divider: true, onSelect: () => handlers.remove(profiles) },
+    { label: countLabel('Start', startable.length), icon: <Play className={icon} />, disabled: !startable.length, onSelect: () => then(handlers.run(startable, 'start')) },
+    { label: countLabel('Stop', stoppable.length), icon: <Square className={icon} />, disabled: !stoppable.length, onSelect: () => then(handlers.run(stoppable, 'stop')) },
+    { label: `Move ${count} to folder…`, icon: <FolderInput className={icon} />, divider: true, onSelect: () => then(handlers.moveToGroup(profiles)) },
+    { label: countLabel('Delete', count), icon: <Trash2 className={icon} />, danger: true, divider: true, onSelect: () => then(handlers.remove(profiles)) },
   ];
 }
 
