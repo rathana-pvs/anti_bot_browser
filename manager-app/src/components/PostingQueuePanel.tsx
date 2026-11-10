@@ -52,6 +52,22 @@ const TYPE_FILTERS: { value: QueueTypeFilter; label: string }[] = [
   { value: 'warming', label: 'Warm-up' },
 ];
 const ALL_BATCHES = '__all__';
+type DateFilter = 'all' | '1' | '3' | '7';
+const DATE_FILTERS: { value: DateFilter; label: string }[] = [
+  { value: 'all', label: 'Any date' },
+  { value: '1', label: 'Today' },
+  { value: '3', label: 'Last 3 days' },
+  { value: '7', label: 'Last 7 days' },
+];
+/** Start of the local day `days - 1` days ago, so "Today" starts at midnight today. */
+const dateFilterStart = (filter: DateFilter): number | null => {
+  if (filter === 'all') return null;
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() - (Number(filter) - 1));
+  return start.getTime();
+};
+const endOfToday = () => { const end = new Date(); end.setHours(23, 59, 59, 999); return end.getTime(); };
 const NEXT_PAGE = 25;
 const FINISHED_PAGE = 25;
 
@@ -69,6 +85,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
   // Follow the newest batch until the user explicitly chooses another view.
   const batchFilter = chosenBatch ?? batches[0]?.batch_id ?? ALL_BATCHES;
   const [search, setSearch] = useState('');
+  const [dateFilter, setDateFilter] = useState<DateFilter>('all');
   const [accountFilter, setAccountFilter] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [nextLimit, setNextLimit] = useState(NEXT_PAGE);
@@ -106,7 +123,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
     return () => clearInterval(interval);
   }, [loadQueue]);
 
-  useEffect(() => { setNextLimit(NEXT_PAGE); setFinishedLimit(FINISHED_PAGE); }, [typeFilter, batchFilter, search, accountFilter]);
+  useEffect(() => { setNextLimit(NEXT_PAGE); setFinishedLimit(FINISHED_PAGE); }, [typeFilter, batchFilter, search, accountFilter, dateFilter]);
 
   // Arriving from an account: show only its items, with nothing else filtered out.
   useEffect(() => {
@@ -115,6 +132,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
     setTypeFilter('all');
     setBatchFilter(ALL_BATCHES);
     setSearch('');
+    setDateFilter('all');
     setSelectedId(focusAccount.executionId ?? null);
   }, [focusAccount?.key]);
 
@@ -122,11 +140,16 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
   const profileName = useCallback((id: string) => profileById.get(id)?.name || id, [profileById]);
   const executions = queueData?.executions || [];
 
-  const filtered = useMemo(() => executions.filter(item =>
-    (typeFilter === 'all' || itemKind(item) === typeFilter)
-    && (batchFilter === ALL_BATCHES || item.batch_id === batchFilter)
-    && (!accountFilter || item.profile_id === accountFilter)
-    && matchesSearch(item, search.trim(), profileName(item.profile_id))), [executions, typeFilter, batchFilter, search, accountFilter, profileName]);
+  const filtered = useMemo(() => {
+    const dateStart = dateFilterStart(dateFilter);
+    const dateEnd = endOfToday();
+    return executions.filter(item =>
+      (typeFilter === 'all' || itemKind(item) === typeFilter)
+      && (batchFilter === ALL_BATCHES || item.batch_id === batchFilter)
+      && (!accountFilter || item.profile_id === accountFilter)
+      && (dateStart === null || (scheduledTime(item) >= dateStart && scheduledTime(item) <= dateEnd))
+      && matchesSearch(item, search.trim(), profileName(item.profile_id)));
+  }, [executions, typeFilter, batchFilter, search, accountFilter, dateFilter, profileName]);
 
   const sections = useMemo(() => {
     const result: Record<QueueSectionKey, QueueExecutionItem[]> = { attention: [], now: [], next: [], finished: [] };
@@ -337,7 +360,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
   }
   menuItems.push({ label: 'Export diagnostics', icon: <Download className="h-3.5 w-3.5" />, onSelect: () => setReport({ open: true, item: null }) });
 
-  const filtersActive = typeFilter !== 'all' || batchFilter !== ALL_BATCHES || search.trim() !== '' || accountFilter !== null;
+  const filtersActive = typeFilter !== 'all' || batchFilter !== ALL_BATCHES || search.trim() !== '' || accountFilter !== null || dateFilter !== 'all';
   // Right-click mirrors what the row and its detail panel offer; nothing is right-click only.
   const itemMenu = (item: QueueExecutionItem): ActionMenuItem[] => {
     const uncertain = UNCERTAIN_STATUSES.has(item.status);
@@ -385,6 +408,14 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
           </button>)}
         </div>
         <Select value={batchFilter} onValueChange={setBatchFilter} options={batchOptions} ariaLabel="Filter by batch" className="min-h-8 w-full shrink-0 whitespace-nowrap py-1 sm:w-80 [&>span:first-child]:truncate" />
+        <Select value={dateFilter} options={DATE_FILTERS} ariaLabel="Filter by date"
+          onValueChange={(value) => {
+            const next = value as DateFilter;
+            setDateFilter(next);
+            // A date range spans several daily batches, so stop narrowing to one batch.
+            if (next !== 'all') setBatchFilter(ALL_BATCHES);
+          }}
+          className="min-h-8 w-full shrink-0 whitespace-nowrap py-1 sm:w-36" />
         <div className="relative w-full sm:w-56">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500" />
           <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Account or caption" aria-label="Search the queue" className="min-h-8 py-1 pl-8" />
@@ -393,7 +424,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
           Account: {profileName(accountFilter)}
           <button type="button" aria-label="Show all accounts" onClick={() => setAccountFilter(null)} className="rounded-full p-0.5 hover:bg-blue-900"><X className="h-3 w-3" /></button>
         </span>}
-        {filtersActive && <button type="button" className="text-xs text-blue-400 hover:text-blue-300" onClick={() => { setTypeFilter('all'); setBatchFilter(ALL_BATCHES); setSearch(''); setAccountFilter(null); }}>Clear filters</button>}
+        {filtersActive && <button type="button" className="text-xs text-blue-400 hover:text-blue-300" onClick={() => { setTypeFilter('all'); setBatchFilter(ALL_BATCHES); setSearch(''); setAccountFilter(null); setDateFilter('all'); }}>Clear filters</button>}
         <div className="ml-auto flex items-center gap-3">
           <span className="text-xs text-zinc-400">
             {remaining.length > 0
@@ -419,7 +450,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
               <Button size="sm" variant="outline" onClick={() => setEditBatch(activeBatch)}><Pencil className="h-3.5 w-3.5" />Edit</Button>
               <Button size="sm" onClick={() => togglePause(activeBatch)} loading={batchBusy}><Play className="h-3 w-3" />Resume</Button>
             </div>}
-            {filtered.length === 0 && <EmptyState title="Nothing matches these filters" description="Try another type, batch, or search." />}
+            {filtered.length === 0 && <EmptyState title="Nothing matches these filters" description="Try another type, batch, date, or search." />}
 
             {sections.attention.length > 0 && <Section title="Needs you" count={sections.attention.length} tone="warning" icon={<AlertTriangle className="h-3.5 w-3.5" />}
               collapsible open={attentionOpen} onToggle={() => setAttentionOpen(!attentionOpen)}>
