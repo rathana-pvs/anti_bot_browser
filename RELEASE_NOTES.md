@@ -1,3 +1,14 @@
+# Version 2.2.7
+
+- Let reel renders run while automation jobs, Auto warming or Live are running.
+  Renders still wait during app maintenance or sustained high CPU, and a post
+  that starts mid-render no longer restarts the render.
+- Fade the Hot News headline and detail box in place instead of sliding them up.
+  An Entrance chosen in Advanced mode still overrides this.
+
+**Linux only.** After installing, run **Settings → Setup and repair → Install /
+update runtime** when prompted.
+
 # Version 2.2.6
 
 - Clear checked accounts and proxies once Start, Stop, Move to folder or Delete
