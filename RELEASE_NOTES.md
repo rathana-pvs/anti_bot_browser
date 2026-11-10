@@ -1,3 +1,11 @@
+# Version 2.2.6
+
+- Clear checked accounts and proxies once Start, Stop, Move to folder or Delete
+  finishes, so you no longer have to untick them. Cancelling keeps them checked.
+
+**Linux only.** After installing, run **Settings → Setup and repair → Install /
+update runtime** when prompted.
+
 # Version 2.2.5
 
 - Filter the posting queue by date: Today, Last 3 days or Last 7 days.
