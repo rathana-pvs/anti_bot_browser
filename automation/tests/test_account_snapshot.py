@@ -199,9 +199,13 @@ class NamePiecesTests(unittest.TestCase):
                     ("0 followers · 0 following", (737, 697, 916, 721)))
         self.assertEqual(read_snapshot(items, 1920, 1080, "page")["name"], "The Express Desk")
 
-    def test_a_name_with_no_letters_is_not_saved(self):
+    def test_a_name_with_no_letters_keeps_only_the_follower_count(self):
         # A name in a script the browser shows as boxes reads as "000".
         items = ocr(("000", (743, 240, 800, 265)), ("66K followers • 18 following", (743, 276, 941, 294)))
+        self.assertEqual(read_snapshot(items, 1920, 1080, "page"), {"kind": "page", "followers": 66000})
+
+    def test_no_name_and_no_follower_count_gives_nothing(self):
+        items = ocr(("000", (743, 240, 800, 265)), ("18 following", (743, 276, 900, 294)))
         self.assertIsNone(read_snapshot(items, 1920, 1080, "page"))
 
 

@@ -1,6 +1,7 @@
 /** The page name and follower count warming visits read from each account's own profile. */
 export interface FacebookPageSnapshot {
-  name: string;
+  /** Missing when the Page name could not be read (a script shown as boxes). */
+  name?: string;
   kind?: 'page' | 'personal';
   followers?: number;
   seen_at?: string;
@@ -44,22 +45,23 @@ export interface PageCells {
 const NOT_YET = 'Read during the next warming visit that opens this account’s profile.';
 
 export function pageCells(snapshot: FacebookPageSnapshot | null | undefined, phone: boolean, now: number = Date.now()): PageCells {
-  if (!snapshot?.name) {
+  if (!snapshot?.name && typeof snapshot?.followers !== 'number') {
     const hint = phone ? 'Not read on phone accounts yet.' : NOT_YET;
     return { page: '—', pageHint: hint, followers: '—', followersHint: hint, sortName: null, sortFollowers: null };
   }
   const seen = seenAgo(snapshot.seen_at, now);
   const kind = snapshot.kind === 'page' ? 'Page' : snapshot.kind === 'personal' ? 'Personal profile' : 'Profile';
-  const pageHint = `${kind}: ${snapshot.name}${seen ? ` · seen ${seen} while warming` : ''}`;
+  const pageHint = snapshot.name ? `${kind}: ${snapshot.name}${seen ? ` · seen ${seen} while warming` : ''}`
+    : 'Facebook shows this Page’s name in a script the browser can’t display, so only the follower count was read.';
   const followers = typeof snapshot.followers === 'number' ? snapshot.followers : null;
   const followersSeen = seenAgo(snapshot.followers_seen_at ?? snapshot.seen_at, now);
   return {
-    page: snapshot.kind === 'personal' ? `${snapshot.name} (personal)` : snapshot.name,
+    page: !snapshot.name ? 'Name not readable' : snapshot.kind === 'personal' ? `${snapshot.name} (personal)` : snapshot.name,
     pageHint,
     followers: followers === null ? '—' : shortCount(followers),
     followersHint: followers === null ? 'Facebook did not show a follower count on the last visit.'
       : `${followers.toLocaleString('en-US')} followers${followersSeen ? ` · seen ${followersSeen} while warming` : ''}`,
-    sortName: snapshot.name,
+    sortName: snapshot.name ?? null,
     sortFollowers: followers,
   };
 }

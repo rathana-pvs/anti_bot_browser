@@ -45,7 +45,8 @@ def sanitize(snapshot) -> dict | None:
     followers = snapshot.get("followers")
     if isinstance(followers, int) and not isinstance(followers, bool) and 0 <= followers < MAX_FOLLOWERS:
         clean["followers"] = followers
-    return clean if "name" in clean else None
+    # A Page whose name could not be read (a script shown as boxes) still gets its follower count.
+    return clean if "name" in clean or "followers" in clean else None
 
 
 def load(profile_id: str) -> dict | None:
@@ -56,7 +57,7 @@ def load(profile_id: str) -> dict | None:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    return value if isinstance(value, dict) and value.get("name") else None
+    return value if isinstance(value, dict) and (value.get("name") or isinstance(value.get("followers"), int)) else None
 
 
 def record(profile_id: str, snapshot, execution_id: str | None = None, now: datetime | None = None) -> dict | None:

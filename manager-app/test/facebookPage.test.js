@@ -44,3 +44,12 @@ test('seen times read naturally', () => {
   assert.equal(seenAgo('2026-11-08T09:00:00Z', NOW), '3 days ago');
   assert.equal(seenAgo(undefined, NOW), '');
 });
+
+test('a Page whose name could not be read still shows its followers', () => {
+  const cells = pageCells({ kind: 'page', followers: 66000, seen_at: '2026-11-11T07:00:00Z' }, false, NOW);
+  assert.equal(cells.page, 'Name not readable');
+  assert.equal(cells.followers, '66K');
+  assert.match(cells.pageHint, /script the browser can’t display/);
+  assert.equal(cells.sortName, null);
+  assert.equal(cells.sortFollowers, 66000);
+});

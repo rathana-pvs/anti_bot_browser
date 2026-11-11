@@ -70,8 +70,16 @@ def test_a_missing_or_old_reading_needs_a_profile_visit():
     assert facebook_page.needs_refresh("profile_001", NOW + facebook_page.REFRESH_AFTER)
 
 
-def test_a_name_without_letters_is_not_saved():
-    assert facebook_page.record("profile_001", {"name": "000", "kind": "page", "followers": 66000}, now=NOW) is None
+def test_a_page_whose_name_cannot_be_read_still_gets_its_followers():
+    saved = facebook_page.record("profile_001", {"name": "000", "kind": "page", "followers": 66000}, now=NOW)
+    assert "name" not in saved and saved["followers"] == 66000 and facebook_page.load("profile_001") == saved
+    # A later reading with a name keeps working on top of it.
+    facebook_page.record("profile_001", {"name": "Ban News", "kind": "page"}, now=NOW + timedelta(days=1))
+    assert facebook_page.load("profile_001")["name"] == "Ban News" and facebook_page.load("profile_001")["followers"] == 66000
+
+
+def test_a_page_with_neither_name_nor_followers_is_not_saved():
+    assert facebook_page.record("profile_001", {"name": "000", "kind": "page"}, now=NOW) is None
 
 
 @pytest.mark.parametrize("kind", ["personal", None, "group"])

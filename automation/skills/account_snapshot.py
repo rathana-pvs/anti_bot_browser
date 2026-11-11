@@ -94,14 +94,15 @@ def read_snapshot(items, width: int, height: int, identity: str | None) -> dict 
         return None
     title, counts = header
     name = re.sub(r"\s+", " ", title["text"]).strip()[:MAX_NAME]
-    if not re.search(r"[^\W\d_]", name):
-        return None  # no letters: a name in a script the browser shows as boxes, read as "000"
     line = " ".join(item.get("text", "") for item in counts)
-    snapshot = {"name": name, "kind": identity if identity in ("page", "personal") else None}
+    snapshot = {"kind": identity if identity in ("page", "personal") else None}
+    # A name with no letters is a script the browser shows as boxes (read as "000"): only the count is kept.
+    if re.search(r"[^\W\d_]", name):
+        snapshot["name"] = name
     followers = parse_followers(line)
     if followers is not None:
         snapshot["followers"] = followers
-    return snapshot
+    return snapshot if "name" in snapshot or "followers" in snapshot else None
 
 
 # Enough wheel notches to reach the top from wherever a freshly loaded profile sits.
@@ -150,6 +151,6 @@ def capture(task) -> dict | None:
         task.log("DEBUG", "The profile header was not readable; page name and followers not updated.")
         return None
     followers = snapshot.get("followers")
-    task.log("INFO", f"Profile header: {snapshot['name']!r}"
+    task.log("INFO", f"Profile header: {snapshot.get('name', 'name not readable')!r}"
                      + (f", {followers:,} followers" if followers is not None else ", followers not shown"))
     return snapshot
