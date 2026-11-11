@@ -1,3 +1,13 @@
+# Version 2.2.9
+
+- Show progress through each step when the phone viewer opens an account.
+- Retry the Reel editor's Next button when the first tap is ignored.
+- Read profile and Page information when Chrome's loading indicator stays
+  stuck, including Page names and follower counts.
+
+**Linux only.** After installing, run **Settings → Setup and repair → Install /
+update runtime** when prompted.
+
 # Version 2.2.8
 
 - Update Page names and follower counts during warming visits, including split
