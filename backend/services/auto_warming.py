@@ -17,7 +17,7 @@ import time
 from datetime import datetime, timezone
 
 from backend.config import DATA_DIR, PROFILES_DIR
-from backend.services import account_health, account_hold, active_hours
+from backend.services import account_health, account_hold, active_hours, facebook_page
 from backend.services.profile_service import atomic_write_json
 
 AUTO_BATCH_PREFIX = "auto_warming_"
@@ -150,7 +150,11 @@ def candidates(queue: dict, configs: dict, health: dict, history: dict, now_ms: 
             # Its posts are waiting for this visit, so it goes first.
             score += 10.0
             reason = "First visit after a proxy change"
-        ranked.append({"profile_id": pid, "stage": stage, "score": round(score, 3), "reason": reason})
+        choice = {"profile_id": pid, "stage": stage, "score": round(score, 3), "reason": reason}
+        if not phone and facebook_page.needs_refresh(pid, datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)):
+            # Starts on the account's own profile so the visit reads its page name and followers again.
+            choice["read_profile"] = True
+        ranked.append(choice)
     ranked.sort(key=lambda item: -item["score"])
     return ranked
 
@@ -170,9 +174,9 @@ def spare_capacity(queue: dict, leases: list, config: dict, now_ms: float, held:
             and snapshot["available"]["total"] - due_soon > 0)
 
 
-def _visit_options(stage: str, rng: random.Random) -> dict:
+def _visit_options(stage: str, rng: random.Random, read_profile: bool = False) -> dict:
     low, high = VISIT_SECONDS[stage]
-    return {"auto": True, "max_seconds": rng.randint(low, high), "surface": "random"}
+    return {"auto": True, "max_seconds": rng.randint(low, high), "surface": "profile" if read_profile else "random"}
 
 
 def add_visit(queue: dict, choice: dict, now: datetime, rng: random.Random) -> dict:
@@ -208,7 +212,7 @@ def add_visit(queue: dict, choice: dict, now: datetime, rng: random.Random) -> d
     }
     batch["posts"].append({
         "post_id": f"v_{index + 1}", "type": "warming", "media_file": "", "base_caption": "",
-        "first_comment": None, "scrolls": 4, "warming_options": _visit_options(choice["stage"], rng),
+        "first_comment": None, "scrolls": 4, "warming_options": _visit_options(choice["stage"], rng, bool(choice.get("read_profile"))),
         "ai_spin": False, "executions": [execution],
     })
     return execution

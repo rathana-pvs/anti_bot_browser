@@ -310,3 +310,27 @@ def test_no_visit_when_the_account_gets_a_post_while_choosing(planner):
     assert auto_warming.plan_once(NOW) is None
     assert not any(auto_warming.is_auto_batch(batch) for batch in store.queue["daily_batches"])
     assert _status(store, "e_post") == "running"
+
+
+def test_a_visit_starts_on_the_profile_when_its_page_reading_is_missing_or_old(monkeypatch):
+    stale = {"profile_001"}
+    monkeypatch.setattr(auto_warming.facebook_page, "needs_refresh", lambda pid, now=None: pid in stale)
+    configs = {"profile_001": config("profile_001"), "profile_002": config("profile_002")}
+    health = {"profile_001": {"stage": "new"}, "profile_002": {"stage": "new"}}
+    by_id = {item["profile_id"]: item for item in rank(configs, health)}
+    assert by_id["profile_001"]["read_profile"] is True and "read_profile" not in by_id["profile_002"]
+    q = {"daily_batches": []}
+    first = add_visit(q, by_id["profile_001"], NOW, random.Random(1))
+    second = add_visit(q, by_id["profile_002"], NOW, random.Random(1))
+    posts = q["daily_batches"][0]["posts"]
+    assert posts[0]["warming_options"]["surface"] == "profile" and posts[1]["warming_options"]["surface"] == "random"
+    assert first["profile_id"] == "profile_001" and second["profile_id"] == "profile_002"
+
+
+def test_phone_visits_keep_a_random_surface(monkeypatch):
+    monkeypatch.setattr(auto_warming.facebook_page, "needs_refresh", lambda pid, now=None: True)
+    from backend.services import android_jobs
+    monkeypatch.setattr(android_jobs, "can_take_auto_visit", lambda config: True)
+    phone = config("profile_003", runtime={"kind": "android_user"}, network={"proxy_id": "proxy_1"})
+    [choice] = rank({"profile_003": phone}, {"profile_003": {"stage": "new"}})
+    assert "read_profile" not in choice

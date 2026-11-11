@@ -16,26 +16,28 @@ import { AccountHandlers, FolderHandlers, accountMenu, bulkMenu, folderMenu } fr
 import { ACCOUNT_DRAG_TYPE, ALL_FOLDERS, ATTENTION, FolderList, NO_FOLDER, SystemFolder } from './FolderList';
 import { STAGE_FOLDER_PREFIX, STAGE_META, STAGE_ORDER, StageBadge, StageView, stageFolder, stageView, useAccountHealth } from './accountHealth';
 import {
-  AccountActivity, HealthSignal, STATUS_LABEL, STATUS_TONE, TONE_CLASS, activityFor, browserNotes, liveSignal,
+  AccountActivity, HealthSignal, STATUS_LABEL, STATUS_TONE, TONE_CLASS, activityFor, browserNotes,
   deviceLabel, isAndroid, networkSignal, openItemSignals, phoneStatus,
   ActivityPeriod, PERIOD_OPTIONS, periodStart,
 } from './accountModel';
 import { formatTime, kindLabel } from '../queue/queueModel';
 import { DeviceChip } from './DeviceChip';
 import { ProxyShareBadge } from './ProxyShareBadge';
+import { pageCells } from './facebookPage';
 
 type StatusFilter = 'all' | 'running' | 'stopped';
 type TypeFilter = 'all' | 'browser' | 'android';
-type AccountSortKey = 'name' | 'device' | 'status' | 'network' | 'live' | 'period';
+type AccountSortKey = 'name' | 'page' | 'followers' | 'device' | 'status' | 'network' | 'period';
 
 function accountSortValue(profile: Profile, key: AccountSortKey,
   ctx: { devices: AndroidDevice[]; proxies: ProxyItem[]; activity: Map<string, AccountActivity> }): string | number | null {
   switch (key) {
     case 'name': return profile.name;
+    case 'page': return pageCells(profile.facebook_page, isAndroid(profile)).sortName;
+    case 'followers': return pageCells(profile.facebook_page, isAndroid(profile)).sortFollowers;
     case 'device': return deviceLabel(profile, ctx.devices);
     case 'status': return isAndroid(profile) ? phoneStatus(profile, ctx.devices)?.label ?? null : STATUS_LABEL[profile.status];
     case 'network': return networkSignal(profile, ctx.proxies).label;
-    case 'live': return liveSignal(profile).label;
     case 'period': return ctx.activity.get(profile.id)?.posted ?? 0;
   }
 }
@@ -217,10 +219,11 @@ export function AccountsPage({ profiles, proxies, devices, groups, executions, h
                 </div>
               : <>
                   <SortButton label="Account" column="name" sort={sort} onToggle={toggleSort} />
+                  <SortButton label="Page" column="page" sort={sort} onToggle={toggleSort} />
+                  <SortButton label="Followers" column="followers" sort={sort} onToggle={toggleSort} />
                   <SortButton label="Device" column="device" sort={sort} onToggle={toggleSort} />
                   <SortButton label="Status" column="status" sort={sort} onToggle={toggleSort} />
                   <SortButton label="Network" column="network" sort={sort} onToggle={toggleSort} className="hidden md:inline-flex" />
-                  <SortButton label="Live" column="live" sort={sort} onToggle={toggleSort} className="hidden md:inline-flex" />
                   <SortButton label={periodInfo.column} column="period" sort={sort} onToggle={toggleSort} className="hidden md:inline-flex" />
                   <span />
                 </>}
@@ -242,7 +245,7 @@ export function AccountsPage({ profiles, proxies, devices, groups, executions, h
   </div>;
 }
 
-const ROW_GRID = 'grid grid-cols-[1.5rem_minmax(0,1.4fr)_minmax(0,1.2fr)_7rem_minmax(0,1fr)_5.5rem_minmax(0,1.4fr)_2.5rem] items-center gap-3';
+const ROW_GRID = 'grid grid-cols-[1.5rem_minmax(0,1.4fr)_minmax(0,1.2fr)_5rem_minmax(0,1.2fr)_7rem_minmax(0,1fr)_minmax(0,1.4fr)_2.5rem] items-center gap-3';
 
 function Signal({ signal, onOpenQueue }: { signal: HealthSignal; onOpenQueue?: () => void }) {
   return signal.opensQueue && onOpenQueue
@@ -259,6 +262,7 @@ function AccountRow({ profile, devices, onOpenDevice, network, proxyShare, activ
   const notes = browserNotes(profile);
   const openItems = openItemSignals(activity);
   const phone = isAndroid(profile) ? phoneStatus(profile, devices) : null;
+  const page = pageCells(profile.facebook_page, isAndroid(profile));
   const done = [activity.posted && `${activity.posted} posted`, activity.warmed && `${activity.warmed} warmed`].filter(Boolean).join(' · ');
   return <div tabIndex={0} draggable onDragStart={onDragStart} onClick={onOpen} onContextMenu={onContextMenu}
     onKeyDown={(e) => {
@@ -278,6 +282,8 @@ function AccountRow({ profile, devices, onOpenDevice, network, proxyShare, activ
       <p className="flex min-w-0 items-center gap-1.5 text-[11px] text-zinc-500"><StageBadge view={stage} compact quietReady />
         <span className="truncate">{profile.group || 'No folder'}</span></p>
     </div>
+    <div className="min-w-0 truncate text-[11px] text-zinc-300" title={page.pageHint}>{page.page}</div>
+    <div className="text-[11px] tabular-nums text-zinc-300" title={page.followersHint}>{page.followers}</div>
     <div className="min-w-0"><DeviceChip profile={profile} devices={devices} onClick={() => onOpenDevice(profile.runtime?.device_serial ?? null)} /></div>
     <div className="min-w-0">
       {phone
@@ -294,7 +300,6 @@ function AccountRow({ profile, devices, onOpenDevice, network, proxyShare, activ
       </span>
       {network.detail && <p className="mt-1 truncate text-[10px] text-zinc-500">{network.detail}</p>}
     </div>
-    <div className="hidden text-[11px] md:block"><Signal signal={liveSignal(profile)} /></div>
     <div className="hidden min-w-0 space-y-0.5 text-[11px] md:block">
       <p className="truncate text-zinc-300">{done || 'Nothing posted'}</p>
       {activity.running

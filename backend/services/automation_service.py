@@ -610,6 +610,9 @@ async def _run_manual_subprocess(profile_id: str, args: list[str], task_record: 
             task_record["error"] = res.get("error") or "Publication requires operator review or could not be visually confirmed"
         elif code == 0:
             task_record["status"] = "completed"
+            if task_record.get("task") == "warming":
+                from backend.services import facebook_page
+                facebook_page.record_from_result(profile_id, res)
         else:
             task_record["status"] = "failed"
             task_record["error"] = res.get("error") or f"Task failed with exit code {code}"
@@ -1271,6 +1274,8 @@ async def _execute_queue_item_inner(execution_id: str, scheduler_kind: str = "pu
             ex["stage"] = "completed"
             ex["error"] = None
             apply_warming_result(ex, res)
+            from backend.services import facebook_page
+            facebook_page.record_from_result(profile_id, res, execution_id)
         elif reported_status and reported_status.startswith("skipped_"):
             ex["status"] = reported_status
             ex["stage"] = reported_status

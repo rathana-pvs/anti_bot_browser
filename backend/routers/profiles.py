@@ -228,7 +228,8 @@ def list_profiles():
             disk = get_profile_disk_usage(profile_id)
             if disk:
                 data["disk_usage"] = disk
-            from backend.services import live_service
+            from backend.services import facebook_page, live_service
+            data["facebook_page"] = facebook_page.load(profile_id)
             try:
                 live_service.launch_settings(profile_id)
                 data["live"] = {"configured": True}

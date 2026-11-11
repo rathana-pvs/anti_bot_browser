@@ -103,3 +103,40 @@ def test_automation_start_clears_restart_needed(monkeypatch, before, records):
     asyncio.run(svc.ensure_profile_container_ready("profile-test"))
 
     assert recorded == (["profile-test"] if records else [])
+
+
+def test_a_finished_warming_visit_saves_its_page_reading(monkeypatch, tmp_path):
+    from backend.services import facebook_page
+    (tmp_path / "profile-test").mkdir()
+    monkeypatch.setattr(facebook_page, "PROFILES_DIR", tmp_path)
+    lease = {"lease_id": "lease-test", "kind": "preparer"}
+    execution = {"execution_id": "exec-test", "profile_id": "profile-test", "status": "running", "scheduler_lease": lease}
+    post = {"type": "warming", "executions": [execution], "scrolls": 4}
+    queue = {"daily_batches": [{"posts": [post]}]}
+    monkeypatch.setattr(svc, "claim_queue_execution", Mock(return_value={
+        "targetExec": execution, "targetPost": post, "leaseId": "lease-test", "lease": lease}))
+    for module in (svc, queue_service):
+        monkeypatch.setattr(module, "load_posting_queue", lambda: queue)
+        monkeypatch.setattr(module, "save_posting_queue", Mock(return_value=True))
+    monkeypatch.setattr(svc, "active_automation_tasks", {})
+    monkeypatch.setattr(svc, "resolve_brain_pin", lambda *_: None)
+    monkeypatch.setattr(svc, "automation_worker_env", lambda: {})
+    monkeypatch.setattr(svc, "_delayed_dispatch", AsyncMock())
+    monkeypatch.setattr(svc, "stop_profile_container_after_report", AsyncMock(return_value={"stopped": True}))
+    monkeypatch.setattr(svc, "ensure_profile_container_ready", AsyncMock(return_value={"started": True, "status": "running"}))
+    line = '{"status": "completed", "success": true, "account_snapshot": {"name": "News 429M", "kind": "page", "followers": 3400}}\n'
+    proc = SimpleNamespace(stdout=SimpleNamespace(read=AsyncMock(side_effect=[line.encode(), b""])),
+                           stderr=SimpleNamespace(read=AsyncMock(return_value=b"")), wait=AsyncMock(return_value=0))
+    monkeypatch.setattr(svc.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc))
+
+    async def run():
+        token = svc.lifecycle.OWNER_TOKEN.set("owner-test")
+        try:
+            return await svc._execute_queue_item_inner("exec-test", "preparer")
+        finally:
+            svc.lifecycle.OWNER_TOKEN.reset(token)
+
+    assert asyncio.run(run())["success"] is True
+    assert execution["status"] == "completed"
+    saved = facebook_page.load("profile-test")
+    assert saved["name"] == "News 429M" and saved["followers"] == 3400 and saved["execution_id"] == "exec-test"

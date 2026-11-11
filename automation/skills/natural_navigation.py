@@ -174,25 +174,14 @@ class NaturalNavigation:
         key = page_key(url)
         if not is_facebook_url(url) or key in (None, "/", "/me", "/home.php"):
             return
+        from skills.account_snapshot import header_region, profile_header
+
         height, width = screen.shape[:2]
-        items = task.vision.read_text(
-            screen, region=(int(width * .36), int(height * .14), int(width * .30), int(height * .18)), min_confidence=.8,
-        )
-        titles = [item for item in items if item.get("bounds") and 2 <= len(item.get("text", "").strip()) <= 60]
-        if not titles:
+        items = task.vision.read_text(screen, region=header_region(width, height), min_confidence=.8)
+        header = profile_header(items, width, height)
+        if header is None:
             return
-        title = max(titles, key=lambda item: item["bounds"][3] - item["bounds"][1])
-        name = title["text"].strip()
-        if _normalize(name) in {"facebook", "manage page", "posts"}:
-            return
-        # Only the real profile header has its follower/friend count right
-        # under the name; a scrolled page shows post text here instead.
-        left, _, _, bottom = title["bounds"]
-        counts = [item for item in items if item is not title and item.get("bounds")
-                  and 0 <= item["bounds"][1] - bottom <= height * .05 and abs(item["bounds"][0] - left) <= width * .02
-                  and re.search(r"\b(followers?|following|friends)\b", item.get("text", ""), re.I)]
-        if not counts:
-            return
+        name = header[0]["text"].strip()
         save_identity(task, name, url)
         task.log("INFO", f"Natural session: remembered this account's profile name {name!r}.")
 

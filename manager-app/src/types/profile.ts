@@ -1,3 +1,4 @@
+import type { FacebookPageSnapshot } from '../components/accounts/facebookPage';
 import type { AndroidRuntime } from './device';
 
 export interface ProfileFingerprint {
@@ -182,6 +183,8 @@ export interface AndroidNetwork {
 }
 
 export interface Profile {
+  /** Page name and followers read by warming visits; null before the first reading. */
+  facebook_page?: FacebookPageSnapshot | null;
   live?: { configured: boolean };
   runtime?: AndroidRuntime;
   android_network?: AndroidNetwork;

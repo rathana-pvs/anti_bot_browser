@@ -10,6 +10,7 @@ import time
 from .base_task import BaseTask
 from warming_options import normalize_warming_options
 from skills.active_visit import ActiveVisit
+from skills.account_snapshot import capture as capture_account_snapshot
 
 
 class FacebookWarmingTask(BaseTask):
@@ -46,6 +47,9 @@ class FacebookWarmingTask(BaseTask):
             target_url=self.WARMING_SURFACES[requested_surface]
         ):
             return self.skip_unverified_session()
+        if requested_surface == "profile":
+            # Read-only and best effort: the page name and followers, never a reason to stop the visit.
+            self.account_snapshot = capture_account_snapshot(self)
         if options["check"]:
             return self._finish_check(options)
 
