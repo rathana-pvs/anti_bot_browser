@@ -1,3 +1,16 @@
+# Version 2.2.8
+
+- Update Page names and follower counts during warming visits, including split
+  names and profile headers that require scrolling. Keep a readable follower
+  count when the Page name cannot be read.
+- Choose how long an account rests between posts from a dropdown, with a
+  30-second default.
+- Choose **All at once** when scheduling a batch to let accounts start as job
+  slots become available.
+
+**Linux only.** After installing, run **Settings → Setup and repair → Install /
+update runtime** when prompted.
+
 # Version 2.2.7
 
 - Let reel renders run while automation jobs, Auto warming or Live are running.
