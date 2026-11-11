@@ -35,6 +35,7 @@ import {
 } from 'lucide-react';
 import { Checkbox } from './ui/Checkbox';
 import { Select } from './ui/Select';
+import { restLabel, restOptions, savedRest } from './restChoices';
 import { ActionMenu } from './ui/ActionMenu';
 import { useAppDialog } from './ui/AppDialogProvider';
 import { useFileDrop } from '../hooks/useFileDrop';
@@ -146,14 +147,12 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
   });
 
 
-  const [iterationDelaySeconds, setIterationDelaySeconds] = useState(() => {
-    const saved = localStorage.getItem(storageKey('iteration_delay_seconds'));
-    if (saved !== null) {
-      const parsed = parseInt(saved, 10);
-      return Number.isNaN(parsed) ? 60 : Math.max(0, parsed);
-    }
-    return 60;
-  });
+  const [iterationDelaySeconds, setIterationDelaySeconds] = useState(() =>
+    savedRest(localStorage.getItem(storageKey('iteration_delay_seconds')), localStorage.getItem(storageKey('rest_chosen')) === 'true'));
+  const chooseRest = (seconds: number) => {
+    setIterationDelaySeconds(seconds);
+    localStorage.setItem(storageKey('rest_chosen'), 'true');
+  };
 
   const [preparationMode, setPreparationMode] = useState<'off' | 'brief' | 'extended'>(() => {
     const saved = localStorage.getItem(storageKey('preparation_mode'));
@@ -463,7 +462,7 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
         schedule_window: {
           start_time: startTime,
           end_time: endTime,
-          profile_stagger_seconds: 60,
+          profile_stagger_seconds: 30,
           timing,
           ...(timing === 'auto' ? (planSeed ? { plan_seed: planSeed } : {}) : { spread_minutes: spreadMinutes }),
           ...(timing === 'exact' ? { start_at: startFrom(startDay.date, startDay.time)!.toISOString() } : {}),
@@ -850,17 +849,17 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
             <div className="pt-1 border-t border-zinc-800/80">
               <button type="button" onClick={() => setShowAdvanced(!showAdvanced)} aria-expanded={showAdvanced}
                 className="w-full flex items-center justify-between text-xs text-zinc-400 hover:text-zinc-200 transition-colors py-1">
-                <span>Pacing · {iterationDelaySeconds}s rest between an account’s posts</span>
+                <span>Pacing · {iterationDelaySeconds ? `${restLabel(iterationDelaySeconds)} rest` : 'no rest'} between an account’s posts</span>
                 {showAdvanced ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
               </button>
               {showAdvanced && (
                 <div className="space-y-3 pt-3 text-xs">
-                  <label className="block">
-                    <span className="block text-zinc-400 mb-1">Seconds each account rests between jobs</span>
-                    <input type="number" min={0} max={3600} step={10} value={iterationDelaySeconds}
-                      onChange={(e) => { const val = parseInt(e.target.value, 10); setIterationDelaySeconds(Number.isNaN(val) ? 60 : Math.max(0, val)); }}
-                      className="w-full px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-white focus:outline-none focus:border-blue-500" />
-                  </label>
+                  <div className="space-y-1.5">
+                    <span className="block text-zinc-400">Rest between an account’s posts</span>
+                    <Select value={String(iterationDelaySeconds)} onValueChange={value => chooseRest(Number(value))}
+                      ariaLabel="Rest between an account’s posts" options={restOptions(iterationDelaySeconds)} />
+                    <p className="text-[11px] text-zinc-500">How long each account waits after one post before its next one in this campaign.</p>
+                  </div>
                   {!liveMode && !warmupMode && (
                     <label htmlFor="ai-caption-spinning" className="flex items-center justify-between gap-3 cursor-pointer">
                       <span>

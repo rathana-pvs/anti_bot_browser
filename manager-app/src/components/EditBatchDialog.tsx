@@ -11,6 +11,7 @@ import { Checkbox } from './ui/Checkbox';
 import { Dialog } from './ui/Dialog';
 import { Input } from './ui/Input';
 import { Select } from './ui/Select';
+import { restLabel, restOptions } from './restChoices';
 import { Textarea } from './ui/Textarea';
 
 interface Props {
@@ -22,8 +23,6 @@ interface Props {
 
 interface PostDraft { base_caption: string; first_comment: string; media_file: string; media_name: string; ai_spin: boolean }
 
-const REST_CHOICES = [0, 30, 60, 120, 300, 600, 1800, 3600];
-const restLabel = (s: number) => s === 0 ? 'No rest' : s < 60 ? `${s} s` : s < 3600 ? `${s / 60} min` : '1 hour';
 const WARM_UP_OPTIONS = [
   { value: 'off', label: 'No warm-up' },
   { value: 'brief', label: 'Brief warm-up' },
@@ -224,7 +223,7 @@ export function EditBatchDialog({ batch, profileName, onClose, onSaved }: Props)
         <section className="grid grid-cols-2 gap-3">
           <label className="space-y-1"><span className="block text-zinc-400">Rest between an account's posts</span>
             <Select value={String(rest)} onValueChange={v => setRest(Number(v))}
-              options={[...new Set([...REST_CHOICES, rest])].sort((a, b) => a - b).map(s => ({ value: String(s), label: restLabel(s) }))} /></label>
+              options={restOptions(rest)} /></label>
           <label className="space-y-1"><span className="block text-zinc-400">Warm-up before posting</span>
             <Select value={warmUp} onValueChange={v => setWarmUp(v as typeof warmUp)} options={WARM_UP_OPTIONS} /></label>
         </section>
