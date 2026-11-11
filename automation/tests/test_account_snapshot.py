@@ -113,3 +113,79 @@ class WarmingVisitTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def ocr(*rows):
+    return [{"text": text, "bounds": bounds, "confidence": 1.0} for text, bounds in rows]
+
+
+# Real readings of three warming screenshots (1920x1080), one with the page scrolled and two at the top.
+FRONTLINE_AT_TOP = ocr(("Frontline Bulletin", (742, 675, 1006, 702)), ("0 followers · 0 following", (737, 710, 916, 732)),
+                       ("!News & media website", (742, 737, 913, 751)), ("Followers", (834, 853, 908, 870)),
+                       ("What's on your mind?", (1118, 928, 1287, 951)))
+SIGNAL_WITH_COVER_TEXT = ocr(("THE", (847, 351, 1049, 426)), ("SIGN", (1072, 347, 1324, 425)),
+                             ("The Signal", (738, 662, 908, 698)), ("0 followers • 0 following", (738, 701, 904, 720)),
+                             ("Staying ahead of emerging movements.", (739, 724, 991, 742)), ("Followers", (823, 854, 893, 870)))
+VERITAS_SCROLLED = ocr(("Veritas Media", (738, 234, 953, 268)), ("0 followers · 0 following", (737, 270, 918, 297)),
+                       ("Truth. Context. Impact", (740, 298, 896, 318)), ("Followers", (831, 426, 912, 447)),
+                       ("Veritas Media", (1100, 838, 1204, 859)), ("4h ·", (1099, 858, 1149, 881)))
+
+
+class RealScreensTests(unittest.TestCase):
+    def test_the_header_is_found_wherever_it_sits(self):
+        for items, name in ((FRONTLINE_AT_TOP, "Frontline Bulletin"), (SIGNAL_WITH_COVER_TEXT, "The Signal"),
+                            (VERITAS_SCROLLED, "Veritas Media")):
+            with self.subTest(name=name):
+                self.assertEqual(read_snapshot(items, 1920, 1080, "page"), {"name": name, "kind": "page", "followers": 0})
+
+    def test_the_region_covers_a_header_low_on_the_screen(self):
+        from skills.account_snapshot import header_region
+        left, top, width, height = header_region(1920, 1080)
+        for text, (x1, y1, x2, y2) in ((i["text"], i["bounds"]) for i in FRONTLINE_AT_TOP[:2] + VERITAS_SCROLLED[:2]):
+            self.assertTrue(left <= x1 and x2 <= left + width and top <= y1 and y2 <= top + height, text)
+
+    def test_the_followers_tab_alone_is_not_a_count(self):
+        self.assertIsNone(read_snapshot(ocr(("Photos", (751, 830, 807, 849)), ("Followers", (834, 853, 908, 870))), 1920, 1080, "page"))
+
+
+class ScrollToTopTests(unittest.TestCase):
+    def task(self, *readings):
+        task = Mock()
+        task.client.screenshot.return_value = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task.client.get_screen_dimensions.return_value = (1920, 1080)
+        task.facebook_identity = "page"
+        task.vision.read_text.side_effect = list(readings)
+        return task
+
+    def run_capture(self, task, state="idle"):
+        with patch("modules.reel_profile_readiness.browser_navigation_state", return_value=state), \
+                patch("skills.account_snapshot.time.sleep"):
+            return capture(task)
+
+    def test_a_visible_header_is_read_without_scrolling(self):
+        task = self.task(FRONTLINE_AT_TOP)
+        self.assertEqual(self.run_capture(task)["name"], "Frontline Bulletin")
+        task.human.scroll.assert_not_called()
+
+    def test_a_header_above_the_screen_is_read_after_one_scroll_to_the_top(self):
+        task = self.task(ocr(("What's on your mind?", (1118, 300, 1287, 320))), FRONTLINE_AT_TOP)
+        self.assertEqual(self.run_capture(task)["name"], "Frontline Bulletin")
+        task.human.scroll.assert_called_once_with("up", notches=12)
+        x, y = task.human.move_to.call_args.args
+        self.assertGreater(x, 1920 * .36)  # over the page, not the sidebar
+        self.assertEqual(task.vision.read_text.call_count, 2)
+
+    def test_still_nothing_after_the_scroll_gives_none_and_scrolls_only_once(self):
+        task = self.task([], [])
+        self.assertIsNone(self.run_capture(task))
+        task.human.scroll.assert_called_once()
+
+    def test_a_page_still_loading_is_not_scrolled(self):
+        task = self.task()
+        self.assertIsNone(self.run_capture(task, state="loading"))
+        task.human.scroll.assert_not_called()
+
+    def test_a_failing_scroll_never_raises(self):
+        task = self.task([])
+        task.human.scroll.side_effect = RuntimeError("xdotool gone")
+        self.assertIsNone(self.run_capture(task))

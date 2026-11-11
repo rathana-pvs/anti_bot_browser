@@ -1,16 +1,21 @@
 """What a warming visit sees on the account's own profile: the name and follower count.
 
-Read once, right after the login check has loaded the account's own profile,
-from one screenshot and one text read of the header. It never clicks or
-navigates, and any doubt or error means no snapshot rather than a wrong one:
-a visit must never fail or slow down because this could not be read.
+Read right after the login check has loaded the account's own profile, from a
+screenshot and one text read of the header. When the header is not on screen it
+scrolls to the top of the page once and reads again; it never clicks or
+navigates. Any doubt or error means no snapshot rather than a wrong one: a visit
+must never fail because this could not be read.
 """
 
 import re
+import time
 
-# Where the name sits on a freshly loaded own profile, as (left, top, width, height) fractions of the screen.
-HEADER_REGION = (.36, .14, .30, .18)
-_COUNT_WORD = re.compile(r"\b(followers?|following|friends)\b", re.I)
+# The profile header can sit anywhere from just under the browser bar (page scrolled) to low on the
+# screen (cover photo showing), so the whole column right of the sidebar is read:
+# (left, top, width, height) as fractions of the screen.
+HEADER_REGION = (.36, .14, .33, .80)
+# A count line has a number: "0 followers · 0 following", "500 friends". The Followers tab has none.
+_COUNT_LINE = re.compile(r"\d[\d.,]*\s*[km]?\s+(followers?|following|friends)\b", re.I)
 _FOLLOWERS = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*([km])?\s*followers?\b", re.I)
 _NOT_A_NAME = {"facebook", "manage page", "posts"}
 MAX_NAME = 80
@@ -26,22 +31,24 @@ def header_region(width: int, height: int) -> tuple[int, int, int, int]:
 
 
 def profile_header(items, width: int, height: int):
-    """The name and the count lines right under it, or None when this is not a profile header.
+    """The name and the count line right under it, or None when no profile header is on screen.
 
-    Only the real header has a follower/friend count directly under the name;
-    a scrolled page shows post text there instead.
+    Found from the count line up: the header's name sits directly above its follower/friend
+    count, left-aligned with it. Big text in the cover photo has no count under it, and a post
+    by the account has no count under its name.
     """
-    titles = [item for item in items if item.get("bounds") and 2 <= len(item.get("text", "").strip()) <= 60]
-    if not titles:
-        return None
-    title = max(titles, key=lambda item: item["bounds"][3] - item["bounds"][1])
-    if _normalize(title["text"]) in _NOT_A_NAME:
-        return None
-    left, _, _, bottom = title["bounds"]
-    counts = [item for item in items if item is not title and item.get("bounds")
-              and 0 <= item["bounds"][1] - bottom <= height * .05 and abs(item["bounds"][0] - left) <= width * .02
-              and _COUNT_WORD.search(item.get("text", ""))]
-    return (title, counts) if counts else None
+    placed = [item for item in items if item.get("bounds") and item.get("text", "").strip()]
+    for count in sorted((item for item in placed if _COUNT_LINE.search(item["text"])), key=lambda item: item["bounds"][1]):
+        left, top = count["bounds"][0], count["bounds"][1]
+        above = [item for item in placed if item is not count
+                 and 0 <= top - item["bounds"][3] <= height * .05
+                 and abs(item["bounds"][0] - left) <= width * .02
+                 and 2 <= len(item["text"].strip()) <= 60
+                 and _normalize(item["text"]) not in _NOT_A_NAME]
+        if above:
+            title = max(above, key=lambda item: item["bounds"][3])  # the line right above the count
+            return title, [count]
+    return None
 
 
 def parse_followers(text: str) -> int | None:
@@ -65,7 +72,7 @@ def read_snapshot(items, width: int, height: int, identity: str | None) -> dict 
         return None
     title, counts = header
     name = re.sub(r"\s+", " ", title["text"]).strip()[:MAX_NAME]
-    line = " ".join(item.get("text", "") for item in sorted(counts, key=lambda item: item["bounds"][1]))
+    line = " ".join(item.get("text", "") for item in counts)
     snapshot = {"name": name, "kind": identity if identity in ("page", "personal") else None}
     followers = parse_followers(line)
     if followers is not None:
@@ -73,17 +80,43 @@ def read_snapshot(items, width: int, height: int, identity: str | None) -> dict 
     return snapshot
 
 
-def capture(task) -> dict | None:
-    """Read the snapshot from the profile on screen now; None on any doubt or error."""
-    try:
-        from modules.reel_profile_readiness import browser_navigation_state
+# Enough wheel notches to reach the top from wherever a freshly loaded profile sits.
+TOP_SCROLL_NOTCHES = 12
+SETTLE_SECONDS = 1.2
 
-        screen = task.client.screenshot()
-        if screen is None or browser_navigation_state(screen) != "idle":
-            return None
-        height, width = screen.shape[:2]
-        items = task.vision.read_text(screen, region=header_region(width, height), min_confidence=.8)
-        snapshot = read_snapshot(items or [], width, height, getattr(task, "facebook_identity", None))
+
+def _read_screen(task) -> tuple[dict | None, bool]:
+    """(snapshot, screen was settled) for what is on screen now."""
+    from modules.reel_profile_readiness import browser_navigation_state
+
+    screen = task.client.screenshot()
+    if screen is None or browser_navigation_state(screen) != "idle":
+        return None, False
+    height, width = screen.shape[:2]
+    items = task.vision.read_text(screen, region=header_region(width, height), min_confidence=.8)
+    return read_snapshot(items or [], width, height, getattr(task, "facebook_identity", None)), True
+
+
+def _scroll_to_top(task) -> None:
+    """One scroll up over the main column (the wheel over the sidebar would scroll the sidebar)."""
+    width, height = task.client.get_screen_dimensions()
+    task.human.move_to(int(width * .55), int(height * .55))
+    task.human.scroll("up", notches=TOP_SCROLL_NOTCHES)
+    time.sleep(SETTLE_SECONDS)
+
+
+def capture(task) -> dict | None:
+    """Read the snapshot from the profile on screen; None on any doubt or error.
+
+    Read as the page loaded first. Only when no header is found does it scroll to the top
+    of the page once and read again: Facebook sometimes opens a profile scrolled past it.
+    """
+    try:
+        snapshot, settled = _read_screen(task)
+        if snapshot is None and settled:
+            task.log("DEBUG", "Profile header not on screen; scrolling to the top to read it.")
+            _scroll_to_top(task)
+            snapshot, _ = _read_screen(task)
     except Exception as exc:
         task.log("DEBUG", f"Could not read the page name and followers: {exc}")
         return None
