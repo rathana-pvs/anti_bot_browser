@@ -476,8 +476,26 @@ class Flows:
                 await self._discard_unfinished_reel(lines)
         else:
             raise StepFailed(f"reel picker: an unfinished reel keeps coming back; {texts(lines)}")
-        await dev.tap(nxt)
-        await self.wait_for("composer with media", ["Describe your reel", "Add a description"], timeout=30)
+        # Next can be drawn before the editor takes taps (the clip still loading, its "Add audio" hint
+        # sliding in), so a tap may leave the editor up. Next is tapped again while the editor stays.
+        for attempt in range(1, 4):
+            await dev.tap(nxt)
+            try:
+                await self.wait_for("composer with media", ["Describe your reel", "Add a description"],
+                                    timeout=10, evidence=attempt == 3)
+                return
+            except StepFailed:
+                if attempt == 3:
+                    raise
+                after = await dev.read()
+                if any(match(after, prompt) for prompt in ("Describe your reel", "Add a description")):
+                    return  # it opened just as the wait ran out
+                again = match(after, "Next")
+                if not again:
+                    dev.snapshot(f"fail_composer_with_media_{int(time.time())}")
+                    raise
+                self.log(event="retry", step="reel editor next", attempt=attempt + 1)
+                nxt = again
 
     async def _discard_unfinished_reel(self, lines: list[Line]) -> bool:
         """A stuck earlier job leaves a reel behind, and Facebook offers it back in the picker. This job has

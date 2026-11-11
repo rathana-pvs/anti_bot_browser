@@ -469,6 +469,22 @@ class PublishTests(unittest.TestCase):
         offset = device.pt(68, 394)
         self.assertEqual(taps, [(100.0, 800.0), (100.0 + offset[0], 280.0 + offset[1]), (100.0, 1130.0)])
 
+    def test_reel_editor_next_is_tapped_again_when_the_editor_stays(self):
+        editor = lines(("Add audio", 90), ("Discover suggestions", 108), ("Next", 1208))
+        device = FakeDevice([lines(("Gallery", 280)), lines(("Next", 1208))] + [editor] * 13
+                            + [lines(("Describe your reel", 300))])
+        run(Flows(device, lambda **e: None)._pick_reel())
+        taps = [a[1] for a in device.actions if a[0] == "tap"]
+        self.assertEqual(taps[1:], [(100.0, 1208.0), (100.0, 1208.0)])
+        self.assertNotIn("snapshot", [a[0] for a in device.actions])
+
+    def test_reel_editor_that_never_advances_fails_after_three_taps(self):
+        device = FakeDevice([lines(("Gallery", 280)), lines(("Add audio", 90), ("Next", 1208))])
+        with self.assertRaises(StepFailed):
+            run(Flows(device, lambda **e: None)._pick_reel())
+        taps = [a[1] for a in device.actions if a[0] == "tap"]
+        self.assertEqual(taps.count((100.0, 1208.0)), 3)
+
     def test_unfinished_reel_prompt_appearing_after_the_tap_is_discarded(self):
         dialog = lines(("Gallery", 280), ("Continue editing your last reel?", 500), ("DISCARD", 800))
         device = FakeDevice([lines(("Gallery", 280)), dialog, lines(("Gallery", 280)), lines(("→ Next", 1130)),
