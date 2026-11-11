@@ -27,7 +27,7 @@ def test_a_reading_is_saved_next_to_the_config_without_touching_it(profiles):
 def test_a_reading_without_followers_keeps_the_old_count():
     facebook_page.record("profile_001", {"name": "News 429M", "kind": "page", "followers": 3400}, now=NOW)
     later = NOW + timedelta(days=1)
-    facebook_page.record("profile_001", {"name": "News 429M Daily", "kind": None}, now=later)
+    facebook_page.record("profile_001", {"name": "News 429M Daily", "kind": "page"}, now=later)
     saved = facebook_page.load("profile_001")
     assert saved["name"] == "News 429M Daily" and saved["followers"] == 3400 and saved["kind"] == "page"
     assert saved["seen_at"] == later.isoformat() and saved["followers_seen_at"] == NOW.isoformat()
@@ -41,15 +41,16 @@ def test_unusable_readings_save_nothing(snapshot):
 
 
 def test_bad_values_are_dropped_but_the_name_is_kept():
-    facebook_page.record("profile_001", {"name": "  News   429M  ", "kind": "group", "followers": -5}, now=NOW)
-    assert facebook_page.load("profile_001") == {"name": "News 429M", "seen_at": NOW.isoformat(), "execution_id": None}
-    facebook_page.record("profile_001", {"name": "News", "followers": True}, now=NOW)
+    facebook_page.record("profile_001", {"name": "  News   429M  ", "kind": "page", "followers": -5}, now=NOW)
+    assert facebook_page.load("profile_001") == {"name": "News 429M", "kind": "page", "seen_at": NOW.isoformat(),
+                                                 "execution_id": None}
+    facebook_page.record("profile_001", {"name": "News", "kind": "page", "followers": True}, now=NOW)
     assert "followers" not in facebook_page.load("profile_001")
 
 
 def test_unknown_or_unsafe_accounts_are_ignored(profiles):
-    assert facebook_page.record("profile_404", {"name": "News"}, now=NOW) is None
-    assert facebook_page.record("../evil", {"name": "News"}, now=NOW) is None
+    assert facebook_page.record("profile_404", {"name": "News", "kind": "page"}, now=NOW) is None
+    assert facebook_page.record("../evil", {"name": "News", "kind": "page"}, now=NOW) is None
     assert not (profiles / "profile_404").exists()
 
 
@@ -64,6 +65,16 @@ def test_saving_from_a_result_never_raises(monkeypatch):
 
 def test_a_missing_or_old_reading_needs_a_profile_visit():
     assert facebook_page.needs_refresh("profile_001", NOW)
-    facebook_page.record("profile_001", {"name": "News"}, now=NOW)
+    facebook_page.record("profile_001", {"name": "News", "kind": "page"}, now=NOW)
     assert not facebook_page.needs_refresh("profile_001", NOW + timedelta(days=2))
     assert facebook_page.needs_refresh("profile_001", NOW + facebook_page.REFRESH_AFTER)
+
+
+def test_a_name_without_letters_is_not_saved():
+    assert facebook_page.record("profile_001", {"name": "000", "kind": "page", "followers": 66000}, now=NOW) is None
+
+
+@pytest.mark.parametrize("kind", ["personal", None, "group"])
+def test_only_pages_are_saved(kind):
+    assert facebook_page.record("profile_001", {"name": "Dara Sok", "kind": kind, "followers": 12}, now=NOW) is None
+    assert facebook_page.load("profile_001") is None

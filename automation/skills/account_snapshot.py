@@ -47,8 +47,30 @@ def profile_header(items, width: int, height: int):
                  and _normalize(item["text"]) not in _NOT_A_NAME]
         if above:
             title = max(above, key=lambda item: item["bounds"][3])  # the line right above the count
-            return title, [count]
+            return _whole_line(title, placed, width), [count]
     return None
+
+
+def _whole_line(title, items, width):
+    """The name with the pieces OCR split it into on the same line ("The" + "Express Desk")."""
+    top, bottom = title["bounds"][1], title["bounds"][3]
+    line = [title]
+    for item in sorted(items, key=lambda item: item["bounds"][0]):
+        if item in line or not (top <= (item["bounds"][1] + item["bounds"][3]) / 2 <= bottom) \
+                or abs(item["bounds"][3] - item["bounds"][1] - (bottom - top)) > (bottom - top) * .5:
+            continue
+        last = max(line, key=lambda piece: piece["bounds"][2])
+        first = min(line, key=lambda piece: piece["bounds"][0])
+        # Joined only when it touches the line's ends: a word gap, not another column.
+        # OCR boxes of neighbouring words may overlap a little.
+        gap = width * .02
+        if -gap <= item["bounds"][0] - last["bounds"][2] <= gap or -gap <= first["bounds"][0] - item["bounds"][2] <= gap:
+            line.append(item)
+    if len(line) == 1:
+        return title
+    line.sort(key=lambda piece: piece["bounds"][0])
+    bounds = (line[0]["bounds"][0], min(p["bounds"][1] for p in line), line[-1]["bounds"][2], max(p["bounds"][3] for p in line))
+    return {**title, "text": " ".join(piece["text"].strip() for piece in line), "bounds": bounds}
 
 
 def parse_followers(text: str) -> int | None:
@@ -72,6 +94,8 @@ def read_snapshot(items, width: int, height: int, identity: str | None) -> dict 
         return None
     title, counts = header
     name = re.sub(r"\s+", " ", title["text"]).strip()[:MAX_NAME]
+    if not re.search(r"[^\W\d_]", name):
+        return None  # no letters: a name in a script the browser shows as boxes, read as "000"
     line = " ".join(item.get("text", "") for item in counts)
     snapshot = {"name": name, "kind": identity if identity in ("page", "personal") else None}
     followers = parse_followers(line)
@@ -106,11 +130,13 @@ def _scroll_to_top(task) -> None:
 
 
 def capture(task) -> dict | None:
-    """Read the snapshot from the profile on screen; None on any doubt or error.
+    """Read the snapshot from the Page on screen; None for a personal profile, or on any doubt or error.
 
     Read as the page loaded first. Only when no header is found does it scroll to the top
     of the page once and read again: Facebook sometimes opens a profile scrolled past it.
     """
+    if getattr(task, "facebook_identity", None) != "page":
+        return None  # only Pages are tracked; a personal profile is left alone
     try:
         snapshot, settled = _read_screen(task)
         if snapshot is None and settled:

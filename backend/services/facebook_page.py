@@ -1,4 +1,6 @@
-"""The page name and follower count that warming visits read from each account's own profile.
+"""The Page name and follower count that warming visits read from each account's own Page.
+
+Only Facebook Pages are tracked; a personal profile is never updated.
 
 Account data, kept in its own small file in the account's folder so that
 saving it can never overwrite an edit to the account's settings. Only a
@@ -34,10 +36,12 @@ def sanitize(snapshot) -> dict | None:
         return None
     clean = {}
     name = snapshot.get("name")
-    if isinstance(name, str) and (name := " ".join(name.split())[:MAX_NAME]) and len(name) >= 2:
+    if (isinstance(name, str) and (name := " ".join(name.split())[:MAX_NAME]) and len(name) >= 2
+            and any(char.isalpha() for char in name)):
         clean["name"] = name
-    if snapshot.get("kind") in ("page", "personal"):
-        clean["kind"] = snapshot["kind"]
+    if snapshot.get("kind") != "page":
+        return None  # only Pages are tracked; personal profiles are not updated
+    clean["kind"] = "page"
     followers = snapshot.get("followers")
     if isinstance(followers, int) and not isinstance(followers, bool) and 0 <= followers < MAX_FOLLOWERS:
         clean["followers"] = followers

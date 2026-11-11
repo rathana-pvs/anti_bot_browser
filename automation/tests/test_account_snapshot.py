@@ -189,3 +189,28 @@ class ScrollToTopTests(unittest.TestCase):
         task = self.task([])
         task.human.scroll.side_effect = RuntimeError("xdotool gone")
         self.assertIsNone(self.run_capture(task))
+
+
+class NamePiecesTests(unittest.TestCase):
+    def test_a_name_split_into_pieces_is_joined(self):
+        # Real reading: the cover's "THE EXPRESS" is bigger, and OCR split the name in two.
+        items = ocr(("THE", (805, 302, 945, 360)), ("EXPRESS", (711, 373, 1237, 469)),
+                    ("The", (740, 663, 817, 692)), ("Express Desk", (802, 660, 1022, 696)),
+                    ("0 followers · 0 following", (737, 697, 916, 721)))
+        self.assertEqual(read_snapshot(items, 1920, 1080, "page")["name"], "The Express Desk")
+
+    def test_a_name_with_no_letters_is_not_saved(self):
+        # A name in a script the browser shows as boxes reads as "000".
+        items = ocr(("000", (743, 240, 800, 265)), ("66K followers • 18 following", (743, 276, 941, 294)))
+        self.assertIsNone(read_snapshot(items, 1920, 1080, "page"))
+
+
+class PagesOnlyTests(unittest.TestCase):
+    def test_a_personal_profile_or_unknown_account_is_not_read(self):
+        for identity in ("personal", None):
+            with self.subTest(identity=identity):
+                task = Mock()
+                task.facebook_identity = identity
+                self.assertIsNone(capture(task))
+                task.client.screenshot.assert_not_called()
+                task.human.scroll.assert_not_called()
