@@ -10,7 +10,7 @@ import json
 import re
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 from backend.config import PROFILES_DIR
 from backend.services import android_devices, proxy_service
@@ -115,14 +115,15 @@ def verify(profile_id: str) -> dict:
     return result
 
 
-def open_account(profile_id: str, job: bool = False) -> dict:
+def open_account(profile_id: str, job: bool = False, progress: Callable[[str], None] | None = None) -> dict:
     """Shows the account's Android user on screen and checks its proxy before anything uses it.
 
     The phone's time is set to this account's proxy. With one account at a time (the default),
     the phone's other users are stopped so no other account runs on the wrong time.
     The target is switched to first because Android cannot stop the user on screen. `job` is set by
-    the queued job that holds the phone.
+    the queued job that holds the phone. `progress` hears each step as it starts.
     """
+    report = progress or (lambda _message: None)
     config, runtime, proxy = _account(profile_id)
     serial, user_id = runtime["device_serial"], runtime["android_user_id"]
     language = ((config or {}).get("requested_environment") or {}).get("language") or "en-US"
@@ -141,11 +142,12 @@ def open_account(profile_id: str, job: bool = False) -> dict:
         # The phone's switcher may have been turned back on in Settings; opening hides it again.
         if android_devices.switch_from_app_only(serial) and client.user_switcher_enabled(serial) is not False:
             client.set_user_switcher(serial, False)
-        switch = android_devices.switch_and_wait(client, serial, user_id)
+        switch = android_devices.switch_and_wait(client, serial, user_id, progress)
         if not switch["ready"]:
             return {"ready": False, "reason": switch["reason"], "switch": switch,
                     "stopped_users": stopped, "timezone_set": zone_set, "network": None}
         if isolate:
+            report("Stopping the phone’s other accounts…")
             for user in client.users(serial):
                 if user.running and user.user_id not in (CONTROL_USER_ID, user_id):
                     client.stop_user(serial, user.user_id)
@@ -154,17 +156,21 @@ def open_account(profile_id: str, job: bool = False) -> dict:
         if zone:
             phone = client.timezone_state(serial)
             if phone["zone"] != zone or phone["auto"] is not False:
+                report(f"Setting the phone’s time to {zone}…")
                 # The timezone belongs to the phone, so side-by-side accounts must agree.
                 android_devices.set_timezone(serial, zone, client=client)
                 zone_set = zone
         from backend.services.account_activity import note_active
         note_active(profile_id)
+        report("Turning off location and other privacy settings…")
         privacy = apply_privacy(profile_id, client, serial, user_id, language)
         if job and privacy["blocking"]:
             # Fail closed: automation never runs Facebook while it could still learn the real location.
             return {"ready": False, "reason": privacy["blocking"], "switch": switch, "stopped_users": stopped,
                     "timezone_set": zone_set, "network": None, "privacy": privacy}
-        network = _verify_until_ready(profile_id) if proxy else {"status": "no_proxy", "reason": None}
+        if proxy:
+            report("Checking the account’s proxy…")
+        network = _verify_until_ready(profile_id, report) if proxy else {"status": "no_proxy", "reason": None}
     ready = network["status"] in ("verified", "no_proxy")
     return {"ready": ready, "reason": None if ready else network.get("reason"), "switch": switch,
             "stopped_users": stopped, "timezone_set": zone_set, "network": network, "privacy": privacy}
@@ -198,8 +204,9 @@ def apply_privacy(profile_id: str, client, serial: str, user_id: int, language: 
     return state
 
 
-def _verify_until_ready(profile_id: str) -> dict:
+def _verify_until_ready(profile_id: str, report: Callable[[str], None] = lambda _message: None) -> dict:
     """Retries only while the user's VPN or DNS is still coming up; a wrong setup fails at once."""
+    started = time.monotonic()
     deadline = time.monotonic() + OPEN_VERIFY_TIMEOUT_S
     while True:
         result = verify(profile_id)
@@ -208,6 +215,8 @@ def _verify_until_ready(profile_id: str) -> dict:
             result["status"] == "blocked" and ("could not be measured" in reason or "not running" in reason))
         if not starting or time.monotonic() >= deadline:
             return result
+        waited = int(time.monotonic() - started)
+        report(f"Waiting for the account’s proxy to connect… ({waited} s of up to {int(OPEN_VERIFY_TIMEOUT_S)} s)")
         time.sleep(OPEN_RETRY_S)
 
 

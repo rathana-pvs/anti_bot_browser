@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone as dt_timezone
 from zoneinfo import ZoneInfo
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from backend.config import DATA_DIR, PROFILES_DIR
 from backend.services import proxy_service
@@ -440,19 +440,30 @@ def phone_lock(serial: str, job: bool = False):
         lock.release()
 
 
-def switch_and_wait(client: AdbClient, serial: str, user_id: int) -> dict:
-    """Switches, then wakes the screen and dismisses a swipe lock until the user is ready. Hold `phone_lock`."""
+def switch_and_wait(client: AdbClient, serial: str, user_id: int,
+                    progress: Callable[[str], None] | None = None) -> dict:
+    """Switches, then wakes the screen and dismisses a swipe lock until the user is ready. Hold `phone_lock`.
+
+    `progress` hears each step, so a viewer can say what the phone is waiting for."""
+    report = progress or (lambda _message: None)
+    report("Switching the phone to this user…")
     client.switch_user(serial, user_id)
     deadline = time.monotonic() + SWITCH_READY_TIMEOUT_S
+    last_reason = None
     while True:
         state = user_readiness(client, serial, user_id)
         if state["ready"]:
             if user_id != CONTROL_USER_ID:
                 # Opening live view also switches users, without running account setup first.
+                report("Finishing the Android user’s setup…")
                 complete_android_user_setup(client, serial, user_id)
             return state
         if time.monotonic() >= deadline:
             return state
+        step = _waiting_step(state, user_id)
+        if step != last_reason:
+            last_reason = step
+            report(step)
         if state["current_user"] == user_id and state["running"]:
             if state["screen_awake"] is False:
                 client.wake_screen(serial)
@@ -461,7 +472,18 @@ def switch_and_wait(client: AdbClient, serial: str, user_id: int) -> dict:
         time.sleep(SWITCH_POLL_S)
 
 
-def switch_user(serial: str, user_id: int) -> dict:
+def _waiting_step(state: dict, user_id: int) -> str:
+    """What a not-yet-ready switch is waiting on, worded as progress rather than as a failure."""
+    if state["current_user"] != user_id or not state["running"]:
+        return "Starting the Android user…"
+    if state["screen_awake"] is False:
+        return "Waking the phone’s screen…"
+    if state["lock_screen_showing"]:
+        return "Dismissing the lock screen…"
+    return "Waiting for the phone…"
+
+
+def switch_user(serial: str, user_id: int, progress: Callable[[str], None] | None = None) -> dict:
     validate_serial(serial)
     serial = canonical_serial(serial)
     client = _client()
@@ -470,10 +492,11 @@ def switch_user(serial: str, user_id: int) -> dict:
     link = _profile_for(linked_profiles(), serial, user_id, client.user_serials(serial).get(user_id))
     if link:
         from backend.services import android_network
-        opened = android_network.open_account(link["profile_id"])
+        opened = (android_network.open_account(link["profile_id"], progress=progress) if progress
+                  else android_network.open_account(link["profile_id"]))
         return {**opened["switch"], "ready": opened["ready"], "reason": opened["reason"]}
     with phone_lock(serial):
-        return switch_and_wait(client, serial, user_id)
+        return switch_and_wait(client, serial, user_id, progress)
 
 
 def restart_phone(serial: str) -> None:

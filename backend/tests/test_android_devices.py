@@ -773,8 +773,13 @@ def test_owner_live_view_switches_to_user_zero(phone, monkeypatch):
     with TestClient(app).websocket_connect(
         '/api/devices/R58M12345ABC/live?user_id=0&access_token=owner-view-token'
     ) as ws:
-        assert ws.receive_json()['type'] == 'status'
-        assert ws.receive_json()['type'] == 'status'
-        assert ws.receive_json() == {'type': 'error', 'message': 'test screen connection'}
+        message = ws.receive_json()
+        statuses = []
+        while message['type'] == 'status':
+            statuses.append(message['message'])
+            message = ws.receive_json()
+        assert message == {'type': 'error', 'message': 'test screen connection'}
+    assert statuses[0] == 'Switching the phone to this user…'
+    assert statuses[-1] == 'Starting the screen stream…'
     assert phone.switched == [0]
     assert phone.settings == {}

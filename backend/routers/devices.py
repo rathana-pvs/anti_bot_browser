@@ -207,8 +207,7 @@ async def live_view(websocket: WebSocket, serial: str, user_id: int | None = Non
     session = None
     try:
         if user_id is not None:
-            await websocket.send_json({"type": "status", "message": "Switching the phone to this user…"})
-            state = await run_in_threadpool(android_devices.switch_user, serial, user_id)
+            state = await _switch_with_progress(websocket, serial, user_id)
             if not state["ready"]:
                 await websocket.send_json({"type": "error", "message": state["reason"]})
                 return
@@ -227,6 +226,23 @@ async def live_view(websocket: WebSocket, serial: str, user_id: int | None = Non
             await websocket.close()
         except (RuntimeError, WebSocketDisconnect):
             pass
+
+
+async def _switch_with_progress(websocket: WebSocket, serial: str, user_id: int) -> dict:
+    """Switches users in a worker thread, telling the viewer each step as the phone reaches it."""
+    loop = asyncio.get_running_loop()
+    steps: asyncio.Queue[str] = asyncio.Queue()
+    work = asyncio.ensure_future(run_in_threadpool(
+        android_devices.switch_user, serial, user_id,
+        lambda message: loop.call_soon_threadsafe(steps.put_nowait, message)))
+    while True:
+        step = asyncio.ensure_future(steps.get())
+        await asyncio.wait({work, step}, return_when=asyncio.FIRST_COMPLETED)
+        if step.done():
+            await websocket.send_json({"type": "status", "message": step.result()})
+            continue
+        step.cancel()
+        return work.result()
 
 
 async def _bridge(websocket: WebSocket, session: android_live.LiveSession) -> None:
