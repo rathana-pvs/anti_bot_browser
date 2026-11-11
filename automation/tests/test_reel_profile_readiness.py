@@ -284,3 +284,43 @@ def test_gallery_permalink_is_preserved_in_publication_result():
     assert result.outputs['post_url'] == 'https://www.facebook.com/reel/123'
     assert result.outputs['publication_status'] == 'published'
     assert task.result_status == 'published'
+
+
+# --- the toolbar is a hint: a stuck loading cross or unknown toolbar no longer blocks a drawn profile ---
+
+@pytest.mark.parametrize('state', ['loading', 'unknown'])
+def test_stuck_toolbar_still_reads_a_still_profile(clock, monkeypatch, state):
+    task = task_stub()
+    task.client.screenshot.return_value = np.full((1080, 1920, 3), 255, dtype=np.uint8)
+    task.vision.read_text.return_value = [item('Posts'), item('Reels')]
+    monkeypatch.setattr('modules.reel_profile_readiness.browser_navigation_state', lambda _: state)
+    assert wait_for_profile_ready(task, timeout=20)
+    assert clock[0] == 12  # 8 s hint, then 4 s still
+    assert task.reel_profile_readiness['reason'] == 'profile_ready_browser_still_loading'
+
+
+def test_stuck_toolbar_without_a_profile_is_not_ready(clock, monkeypatch):
+    task = task_stub()
+    task.client.screenshot.return_value = np.full((1080, 1920, 3), 255, dtype=np.uint8)
+    task.vision.read_text.return_value = [item('Log in')]
+    monkeypatch.setattr('modules.reel_profile_readiness.browser_navigation_state', lambda _: 'loading')
+    assert not wait_for_profile_ready(task, timeout=20)
+    assert task.reel_profile_readiness['reason'] == 'profile_not_visible'
+
+
+def test_profile_that_never_holds_still_is_read_anyway(clock, monkeypatch):
+    task = task_stub()
+    frames = iter(np.full((1080, 1920, 3), (i * 40) % 256, dtype=np.uint8) for i in range(100))
+    task.client.screenshot.side_effect = lambda: next(frames)
+    task.vision.read_text.return_value = [item('Posts'), item('Photos')]
+    monkeypatch.setattr('modules.reel_profile_readiness.browser_navigation_state', lambda _: 'idle')
+    assert wait_for_profile_ready(task, timeout=20)
+    assert task.reel_profile_readiness['reason'] == 'profile_ready_unsettled'
+
+
+def test_two_profile_tabs_anchor_the_profile_without_posts(clock, monkeypatch):
+    task = task_stub()
+    task.client.screenshot.return_value = np.full((1080, 1920, 3), 255, dtype=np.uint8)
+    task.vision.read_text.return_value = [item('About'), item('Followers')]
+    monkeypatch.setattr('modules.reel_profile_readiness.browser_navigation_state', lambda _: 'idle')
+    assert wait_for_profile_ready(task, timeout=5)
