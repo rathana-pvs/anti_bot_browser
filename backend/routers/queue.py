@@ -207,7 +207,7 @@ def schedule_preview(payload: dict = Body(...)):
     seed = random.randrange(1, 2**31)
     now_ms = time.time() * 1000
     start_ms = choice["start_at"].timestamp() * 1000 if choice["start_at"] else now_ms
-    end_ms = start_ms + (choice["spread_minutes"] or 0) * 60_000
+    end_ms = start_ms + max(0, choice["spread_minutes"] or 0) * 60_000
     queue = load_posting_queue() if choice["timing"] == "auto" else None
     # Editing a batch: its own jobs that haven't started are the ones being planned again.
     replanned: dict[str, set] = {}

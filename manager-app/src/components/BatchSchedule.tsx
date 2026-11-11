@@ -5,7 +5,11 @@ import { Checkbox } from './ui/Checkbox';
 import { Select } from './ui/Select';
 import { clockIn, zonePlace } from './queue/queueModel';
 
+/** Every account gets the same start; they begin as job slots allow. */
+export const ALL_AT_ONCE = -1;
+
 export const SPREAD_OPTIONS = [
+  { value: String(ALL_AT_ONCE), label: 'All at once · as slots free up' },
   { value: '0', label: 'Back to back · 45–120 s apart' },
   { value: '15', label: 'Spread over 15 min' },
   { value: '30', label: 'Spread over 30 min' },
@@ -13,6 +17,12 @@ export const SPREAD_OPTIONS = [
   { value: '120', label: 'Spread over 2 hours' },
   { value: '240', label: 'Spread over 4 hours' },
 ];
+
+export function spreadHint(spread: number): string {
+  if (spread === ALL_AT_ONCE) return 'Every account starts right away, as many together as your job slots allow, at least 10 s apart.';
+  if (spread > 0) return `Each account starts at its own random moment within ${spread >= 60 ? `${spread / 60} h` : `${spread} min`}.`;
+  return 'One after another, with a random gap each time.';
+}
 
 const pad = (n: number) => String(n).padStart(2, '0');
 
@@ -241,9 +251,7 @@ export function BatchSchedule({ profileIds, postsPerAccount, mode, onMode, date,
     {!auto && <div className="space-y-1.5">
       <span className="block text-xs text-zinc-400">Accounts start</span>
       <Select value={String(spread)} onValueChange={value => onSpread(Number(value))} ariaLabel="How far apart accounts start" options={SPREAD_OPTIONS} />
-      <p className="text-[11px] text-zinc-500">{spread
-        ? `Each account starts at its own random moment within ${spread >= 60 ? `${spread / 60} h` : `${spread} min`}.`
-        : 'One after another, with a random gap each time.'} The queue never runs more at once than your resource limits allow.</p>
+      <p className="text-[11px] text-zinc-500">{spreadHint(spread)} The queue never runs more at once than your resource limits allow.</p>
     </div>}
 
     {auto && profileIds.length > 0 && <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-2.5 text-[11px]">

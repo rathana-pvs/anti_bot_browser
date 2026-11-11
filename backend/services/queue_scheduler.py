@@ -60,7 +60,9 @@ def compute_execution_schedule(
     # completion-based iteration delay serializes each profile's posts in order.
     return max(now_ms + 60000, window_start_ms + profile_index * stagger_ms)
 
-SPREAD_CHOICES_MINUTES = (0, 15, 30, 60, 120, 240)
+# ALL_AT_ONCE gives every account the same start; slots and container start spacing still apply.
+ALL_AT_ONCE = -1
+SPREAD_CHOICES_MINUTES = (ALL_AT_ONCE, 0, 15, 30, 60, 120, 240)
 # With no spread, accounts still start a varying 45–120 s apart.
 QUICK_GAP_SECONDS = (45, 120)
 
@@ -70,10 +72,13 @@ def spread_offsets_ms(count: int, spread_minutes: int, rand=random.random) -> li
 
     Each account gets its own slice of the window and a random moment inside it, so starts never
     line up like a clock and two accounts are always at least half a slice apart (1 min at most).
-    With no spread, consecutive starts are a random 45–120 s apart.
+    With no spread, consecutive starts are a random 45–120 s apart. All at once gives every
+    account the start itself: they begin as job slots and container start spacing allow.
     """
     if count <= 0:
         return []
+    if spread_minutes == ALL_AT_ONCE:
+        return [0.0] * count
     if spread_minutes <= 0:
         low, high = QUICK_GAP_SECONDS
         offsets, at = [0.0], 0.0

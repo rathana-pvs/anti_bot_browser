@@ -125,3 +125,18 @@ def test_one_job_time_is_kept_even_in_an_older_batch():
     execution["status"] = "running"
     with pytest.raises(batch_edit.EditError, match="already started"):
         batch_edit.edit_job(execution, batch["posts"][0], caption="again", now=NOW)
+
+
+def test_all_at_once_gives_every_account_the_same_start_and_all_are_due(monkeypatch):
+    from backend.services.queue_scheduler import ALL_AT_ONCE
+    assert spread_offsets_ms(3, ALL_AT_ONCE) == [0.0, 0.0, 0.0]
+    batch = make_batch()
+    start = NOW + timedelta(hours=2)
+    choice = {"timing": "exact", "start_at": start, "spread_minutes": ALL_AT_ONCE, "follow_active_hours": False}
+    batch_edit.apply(batch, {}, choice=choice, offsets=spread_offsets_ms, now=NOW)
+    starts = {e["scheduled_at"] for p in batch["posts"] for e in p["executions"]}
+    assert starts == {start.isoformat()} and batch["schedule_window"]["spread_minutes"] == ALL_AT_ONCE
+    monkeypatch.setattr("backend.services.active_hours.admits", lambda *args, **kwargs: True)
+    monkeypatch.setattr("backend.services.account_hold.admits", lambda *args, **kwargs: True)
+    due = profile_pipeline.ordered_due_executions({"daily_batches": [batch]}, start.timestamp() * 1000 + 1)
+    assert {e["profile_id"] for e in due} == {"a", "b"}

@@ -346,3 +346,21 @@ def test_stop_asks_first_when_the_account_is_in_the_middle_of_a_job(client, monk
     automation_service.active_automation_tasks["profile_990"]["status"] = "completed"
     assert client.post("/api/profiles/profile_990/action", json={"action": "stop"}).status_code == 200
     assert stopped == [("profile_990", "stop"), ("profile_990", "stop")]
+
+
+def test_an_all_at_once_batch_starts_every_account_at_the_chosen_time(client):
+    from datetime import datetime, timedelta, timezone
+    start = (datetime.now(timezone.utc) + timedelta(hours=2)).replace(microsecond=0)
+    payload = {
+        "name": "Together", "target_profiles": ["profile_001"], "start_now": False,
+        "schedule_window": {"start_time": "09:00", "end_time": "21:00", "profile_stagger_seconds": 30,
+                            "batch_iteration_delay_seconds": 0, "session_preparation_mode": "off",
+                            "start_now": False, "start_at": start.isoformat(), "spread_minutes": -1,
+                            "follow_active_hours": False},
+        "posts": [{"type": "photo", "media_file": "", "base_caption": "Together", "ai_spin": False}],
+    }
+    res = client.post("/api/queue/batch", json=payload)
+    assert res.status_code == 200, res.text
+    batch = res.json()["batch"]
+    assert batch["schedule_window"]["spread_minutes"] == -1
+    assert datetime.fromisoformat(batch["posts"][0]["executions"][0]["scheduled_at"]) == start
