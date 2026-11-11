@@ -69,8 +69,9 @@ class CaptureTests(unittest.TestCase):
         task.vision.read_text.side_effect = RuntimeError("OCR worker down")
         with patch("modules.reel_profile_readiness.browser_navigation_state", return_value="idle"):
             self.assertIsNone(capture(task))
-        with patch("modules.reel_profile_readiness.browser_navigation_state", return_value="loading"):
-            self.assertIsNone(capture(self.task()))
+        with patch("modules.reel_profile_readiness.browser_navigation_state", return_value="loading"), \
+                patch("skills.account_snapshot.time.sleep"):
+            self.assertIsNone(capture(self.task()))  # still loading, and nothing readable on screen
         broken = self.task()
         broken.client.screenshot.side_effect = OSError("no display")
         self.assertIsNone(capture(broken))
@@ -180,10 +181,23 @@ class ScrollToTopTests(unittest.TestCase):
         self.assertIsNone(self.run_capture(task))
         task.human.scroll.assert_called_once()
 
-    def test_a_page_still_loading_is_not_scrolled(self):
-        task = self.task()
-        self.assertIsNone(self.run_capture(task, state="loading"))
+    def test_a_header_shown_while_chrome_stays_loading_is_read(self):
+        # Facebook can leave a request hanging, so Chrome's loading cross outlasts the drawn header.
+        task = self.task(FRONTLINE_AT_TOP)
+        self.assertEqual(self.run_capture(task, state="loading")["name"], "Frontline Bulletin")
         task.human.scroll.assert_not_called()
+        self.assertEqual(task.client.screenshot.call_count, 9)  # one look a second for 8 s, then read
+
+    def test_a_name_whose_box_overlaps_the_count_line_is_read(self):
+        # Real OCR on a Page header: "Fat Frog" ends at 271, its count line starts at 269.
+        items = [dict(text="Fat Frog", bounds=(724, 227, 863, 271)),
+                 dict(text="23 followers • 0 following", bounds=(724, 269, 912, 292))]
+        self.assertEqual(read_snapshot(items, 1920, 1080, "page"), {"kind": "page", "name": "Fat Frog", "followers": 23})
+
+    def test_a_line_level_with_the_count_is_not_its_name(self):
+        items = [dict(text="Fat Frog", bounds=(724, 270, 863, 290)),
+                 dict(text="23 followers • 0 following", bounds=(724, 269, 912, 292))]
+        self.assertIsNone(read_snapshot(items, 1920, 1080, "page"))
 
     def test_a_failing_scroll_never_raises(self):
         task = self.task([])

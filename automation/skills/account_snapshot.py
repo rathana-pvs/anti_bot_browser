@@ -41,7 +41,9 @@ def profile_header(items, width: int, height: int):
     for count in sorted((item for item in placed if _COUNT_LINE.search(item["text"])), key=lambda item: item["bounds"][1]):
         left, top = count["bounds"][0], count["bounds"][1]
         above = [item for item in placed if item is not count
-                 and 0 <= top - item["bounds"][3] <= height * .05
+                 # OCR boxes of a large name and the line under it can overlap by a few pixels.
+                 and -height * .01 <= top - item["bounds"][3] <= height * .05
+                 and item["bounds"][1] < top
                  and abs(item["bounds"][0] - left) <= width * .02
                  and 2 <= len(item["text"].strip()) <= 60
                  and _normalize(item["text"]) not in _NOT_A_NAME]
@@ -111,11 +113,20 @@ SETTLE_SECONDS = 1.2
 
 
 def _read_screen(task) -> tuple[dict | None, bool]:
-    """(snapshot, screen was settled) for what is on screen now."""
-    from modules.reel_profile_readiness import browser_navigation_state
+    """(snapshot, a screen was read) for what is on screen now.
+
+    Chrome's loading cross is waited out for a few seconds, then ignored: Facebook can leave a request
+    hanging long after the header has drawn. A header still drawing is safe to read, since the name
+    must sit right above its count line or nothing is kept."""
+    from modules.reel_profile_readiness import NAVIGATION_HINT_S, browser_navigation_state
 
     screen = task.client.screenshot()
-    if screen is None or browser_navigation_state(screen) != "idle":
+    for _ in range(int(NAVIGATION_HINT_S)):  # one look a second
+        if screen is None or browser_navigation_state(screen) == "idle":
+            break
+        time.sleep(1.)
+        screen = task.client.screenshot()
+    if screen is None:
         return None, False
     height, width = screen.shape[:2]
     items = task.vision.read_text(screen, region=header_region(width, height), min_confidence=.8)
