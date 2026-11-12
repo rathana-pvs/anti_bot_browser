@@ -10,7 +10,8 @@ export interface AppUpdateInfo {
 }
 export interface AppUpdateProgress { downloaded: number; total: number | null }
 export const getAppVersion = () => invoke<string>('app_update_version');
-export const checkAppUpdate = () => invoke<AppUpdateInfo>('check_app_update');
+/** The latest release, or with `version` that published release, even one older than this app. */
+export const checkAppUpdate = (version?: string) => invoke<AppUpdateInfo>('check_app_update', { version: version ?? null });
 export const downloadAppUpdate = () => invoke<void>('download_app_update');
 export const installAppUpdate = () => invoke<void>('install_app_update');
 export const listenToAppUpdateProgress = (callback: (progress: AppUpdateProgress) => void) =>

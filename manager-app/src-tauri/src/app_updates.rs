@@ -112,12 +112,35 @@ pub fn ensure_desktop_owned() -> Result<(), String> {
     Ok(())
 }
 
+/// A release version as typed ("2.2.9" or "v2.2.9"), or None when it is not one.
+fn release_version(text: &str) -> Option<String> {
+    let version = text.trim().trim_start_matches('v');
+    let parts: Vec<&str> = version.split('.').collect();
+    (parts.len() == 3 && parts.iter().all(|p| !p.is_empty() && p.len() <= 6 && p.bytes().all(|c| c.is_ascii_digit())))
+        .then(|| version.to_string())
+}
+
+/// Each published release keeps its own signed update manifest, so an earlier version can be
+/// installed with the same signature check as the latest one.
+fn release_manifest(version: &str) -> String {
+    format!("https://github.com/rathana-pvs/anti_bot_browser/releases/download/v{version}/latest.json")
+}
+
 #[tauri::command]
 pub async fn check_app_update(
     app: AppHandle,
     state: State<'_, AppUpdates>,
+    version: Option<String>,
 ) -> Result<UpdateInfo, String> {
     let _busy = state.begin()?;
+    // A named version is offered whether it is older or newer than this one, to go back to it.
+    let wanted = match version.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+        Some(text) => Some(release_version(text).ok_or("Enter a version such as 2.2.9.")?),
+        None => None,
+    };
+    if wanted.as_deref() == Some(app.package_info().version.to_string().as_str()) {
+        return Err("That version is already installed.".into());
+    }
     {
         let mut pending = state
             .pending
@@ -125,15 +148,23 @@ pub async fn check_app_update(
             .map_err(|_| "Update state is unavailable")?;
         *pending = Pending::default();
     }
-    let result = app
-        .updater_builder()
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|e| e.to_string())?
-        .check()
-        .await;
+    let mut builder = app.updater_builder().timeout(Duration::from_secs(20));
+    if let Some(ref wanted) = wanted {
+        let manifest = tauri::Url::parse(&release_manifest(wanted)).map_err(|e| e.to_string())?;
+        let target = wanted.clone();
+        builder = builder
+            .endpoints(vec![manifest])
+            .map_err(|e| e.to_string())?
+            .version_comparator(move |current, remote| {
+                remote.version.to_string() == target && remote.version != current
+            });
+    }
+    let result = builder.build().map_err(|e| e.to_string())?.check().await;
     let (update, notice) = match result {
         Ok(update) => (update, None),
+        Err(tauri_plugin_updater::Error::ReleaseNotFound) if wanted.is_some() => {
+            return Err(format!("Version {} was not found among the published releases.", wanted.unwrap_or_default()))
+        }
         Err(error) => match release_check_notice(&error) {
             Some(notice) => (None, Some(notice.to_string())),
             None => return Err(format!("Could not check for updates. Check your connection and try again. Details: {error}")),
@@ -225,12 +256,8 @@ pub async fn install_app_update(
     let install_app = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         update.verify(bytes.as_ref()).map_err(|e| e.to_string())?;
-        if !backend_is_running() {
-            return Err(
-                "Start application services using Setup and repair before installing an update."
-                    .into(),
-            );
-        }
+        // With application services stopped (as on the setup screen) no automation can be running,
+        // so the update installs straight away: a failed repair must not block the release that fixes it.
         let _maintenance = MaintenanceLease;
         update_maintenance(true)?;
         verify_runtime_install_idle()?;
@@ -248,6 +275,7 @@ pub async fn install_app_update(
             }
             owned.take()
         };
+        let stopped_backend = child.is_some();
         if let Some(mut child) = child {
             terminate_backend(&mut child);
         }
@@ -257,7 +285,7 @@ pub async fn install_app_update(
         let outcome = update
             .install(bytes.as_ref())
             .map_err(|e| format!("Installation failed: {e}"));
-        if outcome.is_err() {
+        if outcome.is_err() && stopped_backend {
             if let Ok(mut owned) = backend.0.lock() {
                 *owned = spawn_backend(&install_app);
             }
@@ -287,6 +315,16 @@ mod tests {
         assert!(release_check_notice(&tauri_plugin_updater::Error::EmptyEndpoints).is_none());
         let invalid_json = serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
         assert!(release_check_notice(&tauri_plugin_updater::Error::Serialization(invalid_json)).is_none());
+    }
+    #[test]
+    fn only_a_release_version_names_an_earlier_release() {
+        assert_eq!(release_version(" v2.2.9 ").as_deref(), Some("2.2.9"));
+        assert_eq!(release_version("2.2.10").as_deref(), Some("2.2.10"));
+        for bad in ["", "2.2", "2.2.9.1", "2.2.x", "../2.2.9", "2.2.9/evil"] {
+            assert!(release_version(bad).is_none(), "{bad}");
+        }
+        assert_eq!(release_manifest("2.2.9"),
+            "https://github.com/rathana-pvs/anti_bot_browser/releases/download/v2.2.9/latest.json");
     }
     #[test]
     fn operations_are_exclusive_and_guard_releases_on_error() {

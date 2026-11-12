@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { AppUpdates } from './AppUpdates';
 import {
   AlertCircle,
   Check,
@@ -300,6 +301,11 @@ export const SetupCenter: React.FC<SetupCenterProps> = ({ initialStatus, onCompl
                 {running ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
                 Install / update runtime
               </button>
+            </div>
+            <div className="mt-4 rounded-xl border border-zinc-800 bg-zinc-900/55 p-4">
+              <h3 className="mb-3 text-sm font-medium text-zinc-200">App updates</h3>
+              {/* Reachable here too: a repair that fails must not block the release that fixes it. */}
+              <AppUpdates />
             </div>
             <p className="mt-3 text-center text-[11px] leading-5 text-zinc-600">
               Administrator approval or a restart may be requested for system components. Existing configuration is preserved.
