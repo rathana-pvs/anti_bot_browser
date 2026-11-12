@@ -679,13 +679,23 @@ class PublishTests(unittest.TestCase):
 
 
 class FindPostTests(unittest.TestCase):
-    def test_skips_pinned_post_and_finds_ours(self):
-        device = FakeDevice([lines(("Pinned post", 300), ("3d", 340), ("Morning coffee test", 450))])
+    def test_skips_pinned_post_and_finds_ours_by_its_time_label(self):
+        device = FakeDevice([lines(("Pinned post", 300), ("2m", 340), ("Natalie Smith", 420), ("Just now", 450))])
         device.icons["comment"] = (60.0, 600.0)
         device.screens.insert(1, lines(("Write a comment...", 1100)))
         flows = Flows(device, lambda **e: None)
         self.assertTrue(run(flows.scan_profile(PostItem("photo", "Morning coffee test"), 3, 1)))
         self.assertIn(("tap", (60.0, 600.0)), device.actions)
+
+    def test_caption_is_not_needed_to_find_the_post(self):
+        # Job 2's profile: the caption preview cut off under the tab bar, nothing of it readable.
+        shown = lines(("All", 90), ("Natalie Smith", 150), ("5m", 180), ("Sticker Mule CEO", 250),
+                      ("Jaime Chung", 1009), ("29m", 1039))
+        device = FakeDevice([shown, lines(("Write a comment...", 1100))])
+        device.icons["comment"] = (104.0, 944.0)
+        flows = Flows(device, lambda **e: None)
+        self.assertTrue(run(flows.scan_profile(PostItem("reel", "Newly elected congressional candidate"), 6, 2)))
+        self.assertIn(("tap", (104.0, 944.0)), device.actions)
 
     def test_an_older_unpinned_post_ends_the_look(self):
         device = FakeDevice([lines(("Pinned post", 300), ("3d", 340), ("Old caption", 700), ("2h", 760))])
@@ -693,6 +703,51 @@ class FindPostTests(unittest.TestCase):
         flows = Flows(device, lambda **e: events.append(e))
         self.assertFalse(run(flows.scan_profile(PostItem("photo", "Morning coffee test"), 3, 1)))
         self.assertEqual(events[-1]["reason"], "reached a post 120 min old")
+
+    def test_profile_opened_past_our_post_is_scrolled_back_up_to_find_it(self):
+        past = lines(("All", 150), ("Natalie Smith", 1660), ("14m", 1730))  # only our media in view
+        ours = lines(("Natalie Smith", 400), ("Just now", 450), ("Jaime Chung", 1900), ("14m", 1970))
+        device = FakeDevice([past, ours, lines(("Write a comment...", 1100))])
+        device.icons["comment"] = (60.0, 600.0)
+        events = []
+        flows = Flows(device, lambda **e: events.append(e))
+        self.assertTrue(run(flows.scan_profile(PostItem("reel", "Morning coffee test"), 6, 1)))
+        swipes = [a for a in device.actions if a[0] == "swipe"]
+        self.assertEqual(len(swipes), 1)
+        self.assertLess(swipes[0][1][1], swipes[0][2][1])  # finger moves down: the list scrolls back up
+        self.assertEqual([e["event"] for e in events if e.get("step") == "find post"], ["back_up"])
+
+    def test_an_older_post_still_ends_the_look_after_two_back_ups(self):
+        device = FakeDevice([lines(("Old caption", 700), ("2h", 760))])
+        events = []
+        flows = Flows(device, lambda **e: events.append(e))
+        self.assertFalse(run(flows.scan_profile(PostItem("photo", "Morning coffee test"), 3, 1)))
+        self.assertEqual([e["event"] for e in events if e.get("step") == "find post"], ["back_up", "back_up", "stop"])
+        self.assertEqual(len([a for a in device.actions if a[0] == "swipe"]), 2)
+
+    def test_a_post_up_to_10_minutes_old_is_new_on_every_look(self):
+        device = FakeDevice()
+        flows = Flows(device, lambda **e: None)
+        limits = []
+
+        async def nothing(item, allowed, attempt):
+            limits.append(allowed)
+            return False
+
+        async def noop():
+            return None
+        with patch.object(flows, "scan_profile", nothing), patch.object(flows, "open_feed", noop), \
+                patch.object(flows, "open_profile", noop), patch.object(flows, "refresh_profile", noop):
+            with self.assertRaises(StepFailed):
+                run(flows.find_and_comment(PostItem("reel", "Clip", "hi"), published_at=-600.0))
+        self.assertEqual(limits, [10, 10, 10, 10])
+
+    def test_10m_counts_as_new_and_11m_ends_the_look(self):
+        device = FakeDevice([lines(("10m", 450)), lines(("Write a comment...", 1100))])
+        device.icons["comment"] = (60.0, 600.0)
+        self.assertTrue(run(Flows(device, lambda **e: None).scan_profile(PostItem("reel", "x"), 10, 1)))
+        device = FakeDevice([lines(("11m", 450))])
+        self.assertFalse(run(Flows(device, lambda **e: None).scan_profile(PostItem("reel", "x"), 10, 1)))
 
     def _looks(self, kind, **kwargs):
         device = FakeDevice()
@@ -727,7 +782,7 @@ class FindPostTests(unittest.TestCase):
         flows = Flows(device, lambda **e: None)
         self.assertFalse(run(flows.scan_profile(PostItem("reel", "Morning coffee test"), 3, 2)))
         self.assertIn(("snapshot", "comment_look_2_post_not_there"), device.actions)
-        device = FakeDevice([lines(("Morning coffee test", 450)), lines(("Write a comment...", 1100))])
+        device = FakeDevice([lines(("Just now", 450)), lines(("Write a comment...", 1100))])
         device.icons["comment"] = (60.0, 600.0)
         flows = Flows(device, lambda **e: None)
         self.assertTrue(run(flows.scan_profile(PostItem("reel", "Morning coffee test"), 3, 1)))

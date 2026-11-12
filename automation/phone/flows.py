@@ -82,6 +82,8 @@ UPLOAD_NEVER_SEEN_S = 60
 COMMENT_BOX = ["Write a comment", "Add a comment", "Comment as"]
 # Swipes down the profile looking for its tabs; promo cards can push them about three swipes below the top.
 PROFILE_TAB_SCROLLS = 6
+NEW_POST_MAX_MINUTES = 10  # a post whose time label is at most this old counts as this job's
+PROFILE_BACK_UP_SCROLLS = 2  # swipes back up before an older post ends a look: the profile may open past our post
 # Seconds spent reading between scrolls of a warming session.
 READING_PAUSES = {"quick": (1.0, 3.0), "balanced": (2.5, 5.5), "relaxed": (5.0, 10.0)}
 
@@ -731,8 +733,7 @@ class Flows:
             remaining = published_at + sum(waits[:attempt]) - dev.now()
             if remaining > 0:
                 await dev.sleep(remaining)
-            # Facebook may date the post from the publish tap, before the upload finished.
-            allowed = max_age_minutes if max_age_minutes is not None else (dev.now() - published_at) / 60 + 4
+            allowed = max_age_minutes if max_age_minutes is not None else NEW_POST_MAX_MINUTES
             if attempt == 1:
                 await self.open_feed()
                 await self.open_profile()
@@ -759,9 +760,13 @@ class Flows:
             await dev.tap(tab)
 
     async def scan_profile(self, item: PostItem, allowed_minutes: float, attempt: int) -> bool:
-        """Scrolls the Posts list. Pinned posts are skipped; a post older than this job ends the look,
-        since this job's post would be above it. True once the comment sheet is open."""
+        """Scrolls the Posts list for the newest post by its time label. Pinned posts are skipped; a post
+        older than this job ends the look, since this job's post would be above it. The profile can open,
+        or come back from a refresh, already scrolled past the top of this job's post (only its media in
+        view, the older post under it), so the list is first scrolled back up a little before an older
+        post ends the look. True once the comment sheet is open."""
         dev = self.device
+        backed_up = 0
         for scroll in range(12):
             await dev.settle(timeout=2.0)  # autoplaying video keeps the profile from ever being still
             lines = await dev.read()
@@ -770,11 +775,11 @@ class Flows:
             def near_pin(y: float) -> bool:
                 return any(0 <= y - pin < dev.pt(0, 160)[1] for pin in pinned)
 
-            anchor = match(lines, item.caption_key) if item.caption_key else None
-            if not item.caption_key:  # nothing OCR can read in the caption: the newest unpinned post
-                fresh = [line.point for line in lines if (screen.post_age_minutes(line.text) or 0) <= allowed_minutes
-                         and screen.post_age_minutes(line.text) is not None and not near_pin(line.point[1])]
-                anchor = fresh[0] if fresh else None
+            # This job's post is the newest unpinned one: its time label is within the allowed age. The
+            # caption is not read; its preview can be cut off or hidden under the profile's tab bar.
+            fresh = [line.point for line in lines if (screen.post_age_minutes(line.text) or 0) <= allowed_minutes
+                     and screen.post_age_minutes(line.text) is not None and not near_pin(line.point[1])]
+            anchor = fresh[0] if fresh else None
             if anchor:
                 icon = dev.find_icon("comment", below=anchor[1])
                 if icon:
@@ -791,10 +796,18 @@ class Flows:
                 for line in lines:
                     age = screen.post_age_minutes(line.text)
                     if age is not None and age > allowed_minutes and not near_pin(line.point[1]):
+                        if backed_up < PROFILE_BACK_UP_SCROLLS:
+                            backed_up += 1
+                            self.log(event="back_up", step="find post", attempt=attempt, reason=f"a post {age} min old")
+                            await self.scroll(dev.pt(540, 1000), dev.pt(540, 1600))
+                            break
                         self.log(event="stop", step="find post", attempt=attempt,
                                  reason=f"reached a post {age} min old")
                         dev.snapshot(f"comment_look_{attempt}_post_not_there")
                         return False
+                else:
+                    await self.scroll(dev.pt(540, 1700), dev.pt(540, 1150))
+                continue
             await self.scroll(dev.pt(540, 1700), dev.pt(540, 1150))
         dev.snapshot(f"comment_look_{attempt}_post_not_there")
         return False
