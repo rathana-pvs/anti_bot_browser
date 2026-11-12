@@ -1,3 +1,14 @@
+# Version 2.2.10
+
+- Skip system package downloads during setup and repair when all required
+  packages are already installed. A broken package mirror no longer blocks
+  repair in that case.
+- Install only the missing system packages when additional dependencies are
+  needed.
+
+**Linux only.** After installing, run **Settings → Setup and repair → Install /
+update runtime** when prompted.
+
 # Version 2.2.9
 
 - Show progress through each step when the phone viewer opens an account.
