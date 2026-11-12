@@ -1,3 +1,15 @@
+# Version 2.2.11
+
+- Check for updates or install a named earlier release from the setup screen,
+  including when application services cannot start.
+- Handle the updated phone Reel picker and recover when Share now is covered
+  or unavailable.
+- Find the published phone post by its time label when adding the first
+  comment, and begin the comment as soon as publication is confirmed.
+
+**Linux only.** After installing, run **Settings → Setup and repair → Install /
+update runtime** when prompted.
+
 # Version 2.2.10
 
 - Skip system package downloads during setup and repair when all required
