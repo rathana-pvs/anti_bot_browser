@@ -70,6 +70,7 @@ def comment_looks(kind: str, published_ago: float) -> tuple[float, ...]:
 PUBLISH_CONFIRM_TIMEOUT_S = 180
 # How long a greyed-out publish button may stay grey before the job fails without tapping it.
 PUBLISH_ENABLE_TIMEOUT_S = 180
+PUBLISH_ENABLE_SCROLLS = 3  # swipes down a settings list whose end must be seen before its button turns blue
 # A big video on a slow proxy may keep "Posting" up for long; leaving kills the upload.
 UPLOAD_TIMEOUT_S = 900
 # The bar can vanish for a moment or be misread, so it must stay gone this long.
@@ -465,11 +466,14 @@ class Flows:
     async def _pick_reel(self) -> None:
         """From the reel picker: the newest video, then Next, to the composer."""
         dev = self.device
-        offset = dev.pt(68, 394)  # the first cell, whether or not a Drafts row sits above the grid
+        # The first cell, from the "Gallery" title (whether or not a Drafts row sits above the grid), or, in
+        # the layout without that title, from the "Recents" chip in the filter row right above the grid.
+        offsets = {"Gallery": dev.pt(68, 394), "Recents": dev.pt(75, 290)}
         for _ in range(2):
-            _, gallery, lines = await self.wait_for("reel picker", ["Gallery"], exact=True, timeout=15)
+            found, anchor, lines = await self.wait_for("reel picker", list(offsets), exact=True, timeout=15)
             if not await self._discard_unfinished_reel(lines):
-                await dev.tap((gallery[0] + offset[0], gallery[1] + offset[1]))
+                offset = offsets[found]
+                await dev.tap((anchor[0] + offset[0], anchor[1] + offset[1]))
                 found, nxt, lines = await self.wait_for("reel editor", [screen.LEFT_UNFINISHED, "Next"], timeout=30)  # OCR reads its arrow too
                 if found == "Next":
                     break
@@ -604,7 +608,7 @@ class Flows:
         # The title shows before the button has finished drawing.
         _, point, _ = await self.wait_for(f"settings {button}", [button], exact=True, timeout=10,
                                           handle_interruptions=False)
-        await self._wait_until_enabled(button, point)
+        point = await self._wait_until_enabled(button, point)
         dev.snapshot("before_publish")
         before_tap()
         self.log(event="about_to_publish", screen=found)
@@ -612,22 +616,45 @@ class Flows:
         await dev.tap(point)
         return tapped
 
-    async def _wait_until_enabled(self, button: str, point: Point) -> None:
-        """A tap on a greyed-out button does nothing, so the post would wrongly count as maybe published."""
+    async def _wait_until_enabled(self, button: str, point: Point) -> Point:
+        """A tap on a greyed-out button does nothing, so the post would wrongly count as maybe published.
+        Facebook can keep Reel Settings' Share now grey until its list has been scrolled to the end, so the
+        list above the pinned button is scrolled down first; a swipe only scrolls, it taps nothing. A toast
+        ("All videos will now be posted as reels...") can cover the button: dark, so not grey, but a tap
+        there lands on the toast. The button is tapped only while its label is read on screen and not
+        grey. Returns where to tap."""
         dev = self.device
         waited_from = dev.now()
-        logged = False
-        while screen.button_disabled(dev.image(), point):
-            if not logged:
-                self.log(event="publish_button", state="disabled", button=button)
-                logged = True
+        state = None
+        scrolls = 0
+        while True:
+            seen = match(await dev.read(), button, exact=True)
+            if seen:
+                point = seen
+                if not screen.button_disabled(dev.image(), point):
+                    if state in (None, "settled"):
+                        break
+                    # It just turned blue or came out from under a toast: let it settle, then check again.
+                    self.log(event="publish_button", state="enabled", seconds=round(dev.now() - waited_from))
+                    await dev.settle(timeout=2.0)
+                    state = "settled"
+                    continue
+            now = "disabled" if seen else "hidden"
+            if now != state:
+                self.log(event="publish_button", state=now, button=button)
+                state = now
+            if seen and scrolls < PUBLISH_ENABLE_SCROLLS:
+                scrolls += 1
+                self.log(event="publish_button", action="scroll settings", attempt=scrolls)
+                await self.scroll(dev.pt(540, 1800), dev.pt(540, 800))
+                await dev.settle(timeout=2.0)
+                continue
             if dev.now() >= waited_from + PUBLISH_ENABLE_TIMEOUT_S:
                 dev.snapshot(f"fail_publish_disabled_{int(time.time())}")
-                raise StepFailed(f"publish: Facebook kept {button} disabled for {PUBLISH_ENABLE_TIMEOUT_S} s; nothing was tapped")
-            await dev.sleep(3)
-        if logged:
-            self.log(event="publish_button", state="enabled", seconds=round(dev.now() - waited_from))
-            await dev.settle(timeout=2.0)
+                why = "disabled" if seen else "covered or not shown"
+                raise StepFailed(f"publish: Facebook kept {button} {why} for {PUBLISH_ENABLE_TIMEOUT_S} s; nothing was tapped")
+            await dev.sleep(3 if seen else 1)
+        return point
 
     async def wait_published(self, item: PostItem, tapped: float) -> float:
         """A photo shows on the feed with its caption and "Just now"; a reel is confirmed once the

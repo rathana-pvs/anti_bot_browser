@@ -440,11 +440,43 @@ class PublishTests(unittest.TestCase):
     def test_greyed_out_button_is_waited_for_before_the_tap(self):
         device = FakeDevice([lines(("Share now", 1200))])
         grey, blue = self.frame((232, 227, 226)), self.frame((255, 101, 8))
-        device.images = [grey, grey, blue]
+        device.images = [grey] * 5 + [blue]  # three scrolls, then two plain waits
         order = []
         run(Flows(device, lambda **e: None).publish(lambda: order.append(device.t)))
+        self.assertEqual(len([a for a in device.actions if a[0] == "swipe"]), 3)
         self.assertGreaterEqual(order[0], 6)
         self.assertEqual(device.actions[-1], ("tap", (100.0, 1200.0)))
+
+    def test_grey_share_now_turns_blue_after_the_settings_list_is_scrolled(self):
+        settings = lines(("Reel Settings", 90), ("Location", 410), ("Share now", 1200))
+        device = FakeDevice([lines(("Share now", 1200)), settings])
+        device.images = [self.frame((232, 227, 226)), self.frame((255, 101, 8))]
+        order = []
+        run(Flows(device, lambda **e: None).publish(lambda: order.append("recorded")))
+        swipes = [a for a in device.actions if a[0] == "swipe"]
+        self.assertEqual(len(swipes), 1)
+        self.assertGreater(swipes[0][1][1], swipes[0][2][1])  # finger moves up: the list scrolls down
+        self.assertEqual(device.actions[-1], ("tap", (100.0, 1200.0)))
+        self.assertEqual(order, ["recorded"])
+
+    def test_share_now_under_a_toast_is_tapped_only_once_the_toast_is_gone(self):
+        toast = lines(("Reel Settings", 90), ("All videos will now be posted as reels and", 1180), ("Learn more", 1190))
+        device = FakeDevice([lines(("Share now", 1200)), toast, toast, lines(("Share now", 1205))])
+        device.images = [self.frame((40, 40, 40)), self.frame((255, 101, 8))]  # the toast is dark, not grey
+        taps_before = []
+        run(Flows(device, lambda **e: None).publish(lambda: taps_before.append(
+            [a for a in device.actions if a[0] == "tap"])))
+        self.assertEqual(taps_before, [[]])
+        self.assertEqual(device.actions[-1], ("tap", (100.0, 1205.0)))
+
+    def test_share_now_that_stays_covered_fails_without_a_tap(self):
+        toast = lines(("Reel Settings", 90), ("All videos will now be posted as reels and", 1180))
+        device = FakeDevice([lines(("Share now", 1200)), toast])
+        recorded = []
+        with self.assertRaises(StepFailed):
+            run(Flows(device, lambda **e: None).publish(lambda: recorded.append(True)))
+        self.assertEqual(recorded, [])
+        self.assertNotIn("tap", [a[0] for a in device.actions])
 
     def test_button_that_stays_grey_fails_without_a_tap(self):
         device = FakeDevice([lines(("Share now", 1200))])
@@ -468,6 +500,14 @@ class PublishTests(unittest.TestCase):
         taps = [a[1] for a in device.actions if a[0] == "tap"]
         offset = device.pt(68, 394)
         self.assertEqual(taps, [(100.0, 800.0), (100.0 + offset[0], 280.0 + offset[1]), (100.0, 1130.0)])
+
+    def test_picker_without_a_gallery_title_picks_the_cell_under_the_recents_chip(self):
+        picker = lines(("Create reel", 105), ("Music", 228), ("Drafts", 228), ("Recents", 283), ("Videos", 283))
+        device = FakeDevice([picker, lines(("Next", 1208)), lines(("Describe your reel", 300))])
+        run(Flows(device, lambda **e: None)._pick_reel())
+        taps = [a[1] for a in device.actions if a[0] == "tap"]
+        offset = device.pt(75, 290)
+        self.assertEqual(taps, [(100.0 + offset[0], 283.0 + offset[1]), (100.0, 1208.0)])
 
     def test_reel_editor_next_is_tapped_again_when_the_editor_stays(self):
         editor = lines(("Add audio", 90), ("Discover suggestions", 108), ("Next", 1208))
