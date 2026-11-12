@@ -38,12 +38,14 @@ def squash(value: str) -> str:
     return "".join(ch for ch in value.casefold() if ch.isalnum())
 
 
-def match(lines: list[Line], wanted: str, exact: bool = False) -> Point | None:
+def match(lines: list[Line], wanted: str, exact: bool = False, whole: bool = False) -> Point | None:
     """Exact for button labels; otherwise ignoring case, spaces and punctuation, which OCR sometimes
-    merges or drops in longer text such as captions."""
+    merges or drops in longer text such as captions. `whole` is for a button whose icon OCR may read
+    too ("→ Next"): the line must be the label alone, so a caption with the word in it is not taken."""
     key = squash(wanted)
     for line in lines:
-        if (line.text.strip() == wanted) if exact else (key and key in squash(line.text)):
+        text = squash(line.text)
+        if (line.text.strip() == wanted) if exact else (text == key if whole else (key and key in text)):
             return line.point
     return None
 
@@ -69,6 +71,118 @@ def button_disabled(image: np.ndarray | None, point: Point) -> bool:
         return False
     blue, green, red = np.median(patch.reshape(-1, 3), axis=0)
     return max(blue, green, red) - min(blue, green, red) < 30 and 180 < min(blue, green, red) < 245
+
+
+# A screen's main action button: Facebook's blue filled shape in the bottom-right of the toolbar. It is found
+# by colour and place, so a renamed label or a new icon still finds it; its label only says what a tap does.
+BOTTOM_STRIP = 0.85  # the toolbar under a reel's video; a video's own text never reaches it
+# OpenCV HSV (hue 0-180) for Facebook blue, about RGB (8, 101, 255); a video's blue cannot reach the strip.
+_BLUE_LOW, _BLUE_HIGH = (95, 150, 150), (125, 255, 255)
+_BUTTON_MIN = 60  # px across at 1080 wide; the round Next is about 125
+_BUTTON_LABEL_BELOW = 80  # px at 1080 wide: how far under a round button its label can sit
+FORWARD_LABELS = ("Next", "Continue", "Done")
+PUBLISH_LABELS = ("Share", "Share now", "Post", "Post now", "Publish")  # a tap posts: never a step forward
+EDITOR_TOOLS = ("Audio", "Edit", "Effects", "Text", "Stickers")
+
+
+@dataclass(frozen=True)
+class ActionButton:
+    point: Point
+    label: str  # what OCR read on or under it; "" for an icon alone
+    kind: str  # "forward", "publish", or "unknown" for a label on neither list
+
+
+def _distance(a: str, b: str) -> int:
+    row = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        prev, row[0] = row[0], i
+        for j, cb in enumerate(b, 1):
+            prev, row[j] = row[j], min(row[j] + 1, row[j - 1] + 1, prev + (ca != cb))
+    return row[-1]
+
+
+def _near(key: str, label: str) -> bool:
+    """OCR misreads a letter or two ("Contlnue"): one off from 5 letters, two from 8. Shorter words must be
+    exact, as one letter turns the toolbar's "Text" into "Next"."""
+    want = squash(label)
+    allowed = 2 if len(want) >= 8 else 1 if len(want) >= 5 else 0
+    return key == want or (allowed > 0 and abs(len(key) - len(want)) <= allowed and _distance(key, want) <= allowed)
+
+
+def label_kind(text: str) -> str:
+    """"publish" first, so a misread publish label can never pass as a forward one; "" for no label."""
+    key = squash(text)
+    if not key:
+        return ""
+    if any(_near(key, label) for label in PUBLISH_LABELS):
+        return "publish"
+    if any(_near(key, label) for label in FORWARD_LABELS):
+        return "forward"
+    return "unknown"
+
+
+def _blue_box(image: np.ndarray | None) -> tuple[float, float, float, float] | None:
+    """The box (left, top, right, bottom) of the largest round or pill-shaped Facebook-blue shape in the
+    bottom strip that reaches the right half. The whole width is searched, so a wide bar (Share now) is
+    seen whole and its label, in its middle, is read."""
+    if image is None:
+        return None
+    height, width = image.shape[:2]
+    top = int(height * BOTTOM_STRIP)
+    hsv = cv2.cvtColor(image[top:], cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, _BLUE_LOW, _BLUE_HIGH)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    least = _BUTTON_MIN * width / TEMPLATE_WIDTH
+    best = None
+    for contour in contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        if w < least or h < least or x + w <= width / 2 or cv2.contourArea(contour) < 0.6 * w * h:
+            continue  # a circle fills 0.79 of its box, a rounded bar more
+        if best is None or w * h > best[2] * best[3]:
+            best = (x, y, w, h)
+    if best is None:
+        return None
+    x, y, w, h = best
+    return float(x), float(top + y), float(x + w), float(top + y + h)
+
+
+def blue_button(image: np.ndarray | None) -> Point | None:
+    """The centre of the screen's blue action button (see `_blue_box`)."""
+    box = _blue_box(image)
+    return None if box is None else ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
+
+
+def _label_in(lines: list[Line], box: tuple[float, float, float, float], width: int) -> str:
+    """Text inside the button or just under it (a round button's label sits below). One- or two-character
+    reads are dropped: OCR reads icons, such as the arrow, as stray letters ("e", "0")."""
+    scale = width / TEMPLATE_WIDTH
+    pad = 20 * scale
+    left, top, right, bottom = box
+    near = [line for line in lines if len(squash(line.text)) > 2
+            and left - pad <= line.point[0] <= right + pad and top - pad <= line.point[1] <= bottom + _BUTTON_LABEL_BELOW * scale]
+    return " ".join(line.text for line in sorted(near, key=lambda line: line.point[1])).strip()
+
+
+def action_button(lines: list[Line], image: np.ndarray | None) -> ActionButton | None:
+    """The screen's blue action button and what its label means. With no blue shape seen (or no frame),
+    a known label alone on its line in the bottom strip; an unknown word there is not taken for a button."""
+    box = _blue_box(image)
+    if box:
+        label = _label_in(lines, box, image.shape[1])
+        return ActionButton(((box[0] + box[2]) / 2, (box[1] + box[3]) / 2), label, label_kind(label))
+    top = image.shape[0] * BOTTOM_STRIP if image is not None else None
+    for line in sorted(lines, key=lambda line: -line.point[1]):
+        if top is not None and line.point[1] < top:
+            break
+        kind = label_kind(line.text)
+        if kind in ("forward", "publish"):
+            return ActionButton(line.point, line.text.strip(), kind)
+    return None
+
+
+def reel_editor_shown(lines: list[Line]) -> bool:
+    """The reel editor's own toolbar, read whole, so a video's text cannot fake it."""
+    return sum(match(lines, tool, whole=True) is not None for tool in EDITOR_TOOLS) >= 2
 
 
 def menu_reel(lines: list[Line]) -> Point | None:

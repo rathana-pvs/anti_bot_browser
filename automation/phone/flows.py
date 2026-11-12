@@ -131,10 +131,11 @@ class Flows:
     # --- waiting ------------------------------------------------------------------------------
     async def wait_for(self, step: str, any_of: list[str], timeout: float = 20.0, exact: bool = False,
                        handle_interruptions: bool = True, evidence: bool = True,
-                       discard_old: bool = False) -> tuple[str, Point, list[Line]]:
+                       discard_old: bool = False, whole: tuple[str, ...] = ()) -> tuple[str, Point, list[Line]]:
         """Until one of the texts shows; known pop-ups are closed meanwhile. A caller that recovers from a
         miss passes `evidence=False`, so only real failures leave a fail_ screenshot. `discard_old` is for a
-        step before this job has made anything: a prompt about an earlier job's post is answered with discard."""
+        step before this job has made anything: a prompt about an earlier job's post is answered with discard.
+        The texts in `whole` must fill their line (see `match`)."""
         dev = self.device
         deadline = dev.now() + timeout
         lines: list[Line] = []
@@ -147,7 +148,7 @@ class Flows:
                 await dev.settle(timeout=2.0)
                 continue
             for wanted in any_of:
-                point = match(lines, wanted, exact)
+                point = match(lines, wanted, exact, whole=wanted in whole)
                 if point:
                     return wanted, point, lines
             self.check_account(lines)
@@ -435,7 +436,8 @@ class Flows:
         offset = dev.pt(168, 110)
         await dev.tap((point[0] + offset[0], point[1] + offset[1]))
         # Picking can open the composer at once. Its own Next leads past the caption, so the prompts come first.
-        found, nxt, _ = await self.wait_for("picker selection", [VIDEO_PROMPT, PHOTO_PROMPT, FEED_PROMPT, "Next"], timeout=10)
+        found, nxt, _ = await self.wait_for("picker selection", [VIDEO_PROMPT, PHOTO_PROMPT, FEED_PROMPT, "Next"], timeout=10,
+                                             whole=("Next",))
         if found == "Next":  # the composer's prompt may not have drawn yet
             await dev.settle(timeout=2.0)
             lines = await dev.read()
@@ -476,8 +478,8 @@ class Flows:
             if not await self._discard_unfinished_reel(lines):
                 offset = offsets[found]
                 await dev.tap((anchor[0] + offset[0], anchor[1] + offset[1]))
-                found, nxt, lines = await self.wait_for("reel editor", [screen.LEFT_UNFINISHED, "Next"], timeout=30)  # OCR reads its arrow too
-                if found == "Next":
+                button, lines = await self._wait_reel_editor()
+                if button:
                     break
                 await self._discard_unfinished_reel(lines)
         else:
@@ -485,7 +487,8 @@ class Flows:
         # Next can be drawn before the editor takes taps (the clip still loading, its "Add audio" hint
         # sliding in), so a tap may leave the editor up. Next is tapped again while the editor stays.
         for attempt in range(1, 4):
-            await dev.tap(nxt)
+            self.log(event="reel editor next", label=button.label or "(icon)", attempt=attempt)
+            await dev.tap(button.point)
             try:
                 await self.wait_for("composer with media", ["Describe your reel", "Add a description"],
                                     timeout=10, evidence=attempt == 3)
@@ -496,12 +499,50 @@ class Flows:
                 after = await dev.read()
                 if any(match(after, prompt) for prompt in ("Describe your reel", "Add a description")):
                     return  # it opened just as the wait ran out
-                again = match(after, "Next")
+                again = self._editor_button(after)
                 if not again:
                     dev.snapshot(f"fail_composer_with_media_{int(time.time())}")
                     raise
                 self.log(event="retry", step="reel editor next", attempt=attempt + 1)
-                nxt = again
+                button = again
+
+    def _editor_button(self, lines: list[Line]) -> screen.ActionButton | None:
+        """The reel editor's step forward: its blue button, found by colour and place, whatever its label.
+        A label that posts (Share...) is never tapped here, as the caption comes after this screen; an
+        unknown label stops the job with a screenshot, so a new word is added to the list rather than
+        guessed. An icon with no label is tapped only once the editor's own toolbar is read."""
+        button = screen.action_button(lines, self.device.image())
+        if not button:
+            return None
+        if button.kind == "forward" or (button.kind == "" and screen.reel_editor_shown(lines)):
+            return button
+        if button.kind == "":
+            return None  # a blue shape before the editor has drawn its toolbar
+        self.device.snapshot(f"fail_reel_editor_button_{int(time.time())}")
+        if button.kind == "publish":
+            raise StepFailed(f"reel editor: its blue button says {button.label!r}, which would post before "
+                             "the caption; Facebook's layout changed; nothing was tapped")
+        raise StepFailed(f"reel editor: its blue button says {button.label!r}, a label not known as a step "
+                         f"forward ({', '.join(screen.FORWARD_LABELS)}); nothing was tapped")
+
+    async def _wait_reel_editor(self, timeout: float = 30.0) -> tuple[screen.ActionButton | None, list[Line]]:
+        """Until the editor's step-forward button shows (returned) or the unfinished-reel prompt (None)."""
+        dev = self.device
+        deadline = dev.now() + timeout
+        lines: list[Line] = []
+        while dev.now() < deadline:
+            lines = await dev.read()
+            if match(lines, screen.LEFT_UNFINISHED):
+                return None, lines
+            button = self._editor_button(lines)
+            if button:
+                return button, lines
+            self.check_account(lines)
+            if await self.close_interruption(lines):
+                continue
+            await dev.sleep(0.6)
+        dev.snapshot(f"fail_reel_editor_{int(time.time())}")
+        raise StepFailed(f"reel editor: no step-forward button appeared; screen shows {texts(lines)}")
 
     async def _discard_unfinished_reel(self, lines: list[Line]) -> bool:
         """A stuck earlier job leaves a reel behind, and Facebook offers it back in the picker. This job has

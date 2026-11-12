@@ -157,6 +157,115 @@ class ScreenTests(unittest.TestCase):
         self.assertTrue(screen.logged_out(lines(("Log in", 900), ("Create new account", 1100))))
 
 
+TOOLBAR = os.path.join(os.path.dirname(__file__), "fixtures", "reel_editor_toolbar.png")
+
+
+def toolbar(label=None, caption=True):
+    """OCR of the reel editor in reel_editor_toolbar.png (592 x 1280): its tools, the blue button's label
+    (None for an icon alone) and, by default, a video caption with the word "next" in it."""
+    found = [Line("Add audio", (244.0, 90.0)), Line("Audio", (51.0, 1208.0)), Line("Edit", (138.0, 1208.0)),
+             Line("Effects", (223.0, 1208.0)), Line("Text", (310.0, 1208.0)), Line("Stickers", (397.0, 1208.0))]
+    if caption:
+        found.append(Line("What does the next", (241.0, 493.0)))
+    if label is not None:
+        found.append(Line(label, (545.0, 1208.0)))
+    return found
+
+
+def toolbar_image():
+    import cv2
+    return cv2.imread(TOOLBAR)
+
+
+class ActionButtonTests(unittest.TestCase):
+    def test_blue_button_is_found_by_colour_in_a_real_editor_frame(self):
+        x, y = screen.blue_button(toolbar_image())
+        self.assertAlmostEqual(x, 545, delta=4)
+        self.assertAlmostEqual(y, 1156, delta=4)
+
+    def test_its_label_is_read_under_it_and_a_caption_saying_next_is_ignored(self):
+        button = screen.action_button(toolbar("Next"), toolbar_image())
+        self.assertEqual((button.label, button.kind), ("Next", "forward"))
+        self.assertAlmostEqual(button.point[1], 1156, delta=4)
+
+    def test_icons_read_as_stray_letters_do_not_spoil_the_label(self):
+        found = toolbar("Next") + [Line("e", (545.0, 1156.0))]  # the arrow, read as a letter
+        self.assertEqual(screen.action_button(found, toolbar_image()).label, "Next")
+
+    def test_a_wide_blue_bar_is_seen_whole_and_its_label_read(self):
+        import cv2
+        image = np.full((1280, 592, 3), 20, np.uint8)
+        cv2.rectangle(image, (20, 1170), (572, 1222), (255, 101, 8), -1)  # a full-width Share now bar
+        button = screen.action_button([Line("Share now", (296.0, 1196.0))], image)
+        self.assertEqual((button.label, button.kind), ("Share now", "publish"))
+        self.assertAlmostEqual(button.point[0], 296, delta=4)
+
+    def test_labels_are_sorted_into_forward_publish_and_unknown(self):
+        cases = {"Next": "forward", "→ Next": "forward", "Continue": "forward", "Contlnue": "forward",
+                 "Share": "publish", "Share now": "publish", "Shore": "publish", "POST": "publish",
+                 "Publish": "publish", "Proceed": "unknown", "What does the next": "unknown", "": ""}
+        for text, kind in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(screen.label_kind(text), kind)
+
+    def test_short_words_must_be_exact_so_the_text_tool_is_not_next(self):
+        self.assertEqual(screen.label_kind("Text"), "unknown")
+        self.assertEqual(screen.label_kind("Nexl"), "unknown")
+
+    def test_blue_in_the_video_is_not_a_button(self):
+        image = np.full((1280, 592, 3), 20, np.uint8)
+        import cv2
+        cv2.circle(image, (450, 600), 40, (255, 101, 8), -1)  # BGR Facebook blue, mid-video
+        self.assertIsNone(screen.blue_button(image))
+
+    def test_without_a_frame_only_a_known_label_alone_on_its_line_counts(self):
+        self.assertIsNone(screen.action_button(toolbar(), None))
+        button = screen.action_button(toolbar("→ Next"), None)
+        self.assertEqual((button.point, button.kind), ((545.0, 1208.0), "forward"))
+
+    def test_editor_is_recognised_by_its_toolbar(self):
+        self.assertTrue(screen.reel_editor_shown(toolbar()))
+        self.assertFalse(screen.reel_editor_shown([Line("Edit your text", (100.0, 1208.0))]))
+
+
+class ReelEditorButtonTests(unittest.TestCase):
+    def flows(self, editor, image):
+        device = FakeDevice([lines(("Gallery", 280)), editor, lines(("Describe your reel", 300))])
+        device.images = [image]
+        return device, Flows(device, lambda **e: None)
+
+    def test_a_renamed_forward_button_is_tapped_at_its_blue_shape(self):
+        device, flows = self.flows(toolbar("Continue"), toolbar_image())
+        run(flows._pick_reel())
+        x, y = [a[1] for a in device.actions if a[0] == "tap"][-1]
+        self.assertAlmostEqual(x, 545, delta=4)
+        self.assertAlmostEqual(y, 1156, delta=4)
+
+    def test_an_icon_without_a_label_is_tapped_once_the_toolbar_shows(self):
+        device, flows = self.flows(toolbar(), toolbar_image())
+        run(flows._pick_reel())
+        self.assertAlmostEqual([a[1] for a in device.actions if a[0] == "tap"][-1][0], 545, delta=4)
+
+    def test_an_icon_without_a_label_or_toolbar_is_not_tapped(self):
+        device, flows = self.flows([Line("Add audio", (244.0, 90.0))], toolbar_image())
+        with self.assertRaises(StepFailed):
+            run(flows._pick_reel())
+        self.assertEqual(len([a for a in device.actions if a[0] == "tap"]), 1)  # the gallery cell only
+
+    def test_a_publish_label_is_never_tapped(self):
+        device, flows = self.flows(toolbar("Share now"), toolbar_image())
+        with self.assertRaisesRegex(StepFailed, "would post before the caption"):
+            run(flows._pick_reel())
+        self.assertEqual(len([a for a in device.actions if a[0] == "tap"]), 1)
+        self.assertTrue(any(a[0] == "snapshot" and a[1].startswith("fail_reel_editor_button") for a in device.actions))
+
+    def test_an_unknown_label_stops_with_its_word(self):
+        device, flows = self.flows(toolbar("Proceed"), toolbar_image())
+        with self.assertRaisesRegex(StepFailed, "'Proceed'"):
+            run(flows._pick_reel())
+        self.assertEqual(len([a for a in device.actions if a[0] == "tap"]), 1)
+
+
 class FeedTests(unittest.TestCase):
     def test_facebook_opens_by_tapping_the_icon_ocr_found(self):
         device = FakeDevice([lines(("Facebook", 500)), lines(("facebook", 100), ("What's on your mind?", 200))])
@@ -517,6 +626,13 @@ class PublishTests(unittest.TestCase):
         taps = [a[1] for a in device.actions if a[0] == "tap"]
         self.assertEqual(taps[1:], [(100.0, 1208.0), (100.0, 1208.0)])
         self.assertNotIn("snapshot", [a[0] for a in device.actions])
+
+    def test_reel_editor_next_is_not_taken_from_a_caption_in_the_video(self):
+        editor = lines(("Add audio", 90), ("HOT NEWS", 420), ("What does the next", 490), ("Next", 1208))
+        device = FakeDevice([lines(("Gallery", 280)), editor, lines(("Describe your reel", 300))])
+        run(Flows(device, lambda **e: None)._pick_reel())
+        taps = [a[1] for a in device.actions if a[0] == "tap"]
+        self.assertEqual(taps[1:], [(100.0, 1208.0)])
 
     def test_reel_editor_that_never_advances_fails_after_three_taps(self):
         device = FakeDevice([lines(("Gallery", 280)), lines(("Add audio", 90), ("Next", 1208))])
