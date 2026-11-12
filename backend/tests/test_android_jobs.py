@@ -2,6 +2,7 @@
 import asyncio
 import copy
 import json
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -117,6 +118,15 @@ def test_published_post_leaves_the_comment_for_a_follow_up(world, monkeypatch):
     args = world["runs"][0]
     assert args[args.index("--task") + 1] == "photo" and "--comment-later" in args
     assert android_devices.job_on(SERIAL) is None  # released
+
+
+def test_the_comment_is_due_as_soon_as_the_post_is_confirmed(world, monkeypatch):
+    """No gap in which another account's post could take the phone first."""
+    runner(monkeypatch, world, [{"event": "about_to_publish"}, {"event": "published"}],
+           {"status": "published", "comment": "pending"})
+    asyncio.run(android_jobs.execute_queue_phone(claim(world)))
+    due = android_jobs.due_comments(world["queue"], time.time())
+    assert [ex["execution_id"] for ex, _ in due] == [execution(world)["execution_id"]]
 
 
 def test_a_stop_after_the_publish_tap_is_uncertain_never_failed(world, monkeypatch):

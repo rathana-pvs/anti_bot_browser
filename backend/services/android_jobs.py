@@ -33,8 +33,6 @@ from backend.services.queue_service import (execution_logs, find_queue_execution
 PHONE_RUNNER = AUTOMATION_RUNNER.with_name("phone_runner.py")
 IMAGE_TYPES = (".jpg", ".jpeg", ".png")
 VIDEO_TYPES = (".mp4",)
-# The comment follow-up starts this long after the publish tap: a new post needs a while to show.
-COMMENT_DELAY_S = 25
 COMMENT_PENDING, COMMENT_RUNNING = "phone_pending", "phone_commenting"
 
 MAX_COMMENT_STARTS = 5
@@ -266,8 +264,10 @@ async def execute_queue_phone(claim_res: dict) -> dict:
             record["status"] = "completed"
             comment = {}
             if result.get("comment") == "pending":
-                comment = {"first_comment_status": COMMENT_PENDING, "phone_comment_due_at":
-                           datetime.fromtimestamp(time.time() + COMMENT_DELAY_S, tz=timezone.utc).isoformat()}
+                # Due now: the comment takes the phone before another account's post can, and the
+                # runner waits out the time to its first look itself (--published-ago).
+                comment = {"first_comment_status": COMMENT_PENDING,
+                           "phone_comment_due_at": datetime.now(timezone.utc).isoformat()}
             return finish("published", None, published_at=now_iso(), stage="published",
                           publish_tapped_at=tapped_at[0] if tapped_at else None, **comment, **common)
         if outcome == "blocked":
