@@ -385,11 +385,24 @@ install_node_20() {
 
 install_system_dependencies() {
   confirm_system_changes
-  apt_get update
-  apt_get install -y \
-    ca-certificates curl gnupg jq zip unzip rsync python3 python3-venv python3-pip \
-    build-essential iproute2 mesa-utils libgl1-mesa-dri mesa-vulkan-drivers vulkan-tools \
+  local packages=(
+    ca-certificates curl gnupg jq zip unzip rsync python3 python3-venv python3-pip
+    build-essential iproute2 mesa-utils libgl1-mesa-dri mesa-vulkan-drivers vulkan-tools
     tesseract-ocr tesseract-ocr-eng ffmpeg libraqm0
+  )
+  local missing=() package
+  for package in "${packages[@]}"; do
+    dpkg-query -W -f='${Status}' "${package}" 2>/dev/null | grep -q "install ok installed" || missing+=("${package}")
+  done
+  # Nothing to download when every package is already installed, so a broken
+  # mirror in the system's package sources cannot stop a repair.
+  if [ "${#missing[@]}" -gt 0 ]; then
+    echo "Installing system packages: ${missing[*]}"
+    apt_get update
+    apt_get install -y "${missing[@]}"
+  else
+    echo "OK: System packages are already installed"
+  fi
 
   if [ "${DESKTOP_SETUP}" = false ]; then
     local node_ok=false
