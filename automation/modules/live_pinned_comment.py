@@ -4,6 +4,7 @@ import re
 import unicodedata
 import cv2
 import numpy as np
+from modules.composer_entry import same_text
 from modules.live_producer import label, phrase, enabled_color
 
 
@@ -294,8 +295,8 @@ class LivePinnedComment:
             self.open_editor()
             self.focus_body()
             owner = self.task.client.input_owner()
-            if self.task.live_input.composer_entry.read_field(
-                    self.task.live_input.composer_entry.waiter(owner)) != comment:
+            if not same_text(self.task.live_input.composer_entry.read_field(
+                    self.task.live_input.composer_entry.waiter(owner)), comment):
                 raise RuntimeError('Facebook did not retain the saved pinned comment.')
             self.task.live_input.human.key_press('Escape', clear_modifiers=True)
         return self.restore_setup()

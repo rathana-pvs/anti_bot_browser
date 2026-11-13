@@ -7,7 +7,7 @@ from engine.behavior_profile import BehaviorSession
 from engine.behavior_timing import BehaviorTiming, InteractionWait, EntryInterrupted
 from engine.text_entry_policy import choose_entry_plan, contains_link
 from engine.human_input import HumanInput
-from modules.composer_entry import ComposerEntry, ClipboardFailure
+from modules.composer_entry import ComposerEntry, ClipboardFailure, clean_text, mismatch_kind, same_text
 from modules.composer_review import ComposerReview
 from tasks.base_task import BaseTask
 
@@ -95,12 +95,13 @@ def test_clipboard_failure_never_types():
     task.human.type_text.assert_not_called()
 
 
-def test_partial_insertion_does_not_repeat_or_switch():
+def test_partial_insertion_is_repaired_once_without_switching_method():
     task, entry = fixture_task()
-    entry.read_field = Mock(side_effect=['', 'https://exam', 'https://exam'])
-    assert not entry.enter('https://example.com', (2, 3)).verified
-    assert not entry.enter('https://example.com', (2, 3)).verified
-    task.paste_text.assert_called_once()
+    entry.read_field = Mock(side_effect=['', 'https://exam', 'https://exam',  # first try: half landed
+                                         'https://exam', '', 'https://example.com'])  # second: cleared, entered
+    assert not entry.enter('https://example.com', (2, 3), empty_confirmed=True).verified
+    assert entry.enter('https://example.com', (2, 3), empty_confirmed=True).verified
+    assert task.paste_text.call_count == 2
     task.human.type_text.assert_not_called()
 
 
@@ -279,3 +280,130 @@ def test_review_reports_empty_and_unreadable_without_exposing_contents(observed,
         task.review_composer('private requested caption')
     assert failure.value.reason == reason
     assert 'private requested caption' not in str(failure.value)
+
+
+# --- cleaning, tolerant readback, refocus and repair ---------------------------------------------
+
+
+def test_clean_text_changes_nothing_a_reader_sees():
+    assert clean_text('  Hello\u00a0 world  \r\nnext  line \n\n\n\nend \n') == 'Hello world\nnext line\n\nend'
+    assert clean_text('ស្វាគមន៍ 🎉 #News') == 'ស្វាគមន៍ 🎉 #News'
+    assert clean_text('cafe\u0301') == 'caf\u00e9'
+
+
+def test_same_text_ignores_only_invisible_differences():
+    assert same_text('Hello\u00a0world\u200b', 'Hello world')
+    assert same_text('a\r\nb ', 'a\nb')
+    assert not same_text('Hello world.', 'Hello world')
+    assert not same_text('Helo world', 'Hello world')
+    assert not same_text(None, 'Hello')
+    assert same_text('👨\u200d👩\u200d👧', '👨\u200d👩\u200d👧')
+    assert not same_text('👨👩👧', '👨\u200d👩\u200d👧')  # joiners are kept: they change the emoji
+
+
+def test_mismatch_kind_never_carries_the_text():
+    assert mismatch_kind('Hello', 'Hello world') == 'missing_end'
+    assert mismatch_kind('Hello world!!', 'Hello world') == 'extra_end'
+    assert mismatch_kind('Bye', 'Hello world') == 'differs'
+    assert mismatch_kind('', 'Hello') == 'empty'
+    assert mismatch_kind(None, 'Hello') == 'unreadable'
+
+
+def test_the_cleaned_text_is_pasted_and_a_lookalike_readback_passes():
+    task, entry = fixture_task()
+    entry.read_field = Mock(side_effect=['', 'Hello\u00a0world'])
+    assert entry.enter('  Hello  world ', (2, 3), empty_confirmed=True).verified
+    task.paste_text.assert_called_once_with('Hello world', expected_owner=('chrome', '10,20'))
+
+
+def test_a_readback_taken_too_early_is_read_once_more():
+    task, entry = fixture_task()
+    entry.read_field = Mock(side_effect=['', 'https://exam', 'https://example.com'])
+    assert entry.enter('https://example.com', (2, 3), empty_confirmed=True).status == 'entered_verified'
+    task.paste_text.assert_called_once()
+
+
+def test_a_mismatch_records_its_kind_but_not_the_text():
+    task, entry = fixture_task()
+    entry.read_field = Mock(side_effect=['', 'private wrong', 'private wrong'])
+    assert entry.enter('private caption', (2, 3), empty_confirmed=True).status == 'entry_unconfirmed'
+    recorded = task.telemetry.record_step.call_args.kwargs
+    assert recorded['mismatch'] == 'differs' and recorded['length_delta'] == -2
+    assert 'private' not in repr(recorded)
+
+
+def focus_fixture(owners):
+    """Like fixture_task, with the real focus reason: each check takes the next window from `owners`."""
+    task, entry = fixture_task()
+    windows = iter(owners)
+    def guard():
+        if next(windows, 'chrome') != 'chrome':
+            raise EntryInterrupted('Window focus changed', 'focus_changed')
+        return True
+    clock = Clock()
+    entry.waiter = lambda owner, deadline=None, surface_guard=None: InteractionWait(
+        guard=guard, clock=clock.clock, sleep=clock.sleep, surface_guard=surface_guard)
+    return task, entry
+
+
+def test_focus_lost_before_entry_is_taken_back_once():
+    task, entry = focus_fixture(['other'])
+    entry.read_field = Mock(side_effect=['', 'https://example.com'])
+    result = entry.enter('https://example.com', (2, 3), empty_confirmed=True)
+    assert result.verified
+    assert task.human.click.call_count == 2
+    task.paste_text.assert_called_once()
+    assert task.telemetry.record_step.call_args.kwargs['refocused'] is True
+
+
+def test_focus_lost_twice_stops():
+    task, entry = focus_fixture(['other'] * 50)
+    entry.read_field = Mock(return_value='')
+    result = entry.enter('https://example.com', (2, 3), empty_confirmed=True)
+    assert (result.status, result.interruption_reason) == ('interrupted', 'focus_changed')
+    assert task.human.click.call_count == 2
+    task.paste_text.assert_not_called()
+
+
+def test_focus_lost_after_a_half_entry_clears_and_enters_again():
+    task, entry = fixture_task()
+    entry.read_field = Mock(side_effect=['Hello wor', '', 'Hello world'])
+    assert entry.enter('Hello world', (2, 3), empty_confirmed=True).verified
+    keys = [c.args[0] for c in task.human.key_press.call_args_list]
+    assert keys[:2] == ['ctrl+a', 'Delete']
+    task.paste_text.assert_called_once()
+
+
+def test_other_text_in_the_field_is_never_cleared():
+    task, entry = fixture_task()
+    entry.read_field = Mock(return_value='Someone else wrote this')
+    assert entry.enter('Hello world', (2, 3), empty_confirmed=True).status == 'draft_conflict'
+    assert 'Delete' not in [c.args[0] for c in task.human.key_press.call_args_list]
+    task.paste_text.assert_not_called()
+
+
+def test_a_clear_that_leaves_text_stops_without_entering():
+    task, entry = fixture_task()
+    entry.read_field = Mock(side_effect=['Hello wor', 'Hello wor'])
+    assert entry.enter('Hello world', (2, 3), empty_confirmed=True).status == 'draft_unknown'
+    task.paste_text.assert_not_called()
+
+
+def test_a_half_entry_is_repaired_only_once():
+    task, entry = fixture_task()
+    entry.read_field = Mock(side_effect=['Hello wor', '', 'Hello w', 'Hello w', 'Hello w'])
+    assert not entry.enter('Hello world', (2, 3), empty_confirmed=True).verified
+    assert entry.enter('Hello world', (2, 3), empty_confirmed=True).status == 'draft_conflict'
+    task.paste_text.assert_called_once()
+
+
+def test_review_accepts_a_lookalike_readback():
+    task = BaseTask.__new__(BaseTask)
+    task.composer_entry = Mock()
+    task.composer_entry.last_owner = ('chrome', '10,20')
+    task.composer_entry.read_field.return_value = 'requested\u00a0caption '
+    task.composer_review = Mock()
+    task.composer_review.review.return_value = 2
+    task.telemetry = Mock()
+    task.review_composer('requested caption')
+    assert task.telemetry.record_step.call_args.kwargs['outcome'] == 'completed'

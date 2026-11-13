@@ -5,7 +5,7 @@ entry policy and verifies the field; this skill owns the clipboard paste it
 falls back on and the pre-publish review.
 """
 
-from modules.composer_entry import ClipboardFailure, CaptionReviewFailure
+from modules.composer_entry import ClipboardFailure, CaptionReviewFailure, same_text
 
 
 class TextEntry:
@@ -47,7 +47,7 @@ class TextEntry:
         if caption and hasattr(task.composer_entry, "last_owner"):
             waiter = task.composer_entry.waiter(owner)
             observed = task.composer_entry.read_field(waiter)
-            if observed != caption:
+            if not same_text(observed, caption):
                 reason = ('caption_empty_after_review' if observed == '' else
                           'caption_unreadable_after_review' if observed is None else
                           'caption_changed_after_review')
