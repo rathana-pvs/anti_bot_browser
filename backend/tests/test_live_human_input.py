@@ -177,14 +177,16 @@ def test_short_live_title_and_caption_always_paste(adapter, field, draw):
     assert 'Return' not in repr(adapter.client.commands)
 
 
-@pytest.mark.parametrize('text,field', [
-    ('word ' * 100, 'live_caption'), ('https://example.com/live?a=1', 'live_title'),
-    ('Caption\nខ្មែរ 😀', 'live_caption'), ('Pinned comment', 'comment'),
-    ('https://example.com', 'comment'),
+@pytest.mark.parametrize('text,field,expected', [
+    ('word ' * 100, 'live_caption', 'word ' * 99 + 'word'),
+    ('https://example.com/live?a=1', 'live_title', 'https://example.com/live?a=1'),
+    ('Caption\nខ្មែរ 😀', 'live_caption', 'Caption\nខ្មែរ 😀'),
+    ('Pinned comment', 'comment', 'Pinned comment'),
+    ('https://example.com', 'comment', 'https://example.com'),
 ])
-def test_live_forced_paste_fields_preserve_exact_content(adapter, text, field):
+def test_live_forced_paste_fields_preserve_normalized_content(adapter, text, field, expected):
     assert enter(adapter, text, field).verified
-    assert adapter.client.value == text
+    assert adapter.client.value == expected
     assert adapter.client.typed == []
     assert adapter.client.commands.count('key ctrl+v') == 1
     adapter.client.screenshot.assert_not_called()
@@ -264,7 +266,19 @@ def test_live_telemetry_allowlist_drops_content_and_secrets(adapter):
     adapter.client.screenshot.assert_not_called()
 
 
-@pytest.mark.parametrize('reason', ['focus_changed', 'deadline_exceeded', 'composer_unconfirmed'])
+def test_live_review_focus_recovery_reuses_verified_text_without_pasting_again(adapter):
+    text = 'PRIVATE caption'
+    adapter.review.review = Mock(side_effect=EntryInterrupted('PRIVATE field contents', 'focus_changed'))
+    assert enter(adapter, text).verified
+    assert adapter.client.value == text
+    assert adapter.human.click.call_count == 2
+    assert adapter.client.commands.count('key ctrl+v') == 1
+    adapter.review.review.assert_called_once()
+    assert 'PRIVATE' not in repr(adapter.events)
+    adapter.client.screenshot.assert_not_called()
+
+
+@pytest.mark.parametrize('reason', ['deadline_exceeded', 'composer_unconfirmed'])
 def test_live_review_error_identifies_field_and_safe_reason(adapter, reason):
     adapter.review.review = Mock(side_effect=EntryInterrupted('PRIVATE field contents', reason))
     with pytest.raises(RuntimeError, match='caption review was interrupted \\(' + reason + '\\)') as error:
