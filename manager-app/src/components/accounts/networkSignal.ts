@@ -10,7 +10,7 @@ import type { HealthSignal } from './accountModel';
 /** Use the saved test for this account's selected pool proxy, never another proxy. */
 export function networkSignal(profile: Profile, proxies: ProxyItem[] = []): HealthSignal {
   const own = profile.network?.mode === 'pool' ? proxies.find(p => p.id === profile.network.proxy_id) : undefined;
-  if (own?.replaced_by) return { label: 'Proxy replaced', tone: 'bad', detail: own.replaced_by_address ? `New: ${own.replaced_by_address}` : undefined,
+  if (own?.replaced_by) return { label: 'Replaced', tone: 'bad', detail: own.replaced_by_address ? `New: ${own.replaced_by_address}` : undefined,
     hint: `${own.host}:${own.port} was replaced at Webshare and no longer works. Change this account's proxy (right-click → Change proxy)`
       + `${own.replaced_by_address ? `, for example to ${own.replaced_by_address},` : ''} when it can rest after the change.` };
   if (profile.runtime?.kind === 'android_user') {
@@ -18,10 +18,10 @@ export function networkSignal(profile: Profile, proxies: ProxyItem[] = []): Heal
     const check = profile.android_network;
     const when = check?.checked_at ? `checked ${new Date(check.checked_at).toLocaleString()}` : '';
     // Only a check run inside the phone's Android user can say the proxy is in use.
-    if (reserved && check?.status === 'verified') return { label: 'Proxy verified', tone: 'ok', detail: `Exit ${check.exit_ip} · ${when}`,
+    if (reserved && check?.status === 'verified') return { label: 'Verified', tone: 'ok', detail: `Exit ${check.exit_ip} · ${when}`,
       hint: `Measured inside the phone: traffic leaves through ${reserved.host}:${reserved.port} (exit ${check.exit_ip}), and the kill switch is on.` };
-    if (reserved && check?.status === 'blocked') return { label: 'Proxy blocked', tone: 'bad', detail: when, hint: check.reason || 'The last check failed.' };
-    if (reserved) return { label: 'Proxy reserved', tone: 'muted', detail: check?.checked_at ? 'Not set up on phone' : 'Not checked on phone yet',
+    if (reserved && check?.status === 'blocked') return { label: 'Blocked', tone: 'bad', detail: when, hint: check.reason || 'The last check failed.' };
+    if (reserved) return { label: 'Reserved', tone: 'muted', detail: check?.checked_at ? 'Not set up on phone' : 'Not checked on phone yet',
       hint: check?.reason || `${reserved.host}:${reserved.port} is reserved for this account. Open the account and press Verify now to check it on the phone.` };
     return { label: 'Not set up', tone: 'muted', detail: "Phone's own network",
       hint: "Proxy and kill switch for phone accounts are not set up yet. This account uses the phone's own network." };
@@ -44,10 +44,10 @@ export function networkSignal(profile: Profile, proxies: ProxyItem[] = []): Heal
     const hint = [`${proxy.host}:${proxy.port} · ${GRADE_LABEL[rating.grade]}`,
       check.facebook_ms != null ? `Facebook responds in ${check.facebook_ms} ms` : '',
       ...proxyWarnings(proxy), `Checked ${new Date(check.checked_at).toLocaleString()}`].filter(Boolean).join('\n');
-    if (rating.grade === 'dead') return { label: 'Proxy offline', tone: 'bad', detail, hint };
-    if (rating.grade === 'timeout') return { label: 'Proxy timed out', tone: 'bad', detail, hint };
-    if (rating.grade === 'slow') return { label: 'Proxy slow', tone: 'warn', detail, hint };
-    return { label: proxyWarnings(proxy).length ? 'Proxy · watch' : 'Proxy good', tone: proxyWarnings(proxy).length ? 'warn' : 'ok', detail, hint };
+    if (rating.grade === 'dead') return { label: 'Offline', tone: 'bad', detail, hint };
+    if (rating.grade === 'timeout') return { label: 'Timed out', tone: 'bad', detail, hint };
+    if (rating.grade === 'slow') return { label: 'Slow', tone: 'warn', detail, hint };
+    return { label: proxyWarnings(proxy).length ? 'Watch' : 'Good', tone: proxyWarnings(proxy).length ? 'warn' : 'ok', detail, hint };
   }
   if (proxy) {
     const test = proxy.speed_test;
@@ -65,14 +65,14 @@ export function networkSignal(profile: Profile, proxies: ProxyItem[] = []): Heal
     ].filter(Boolean).join('\n');
     const connectionTime = Date.parse(proxy.last_checked || '') || 0;
     const speedTime = Date.parse(test?.last_checked || '') || 0;
-    if (proxy.reachable === false && connectionTime >= speedTime) return { label: 'Proxy offline', tone: 'bad', detail, hint };
-    if (measured.some(value => value !== null && value < 1)) return { label: 'Proxy slow', tone: 'warn', detail, hint };
-    if (test && measured.every(value => value !== null && value >= 1)) return { label: 'Proxy good', tone: 'ok', detail, hint };
-    if (test) return { label: 'Proxy test failed', tone: 'warn', detail, hint };
+    if (proxy.reachable === false && connectionTime >= speedTime) return { label: 'Offline', tone: 'bad', detail, hint };
+    if (measured.some(value => value !== null && value < 1)) return { label: 'Slow', tone: 'warn', detail, hint };
+    if (test && measured.every(value => value !== null && value >= 1)) return { label: 'Good', tone: 'ok', detail, hint };
+    if (test) return { label: 'Test failed', tone: 'warn', detail, hint };
     return { label: 'Speed untested', tone: 'muted', detail, hint };
   }
   // Custom proxies have no pool test record. Preserve their browser-start check.
-  if (preflight?.startsWith('passed:')) return { label: 'Proxy online', tone: 'ok', detail: 'Speed untested', hint: preflight };
-  if (preflight) return { label: 'Proxy failed', tone: 'bad', hint: preflight };
-  return { label: 'Proxy · not checked', tone: 'muted', hint: `${network.proxy_host}:${network.proxy_port} · checked when the browser starts` };
+  if (preflight?.startsWith('passed:')) return { label: 'Online', tone: 'ok', detail: 'Speed untested', hint: preflight };
+  if (preflight) return { label: 'Failed', tone: 'bad', hint: preflight };
+  return { label: 'Not checked', tone: 'muted', hint: `${network.proxy_host}:${network.proxy_port} · checked when the browser starts` };
 }

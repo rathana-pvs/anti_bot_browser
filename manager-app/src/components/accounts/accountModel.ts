@@ -65,9 +65,9 @@ export function phoneOf(profile: Profile, devices: AndroidDevice[]) {
   return profile.runtime ? devices.find(device => (device.serial === profile.runtime!.device_serial || device.aliases?.includes(profile.runtime!.device_serial))) : undefined;
 }
 
-/** Where the account lives, e.g. "This PC" or "Pixel 10 · User 11". */
+/** Where the account lives, e.g. "PC" or "Pixel 10 · User 11". */
 export function deviceLabel(profile: Profile, devices: AndroidDevice[]) {
-  if (!profile.runtime) return 'This PC';
+  if (!profile.runtime) return 'PC';
   return `${phoneOf(profile, devices)?.label || profile.runtime.device_serial} · User ${profile.runtime.android_user_id}`;
 }
 

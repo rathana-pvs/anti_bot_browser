@@ -14,7 +14,7 @@ const proxy = (download, upload, extra = {}) => ({ id: 'proxy1', host: 'proxy.ex
 
 test('saved passing test includes real speeds and tooltip timestamp', () => {
   const signal = networkSignal(profile, [proxy(3.456, 1)]);
-  assert.equal(signal.label, 'Proxy good');
+  assert.equal(signal.label, 'Good');
   assert.equal(signal.tone, 'ok');
   assert.equal(signal.detail, '↓3.46 ↑1 Mbps');
   assert.match(signal.hint, /Speed checked:/);
@@ -22,13 +22,13 @@ test('saved passing test includes real speeds and tooltip timestamp', () => {
 
 test('either slow direction overrides old Proxy OK preflight', () => {
   for (const [down, up] of [[.5, 3], [3, .5], [0, 3]]) {
-    assert.equal(networkSignal(profile, [proxy(down, up)]).label, 'Proxy slow');
+    assert.equal(networkSignal(profile, [proxy(down, up)]).label, 'Slow');
   }
 });
 
 test('partial and failed checks are never marked good', () => {
-  assert.equal(networkSignal(profile, [proxy(3, null)]).label, 'Proxy test failed');
-  assert.equal(networkSignal(profile, [proxy(3, null, { last_speed_quality: 'poor' })]).label, 'Proxy test failed');
+  assert.equal(networkSignal(profile, [proxy(3, null)]).label, 'Test failed');
+  assert.equal(networkSignal(profile, [proxy(3, null, { last_speed_quality: 'poor' })]).label, 'Test failed');
   assert.equal(networkSignal(profile, [proxy(NaN, 3)]).tone, 'warn');
 });
 
@@ -37,14 +37,14 @@ test('untested pool proxies do not inherit a speed claim from startup', () => {
 });
 
 test('newer connection failure overrides a passing speed check', () => {
-  assert.equal(networkSignal(profile, [proxy(3, 3, { reachable: false, last_checked: '2026-10-26T13:00:00Z' })]).label, 'Proxy offline');
-  assert.equal(networkSignal(profile, [proxy(3, 3, { reachable: false, last_checked: '2026-10-26T11:00:00Z' })]).label, 'Proxy good');
+  assert.equal(networkSignal(profile, [proxy(3, 3, { reachable: false, last_checked: '2026-10-26T13:00:00Z' })]).label, 'Offline');
+  assert.equal(networkSignal(profile, [proxy(3, 3, { reachable: false, last_checked: '2026-10-26T11:00:00Z' })]).label, 'Good');
 });
 
 test('only the selected proxy contributes measurements', () => {
-  assert.equal(networkSignal(profile, [proxy(.1, .1, { id: 'other' })]).label, 'Proxy online');
+  assert.equal(networkSignal(profile, [proxy(.1, .1, { id: 'other' })]).label, 'Online');
   assert.equal(networkSignal({ ...profile, network: { mode: 'direct' } }, [proxy(.1, .1)]).label, 'Direct OK');
-  assert.equal(networkSignal({ ...profile, network: { ...profile.network, mode: 'custom' } }, [proxy(.1, .1)]).label, 'Proxy online');
+  assert.equal(networkSignal({ ...profile, network: { ...profile.network, mode: 'custom' } }, [proxy(.1, .1)]).label, 'Online');
 });
 
 test('a checked proxy shows working, slow or timed out', () => {
@@ -52,9 +52,9 @@ test('a checked proxy shows working, slow or timed out', () => {
     check: { checked_at: '2026-11-06T00:00:00Z', reachable: grade !== 'dead', facebook_ms: 400, error: grade === 'dead' ? 'No traffic got through this proxy' : null, ...extra.check },
     rating: { grade, stable: true, download_mbps: 8.7, upload_mbps: grade === 'slow' ? 0.6 : 3.7, ...extra.rating } });
   const good = networkSignal(profile, [rated('good')]);
-  assert.equal(good.label, 'Proxy good');
+  assert.equal(good.label, 'Good');
   assert.equal(good.detail, '↓8.7 ↑3.7 Mbps');
-  assert.equal(networkSignal(profile, [rated('slow')]).label, 'Proxy slow');
+  assert.equal(networkSignal(profile, [rated('slow')]).label, 'Slow');
   assert.equal(networkSignal(profile, [rated('timeout')]).tone, 'bad');
   assert.equal(networkSignal(profile, [rated('dead')]).detail, 'No traffic got through this proxy');
   const moved = networkSignal(profile, [rated('good', { check: { ip_changed: true } })]);
