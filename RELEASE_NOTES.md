@@ -1,3 +1,13 @@
+# Version 2.2.12
+
+- Find the phone Reel editor's Next action by its blue button, avoiding other
+  Next text on the screen.
+- Recognize the Reel editor toolbar before advancing when the button has no
+  readable label.
+
+**Linux only.** After installing, run **Settings → Setup and repair → Install /
+update runtime** when prompted.
+
 # Version 2.2.11
 
 - Check for updates or install a named earlier release from the setup screen,
