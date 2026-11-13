@@ -77,6 +77,7 @@ UPLOAD_TIMEOUT_S = 900
 UPLOAD_GONE_S = 20
 # How long a reel waits on its result screen when the bar was never seen.
 UPLOAD_NEVER_SEEN_S = 60
+CAPTION_PROMPTS = [FEED_PROMPT, PHOTO_PROMPT, "Describe your reel", "Add a description"]  # an empty caption field
 # The comment box's placeholder: "Write a comment..." on posts, "Add a comment" in the reel player, and
 # "Comment as NAME" under the "Get the ball rolling" sheet of a post with no comments yet.
 COMMENT_BOX = ["Write a comment", "Add a comment", "Comment as"]
@@ -114,13 +115,11 @@ class PostItem:
     caption: str
     comment: str = ""
     caption_key: str = field(init=False)
-    caption_tail: str = field(init=False)
 
     def __post_init__(self):
         if self.kind not in ("photo", "reel"):
             raise ValueError("kind must be photo or reel")
         self.caption_key = screen.caption_key(self.caption)
-        self.caption_tail = screen.caption_tail_key(self.caption)
 
 
 class Flows:
@@ -622,18 +621,22 @@ class Flows:
             await dev.paste(text)
 
     async def write_caption(self, item: PostItem) -> None:
+        """Paste never drops text, so the caption is not read back (OCR misreads it); the field only has to
+        have left its empty prompt. A prompt still showing is given a moment, as the paste may still be drawing."""
         dev = self.device
-        _, field_point, _ = await self.wait_for("caption field", [FEED_PROMPT, PHOTO_PROMPT, "Describe your reel",
-                                                                  "Add a description"], timeout=15)
+        _, field_point, _ = await self.wait_for("caption field", CAPTION_PROMPTS, timeout=15)
         await dev.tap(field_point)
         await self._enter_text(item.caption, "caption")
         await dev.key(KEY_ESCAPE)
         lines = await dev.read()
-        if item.caption_key and not match(lines, item.caption_key) and not (
-                item.caption_tail and screen.shown_across_lines(lines, item.caption_tail)):
-            raise StepFailed(f"caption: not shown after paste; screen shows {texts(lines, 10)}")
-        if not item.caption_key and any(match(lines, prompt) for prompt in (FEED_PROMPT, PHOTO_PROMPT, "Describe your reel")):
-            raise StepFailed("caption: the field is still empty after paste")
+        for _ in range(3):
+            if not item.caption or not any(match(lines, prompt) for prompt in CAPTION_PROMPTS):
+                break
+            await dev.settle(timeout=1.0)
+            lines = await dev.read()
+        if item.caption and any(match(lines, prompt) for prompt in CAPTION_PROMPTS):
+            dev.snapshot(f"fail_caption_{int(time.time())}")
+            raise StepFailed(f"caption: the field is still empty after paste; screen shows {texts(lines, 10)}")
         done = match(lines, "Done", exact=True)
         if done and match(lines, "Add text", exact=True):  # this composer takes the caption on a screen of its own
             await dev.tap(done)

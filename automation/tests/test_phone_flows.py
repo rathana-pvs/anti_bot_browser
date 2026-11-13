@@ -144,10 +144,6 @@ class ScreenTests(unittest.TestCase):
         self.assertEqual(screen.discard_button(lines(("Save this reel as a draft?", 500), ("Save as draft", 600),
                                                      ("Keep editing", 700), ("Discard video", 800))), (100.0, 800.0))
 
-    def test_caption_tail_is_the_end_of_the_last_line(self):
-        self.assertEqual(screen.caption_tail_key("Long story here\nMore detail in the comment 👇"), "etail in the comment")
-        self.assertEqual(screen.caption_tail_key("ព្រះអាទិត្យលិច 🌅"), "")
-
     def test_permission_prompt_is_denied(self):
         kind, action, point = screen.interruption(lines(("Allow Facebook to send you notifications?", 500),
                                                         ("Allow", 700), ("Don't allow", 800)))
@@ -400,23 +396,22 @@ class PublishTests(unittest.TestCase):
         took = run(Flows(device, lambda **e: None).wait_published(PostItem("photo", "Morning coffee test"), 0.0))
         self.assertLess(took, 5)
 
-    def test_long_caption_scrolled_to_its_end_counts_as_shown(self):
-        caption = "A very long story about many things\nMore detail in the comment 👇"
-        device = FakeDevice([lines(("Describe your reel", 300)), lines(("New reel", 50), ("is...See more", 300),
-                                                                       ("More detail in the comment", 330))])
-        run(Flows(device, lambda **e: None).write_caption(PostItem("reel", caption)))
-
-    def test_caption_end_wrapping_onto_two_lines_counts_as_shown(self):
-        caption = "A very long story about many things\n#DonaldTrump #USPolitics #Cuba #MarcoRubio"
+    def test_caption_misread_by_ocr_still_counts_once_the_field_is_filled(self):
+        caption = "White House officials recognize that choosing a press secretary with Supreme Court clerk"
         device = FakeDevice([lines(("Describe your reel", 300)),
-                             lines(("New reel", 50), ("#MarcoRubio", 330), ("#DonaldTrump #USPolitics #Cuba", 300))])
+                             lines(("Reel Settings", 50), ("vnite House omciais recognize tnat", 300))])
         run(Flows(device, lambda **e: None).write_caption(PostItem("reel", caption)))
 
-    def test_caption_nowhere_on_screen_still_fails(self):
-        caption = "A very long story about many things\nMore detail in the comment 👇"
-        device = FakeDevice([lines(("Describe your reel", 300)), lines(("Describe your reel", 300))])
-        with self.assertRaises(StepFailed):
-            run(Flows(device, lambda **e: None).write_caption(PostItem("reel", caption)))
+    def test_caption_drawn_a_moment_after_paste_counts(self):
+        device = FakeDevice([lines(("Describe your reel", 300)), lines(("Describe your reel", 300)),
+                             lines(("New reel", 50), ("is...See more", 300))])
+        run(Flows(device, lambda **e: None).write_caption(PostItem("reel", "A long story")))
+
+    def test_field_still_empty_after_paste_fails_with_a_screenshot(self):
+        device = FakeDevice([lines(("Describe your reel", 300))])
+        with self.assertRaisesRegex(StepFailed, "still empty"):
+            run(Flows(device, lambda **e: None).write_caption(PostItem("reel", "A long story")))
+        self.assertTrue(any(a[0] == "snapshot" and a[1].startswith("fail_caption") for a in device.actions))
 
     def test_new_reel_screen_goes_straight_to_share_now(self):
         device = FakeDevice([lines(("New reel", 50), ("Share now", 1200))])

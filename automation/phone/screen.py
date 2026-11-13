@@ -195,12 +195,6 @@ def menu_reel(lines: list[Line]) -> Point | None:
     return None
 
 
-def shown_across_lines(lines: list[Line], wanted: str) -> bool:
-    """`wanted` anywhere in the screen's text read top to bottom, for text that wraps onto several lines."""
-    key = squash(wanted)
-    return bool(key) and key in squash("".join(line.text for line in sorted(lines, key=lambda line: line.point[1])))
-
-
 def texts(lines: list[Line], limit: int = 12) -> list[str]:
     return [line.text for line in lines][:limit]
 
@@ -211,14 +205,6 @@ def caption_key(caption: str) -> str:
     readable = re.sub(r"[^\x20-\x7e]", " ", caption)
     words = " ".join(readable.split())
     return words[:20] if len(squash(words[:20])) >= 6 else ""
-
-
-def caption_tail_key(caption: str) -> str:
-    """The end of a caption's last line: a long caption's box scrolls there, so its start is out of sight.
-    Empty when that line has nothing OCR can read back."""
-    last = (caption.strip().splitlines() or [""])[-1]
-    words = " ".join(re.sub(r"[^\x20-\x7e]", " ", last).split())
-    return words[-20:] if len(squash(words[-20:])) >= 6 else ""
 
 
 def load_templates(names=("comment", "send", "home_tab", "create")) -> dict[str, np.ndarray]:
