@@ -1,3 +1,15 @@
+# Version 2.3.0
+
+- Improve PC caption, comment and Live text entry by normalizing whitespace,
+  tolerating invisible readback differences, and recovering from lost focus
+  or incomplete entry.
+- Confirm phone captions by checking that the empty field hint disappears,
+  avoiding false failures from OCR misreading the pasted text.
+- Shorten device and network labels on the Accounts page.
+
+**Linux only.** After installing, run **Settings → Setup and repair → Install /
+update runtime** when prompted.
+
 # Version 2.2.12
 
 - Find the phone Reel editor's Next action by its blue button, avoiding other
