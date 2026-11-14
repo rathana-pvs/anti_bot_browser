@@ -1,3 +1,15 @@
+# Version 2.3.1
+
+- Give a slow Reel Studio up to 90 seconds to finish opening after it responds
+  to the entry click.
+- Save the frame automation used to make a failure decision, with a separate
+  later frame when the screen changes.
+- Keep phone text, icon and button checks on the same frame so evidence matches
+  the decision.
+
+**Linux only.** After installing, run **Settings → Setup and repair → Install /
+update runtime** when prompted.
+
 # Version 2.3.0
 
 - Improve PC caption, comment and Live text entry by normalizing whitespace,
