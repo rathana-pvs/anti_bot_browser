@@ -7,6 +7,8 @@ from pathlib import Path
 import re
 import time
 
+import numpy as np
+
 from composer_templates import (
     ComposerTemplateDetector,
     ComposerTemplateRegistry,
@@ -733,6 +735,20 @@ class FacebookReelTask(BaseTask):
         finish("timeout")
         return "timeout", None, None
 
+    # Once a dialog has opened over the profile, Reel Studio may take this
+    # long in total to show its Upload control (slow Pages reach 30-40 s).
+    REEL_ENTRY_LOADING_TIMEOUT = 90.0
+    # Mean grey-level change from the pre-click screen that means something
+    # opened. Opening a dialog measured 19+; an unchanged page is near 0.
+    REEL_ENTRY_OPENED_CHANGE = 10.0
+
+    def _reel_entry_opened(self, screen) -> bool:
+        """Whether the screen changed from the profile as it was before the Reel click."""
+        before = getattr(self, "_reel_pre_click_frame", None)
+        if not isinstance(before, np.ndarray) or not isinstance(screen, np.ndarray):
+            return False
+        return self.screen_change(before, screen) >= self.REEL_ENTRY_OPENED_CHANGE
+
     def _wait_for_reel_entry(self, timeout: float = 35.0):
         """Wait for either supported Reel entry flow after the profile action.
 
@@ -740,11 +756,33 @@ class FacebookReelTask(BaseTask):
         Others first open Reel Studio and require an Upload/Add video click.
         The native modal is checked first so page OCR and clicks never target the
         inaccessible Facebook window behind an open chooser.
+
+        After ``timeout`` the wait continues, up to
+        ``REEL_ENTRY_LOADING_TIMEOUT`` in total, only while something has
+        opened over the profile (a dialog still loading). Nothing is clicked
+        while it loads. Returns ``("loading", None, frame)`` when it never
+        finished, ``("timeout", None, frame)`` when nothing opened.
         """
         started = time.perf_counter()
-        deadline = time.time() + timeout
+        begun = time.time()
+        deadline = begun + timeout
+        loading_deadline = begun + max(timeout, self.REEL_ENTRY_LOADING_TIMEOUT)
         local_misses = 0
-        while time.time() < deadline:
+        screen = None
+        opened = False
+        extended = False
+        while True:
+            now = time.time()
+            if now >= deadline:
+                if not opened or now >= loading_deadline:
+                    break
+                if not extended:
+                    extended = True
+                    self.log(
+                        "INFO",
+                        f"Reel Studio opened but is still loading after {timeout:g} s; "
+                        f"waiting up to {self.REEL_ENTRY_LOADING_TIMEOUT:g} s in total without clicking.",
+                    )
             chooser_window = self.find_visible_file_chooser()
             if chooser_window is not None:
                 self._preferred_reel_sidebar_region = self.LEFT_REEL_SIDEBAR
@@ -768,6 +806,11 @@ class FacebookReelTask(BaseTask):
 
             screen = self.client.screenshot()
             upload_target = self._find_reel_upload_target()
+            # The finder takes its own screenshots; judge and record the
+            # newest one so evidence shows the frame the target came from.
+            judged = self.judged_frame(max_age=30.0)
+            if judged is not None:
+                screen = judged
             if upload_target:
                 self._preferred_reel_sidebar_region = self.LEFT_REEL_SIDEBAR
                 self.capture_evidence(
@@ -775,6 +818,7 @@ class FacebookReelTask(BaseTask):
                     screen,
                     target=list(upload_target),
                     entry_flow="reel_studio",
+                    waited_s=round(time.time() - begun, 1),
                 )
                 telemetry = getattr(self, "telemetry", None)
                 if telemetry is not None:
@@ -789,16 +833,18 @@ class FacebookReelTask(BaseTask):
             observation = self._reel_safety_observation(screen, local_misses)
             if observation.state == ScreenState.ERROR_DIALOG:
                 return "error", None, screen
+            opened = self._reel_entry_opened(screen)
             time.sleep(2.0)
 
+        status = "loading" if opened else "timeout"
         telemetry = getattr(self, "telemetry", None)
         if telemetry is not None:
             telemetry.record_step(
                 "reel_entry_flow",
                 (time.perf_counter() - started) * 1000.0,
-                outcome="timeout",
+                outcome="loading_timeout" if opened else "timeout",
             )
-        return "timeout", None, None
+        return status, None, screen
 
     def _ordered_reel_sidebar_regions(self, allow_layout_fallback: bool = False):
         """Lock to the selected layout, adding the alternate only after local misses."""
@@ -1711,6 +1757,9 @@ class FacebookReelTask(BaseTask):
             "click Reel button to open Reel creator dialog",
         )
         self.capture_evidence("before_click_reel_button", target=list(reel_button))
+        # The entry wait compares against this to tell a loading dialog from
+        # a click that opened nothing.
+        self._reel_pre_click_frame = self.judged_frame(max_age=30.0)
         self.click_reversible(reel_button, label="profile_reel", max_offset_px=4)
         time.sleep(2.5)
         return None
@@ -1722,6 +1771,12 @@ class FacebookReelTask(BaseTask):
         screen = self._screen
         if entry_status == "error":
             return self._fail("reel_studio_error", "Facebook displayed an error in Reel Studio.", screen)
+        if entry_status == "loading":
+            return self._fail(
+                "reel_studio_still_loading",
+                f"Reel Studio opened but did not finish loading within {self.REEL_ENTRY_LOADING_TIMEOUT:g} seconds; "
+                "nothing was uploaded.",
+            )
         if entry_status == "timeout" or not entry_target:
             return self._fail(
                 "reel_entry_flow_not_recognized",

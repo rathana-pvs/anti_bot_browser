@@ -6,6 +6,7 @@ import os
 import random
 import time
 import uuid
+import cv2
 import numpy as np
 from datetime import datetime
 from engine.container_client import ContainerClient
@@ -270,9 +271,60 @@ class BaseTask:
         )
         self.log(level, message)
 
+    # A judged frame older than this is not the screen a failure was decided on.
+    JUDGED_FRAME_MAX_AGE_S = 120.0
+    # Mean grey-level change (0-255, on a small copy) above which the screen
+    # is treated as different from the judged frame.
+    SCREEN_CHANGED_THRESHOLD = 2.0
+
+    def judged_frame(self, max_age: float | None = None):
+        """The last screenshot automation processed, or None if there is no recent one."""
+        frame = getattr(self.client, "last_frame", None)
+        if not isinstance(frame, tuple) or len(frame) != 2:
+            return None
+        image, taken = frame
+        if not isinstance(image, np.ndarray) or not isinstance(taken, (int, float)):
+            return None
+        limit = self.JUDGED_FRAME_MAX_AGE_S if max_age is None else max_age
+        if time.monotonic() - taken > limit:
+            return None
+        return image
+
+    @staticmethod
+    def screen_change(first, second) -> float:
+        """Mean grey-level difference between two screenshots, on a small copy."""
+        if first is None or second is None:
+            return 0.0
+        def small(image):
+            grey = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+            return cv2.resize(grey, (320, 180), interpolation=cv2.INTER_AREA).astype(np.int16)
+        return float(np.abs(small(first) - small(second)).mean())
+
     def capture_evidence(self, label: str, screen=None, **metadata) -> str | None:
-        """Capture diagnostic evidence without allowing evidence I/O to abort a task."""
+        """Capture diagnostic evidence without allowing evidence I/O to abort a task.
+
+        Failure evidence (``error_code`` given) with no screen saves the last
+        frame automation judged, so the picture matches the decision. A newer
+        screen is saved beside it as ``<label>_after`` only when it differs.
+        """
         try:
+            judged = None
+            if screen is None and "error_code" in metadata:
+                judged = self.judged_frame()
+            if judged is not None:
+                path = self.evidence.capture(label, judged, {**metadata, "frame": "judged"})
+                self.log("DEBUG", f"Evidence captured: {path}")
+                try:
+                    now = self.client.screenshot()
+                    if self.screen_change(judged, now) > self.SCREEN_CHANGED_THRESHOLD:
+                        after = self.evidence.capture(
+                            f"{label}_after", now,
+                            {"error_code": metadata["error_code"], "frame": "after_decision"},
+                        )
+                        self.log("DEBUG", f"Screen changed after the decision: {after}")
+                except Exception as exc:
+                    self.log("DEBUG", f"No after-decision frame for '{label}': {exc}")
+                return path
             screen = self.client.screenshot() if screen is None else screen
             path = self.evidence.capture(label, screen, metadata or None)
             self.log("DEBUG", f"Evidence captured: {path}")

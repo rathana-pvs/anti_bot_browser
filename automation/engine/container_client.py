@@ -324,6 +324,9 @@ class ContainerClient:
             img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             if img is None:
                 raise RuntimeError(f"Failed to decode screenshot from {self.container_name}")
+            # The last frame automation looked at: failure evidence saves this
+            # frame, so it shows what the decision was made on.
+            self.last_frame = (img, time.monotonic())
             return img
         finally:
             # Screens may contain credentials; remove the transient capture even
