@@ -1,7 +1,8 @@
 """Bounded local Live-comment timing and content-free failure codes."""
-COMMENT_TOTAL_SECONDS = 70
-COMMENT_ACTION_SECONDS = 75
+COMMENT_TOTAL_SECONDS = 90
 COMMENT_STARTUP_RESERVE_SECONDS = 15
+# The backend's limit on the whole comment action: the comment's own budget plus browser startup.
+COMMENT_ACTION_SECONDS = COMMENT_TOTAL_SECONDS + COMMENT_STARTUP_RESERVE_SECONDS
 COMMENT_VERIFY_SECONDS = 18
 COMMENT_CODES = frozenset({
     'live_not_confirmed', 'input_missing', 'input_changed', 'matching_comment_visible',

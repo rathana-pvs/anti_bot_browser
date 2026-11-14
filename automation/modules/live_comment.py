@@ -94,14 +94,23 @@ class LiveComment:
         self.wait_for_delivery(self.observe(), target, text, deadline)
 
     def wait_for_delivery(self, items, target, text, deadline):
-        while time.monotonic() < deadline:
+        while True:
             posted = self.posted_items(items, target)
             # The text was pasted and Enter sent exactly once. Facebook shortens
             # links on screen, so an emptied box is enough without a text match.
-            if not self.delivery_pending(posted) and (self.input_empty(items) or self.contains(posted, text)):
+            sent = self.input_empty(items) or self.contains(posted, text)
+            if sent and not self.delivery_pending(posted):
                 return
+            if time.monotonic() >= deadline:
+                break
             time.sleep(.5)
             items = self.observe()
+        # An ended video's page can keep "Posting…" on a comment Facebook has
+        # already saved; it is accepted once the box emptied and nothing says
+        # the comment failed. A failure notice or text left in the box is not.
+        if sent and self.delivery_still_posting(posted) and not self.delivery_failed(posted):
+            self.task.report('live_comment_accepted_while_posting')
+            return
         raise LiveCommentFailure('submission_unconfirmed')
 
     def input_empty(self, items):
@@ -109,15 +118,20 @@ class LiveComment:
                    (label(item).startswith('write a ') and ' as ' not in label(item))
                    for item in self.inputs(items))
 
+    @classmethod
+    def delivery_pending(cls, items):
+        return cls.delivery_still_posting(items) or cls.delivery_failed(items)
+
     @staticmethod
-    def delivery_pending(items):
-        for item in items:
-            status = label(item)
-            if (status in {'posting', 'sending', 'pending', 'retry', 'try again'}
-                    or status.startswith(('posting ', 'sending ', 'couldnt post', 'could not post',
-                                          'failed to post', 'unable to post', 'comment failed'))):
-                return True
-        return False
+    def delivery_still_posting(items):
+        return any(label(item) in {'posting', 'sending', 'pending'}
+                   or label(item).startswith(('posting ', 'sending ')) for item in items)
+
+    @staticmethod
+    def delivery_failed(items):
+        return any(label(item) in {'retry', 'try again'}
+                   or label(item).startswith(('couldnt post', 'could not post', 'failed to post',
+                                              'unable to post', 'comment failed')) for item in items)
 
     def posted_items(self, items, target):
         # A profile includes the post's caption as well as its comments. Never

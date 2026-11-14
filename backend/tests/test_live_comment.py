@@ -90,7 +90,8 @@ def test_optimistic_comment_waits_for_delivery(monkeypatch, notice, already_visi
     assert task.live_input.enter.call_count == (0 if already_visible else 1)
 
 
-def test_comment_stuck_posting_never_succeeds_or_resubmits(monkeypatch):
+def test_comment_still_posting_at_the_deadline_is_accepted_without_resubmitting(monkeypatch):
+    # An ended video's page can keep "Posting…" on a comment Facebook has already saved.
     clock = Clock()
     monkeypatch.setattr('modules.live_comment.time.monotonic', clock.clock)
     monkeypatch.setattr('modules.live_comment.time.sleep', clock.sleep)
@@ -99,10 +100,40 @@ def test_comment_stuck_posting_never_succeeds_or_resubmits(monkeypatch):
     placeholder = [entry('Write a comment...')]
     pending = placeholder + [entry('hello', y=600), entry('Posting…', y=650)]
     module.observe = Mock(return_value=pending)
-    with pytest.raises(RuntimeError, match='submission_unconfirmed'):
-        module.post('hello')
+    module.post('hello')
+    assert clock.now >= 90  # waited the whole budget for the notice to clear
+    task.report.assert_any_call('live_comment_accepted_while_posting')
     task.live_input.enter.assert_not_called()
     task.live_input.human.key_press.assert_not_called()
+
+
+@pytest.mark.parametrize('notice', ["Couldn't post. Try again", 'Try again', 'Failed to post'])
+def test_comment_with_a_failure_notice_at_the_deadline_still_needs_review(monkeypatch, notice):
+    clock = Clock()
+    monkeypatch.setattr('modules.live_comment.time.monotonic', clock.clock)
+    monkeypatch.setattr('modules.live_comment.time.sleep', clock.sleep)
+    task = comment_task()
+    module = LiveComment(task)
+    failed = [entry('Write a comment...'), entry('hello', y=600), entry(notice, y=650)]
+    module.observe = Mock(return_value=failed)
+    with pytest.raises(RuntimeError, match='submission_unconfirmed'):
+        module.post('hello')
+    task.live_input.human.key_press.assert_not_called()
+
+
+def test_posting_notice_with_text_still_in_the_box_is_not_accepted(monkeypatch):
+    clock = Clock()
+    monkeypatch.setattr('modules.live_comment.time.monotonic', clock.clock)
+    monkeypatch.setattr('modules.live_comment.time.sleep', clock.sleep)
+    task = comment_task()
+    module = LiveComment(task)
+    placeholder = [entry('Write a comment...')]
+    stuck = [entry('hello'), entry('Posting…', y=650)]  # no placeholder: the text is still in the box
+    module.observe = Mock(side_effect=[placeholder, placeholder] + [stuck] * 400)  # read 3 is after Enter
+    with pytest.raises(RuntimeError, match='submission_unconfirmed'):
+        module.post('hello')
+    task.report.assert_any_call('live_comment_submit_sent')
+    assert ('live_comment_accepted_while_posting',) not in [c.args for c in task.report.call_args_list]
 
 
 def test_visible_posted_comment_succeeds_without_placeholder_reconfirmation():
@@ -147,8 +178,10 @@ def test_normal_comment_text_keeps_word_boundaries():
 def test_unconfirmed_submission_never_retries(monkeypatch):
     task = comment_task()
     module = LiveComment(task)
-    module.observe = Mock(return_value=[entry('Write a comment...')])
-    monkeypatch.setattr('modules.live_comment.time.monotonic', Mock(side_effect=[0, 71]))
+    placeholder = [entry('Write a comment...')]
+    # The text is still in the box after Enter, and the budget is already over.
+    module.observe = Mock(side_effect=[placeholder, placeholder, [entry('hello')]])
+    monkeypatch.setattr('modules.live_comment.time.monotonic', Mock(side_effect=[0, 91]))
     with pytest.raises(RuntimeError, match='unconfirmed'):
         module.post('hello')
     task.live_input.human.key_press.assert_called_once()

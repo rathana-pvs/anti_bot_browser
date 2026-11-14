@@ -401,6 +401,7 @@ async def browser_action(profile_id, action, producer_url, stop_event, *, prepar
                                         'go_live_dialog_click_sent', 'end_live_requested', 'end_live_click_sent',
                                         'end_confirmation_requested', 'end_confirmation_click_sent',
                                         'live_comment_submit_requested', 'live_comment_submit_sent',
+                                        'live_comment_accepted_while_posting',
                                         'live_profile_comment_fallback_requested', 'live_profile_recent_post_verified',
                                         'live_profile_comment_input_found'}:
                 live_event(record, message['event'])

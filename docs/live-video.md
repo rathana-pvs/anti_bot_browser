@@ -31,13 +31,18 @@ jobs with the legacy `end_after_comment` flag. There is no opt-in checkbox.
 After Facebook confirms Live, the app sends End, including Facebook's final End
 button when a confirmation dialog appears, and stops the sender. It keeps the
 browser/container open and posts the comment once on the ended video's page.
-The comment has its own 75-second budget; streaming startup deadlines no longer
+The comment has its own 90-second budget (105 seconds for the whole action, with
+browser startup); streaming startup deadlines no longer
 limit it, and neither does the two-minute broadcast limit, which is cancelled when
 End begins. After Enter is sent once, the comment is confirmed when the comment box
 is empty again or the exact text is visible, and no delivery notice (such as
 `Posting…`, `Sending…` or `Couldn't post`) remains. The posted text is not compared
-when the box is empty, because Facebook shortens links on screen. Text still in the
-box or a remaining notice does not confirm success. An existing matching comment
+when the box is empty, because Facebook shortens links on screen. An ended video's
+page can keep `Posting…` or `Sending…` on a comment Facebook has already saved, so
+when only such a notice is left at the end of the budget, with the box emptied or
+the text visible, the comment counts as posted (`live_comment_accepted_while_posting`).
+Text still in the box or a failure notice (`Couldn't post`, `Try again`) does not
+confirm success. An existing matching comment
 is awaited without reposting if delivery is still pending.
 If the ended Producer page has no comment input, the helper opens the profile
 and uses the Reel first-post header/timestamp parser. Only the newest card with
