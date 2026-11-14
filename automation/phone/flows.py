@@ -510,7 +510,7 @@ class Flows:
         A label that posts (Share...) is never tapped here, as the caption comes after this screen; an
         unknown label stops the job with a screenshot, so a new word is added to the list rather than
         guessed. An icon with no label is tapped only once the editor's own toolbar is read."""
-        button = screen.action_button(lines, self.device.image())
+        button = screen.action_button(lines, self.device.judged_image())
         if not button:
             return None
         if button.kind == "forward" or (button.kind == "" and screen.reel_editor_shown(lines)):
@@ -677,7 +677,7 @@ class Flows:
             seen = match(await dev.read(), button, exact=True)
             if seen:
                 point = seen
-                if not screen.button_disabled(dev.image(), point):
+                if not screen.button_disabled(dev.judged_image(), point):
                     if state in (None, "settled"):
                         break
                     # It just turned blue or came out from under a toast: let it settle, then check again.

@@ -50,6 +50,20 @@ def media_mime(path: str) -> str:
     return mime
 
 
+# A judged frame older than this is not what a failure was decided on.
+JUDGED_MAX_AGE_S = 120.0
+# Mean grey-level change (0-255, on a small copy) above which the live screen differs from it.
+SCREEN_CHANGED = 2.0
+
+
+def screen_change(first: np.ndarray, second: np.ndarray) -> float:
+    """Mean grey-level difference between two frames, on a small copy."""
+    def small(image):
+        grey = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+        return cv2.resize(grey, (90, 195), interpolation=cv2.INTER_AREA).astype(np.int16)
+    return float(np.abs(small(first) - small(second)).mean())
+
+
 class PhoneDevice:
     """Async primitives for the flows. Points are in stream pixels (576 wide on a 1080 px phone);
     `pt` converts full-resolution coordinates."""
@@ -68,6 +82,10 @@ class PhoneDevice:
         self._config = b""
         self._frame: np.ndarray | None = None
         self.frame_count = 0
+        # The frame the flows last judged (read or searched), when, and when input was last sent:
+        # evidence shows that frame while nothing has been sent since.
+        self._judged: tuple[np.ndarray, float] | None = None
+        self._acted_at = 0.0
         self._lock = threading.Lock()
         self._tasks: list[asyncio.Task] = []
         self._warmed = False
@@ -132,23 +150,43 @@ class PhoneDevice:
         with self._lock:
             return None if self._frame is None else self._frame.copy()
 
-    async def read(self) -> list[Line]:
+    def _judge(self) -> np.ndarray | None:
         image = self.image()
+        if image is not None:
+            self._judged = (image, time.monotonic())
+        return image
+
+    def judged_image(self) -> np.ndarray | None:
+        """The frame last read or searched, while no input has been sent since; else the live one.
+        Checks on a read's lines use this so their pixels come from the same moment as the text."""
+        if self._judged is not None:
+            image, taken = self._judged
+            if taken >= self._acted_at and time.monotonic() - taken <= JUDGED_MAX_AGE_S:
+                return image
+        return self.image()
+
+    async def read(self) -> list[Line]:
+        image = self._judge()
         if image is None:
             return []
         return await asyncio.to_thread(lambda: lines_from_ocr(self.reader.readtext(image[:, :, ::-1])))
 
     def find_icon(self, name: str, below: float | None = None) -> Point | None:
-        image = self.image()
+        image = self._judge()
         return None if image is None else find_template(image, self.templates[name], below)
 
     def snapshot(self, name: str) -> str | None:
-        image = self.image()
-        if image is None:
+        """Save the frame the last decision was made on. When the live screen has changed since, it
+        is saved beside it as <name>_after, so evidence shows both what was judged and what followed."""
+        judged = self.judged_image()
+        if judged is None:
             return None
         self.evidence_dir.mkdir(parents=True, exist_ok=True)
         path = self.evidence_dir / f"{name}.png"
-        cv2.imwrite(str(path), image)
+        cv2.imwrite(str(path), judged)
+        live = self.image()
+        if live is not None and live is not judged and screen_change(judged, live) > SCREEN_CHANGED:
+            cv2.imwrite(str(self.evidence_dir / f"{name}_after.png"), live)
         return str(path)
 
     def focus(self) -> str | None:
@@ -209,6 +247,7 @@ class PhoneDevice:
         raise ApprovalScreenUp("Facebook's login approval screen stayed open; check the account on the phone")
 
     async def _touch(self, action: int, x: float, y: float) -> None:
+        self._acted_at = time.monotonic()
         await self.session.send({"type": "touch", "action": action, "x": int(x), "y": int(y),
                                  "width": self.width, "height": self.height})
 
@@ -239,6 +278,7 @@ class PhoneDevice:
 
     async def key(self, code: int) -> None:
         await self._clear_of_approval()
+        self._acted_at = time.monotonic()
         await self.session.send({"type": "key", "keycode": code})
         await asyncio.sleep(random.uniform(0.5, 0.9))
 
@@ -263,6 +303,7 @@ class PhoneDevice:
             chunk_len = 1 if random.random() < 0.75 else 2
             chunk = text[i:i + chunk_len]
             # scrcpy caps inject-text at 300 bytes; one or two chars never approach that.
+            self._acted_at = time.monotonic()
             await self.session.send({"type": "text", "text": chunk})
             i += len(chunk)
             # Base ~70 ms/char with jitter, plus a longer pause at word breaks and the odd think.

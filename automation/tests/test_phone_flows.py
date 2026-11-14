@@ -60,6 +60,9 @@ class FakeDevice:
     def image(self):
         return self.images.pop(0) if len(self.images) > 1 else (self.images[0] if self.images else None)
 
+    def judged_image(self):
+        return self.image()
+
     def snapshot(self, name):
         self.actions.append(("snapshot", name))
         return f"/evidence/{name}.png"
