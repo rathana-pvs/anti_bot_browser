@@ -1,4 +1,4 @@
-import { Copy, Eye, Eraser, Shuffle, FolderInput, FolderMinus, FolderPlus, Hand, ListChecks, Pause, PencilLine, Play, Settings2, Square, Trash2, ExternalLink } from 'lucide-react';
+import { Copy, Eye, Eraser, Shuffle, FolderInput, FolderMinus, FolderPlus, Hand, ImagePlus, ListChecks, Pause, PencilLine, Play, Settings2, Square, Trash2, ExternalLink } from 'lucide-react';
 import { Profile } from '../../types/profile';
 import type { ActionMenuItem } from '../ui/ActionMenu';
 import { isAndroid, type AccountTab } from './accountModel';
@@ -22,6 +22,8 @@ export interface AccountHandlers {
   toggleHold: (profile: Profile) => void;
   /** Change: move the account to another proxy already in the pool. */
   changeProxy: (profile: Profile) => void;
+  /** Phone accounts: copy photos and videos into the account's gallery by hand. */
+  phoneFiles: (profile: Profile) => void;
 }
 
 const browserOpen = (profile: Profile) => profile.status === 'running' || profile.status === 'paused';
@@ -53,6 +55,8 @@ export function accountMenu(profile: Profile, handlers: AccountHandlers, { inclu
     if (includeOpen) items.push({ label: 'Open', icon: <ExternalLink className={icon} />, onSelect: () => handlers.open(profile.id, 'overview') });
     items.push(
       { label: 'Show in queue', icon: <ListChecks className={icon} />, onSelect: () => handlers.openQueue(profile.id), divider: includeOpen },
+      { label: 'Send files to phone…', icon: <ImagePlus className={icon} />, hint: 'Copy photos or videos into this account’s gallery, e.g. for a profile picture.',
+        onSelect: () => handlers.phoneFiles(profile) },
       changeProxyItem(profile, handlers),
       renameItem(profile, handlers),
       { label: 'Move to folder…', icon: <FolderInput className={icon} />, onSelect: () => handlers.moveToGroup([profile]) },

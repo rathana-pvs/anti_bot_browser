@@ -41,6 +41,7 @@ import type { PhoneAccountRequest } from './components/devices/PhoneAccountForm'
 import { AccountPage } from './components/accounts/AccountPage';
 import { MoveToGroupDialog } from './components/accounts/MoveToGroupDialog';
 import { ChangeProxyDialog } from './components/accounts/ChangeProxyDialog';
+import { PhoneFilesDialog } from './components/accounts/PhoneFilesDialog';
 import { AccountHandlers, FolderHandlers, ProfileAction } from './components/accounts/accountActions';
 import { refreshAccountHealth } from './components/accounts/accountHealth';
 import { FolderNameDialog, FolderDialogState } from './components/accounts/FolderNameDialog';
@@ -87,6 +88,7 @@ export const App: React.FC = () => {
   const settleMove = (moved: boolean) => { moveDone.current?.(moved); moveDone.current = null; };
   const [folderDialog, setFolderDialog] = useState<FolderDialogState>(null);
   const [changeProxyFor, setChangeProxyFor] = useState<Profile | null>(null);
+  const [phoneFilesFor, setPhoneFilesFor] = useState<Profile | null>(null);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [campaignAttention, setCampaignAttention] = useState(0);
   const [queueRequest, setQueueRequest] = useState<{ profileId?: string; executionId?: string; key: number } | null>(null);
@@ -353,6 +355,7 @@ export const App: React.FC = () => {
     rename: (profile) => { void renameAccount(profile); },
     toggleHold: (profile) => { void toggleHold(profile); },
     changeProxy: setChangeProxyFor,
+    phoneFiles: setPhoneFilesFor,
     openQueue,
     clearFailures: (profile, before) => { void clearFailures(profile, before); },
     open: openAccountPage,
@@ -562,6 +565,8 @@ export const App: React.FC = () => {
 
       {changeProxyFor && <ChangeProxyDialog profile={changeProxyFor} onClose={() => setChangeProxyFor(null)}
         onChanged={(message) => { showToast(message, 'success'); refreshAccountHealth(); void loadData(); }} />}
+
+      {phoneFilesFor && <PhoneFilesDialog profile={phoneFilesFor} onClose={() => setPhoneFilesFor(null)} />}
 
       <SettingsModal
         onRequestOpen={() => setIsSettingsOpen(true)}

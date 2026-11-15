@@ -169,3 +169,38 @@ export function makeDevicePrimary(serial: string, options: { pin?: string; forgo
 export function setDevicePin(serial: string, pin: string | null): Promise<{ pin_set: boolean }> {
   return post(`${devicePath(serial)}/pin`, { pin }, 'Failed to save the PIN', 'PUT');
 }
+
+/** A photo or video copied by hand into one phone account's gallery (not posting media). */
+export interface PhoneFile {
+  id: string;
+  name: string;
+  original_name: string;
+  mime: string;
+  size_bytes: number;
+  album: 'Pictures' | 'Movies';
+  copied_at: string;
+}
+
+export const PHONE_FILE_TYPES = '.jpg,.jpeg,.png,.mp4';
+export const isPhoneFileType = (name: string) => /\.(jpe?g|png|mp4)$/i.test(name);
+
+const accountFilesPath = (profileId: string) => `${API_BASE}/devices/accounts/${encodeURIComponent(profileId)}/files`;
+
+export async function fetchPhoneFiles(profileId: string): Promise<PhoneFile[]> {
+  const res = await fetch(accountFilesPath(profileId));
+  if (!res.ok) throw await networkError(res, 'Failed to load the files on the phone');
+  return (await res.json()).files;
+}
+
+export async function copyFileToPhone(profileId: string, file: File): Promise<PhoneFile> {
+  const body = new FormData();
+  body.append('file', file, file.name);
+  const res = await fetch(accountFilesPath(profileId), { method: 'POST', body });
+  if (!res.ok) throw await networkError(res, `Failed to copy ${file.name} to the phone`);
+  return res.json();
+}
+
+export async function removePhoneFile(profileId: string, fileId: string): Promise<void> {
+  const res = await fetch(`${accountFilesPath(profileId)}/${encodeURIComponent(fileId)}`, { method: 'DELETE' });
+  if (!res.ok) throw await networkError(res, 'Failed to remove the file from the phone');
+}

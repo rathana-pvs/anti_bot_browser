@@ -1,13 +1,17 @@
 import asyncio
 import json
+import os
+import shutil
+import tempfile
 import time
+from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.security import websocket_token_valid
-from backend.services import android_devices, android_live, android_network, android_ownership, android_setup, proxy_change
+from backend.services import android_devices, android_files, android_live, android_network, android_ownership, android_setup, proxy_change
 from backend.services.adb_client import AdbError, AdbUnavailable
 
 
@@ -153,6 +157,33 @@ def replace_proxy(profile_id: str, request: ProxyChangeRequest):
     if reason:
         raise HTTPException(status_code=409, detail=reason)
     return _call(lambda: android_ownership.replace_proxy(profile_id, request.proxy_id))
+
+
+@router.get("/accounts/{profile_id}/files")
+def list_phone_files(profile_id: str):
+    return _call(lambda: android_files.list_files(profile_id))
+
+
+@router.post("/accounts/{profile_id}/files", status_code=201)
+async def copy_phone_file(profile_id: str, file: UploadFile = File(...)):
+    """One photo or video per request, so the app can show each file's own result."""
+    name = Path((file.filename or "").replace("\\", "/")).name
+    _call(lambda: android_files.mime_for(name))
+    fd, temp = tempfile.mkstemp(prefix="phone-copy-", suffix=Path(name).suffix.lower())
+    try:
+        with os.fdopen(fd, "wb") as out:
+            await run_in_threadpool(shutil.copyfileobj, file.file, out, 1024 * 1024)
+        return await run_in_threadpool(lambda: _call(lambda: android_files.copy_file(profile_id, Path(temp), name)))
+    finally:
+        try:
+            os.unlink(temp)
+        except OSError:
+            pass
+
+
+@router.delete("/accounts/{profile_id}/files/{file_id}")
+def remove_phone_file(profile_id: str, file_id: str):
+    return _call(lambda: android_files.remove_file(profile_id, file_id))
 
 
 @router.post("/{serial}/users", status_code=201)
