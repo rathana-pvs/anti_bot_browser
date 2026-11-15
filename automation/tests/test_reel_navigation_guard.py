@@ -3,6 +3,7 @@ from unittest.mock import Mock, patch
 
 from modules.publication_result_verifier import ReelPublicationResultVerifier
 from modules.publishing_pipeline import PublicationResultVerifierModule
+from modules.reel_post_click_verifier import ReelPostClickVerifier
 from tasks.facebook_reel import FacebookReelTask
 
 
@@ -14,14 +15,31 @@ class ReelNavigationGuardTests(unittest.TestCase):
         task.navigate_to.assert_not_called()
         task._scan_profile_for_latest_reel.assert_not_called()
 
-    def test_composer_is_rechecked_before_second_profile_navigation(self):
+    def test_opening_the_profile_marks_the_composer_page_as_left(self):
         task = Mock()
-        task._allow_reel_profile_navigation.side_effect = [True, False]
-        task._scan_profile_for_latest_reel.return_value = (False, object())
+        task._reel_profile_opened = False
+        task._allow_reel_profile_navigation.return_value = True
+        task._wait_for_reel_profile_ready.return_value = False
+        task.reel_profile_readiness = {"accepted": False}
         with patch("modules.publication_result_verifier.time.sleep"):
             self.assertFalse(ReelPublicationResultVerifier(task).verify_latest_reel())
-        task.navigate_to.assert_called_once()
-        self.assertEqual(task._allow_reel_profile_navigation.call_count, 2)
+        self.assertIs(task._reel_profile_opened, True)
+
+    def test_closure_is_checked_only_before_the_first_profile_navigation(self):
+        task = Mock()
+        task._reel_profile_opened = False
+        task._uncertain = Mock()
+        verifier = ReelPostClickVerifier(task)
+        with patch.object(ReelPostClickVerifier, "composer_has_closed", return_value=False):
+            self.assertFalse(verifier.allow_profile_navigation())
+            task._uncertain.assert_called_once()
+            # After the profile opened, Facebook's loading logo screen must not
+            # be read as the composer still being open.
+            task._reel_profile_opened = True
+            task.client.screenshot.reset_mock()
+            self.assertTrue(verifier.allow_profile_navigation())
+        task.client.screenshot.assert_not_called()
+        task._uncertain.assert_called_once()
 
     def test_pipeline_preserves_uncertainty_when_navigation_is_blocked(self):
         task = Mock()

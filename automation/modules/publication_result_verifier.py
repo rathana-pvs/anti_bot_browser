@@ -221,6 +221,7 @@ class ReelPublicationResultVerifier:
                 f"{'Opening' if attempt == 1 else 'Refreshing'} the profile to check for the latest Reel (attempt {attempt}/{self.attempts}).",
             )
             self.task.navigate_to("https://www.facebook.com/me", wait_seconds=3.0)
+            self.task._reel_profile_opened = True
             if not self.task._wait_for_reel_profile_ready():
                 continue
             visible, screen = self.task._scan_profile_for_latest_reel()

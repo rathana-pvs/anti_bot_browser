@@ -1,7 +1,8 @@
 """Shared post-click prompt, upload, and closure verification for every Reel template.
 
 This module never clicks Post or navigates. It returns profile_fallback only
-once the composer has closed; profile navigation must recheck that guard.
+once the composer has closed; the first profile navigation must recheck that
+guard.
 """
 
 from __future__ import annotations
@@ -145,7 +146,14 @@ class ReelPostClickVerifier:
         return lines + rows
 
     def allow_profile_navigation(self) -> bool:
-        """Recheck closure immediately before every profile verification navigation."""
+        """Check closure once, immediately before the first profile navigation.
+
+        Opening the profile replaces the composer page, so later refreshes
+        cannot leave an open composer behind. Rechecking them only misread a
+        slowly loading profile (Facebook's logo screen) as an open composer.
+        """
+        if getattr(self.task, "_reel_profile_opened", False) is True:
+            return True
         screen = self.task.client.screenshot()
         observation = self.task.recognizer.observe(screen)
         if self.composer_has_closed(screen, observation):
