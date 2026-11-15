@@ -45,6 +45,36 @@ def profile_feed_is_loading(screen, region=None):
     return False
 
 
+def profile_placeholder_tiles(screen):
+    """Count the plain grey squares Facebook draws while a profile is loading.
+
+    The Featured/Photos skeleton is a grid of large, single-colour tiles in the
+    main column. Loaded photos are never one flat grey, so three or more such
+    tiles mean the profile has not been drawn yet. Works at any screen size.
+    """
+    import cv2
+    import numpy as np
+
+    if screen is None or not isinstance(screen, np.ndarray):
+        return 0
+    height, width = screen.shape[:2]
+    crop = screen[int(height * .16):int(height * .98), int(width * .28):int(width * .95), :3].astype(np.int16)
+    if not crop.size:
+        return 0
+    low, high = crop.min(axis=2), crop.max(axis=2)
+    flat = high - low <= 4
+    side = .09 * height
+    tiles = 0
+    # Light-mode and dark-mode placeholder greys.
+    for mask in (flat & (low >= 195) & (high <= 238), flat & (low >= 45) & (high <= 115)):
+        contours, _ = cv2.findContours(mask.astype(np.uint8) * 255, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for contour in contours:
+            _, _, bw, bh = cv2.boundingRect(contour)
+            if bw >= side and bh >= side and cv2.contourArea(contour) >= .9 * bw * bh:
+                tiles += 1
+    return tiles
+
+
 def bounds(item):
     return item.get('bounds')
 

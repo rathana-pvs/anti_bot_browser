@@ -23,7 +23,9 @@ from engine.text_matcher import OcrTextMatcher
 from engine.vision import VisionEngine
 from modules.meta_feed_promotion import dismiss_meta_feed_promotion
 from modules.publication_result_verifier import ReelPublicationResultVerifier
-from modules.reel_top_post import first_header_region, retry_unreadable_header, profile_feed_is_loading
+from modules.reel_top_post import (
+    first_header_region, retry_unreadable_header, profile_feed_is_loading, profile_placeholder_tiles,
+)
 from modules.reel_post_click_verifier import ReelPostClickVerifier
 from modules.reel_profile_readiness import wait_for_profile_ready
 from modules.post_timestamp import parse_header_timestamp
@@ -1719,20 +1721,35 @@ class FacebookReelTask(BaseTask):
         self.log("INFO", "Reusing the verified profile page for Reel creation.")
         return None
 
+    # While the profile still shows grey loading placeholders, its composer
+    # card may not be drawn yet. Hold the search still this long before
+    # scrolling; placeholders that never clear must not block it forever.
+    PROFILE_LOADING_SCROLL_HOLD_S = 15.0
+
     def _step_open_reel_entry(self):
         self.log("STEP", "Locating Reel button on profile page...")
         # Start from a known position; reused profile pages can retain scroll.
         self.human.key_press("ctrl+home", check=False)
         scrolls = 0
+        search_started = time.monotonic()
+        hold_logged = False
 
         def locate_reel_button():
-            nonlocal scrolls
+            nonlocal scrolls, hold_logged
             target = self._find_profile_reel_action()
             if target:
                 return target
             # Hold a visible composer still while OCR/the page settles. Repeated
             # blind scrolling used to move its action row out of the viewport.
             if getattr(self, "_profile_reel_composer_visible", False) or scrolls >= 3:
+                return None
+            # Scrolling a profile that is still loading slid its composer card
+            # off the top before the Reel button was drawn.
+            if (time.monotonic() - search_started < self.PROFILE_LOADING_SCROLL_HOLD_S
+                    and profile_placeholder_tiles(self.client.screenshot()) >= 3):
+                if not hold_logged:
+                    self.log("INFO", "The profile is still loading; waiting before scrolling to find the Reel button.")
+                    hold_logged = True
                 return None
             self.human.move_to(1150, 500)
             self.human.scroll("down", notches=1)

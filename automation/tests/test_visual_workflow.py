@@ -1937,6 +1937,33 @@ class ReelProfileActionTests(unittest.TestCase):
         self.assertEqual(task.human.scroll.call_count, 3)
 
 
+    def test_loading_profile_is_not_scrolled_until_the_hold_ends(self):
+        task = self.make_task([])
+        task.human = Mock()
+        task.log = Mock()
+        task._fail = Mock(return_value=False)
+        task._profile_reel_composer_visible = False
+        task._find_profile_reel_action = Mock(return_value=None)
+        clock = [0.0]
+
+        def wait(locate, **kwargs):
+            for _ in range(6):
+                self.assertIsNone(locate())
+                clock[0] += 2.0
+            self.assertEqual(task.human.scroll.call_count, 0)
+            clock[0] = task.PROFILE_LOADING_SCROLL_HOLD_S
+            self.assertIsNone(locate())
+            return "timeout", None, None
+
+        task._wait_for_target = wait
+        with patch("tasks.facebook_reel.time.sleep"), \
+             patch("tasks.facebook_reel.time.monotonic", side_effect=lambda: clock[0]), \
+             patch("tasks.facebook_reel.profile_placeholder_tiles", return_value=12):
+            task._step_open_reel_entry()
+        # Placeholders that never clear still allow the bounded scroll.
+        self.assertEqual(task.human.scroll.call_count, 1)
+
+
 class PublicationVerificationTests(unittest.TestCase):
     def make_task(self, observations, similarities):
         task = FacebookPostTask.__new__(FacebookPostTask)

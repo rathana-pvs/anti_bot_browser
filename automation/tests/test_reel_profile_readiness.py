@@ -10,6 +10,7 @@ import pytest
 from modules.reel_profile_readiness import browser_navigation_state, wait_for_profile_ready
 from modules.publication_result_verifier import ReelPublicationResultVerifier
 from modules.reel_gallery_verifier import reels_tab, viewer_identity, ReelGalleryVerifier
+from modules.reel_top_post import profile_placeholder_tiles
 from tasks.facebook_reel import FacebookReelTask
 
 
@@ -324,3 +325,23 @@ def test_two_profile_tabs_anchor_the_profile_without_posts(clock, monkeypatch):
     task.vision.read_text.return_value = [item('About'), item('Followers')]
     monkeypatch.setattr('modules.reel_profile_readiness.browser_navigation_state', lambda _: 'idle')
     assert wait_for_profile_ready(task, timeout=5)
+
+
+@pytest.mark.parametrize('size', [(720, 1280), (1080, 1920)])
+@pytest.mark.parametrize('page,tile', [(255, 222), (24, 70)])
+def test_grey_placeholder_grid_counts_as_loading(size, page, tile):
+    height, width = size
+    screen = np.full((height, width, 3), page, dtype=np.uint8)
+    step = int(height * .14)
+    for row in range(2):
+        for col in range(3):
+            x, y = int(width * .45) + col * step, int(height * .3) + row * step
+            screen[y:y + step - 3, x:x + step - 3] = tile
+    assert profile_placeholder_tiles(screen) == 6
+
+
+def test_photos_are_not_placeholders():
+    rng = np.random.default_rng(1)
+    screen = np.full((1080, 1920, 3), 255, dtype=np.uint8)
+    screen[300:700, 900:1500] = rng.integers(0, 255, (400, 600, 3), dtype=np.uint8)
+    assert profile_placeholder_tiles(screen) == 0
