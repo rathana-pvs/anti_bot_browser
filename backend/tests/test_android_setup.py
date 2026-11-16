@@ -134,6 +134,9 @@ class FakePhone:
     def package_installed(self, serial, user_id, package=FACEBOOK):
         return (user_id, package) in self.packages
 
+    def installed_users(self, serial, package):
+        return {user_id for user_id, pkg in self.packages if pkg == package}
+
     def package_version(self, serial, package=FACEBOOK):
         return "0.3.0" if any(pkg == package for _, pkg in self.packages) else None
 

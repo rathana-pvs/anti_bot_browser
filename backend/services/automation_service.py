@@ -1909,7 +1909,8 @@ async def dispatch_pending_queue():
             pid = match["execution"]["profile_id"]
             standalone_warming = match["post"].get("type") == "warming"
             auto_visit = auto_warming.is_auto_batch(match["batch"])
-            if auto_visit and (post_waiting or not auto_warming.enabled()):
+            # A visit not yet started waits for its device's switch; a running one is never stopped here.
+            if auto_visit and (post_waiting or not auto_warming.enabled_for_profile(pid)):
                 continue
             prep_mode = match["execution"].get("preparation_mode") or "off"
             needs_prep = (

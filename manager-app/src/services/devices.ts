@@ -10,8 +10,9 @@ export async function fetchDevices(): Promise<DeviceListResponse> {
   return res.json();
 }
 
-export async function scanDevice(serial: string): Promise<AndroidDevice> {
-  const res = await fetch(`${devicePath(serial)}/scan`, { method: 'POST' });
+/** A quick scan reads only running users' companion apps; `full` also starts each stopped user to read it. */
+export async function scanDevice(serial: string, full = false): Promise<AndroidDevice> {
+  const res = await fetch(`${devicePath(serial)}/scan${full ? '?full=true' : ''}`, { method: 'POST' });
   if (!res.ok) throw await apiError(res, 'Failed to scan the phone');
   return res.json();
 }
@@ -87,7 +88,7 @@ export async function openAccountOnPhone(profileId: string): Promise<OpenAccount
 }
 
 export async function updateDeviceSettings(serial: string,
-  settings: { one_account_at_a_time?: boolean; switch_from_app_only?: boolean; active_hours?: boolean }): Promise<AndroidDevice> {
+  settings: { one_account_at_a_time?: boolean; switch_from_app_only?: boolean; active_hours?: boolean; auto_warming?: boolean }): Promise<AndroidDevice> {
   const res = await fetch(`${devicePath(serial)}/settings`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings),
   });

@@ -35,6 +35,9 @@ def awake(monkeypatch, tmp_path):
     monkeypatch.setattr(auto_warming.active_hours, "persona_hours_admit", lambda config, now_ms: True)
     monkeypatch.setattr(auto_warming, "persona_day", lambda config, now_ms: {"rest_day": False, "frequency": 1.0})
     monkeypatch.setattr(auto_warming, "YIELD_FILE", tmp_path / "yield.json")
+    # Every test account's device has Auto warming on unless a test says otherwise.
+    monkeypatch.setattr(auto_warming, "enabled_for", lambda config: True)
+    monkeypatch.setattr(auto_warming, "enabled_for_profile", lambda profile_id: True)
 
 
 def rank(configs, health, history=None, q=None):
@@ -334,3 +337,56 @@ def test_phone_visits_keep_a_random_surface(monkeypatch):
     phone = config("profile_003", runtime={"kind": "android_user"}, network={"proxy_id": "proxy_1"})
     [choice] = rank({"profile_003": phone}, {"profile_003": {"stage": "new"}})
     assert "read_profile" not in choice
+
+
+# One switch per device ------------------------------------------------------
+
+_ENABLED_FOR = auto_warming.enabled_for  # the real one, read before any fixture replaces it
+
+
+def _real_switches(monkeypatch, pc=False, phones=()):
+    """Undo the autouse stand-in: This PC's switch and each phone's come from these values."""
+    from backend.services import android_devices
+    monkeypatch.setattr(auto_warming, "enabled_for", _ENABLED_FOR)
+    monkeypatch.setattr(auto_warming, "pc_enabled", lambda: pc)
+    monkeypatch.setattr(android_devices, "auto_warming_on", lambda serial: serial in phones)
+
+
+def test_only_accounts_on_a_device_with_auto_warming_on_are_chosen(monkeypatch):
+    from backend.services import android_jobs
+    monkeypatch.setattr(android_jobs, "can_take_auto_visit", lambda cfg: True)
+    configs = {"pc_1": config("pc_1"), "phone_1": phone_config()}
+    health = {"pc_1": {"stage": "new"}, "phone_1": {"stage": "new"}}
+    _real_switches(monkeypatch, pc=False, phones={"PHONE1"})
+    assert [c["profile_id"] for c in candidates(queue(), configs, health, {}, NOW_MS)] == ["phone_1"]
+    _real_switches(monkeypatch, pc=True, phones=set())
+    assert [c["profile_id"] for c in candidates(queue(), configs, health, {}, NOW_MS)] == ["pc_1"]
+
+
+def test_switching_a_device_off_cancels_its_unstarted_visits_and_lets_running_ones_finish():
+    waiting = {"profile_id": "phone_1", "status": "pending", "scheduled_at": at(0.01)}
+    elsewhere = {"profile_id": "pc_1", "status": "pending", "scheduled_at": at(0.01)}
+    running = {"profile_id": "phone_1", "status": "running", "scheduled_at": at(0.05)}
+    visits = queue(waiting, elsewhere, running, batch_id=f"{auto_warming.AUTO_BATCH_PREFIX}2026-10-31", kind="warming")
+    assert expire_unstarted(visits, NOW_MS, switched_off=lambda pid: pid == "phone_1") == 1
+    assert (waiting["status"], waiting["error"]) == ("cancelled", "Auto warming switched off")
+    assert elsewhere["status"] == "pending" and running["status"] == "running"
+
+
+def test_summary_counts_visits_and_running_ones_per_device(monkeypatch):
+    from backend.services import android_devices, queue_service
+    today = datetime.now().astimezone().date().isoformat()
+    visits = queue({"profile_id": "pc_1", "status": "completed"}, {"profile_id": "phone_1", "status": "running"},
+                   {"profile_id": "phone_1", "status": "completed"},
+                   batch_id=f"{auto_warming.AUTO_BATCH_PREFIX}{today}", kind="warming")
+    monkeypatch.setattr(queue_service, "load_posting_queue", lambda: visits)
+    monkeypatch.setattr(auto_warming, "_profile_configs", lambda: {"pc_1": config("pc_1"), "phone_1": phone_config()})
+    monkeypatch.setattr(auto_warming, "pc_enabled", lambda: False)
+    monkeypatch.setattr(android_devices, "auto_warming_phones", lambda: {"PHONE1": {"label": "Pixel", "enabled": True}})
+    monkeypatch.setattr(android_devices, "canonical_serial", lambda serial: serial)
+    result = auto_warming.summary()
+    by_device = {device["device"]: device for device in result["devices"]}
+    assert by_device["pc"] == {"device": "pc", "label": "This PC", "enabled": False, "accounts": 1, "visits_today": 1, "running": []}
+    assert by_device["PHONE1"] == {"device": "PHONE1", "label": "Pixel", "enabled": True, "accounts": 1,
+                                   "visits_today": 1, "running": ["phone_1"]}
+    assert result["enabled"] is True and result["visits_today"] == 2

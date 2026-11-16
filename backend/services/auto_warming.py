@@ -1,13 +1,15 @@
 """Automatic warming: short read-only visits that keep accounts active.
 
-One global switch. When it is on, `tick` runs once a minute and starts at most
-one visit, for the account that needs it most, and only with spare capacity:
+One switch per device: This PC (its browser accounts) and each phone. Every
+account on a device that is on may get visits; `tick` runs once a minute and
+starts at most one visit, for the account that needs it most, and only with spare capacity:
 posts due soon keep their slots, a busy machine starts nothing, and a running
 visit gives way to a post (see `yield_for_post`).
 
 Visits are ordinary `warming` queue items in one system batch per day, kept at
 the end of the queue, so the dispatcher, slots, evidence and account history
-treat them like any other warm-up.
+treat them like any other warm-up. Turning a device off stops new visits there
+and cancels its unstarted ones; a visit already running finishes by itself.
 """
 
 import asyncio
@@ -38,9 +40,37 @@ ACTIVE_STATUSES = {"running", "preparing"}
 WAITING_STATUSES = {"pending", "ready"}
 
 
-def enabled() -> bool:
+def pc_enabled() -> bool:
     from backend.services.resource_service import settings_manager
     return settings_manager.auto_warming
+
+
+def phone_of(config: dict) -> str | None:
+    runtime = config.get("runtime") or {}
+    return runtime.get("device_serial") if runtime.get("kind") == "android_user" else None
+
+
+def enabled_for(config: dict) -> bool:
+    """The account's device has Auto warming on: This PC for browser accounts, else its phone."""
+    serial = phone_of(config)
+    if serial is None:
+        return pc_enabled()
+    from backend.services import android_devices
+    return android_devices.auto_warming_on(serial)
+
+
+def enabled_for_profile(profile_id: str) -> bool:
+    try:
+        config = json.loads((PROFILES_DIR / profile_id / "config.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(config, dict) and enabled_for(config)
+
+
+def enabled() -> bool:
+    """On for at least one device."""
+    from backend.services import android_devices
+    return pc_enabled() or any(phone["enabled"] for phone in android_devices.auto_warming_phones().values())
 
 
 def is_auto_batch(batch: dict) -> bool:
@@ -97,6 +127,8 @@ def candidates(queue: dict, configs: dict, health: dict, history: dict, now_ms: 
     for pid, config in configs.items():
         stage = (health.get(pid) or {}).get("stage")
         if stage not in STAGE_WEIGHT or pid in busy:
+            continue
+        if not enabled_for(config):
             continue
         phone = (config.get("runtime") or {}).get("kind") == "android_user"
         automation = config.get("automation") or {}
@@ -218,15 +250,18 @@ def add_visit(queue: dict, choice: dict, now: datetime, rng: random.Random) -> d
     return execution
 
 
-def expire_unstarted(queue: dict, now_ms: float, *, all_pending: bool = False) -> int:
-    """Cancel visits that waited too long (or every waiting one when switched off)."""
+def expire_unstarted(queue: dict, now_ms: float, *, all_pending: bool = False, switched_off=None) -> int:
+    """Cancel visits that waited too long, every waiting one when switched off (`all_pending`), or
+    those on an account whose device was switched off (`switched_off(profile_id)`). Running ones
+    are left to finish."""
     expired = 0
     for batch, _post, execution in _executions(queue):
         if not is_auto_batch(batch) or execution.get("status") != "pending":
             continue
-        if all_pending or now_ms - _ms(execution.get("scheduled_at")) >= UNSTARTED_EXPIRY_MS:
+        off = all_pending or bool(switched_off and switched_off(execution.get("profile_id")))
+        if off or now_ms - _ms(execution.get("scheduled_at")) >= UNSTARTED_EXPIRY_MS:
             execution.update(status="cancelled", stage="cancelled",
-                             error="Auto warming switched off" if all_pending else "No spare capacity in time; visit skipped")
+                             error="Auto warming switched off" if off else "No spare capacity in time; visit skipped")
             expired += 1
     return expired
 
@@ -287,7 +322,7 @@ def plan_once(now: datetime | None = None) -> dict | None:
             choice = ranked[0] if ranked else None
     with _QUEUE_IO_LOCK:
         queue = load_posting_queue()
-        changed = expire_unstarted(queue, now_ms) > 0
+        changed = expire_unstarted(queue, now_ms, switched_off=lambda pid: not enabled_for_profile(pid)) > 0
         if choice is not None:
             pid = choice["profile_id"]
             # A post may have been claimed or added on this account since the copy was read.
@@ -401,15 +436,38 @@ def yield_phone_for_post(queue: dict, serial: str) -> bool:
     return asked
 
 
+PC_DEVICE = "pc"
+
+
 def summary() -> dict:
+    """Today's visits overall and per device ("pc" or a phone serial)."""
+    from backend.services import android_devices
     from backend.services.queue_service import load_posting_queue
     queue = load_posting_queue()
     today = datetime.now().astimezone().date().isoformat()
     visits = [execution for batch, _post, execution in _executions(queue)
               if batch.get("batch_id") == f"{AUTO_BATCH_PREFIX}{today}"]
+    device_of = {pid: android_devices.canonical_serial(phone_of(config)) if phone_of(config) else PC_DEVICE
+                 for pid, config in _profile_configs().items()}
+    devices = {PC_DEVICE: {"device": PC_DEVICE, "label": "This PC", "enabled": pc_enabled()}}
+    devices.update({serial: {"device": serial, **phone} for serial, phone in android_devices.auto_warming_phones().items()})
+    for device in devices.values():
+        device.update(accounts=0, visits_today=0, running=[])
+    for device in device_of.values():
+        if device in devices:
+            devices[device]["accounts"] += 1
+    for execution in visits:
+        device = devices.get(device_of.get(execution.get("profile_id")))
+        if device is None:
+            continue
+        if execution.get("status") == "completed":
+            device["visits_today"] += 1
+        elif execution.get("status") in ACTIVE_STATUSES:
+            device["running"].append(execution.get("profile_id"))
     return {
-        "enabled": enabled(),
+        "enabled": any(device["enabled"] for device in devices.values()),
         "visits_today": sum(1 for execution in visits if execution.get("status") == "completed"),
         "running": [execution.get("profile_id") for execution in visits if execution.get("status") in ACTIVE_STATUSES],
         "last_choice": _last_choice,
+        "devices": list(devices.values()),
     }

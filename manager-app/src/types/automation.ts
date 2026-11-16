@@ -463,4 +463,16 @@ export interface AutoWarmingSummary {
   /** Accounts on a visit right now. */
   running: string[];
   last_choice: { profile_id: string; reason: string; at: string } | null;
+  /** Each device's switch and today's visits: "pc" for This PC, else a phone serial. */
+  devices?: AutoWarmingDevice[];
+}
+
+export interface AutoWarmingDevice {
+  device: string;
+  label: string;
+  enabled: boolean;
+  accounts: number;
+  visits_today: number;
+  /** Accounts on this device with a visit running now; a visit finishes even after the switch is turned off. */
+  running: string[];
 }

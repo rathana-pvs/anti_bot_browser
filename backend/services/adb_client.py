@@ -90,6 +90,22 @@ def parse_package_installed(output: str, package: str) -> bool:
     return any(line.strip() == f"package:{package}" for line in output.splitlines())
 
 
+_USER_INSTALL = re.compile(r"^\s+User (\d+):.*\binstalled=(true|false)\b")
+
+
+def parse_installed_users(dumpsys_package: str) -> set[int] | None:
+    """Users that have the package, from one `dumpsys package <name>`; None when the output is not
+    understood. Each user is listed more than once; its first line counts."""
+    if "Unable to find package" in dumpsys_package:
+        return set()
+    seen: dict[int, bool] = {}
+    for line in dumpsys_package.splitlines():
+        match = _USER_INSTALL.match(line)
+        if match:
+            seen.setdefault(int(match.group(1)), match.group(2) == "true")
+    return {user for user, installed in seen.items() if installed} if seen else None
+
+
 def parse_version_name(dumpsys_package: str) -> str | None:
     match = re.search(r"versionName=(\S+)", dumpsys_package)
     return match.group(1) if match else None
@@ -387,6 +403,10 @@ class AdbClient:
     def package_installed(self, serial: str, user_id: int, package: str = FACEBOOK_PACKAGE) -> bool:
         return parse_package_installed(
             self.shell(serial, "pm", "list", "packages", "--user", str(int(user_id)), package), package)
+
+    def installed_users(self, serial: str, package: str) -> set[int] | None:
+        """Every user that has the package, in one call; None when it cannot be told."""
+        return parse_installed_users(self.shell(serial, "dumpsys", "package", package))
 
     def package_version(self, serial: str, package: str = FACEBOOK_PACKAGE) -> str | None:
         return parse_version_name(self.shell(serial, "dumpsys", "package", package))

@@ -133,10 +133,11 @@ def _agent_installed(client: AdbClient, serial: str, user_id: int) -> bool:
         return False
 
 
-def read_user(client: AdbClient, serial: str, user_id: int) -> dict | None:
+def read_user(client: AdbClient, serial: str, user_id: int, installed: bool | None = None) -> dict | None:
     """What the companion app in this user knows: its account and saved proxy (no password).
-    None when the app is not installed. A user stopped to read it is stopped again."""
-    if user_id == CONTROL_USER_ID or not _agent_installed(client, serial, user_id):
+    None when the app is not installed (`installed`, when the caller already knows). A user
+    stopped to read it is stopped again."""
+    if user_id == CONTROL_USER_ID or not (_agent_installed(client, serial, user_id) if installed is None else installed):
         return None
     started = _ensure_running(client, serial, user_id)
     try:

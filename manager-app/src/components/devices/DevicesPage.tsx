@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { BatteryCharging, BatteryMedium, Check, ChevronRight, CircleAlert, Loader2, Copy, Cpu, MemoryStick, Monitor, PencilLine, Plus, Power, RefreshCw, ScanLine, ShieldCheck, Smartphone, Thermometer, Trash2, Usb, UserRound, Wifi } from 'lucide-react';
+import { BatteryCharging, BatteryMedium, Check, ChevronRight, CircleAlert, Loader2, Copy, Cpu, MemoryStick, ScanSearch, Monitor, PencilLine, Plus, Power, RefreshCw, ScanLine, ShieldCheck, Smartphone, Thermometer, Trash2, Usb, UserRound, Wifi } from 'lucide-react';
 import { AndroidDevice, AndroidUserRow, DeviceListResponse } from '../../types/device';
+import { AutoWarmingDevice, AutoWarmingSummary } from '../../types/automation';
 import { Profile, SystemStats } from '../../types/profile';
 import { ProxyItem } from '../../types/proxy';
 import { adoptDeviceUser, fetchDevices, forgetDevice, makeDevicePrimary, renameDevice, restartDevice, scanDevice, setDevicePin, setDeviceTimezone, switchDeviceUser, updateDeviceSettings } from '../../services/devices';
@@ -9,7 +10,7 @@ import { Dialog } from '../ui/Dialog';
 import { Checkbox } from '../ui/Checkbox';
 import { Select } from '../ui/Select';
 import { formatUtcOffset, phoneTimeReport } from './phoneTime';
-import { API_BASE } from '../../services/api';
+import { API_BASE, fetchAutoWarming, updateAutoWarming } from '../../services/api';
 import { writeHostClipboardText } from '../../services/clipboard';
 import { Alert } from '../ui/Alert';
 import { Badge } from '../ui/Badge';
@@ -74,6 +75,7 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
   const [loadError, setLoadError] = useState('');
   const [selected, setSelected] = useState<string>(THIS_PC);
   const [scanning, setScanning] = useState<string | null>(null);
+  const [fullScanning, setFullScanning] = useState<string | null>(null);
   const [taking, setTaking] = useState(false);
   const [viewingUser, setViewingUser] = useState<AndroidUserRow | null>(null);
   useEffect(() => setViewingUser(null), [selected, active]);
@@ -87,6 +89,19 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
     } catch { return '10000'; }
   });
   const [scanError, setScanError] = useState<{ serial: string; message: string } | null>(null);
+  const [warming, setWarming] = useState<AutoWarmingSummary | null>(null);
+  const loadWarming = useCallback(() => fetchAutoWarming().then(setWarming).catch(() => undefined), []);
+  useEffect(() => {
+    if (!active) return;
+    void loadWarming();
+    const timer = setInterval(() => void loadWarming(), 15000);
+    return () => clearInterval(timer);
+  }, [active, loadWarming]);
+  const warmingOf = (key: string) => warming?.devices?.find(item => item.device === key) ?? null;
+  const togglePcWarming = async (on: boolean) => {
+    try { setWarming(await updateAutoWarming(on)); }
+    catch (error) { await showAlert(error instanceof Error ? error.message : 'Could not save', { title: 'Setting not saved', variant: 'danger' }); }
+  };
   const scansInFlight = useRef(new Set<string>());
 
   const load = useCallback(async () => {
@@ -109,21 +124,25 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
 
   const device = data?.devices.find(d => d.serial === selected) ?? null;
 
-  const scan = useCallback(async (serial: string, automatic = false) => {
-    if (scansInFlight.current.has(serial)) return;
+  const scan = useCallback(async (serial: string, automatic = false, full = false): Promise<AndroidDevice | null> => {
+    if (scansInFlight.current.has(serial)) return null;
     scansInFlight.current.add(serial);
     setScanning(serial);
+    if (full) setFullScanning(serial);
     try {
-      const scanned = await scanDevice(serial);
+      const scanned = await scanDevice(serial, full);
       setData(current => current && { ...current, devices: current.devices.map(d => d.serial === serial ? { ...d, ...scanned } : d) });
       setScanError(current => current?.serial === serial ? null : current);
+      return scanned;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Scan failed';
       if (automatic) setScanError({ serial, message });
-      else await showAlert(message, { title: 'Could not scan phone', variant: 'danger' });
+      else await showAlert(message, { title: full ? 'Full scan not done' : 'Could not scan phone', variant: 'danger' });
+      return null;
     } finally {
       scansInFlight.current.delete(serial);
       setScanning(current => current === serial ? null : current);
+      setFullScanning(current => current === serial ? null : current);
     }
   }, [showAlert]);
 
@@ -200,6 +219,16 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
     }
   };
 
+  const fullScan = async (target: AndroidDevice) => {
+    if (!await showConfirm(`Run a full scan of ${target.label}? Each stopped user whose account is on the phone’s time zone is started for a few seconds to read its companion app, then stopped again. Users on another time zone are not started. Until it finishes, about a minute, the phone can’t switch users or start a queued post.`,
+      { title: 'Full scan', confirmLabel: 'Run full scan' })) return;
+    const scanned = await scan(target.serial, false, true);
+    if (!scanned) return;
+    const skipped = scanned.last_scan?.users.filter(user => user.agent_note).length ?? 0;
+    showToast(skipped ? `Full scan done. ${skipped} stopped user${skipped === 1 ? ' was' : 's were'} not started; the users table says why.`
+      : 'Full scan done', skipped ? 'info' : 'success');
+  };
+
   const restart = async (target: AndroidDevice) => {
     if (!await showConfirm(`Restart ${target.label}? It goes offline for about a minute, and every account on it stops until it is opened again.`,
       { title: 'Restart phone', confirmLabel: 'Restart', variant: 'danger' })) return;
@@ -229,6 +258,7 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
     try {
       await updateDeviceSettings(target.serial, settings);
       await load();
+      if (settings.auto_warming !== undefined) void loadWarming();
     } catch (error) {
       await showAlert(error instanceof Error ? error.message : 'Could not save', { title: 'Setting not saved', variant: 'danger' });
     }
@@ -336,7 +366,8 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
         </div>
 
         <div className="min-w-0 lg:-m-1 lg:min-h-0 lg:overflow-y-auto lg:p-1">
-        {selected === THIS_PC && <PcDetail profiles={profiles} stats={stats} onOpenAccount={onOpenAccount} />}
+        {selected === THIS_PC && <PcDetail profiles={profiles} stats={stats} onOpenAccount={onOpenAccount}
+          warming={warmingOf('pc')} onToggleWarming={(on) => void togglePcWarming(on)} />}
         {selected === ADD_PHONE && (loadError && !data
           ? <PhoneUnavailable error={loadError} loading={loading} onRetry={() => void load()} />
           : <ConnectPhone loading={loading} onCheck={() => void load()} />)}
@@ -348,9 +379,15 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
                 {[device.manufacturer, device.model, device.android_version && `Android ${device.android_version}`, device.serial].filter(Boolean).join(' · ')}
               </p>
             </div>
-            <Button size="sm" onClick={() => void scan(device.serial)} loading={scanning === device.serial} disabled={device.state !== 'device'}>
+            <Button size="sm" onClick={() => void scan(device.serial)} loading={scanning === device.serial && fullScanning !== device.serial}
+              disabled={device.state !== 'device' || scanning === device.serial}
+              title="Reads the phone's users. Stopped users keep the companion app details from their last read.">
               <ScanLine className="mr-1.5 h-3.5 w-3.5" />Scan phone
             </Button>
+            <IconButton aria-label="Full scan" title={fullScanning === device.serial ? 'Full scan running…' : 'Full scan: also reads stopped users’ companion apps'}
+              disabled={device.state !== 'device' || scanning === device.serial} onClick={() => void fullScan(device)}>
+              {fullScanning === device.serial ? <Loader2 className="h-4 w-4 animate-spin" /> : <ScanSearch className="h-4 w-4" />}
+            </IconButton>
             <IconButton aria-label="Restart phone" title="Restart phone" disabled={device.state !== 'device'} onClick={() => void restart(device)}><Power className="h-4 w-4" /></IconButton>
             <IconButton aria-label="Rename phone" onClick={() => void rename(device)}><PencilLine className="h-4 w-4" /></IconButton>
             <IconButton aria-label="Remove phone" onClick={() => void forget(device)}><Trash2 className="h-4 w-4" /></IconButton>
@@ -384,25 +421,23 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
             <Button size="sm" variant="outline" disabled={device.state !== 'device'} onClick={() => void changePin(device, false)}>{device.pin_set ? 'Change PIN' : 'Set a PIN'}</Button>
             {device.pin_set && <Button size="sm" variant="ghost" disabled={device.state !== 'device'} onClick={() => void changePin(device, true)}>Remove PIN</Button>}
           </div>}
-          <label className="flex items-start gap-2 px-4 pt-3 text-xs text-zinc-300">
-            <Checkbox checked={device.switch_from_app_only !== false} onCheckedChange={(on) => void saveSettings(device, { switch_from_app_only: on })}
-              ariaLabel="Switch accounts from this app only" disabled={device.state !== 'device'} className="mt-0.5" />
-            <span><span className="font-medium">Switch accounts from this app only</span>
-              <span className="block text-[11px] text-zinc-500">Hides the user switcher on the phone, so accounts change only with Open on phone, where the proxy and time are checked first. Signing in still works on the phone after it opens.</span>
-              {device.switch_from_app_only !== false && device.health?.user_switcher === true && <span className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-amber-300">
-                The phone shows its user switcher again (turned on in Settings).
-                <Button size="sm" variant="outline" onClick={() => void saveSettings(device, { switch_from_app_only: true })}>Hide it</Button></span>}</span>
-          </label>
-          <label className="flex items-start gap-2 px-4 pt-3 text-xs text-zinc-300">
-            <Checkbox checked={device.one_account_at_a_time !== false} onCheckedChange={(on) => void saveSettings(device, { one_account_at_a_time: on })} ariaLabel="One account at a time" className="mt-0.5" />
-            <span><span className="font-medium">One account at a time</span>
-              <span className="block text-[11px] text-zinc-500">Opening an account stops this phone’s other accounts and sets the phone’s time to that account’s proxy, so nothing runs in the background on the wrong time or uses resources. Opening takes up to about two minutes while the proxy is checked.</span></span>
-          </label>
-          <label className="flex items-start gap-2 px-4 pt-3 text-xs text-zinc-300">
-            <Checkbox checked={device.active_hours !== false} onCheckedChange={(on) => void saveSettings(device, { active_hours: on })} ariaLabel="Follow active hours" className="mt-0.5" />
-            <span><span className="font-medium">Follow active hours</span>
-              <span className="block text-[11px] text-zinc-500">Scheduled posts on this phone wait for each account’s active hours, by this PC’s time. Turn off to start them at their scheduled time. Warming always keeps to active hours.</span></span>
-          </label>
+          <div className="space-y-2 px-4 pt-3">
+            <SettingCheckbox label="Switch accounts from this app only" checked={device.switch_from_app_only !== false}
+              disabled={device.state !== 'device'} onChange={(on) => void saveSettings(device, { switch_from_app_only: on })}
+              hint="Hides the user switcher on the phone, so accounts change only with Open on phone, where the proxy and time are checked first. Signing in still works on the phone after it opens." />
+            {device.switch_from_app_only !== false && device.health?.user_switcher === true && <p className="flex flex-wrap items-center gap-2 pl-6 text-[11px] text-amber-300">
+              The phone shows its user switcher again (turned on in Settings).
+              <Button size="sm" variant="outline" onClick={() => void saveSettings(device, { switch_from_app_only: true })}>Hide it</Button></p>}
+            <SettingCheckbox label="One account at a time" checked={device.one_account_at_a_time !== false}
+              onChange={(on) => void saveSettings(device, { one_account_at_a_time: on })}
+              hint="Opening an account stops this phone’s other accounts and sets the phone’s time to that account’s proxy, so nothing runs in the background on the wrong time or uses resources. Opening takes up to about two minutes while the proxy is checked." />
+            <SettingCheckbox label="Follow active hours" checked={device.active_hours !== false}
+              onChange={(on) => void saveSettings(device, { active_hours: on })}
+              hint="Scheduled posts on this phone wait for each account’s active hours, by this PC’s time. Turn off to start them at their scheduled time. Warming always keeps to active hours." />
+            <SettingCheckbox label="Auto warming" checked={device.auto_warming === true}
+              onChange={(on) => void saveSettings(device, { auto_warming: on })} hint={WARMING_HINT}
+              status={warmingStatus(warmingOf(device.serial), profiles)} />
+          </div>
           <DeviceWarnings device={device} profiles={profiles} proxies={proxies} onSetTimezone={(zone) => void setTimezone(device, zone)} />
           {active && viewingUser && device.state === 'device' && <Dialog open
             onOpenChange={(open) => { if (!open) { setViewingUser(null); void scan(device.serial, true); } }}
@@ -481,7 +516,30 @@ function PcCard({ profiles, stats, selected, onSelect }: { profiles: Profile[]; 
   </button>;
 }
 
-function PcDetail({ profiles, stats, onOpenAccount }: { profiles: Profile[]; stats: SystemStats; onOpenAccount: (profileId: string) => void }) {
+const WARMING_HINT = 'Short read-only visits keep this device’s accounts active. Auto warming picks which account and when, uses spare time only and always gives way to posts. Turning it off lets a running visit finish.';
+
+/** Only while a visit runs: who is on one, or that it finishes by itself after the switch went off. */
+function warmingStatus(device: AutoWarmingDevice | null, profiles: Profile[]): string | null {
+  if (!device || device.running.length === 0) return null;
+  const names = device.running.map(id => profiles.find(p => p.id === id)?.name || id).join(', ');
+  return device.enabled ? `Now: ${names}` : `${names}’s visit finishes by itself`;
+}
+
+/** A setting with its label only; what it does shows on hover. */
+function SettingCheckbox({ label, hint, checked, disabled, onChange, status }: {
+  label: string; hint: string; checked: boolean; disabled?: boolean; onChange: (on: boolean) => void; status?: string | null;
+}) {
+  return <label title={hint} className="flex w-fit cursor-pointer items-center gap-2 text-xs text-zinc-300">
+    <Checkbox checked={checked} onCheckedChange={onChange} ariaLabel={label} disabled={disabled} />
+    <span className="font-medium">{label}</span>
+    {status && <span className="text-[11px] text-zinc-500">· {status}</span>}
+  </label>;
+}
+
+function PcDetail({ profiles, stats, onOpenAccount, warming, onToggleWarming }: {
+  profiles: Profile[]; stats: SystemStats; onOpenAccount: (profileId: string) => void;
+  warming: AutoWarmingDevice | null; onToggleWarming: (on: boolean) => void;
+}) {
   const facts = pcFacts(profiles, stats);
   return <section aria-label="This PC" className="min-w-0 rounded-panel border border-zinc-800 bg-surface/70">
     <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-4 py-3">
@@ -497,6 +555,8 @@ function PcDetail({ profiles, stats, onOpenAccount }: { profiles: Profile[]; sta
         facts.totalMb > 0 && `RAM ${gb(facts.usedMb)} / ${gb(facts.totalMb)} GB`,
       ].filter(Boolean).join(' · ')}</p>
       {!stats.docker_running && <Alert variant="warning">Docker isn’t running, so browser accounts can’t start. Open Setup and repair from Settings.</Alert>}
+      <SettingCheckbox label="Auto warming" checked={warming?.enabled === true} disabled={!warming}
+        onChange={onToggleWarming} hint={WARMING_HINT} status={warmingStatus(warming, profiles)} />
     </div>
     <div className="p-4">
       {facts.accounts.length === 0
@@ -672,6 +732,7 @@ function UsersTable({ device, onView, onSwitch, switchingUserId, switchError, on
             </td>
             <td className="px-3 py-2.5">
               {user.control_user ? <span className="text-zinc-500">Control user</span> : <AgentCell user={user} />}
+              {user.agent_note && <p className="mt-1 max-w-72 text-[11px] text-amber-300">{user.agent_note}</p>}
             </td>
             <td className="px-3 py-2.5">
               {user.control_user ? <span className="text-zinc-500">Not used for accounts</span>
@@ -698,7 +759,8 @@ function UsersTable({ device, onView, onSwitch, switchingUserId, switchError, on
       </table>
     </div>
     <p className="mt-2 shrink-0 text-[11px] text-zinc-500">
-      Scanned {new Date(scan.scanned_at).toLocaleString()}. Accounts set up by another PC are read from the phone; adding one here doesn’t change the phone. Automation for phone accounts isn’t available yet.
+      Scanned {new Date(scan.scanned_at).toLocaleString()}. Stopped users show their companion app details from {scan.full_scan_at
+        ? `the full scan of ${new Date(scan.full_scan_at).toLocaleString()}` : 'their last read'}; use Full scan to read them again. Accounts set up by another PC are read from the phone; adding one here doesn’t change the phone. Automation for phone accounts isn’t available yet.
     </p>
   </div>;
 }

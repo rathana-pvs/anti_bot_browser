@@ -30,6 +30,7 @@ def visit(hours_ago):
 @pytest.fixture
 def warming_on(monkeypatch):
     monkeypatch.setattr(auto_warming, "enabled", lambda: True)
+    monkeypatch.setattr(auto_warming, "enabled_for", lambda config: True)
 
 
 def item(status="pending", **extra):
@@ -78,9 +79,9 @@ def test_a_new_proxy_restarts_the_account_and_posts_wait_for_a_visit(warming_on)
 def test_posts_are_not_held_without_auto_warming_or_after_a_day(monkeypatch):
     value = config()
     note_proxy_change(value, NOW - timedelta(hours=2))
-    monkeypatch.setattr(auto_warming, "enabled", lambda: False)
+    monkeypatch.setattr(auto_warming, "enabled_for", lambda config: False)
     assert admits(item(), {"type": "photo"}, value, NOW_MS, dict)
-    monkeypatch.setattr(auto_warming, "enabled", lambda: True)
+    monkeypatch.setattr(auto_warming, "enabled_for", lambda config: True)
     later = NOW_MS + 23 * 3600 * 1000
     assert admits(item(), {"type": "photo"}, value, later, dict)
     assert compute(value, ready_history(), NOW + timedelta(hours=23))["stage"] == "ready"
@@ -96,7 +97,7 @@ def test_a_proxy_changed_on_hold_restarts_on_release():
     assert window["since"] == NOW and window["until"] == NOW + timedelta(hours=24)
 
 
-def test_a_restarted_account_gets_the_next_visit_even_with_a_post_due(monkeypatch, tmp_path):
+def test_a_restarted_account_gets_the_next_visit_even_with_a_post_due(monkeypatch, tmp_path, warming_on):
     monkeypatch.setattr(auto_warming.active_hours, "persona_hours_admit", lambda config, now_ms: True)
     monkeypatch.setattr(auto_warming, "persona_day", lambda config, now_ms: {"rest_day": False, "frequency": 1.0})
     configs = {"a": dict(config(), id="a"), "b": dict(config(), id="b")}

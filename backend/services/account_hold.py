@@ -218,8 +218,8 @@ def admits(execution: dict, post: dict, config: dict, now_ms: float, history) ->
     if post.get("type") == "warming" or execution.get("cloud_attempt_id"):
         return True
     from backend.services import auto_warming
-    # Without Auto warming no visit would come, so posts are not held.
-    if not auto_warming.enabled():
+    # Without Auto warming on the account's device no visit would come, so posts are not held.
+    if not auto_warming.enabled_for(config):
         return True
     now = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)
     if restart(config, now) is None:

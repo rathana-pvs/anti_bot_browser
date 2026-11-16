@@ -181,6 +181,9 @@ class FakeAdb:
         # No companion app: these users were not set up by a PC.
         return user_id != 11 and package == adb_client.FACEBOOK_PACKAGE
 
+    def installed_users(self, serial, package):
+        return {user.user_id for user in self.users_list if self.package_installed(serial, user.user_id, package)}
+
     def read_file(self, serial, path):
         return None
 
@@ -425,6 +428,131 @@ def test_switch_user_waits_until_user_is_running_awake_and_unlocked(phone):
     with pytest.raises(HTTPException) as error:
         devices.switch_user("R58M12345ABC", devices.SwitchUserRequest(user_id=42))
     assert error.value.status_code == 404
+
+
+def test_installed_users_reads_every_user_from_one_dumpsys():
+    output = ("Packages:\n  Package [com.facebook.katana] (abc):\n"
+              "    User 0: ceDataInode=1 installed=true hidden=false\n"
+              "    User 10: ceDataInode=2 installed=false hidden=false\n"
+              "    User 11: ceDataInode=3 installed=true hidden=false\n"
+              "  Hidden system packages:\n    User 10: ceDataInode=2 installed=true\n")
+    # A user listed twice counts by its first line.
+    assert adb_client.parse_installed_users(output) == {0, 11}
+    assert adb_client.parse_installed_users("Unable to find package: com.example") == set()
+    assert adb_client.parse_installed_users("something else") is None
+
+
+def test_scan_asks_each_user_when_the_one_call_is_not_understood(phone, monkeypatch):
+    monkeypatch.setattr(phone, "installed_users", lambda serial, package: None, raising=False)
+    asked = []
+    original = phone.package_installed
+    monkeypatch.setattr(phone, "package_installed", lambda serial, user_id, package=adb_client.FACEBOOK_PACKAGE:
+                        asked.append(user_id) or original(serial, user_id, package), raising=False)
+    result = android_devices.scan_device("R58M12345ABC")
+    assert {row["user_id"]: row["facebook_installed"] for row in result["last_scan"]["users"]} == {0: True, 10: True, 11: False}
+    assert set(asked) == {0, 10, 11}
+
+
+def _count_agent_reads(monkeypatch):
+    reads = []
+
+    def read_user(client, serial, user_id, installed=None):
+        reads.append(user_id)
+        return {"readable": True, "version": "1", "account": {"name": f"read {len(reads)}"}, "pin_set": False, "proxy": None}
+    monkeypatch.setattr(android_ownership, "read_user", read_user)
+    return reads
+
+
+def test_quick_scan_keeps_a_stopped_users_companion_details_without_starting_it(phone, monkeypatch):
+    reads = _count_agent_reads(monkeypatch)
+    first = android_devices.scan_device("R58M12345ABC")  # user 11 is stopped and never read: it is read once
+    assert sorted(reads) == [0, 10, 11] and first["last_scan"]["full_scan_at"] is None
+    reads.clear()
+    again = android_devices.scan_device("R58M12345ABC")
+    assert sorted(reads) == [0, 10]  # only running users are read again
+    stopped = next(row for row in again["last_scan"]["users"] if row["user_id"] == 11)
+    assert stopped["agent"]["account"]["name"] == "read 3"
+
+
+def test_full_scan_reads_every_user_and_records_when(phone, monkeypatch):
+    reads = _count_agent_reads(monkeypatch)
+    android_devices.scan_device("R58M12345ABC")
+    reads.clear()
+    full = android_devices.scan_device("R58M12345ABC", full=True)
+    assert sorted(reads) == [0, 10, 11]
+    assert full["last_scan"]["full_scan_at"] == full["last_scan"]["scanned_at"]
+    # A later quick scan keeps the time of the last full one.
+    assert android_devices.scan_device("R58M12345ABC")["last_scan"]["full_scan_at"] == full["last_scan"]["full_scan_at"]
+
+
+def test_quick_scan_reads_a_stopped_user_again_when_its_id_was_reused(phone, monkeypatch):
+    reads = _count_agent_reads(monkeypatch)
+    android_devices.scan_device("R58M12345ABC")
+    reads.clear()
+    phone.serials = {**phone.serials, 11: 99}  # user 11 was removed and a new one took its ID
+    android_devices.scan_device("R58M12345ABC")
+    assert 11 in reads
+
+
+def _companion_in(phone, monkeypatch, *user_ids):
+    """The phone reports the companion app in these users (the fake has it nowhere by default)."""
+    real = phone.installed_users
+    monkeypatch.setattr(phone, "installed_users", lambda serial, package: set(user_ids)
+                        if package == android_devices.AGENT_PACKAGE else real(serial, package), raising=False)
+
+
+def _earlier_read(phone, monkeypatch, zone):
+    """A first scan read user 11's companion app while it ran (its account on `zone`); it is stopped now."""
+    monkeypatch.setattr(android_ownership, "read_user", lambda client, serial, user_id, installed=None: {
+        "readable": True, "account": {"name": "Second", "timezone": zone}, "pin_set": False, "proxy": None})
+    stopped = phone.users_list
+    phone.users_list = [AndroidUser(u.user_id, u.name, u.flags, True) for u in stopped]
+    android_devices.scan_device("R58M12345ABC")
+    phone.users_list = stopped
+
+
+def test_full_scan_starts_a_stopped_user_on_the_phones_time_zone(phone, monkeypatch):
+    _companion_in(phone, monkeypatch, 10, 11)
+    _earlier_read(phone, monkeypatch, phone.zone)
+    reads = _count_agent_reads(monkeypatch)
+    result = android_devices.scan_device("R58M12345ABC", full=True)
+    assert 11 in reads
+    assert next(row for row in result["last_scan"]["users"] if row["user_id"] == 11)["agent_note"] is None
+
+
+def test_full_scan_never_starts_a_user_whose_account_is_on_another_time_zone(phone, monkeypatch):
+    _companion_in(phone, monkeypatch, 10, 11)
+    _earlier_read(phone, monkeypatch, "America/Denver")
+    reads = _count_agent_reads(monkeypatch)
+    result = android_devices.scan_device("R58M12345ABC", full=True)
+    assert 11 not in reads
+    row = next(row for row in result["last_scan"]["users"] if row["user_id"] == 11)
+    assert "America/Denver" in row["agent_note"] and phone.zone in row["agent_note"]
+    assert row["agent"]["account"]["name"] == "Second"  # its last reading stays shown
+
+
+def test_a_never_read_user_with_an_unknown_time_zone_is_not_started(phone, monkeypatch):
+    _companion_in(phone, monkeypatch, 11)
+    reads = _count_agent_reads(monkeypatch)
+    result = android_devices.scan_device("R58M12345ABC")
+    assert 11 not in reads
+    assert "isn't known" in next(row for row in result["last_scan"]["users"] if row["user_id"] == 11)["agent_note"]
+
+
+def test_quick_scan_starts_no_user_while_a_job_holds_the_phone(phone, monkeypatch):
+    _companion_in(phone, monkeypatch, 11)
+    _earlier_read(phone, monkeypatch, phone.zone)
+    phone.serials = {**phone.serials, 11: 99}  # would need a fresh read
+    reads = _count_agent_reads(monkeypatch)
+    assert android_devices.hold_for_job("R58M12345ABC", "job")
+    try:
+        result = android_devices.scan_device("R58M12345ABC")
+        with pytest.raises(AdbError, match="queued post"):
+            android_devices.scan_device("R58M12345ABC", full=True)
+    finally:
+        android_devices.release_job("R58M12345ABC")
+    assert 11 not in reads
+    assert "queued post" in next(row for row in result["last_scan"]["users"] if row["user_id"] == 11)["agent_note"]
 
 
 def test_switching_to_the_user_already_on_screen_sends_no_switch(phone):
@@ -811,3 +939,29 @@ def test_owner_live_view_switches_to_user_zero(phone, monkeypatch):
     assert statuses[-1] == 'Starting the screen stream…'
     assert phone.switched == [0]
     assert phone.settings == {}
+
+
+def test_auto_warming_starts_per_phone_from_the_old_global_switch_and_new_phones_start_off(phone, monkeypatch):
+    from backend.services.resource_service import settings_manager
+    android_devices.scan_device("R58M12345ABC")
+    store = android_devices.load_store()
+    store.pop("auto_warming_per_device", None)
+    store["devices"]["R58M12345ABC"].pop("auto_warming", None)
+    android_devices._save_store(store)
+    monkeypatch.setattr(type(settings_manager), "auto_warming", property(lambda self: True))
+    assert android_devices.auto_warming_on("R58M12345ABC") is True  # it was on for everyone
+    store = android_devices.load_store()
+    store["devices"]["NEWPHONE"] = {"serial": "NEWPHONE", "label": "New"}
+    android_devices._save_store(store)
+    assert android_devices.auto_warming_on("NEWPHONE") is False
+
+
+def test_a_phones_auto_warming_switch_is_saved_and_listed(phone):
+    android_devices.scan_device("R58M12345ABC")
+    android_devices.update_device_settings("R58M12345ABC", auto_warming=True)
+    assert android_devices.auto_warming_on("R58M12345ABC") is True
+    assert android_devices.auto_warming_phones()["R58M12345ABC"]["enabled"] is True
+    listed = {device["serial"]: device for device in android_devices.list_devices()["devices"]}
+    assert listed["R58M12345ABC"]["auto_warming"] is True
+    android_devices.update_device_settings("R58M12345ABC", auto_warming=False)
+    assert android_devices.auto_warming_on("R58M12345ABC") is False

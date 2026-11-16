@@ -20,6 +20,7 @@ from typing import Any, Callable
 from backend.config import DATA_DIR, PROFILES_DIR
 from backend.services import proxy_service
 from backend.services.adb_client import AdbClient, AdbError, FACEBOOK_PACKAGE, validate_serial, wifi_endpoint_serial
+from backend.services.android_agent import AGENT_PACKAGE
 from backend.services.profile_service import (
     DEFAULT_RESOURCE_LIMITS, PROFILE_SCHEMA_VERSION, allocate_profile_identity, atomic_write_json,
     compatibility_fingerprint, creation_lock, resolve_requested_environment, utc_now, validate_timezone,
@@ -163,6 +164,7 @@ def _merge_wifi_records(store: dict[str, Any]) -> bool:
 
 
 def list_devices() -> dict:
+    _ensure_auto_warming_migrated()
     client = _client()
     adb_error = None
     connected: dict[str, dict] = {}
@@ -216,6 +218,7 @@ def list_devices() -> dict:
                  "one_account_at_a_time": saved.get("one_account_at_a_time", True),
                  "switch_from_app_only": saved.get("switch_from_app_only", True),
                  "active_hours": saved.get("active_hours", True),
+                 "auto_warming": saved.get("auto_warming") is True,
                  "model": saved.get("model") or (live or {}).get("model"),
                  "profile_count": sum(1 for link in links if link["runtime"].get("device_serial") == serial),
                  "health": None}
@@ -231,9 +234,52 @@ def list_devices() -> dict:
     return {"adb_available": adb_error is None, "adb_error": adb_error, "devices": devices}
 
 
-def scan_device(serial: str) -> dict:
-    from backend.services import android_ownership  # imports this module
+def scan_device(serial: str, full: bool = False) -> dict:
+    """Lists the phone's Android users and what each one's companion app holds.
+
+    A quick scan (the default, and every automatic one) reads only running users' companion apps;
+    a stopped user keeps what was last read from it, as nothing can change it while it is stopped
+    except another PC. Reading a stopped user means starting it for a few seconds, so only a `full`
+    scan, or a stopped user never read before, does that, and only when it is safe (see
+    `_start_refused`). A full scan holds the phone throughout, so no switch or queued post runs
+    while users are started one by one; it is refused while either is running."""
     validate_serial(serial)
+    if not full:
+        return _scan(serial, False)
+    with phone_lock(serial):
+        return _scan(serial, True)
+
+
+def _start_refused(account_zone: str | None, phone_zone: str | None, job_running: bool) -> str | None:
+    """Why a stopped user must not be started to read it, or None. Started, its Facebook may wake
+    up and see the phone's time zone, which is another account's, so the two must match."""
+    if job_running:
+        return "Not read: the phone is running a queued post. Scan again when it finishes."
+    if not phone_zone:
+        return "Not read: the phone's time zone couldn't be read."
+    if not account_zone:
+        return "Not read: its account's time zone isn't known. Switch to this user to read it."
+    if account_zone != phone_zone:
+        return (f"Not read: its account is on {account_zone}, but the phone is on {phone_zone}. "
+                "Switch to this user to read it.")
+    return None
+
+
+def _account_zone(link: dict | None, known_agent: dict | None) -> str | None:
+    """The time zone the user's account lives on: its proxy's, else what its companion app last said."""
+    if link:
+        from backend.services import android_network  # imports this module
+        try:
+            proxy = android_network._account(link["profile_id"])[2]
+        except (DeviceNotFound, ValueError, KeyError):
+            proxy = None
+        if proxy and proxy.get("timezone"):
+            return proxy["timezone"]
+    return ((known_agent or {}).get("account") or {}).get("timezone")
+
+
+def _scan(serial: str, full: bool) -> dict:
+    from backend.services import android_ownership  # imports this module
     serial = canonical_serial(serial)
     client = _client()
     connected = {device["serial"]: device for device in client.devices()}
@@ -249,18 +295,49 @@ def scan_device(serial: str) -> dict:
     user_serials = client.user_serials(serial)
     current = client.current_user(serial)
     links = linked_profiles()
+    earlier = (load_store()["devices"].get(serial) or {}).get("last_scan") or {}
+    # One call per app answers for every user; asking user by user takes seconds on a phone with many.
+    facebook_users = _installed_users(client, serial, FACEBOOK_PACKAGE)
+    agent_users = _installed_users(client, serial, AGENT_PACKAGE)
+    earlier_rows = {row.get("user_id"): row for row in earlier.get("users") or []}
+    job_running = not full and job_on(serial) is not None  # a full scan holds the phone instead
+    phone_zone: list[str | None] = []  # read once, only if a stopped user needs starting
     rows = []
     for user in users:
         user_serial = user_serials.get(user.user_id)
-        try:
-            facebook_installed = client.package_installed(serial, user.user_id, FACEBOOK_PACKAGE)
-        except AdbError:
-            facebook_installed = None
+        if facebook_users is not None:
+            facebook_installed = user.user_id in facebook_users
+        else:
+            try:
+                facebook_installed = client.package_installed(serial, user.user_id, FACEBOOK_PACKAGE)
+            except AdbError:
+                facebook_installed = None
         link = _profile_for(links, serial, user.user_id, user_serial)
-        try:
-            agent = android_ownership.read_user(client, serial, user.user_id)
-        except AdbError as exc:
-            agent = {"readable": False, "reason": str(exc)}
+        known = earlier_rows.get(user.user_id) or {}
+        same_user = known.get("user_serial") == user_serial  # it changes when a user ID is reused
+        # Read fine before: nothing but another PC can change it while it is stopped.
+        keep = not full and not user.running and same_user and (known.get("agent") or {}).get("readable") is True
+        needs_start = (not user.running and user.user_id != CONTROL_USER_ID
+                       and (agent_users is None or user.user_id in agent_users))
+        note = None
+        if not keep and needs_start:
+            if not phone_zone:
+                try:
+                    phone_zone.append(client.timezone_state(serial).get("zone"))
+                except AdbError:
+                    phone_zone.append(None)
+            note = _start_refused(_account_zone(link, known.get("agent") if same_user else None),
+                                  phone_zone[0], job_running)
+        if keep:
+            agent = known["agent"]
+        elif note:
+            agent = known.get("agent") if same_user else None
+        else:
+            try:
+                agent = android_ownership.read_user(client, serial, user.user_id,
+                                                    None if agent_users is None else user.user_id in agent_users)
+            except AdbError as exc:
+                agent = {"readable": False, "reason": str(exc)}
         rows.append({
             "user_id": user.user_id, "name": user.name, "user_serial": user_serial,
             "running": user.running, "current": user.user_id == current,
@@ -269,8 +346,11 @@ def scan_device(serial: str) -> dict:
             "profile_id": link["profile_id"] if link else None,
             "profile_name": link["name"] if link else None,
             "agent": agent,
+            "agent_note": note,
         })
-    scan = {"scanned_at": utc_now(), "current_user": current, "users": rows}
+    now = utc_now()
+    scan = {"scanned_at": now, "current_user": current, "users": rows,
+            "full_scan_at": now if full else earlier.get("full_scan_at")}
     ownership = android_ownership.phone_role(client, serial)
     with _store_lock:
         store = load_store()
@@ -282,6 +362,13 @@ def scan_device(serial: str) -> dict:
     result = {**saved, "state": live["state"], "connection": live["connection"], "pin_set": bool(saved.get("pin"))}
     result.pop("pin", None)
     return result
+
+
+def _installed_users(client: AdbClient, serial: str, package: str) -> set[int] | None:
+    try:
+        return client.installed_users(serial, package)
+    except AdbError:
+        return None  # each user is then asked on its own
 
 
 def update_device_record(serial: str, **changes: Any) -> dict:
@@ -539,6 +626,40 @@ def switch_from_app_only(serial: str) -> bool:
     return bool((load_store()["devices"].get(canonical_serial(serial)) or {}).get("switch_from_app_only", True))
 
 
+def _migrate_auto_warming(store: dict[str, Any]) -> bool:
+    """Auto warming used to be one switch for everything. The first time it is per device, every phone
+    already known starts with that switch's value; a phone added later starts off."""
+    if store.get("auto_warming_per_device"):
+        return False
+    from backend.services.resource_service import settings_manager  # the PC's switch, once everyone's
+    legacy = settings_manager.auto_warming
+    for record in store["devices"].values():
+        record.setdefault("auto_warming", legacy)
+    store["auto_warming_per_device"] = True
+    return True
+
+
+def _ensure_auto_warming_migrated() -> dict[str, Any]:
+    with _store_lock:
+        store = load_store()
+        if _migrate_auto_warming(store):
+            _save_store(store)
+        return store
+
+
+def auto_warming_on(serial: str | None) -> bool:
+    """Auto warming may visit this phone's accounts. Off (the default for a new phone): none are visited."""
+    store = _ensure_auto_warming_migrated()
+    return bool(serial) and (store["devices"].get(canonical_serial(serial)) or {}).get("auto_warming") is True
+
+
+def auto_warming_phones() -> dict[str, dict]:
+    """Every known phone's serial with its label and Auto warming switch."""
+    store = _ensure_auto_warming_migrated()
+    return {serial: {"label": record.get("label") or serial, "enabled": record.get("auto_warming") is True}
+            for serial, record in store["devices"].items()}
+
+
 def follows_active_hours(serial: str) -> bool:
     """On (the default): this phone's scheduled posts wait for each account's active hours. Off: they
     start at their scheduled time."""
@@ -546,9 +667,11 @@ def follows_active_hours(serial: str) -> bool:
 
 
 def update_device_settings(serial: str, one_at_a_time: bool | None = None, app_only: bool | None = None,
-                           active_hours: bool | None = None) -> dict:
+                           active_hours: bool | None = None, auto_warming: bool | None = None) -> dict:
+    """Turning Auto warming off stops new visits; one already running finishes by itself."""
     validate_serial(serial)
     serial = canonical_serial(serial)
+    _ensure_auto_warming_migrated()
     with _store_lock:
         store = load_store()
         if serial not in store["devices"]:
@@ -557,6 +680,8 @@ def update_device_settings(serial: str, one_at_a_time: bool | None = None, app_o
             store["devices"][serial]["one_account_at_a_time"] = bool(one_at_a_time)
         if active_hours is not None:
             store["devices"][serial]["active_hours"] = bool(active_hours)
+        if auto_warming is not None:
+            store["devices"][serial]["auto_warming"] = bool(auto_warming)
         if app_only is not None:
             # Applied before saving, so a disconnected phone keeps its old setting and the error shows.
             _client().set_user_switcher(serial, not app_only)

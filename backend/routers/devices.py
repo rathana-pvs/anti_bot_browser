@@ -43,6 +43,7 @@ class DeviceSettingsRequest(BaseModel):
     one_account_at_a_time: bool | None = None
     switch_from_app_only: bool | None = None
     active_hours: bool | None = None
+    auto_warming: bool | None = None
 
 
 class CreateUserRequest(BaseModel):
@@ -92,8 +93,8 @@ def list_devices():
 
 
 @router.post("/{serial}/scan")
-def scan_device(serial: str):
-    return _call(lambda: android_devices.scan_device(serial))
+def scan_device(serial: str, full: bool = False):
+    return _call(lambda: android_devices.scan_device(serial, full))
 
 
 @router.put("/{serial}")
@@ -209,7 +210,8 @@ def set_pin(serial: str, request: PinRequest):
 @router.put("/{serial}/settings")
 def update_device_settings(serial: str, request: DeviceSettingsRequest):
     return _call(lambda: android_devices.update_device_settings(
-        serial, request.one_account_at_a_time, request.switch_from_app_only, request.active_hours))
+        serial, request.one_account_at_a_time, request.switch_from_app_only, request.active_hours,
+        request.auto_warming))
 
 
 @router.post("/{serial}/restart")

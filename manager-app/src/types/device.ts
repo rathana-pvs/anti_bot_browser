@@ -28,6 +28,8 @@ export interface AndroidUserRow {
   profile_name: string | null;
   /** The companion app in this user; null when it is not installed. */
   agent?: AgentInfo | null;
+  /** Why this stopped user was not started to read its companion app; `agent` is then its last reading. */
+  agent_note?: string | null;
 }
 
 /** What a user's companion app reports. The proxy's password never leaves the phone this way. */
@@ -56,6 +58,8 @@ export interface DeviceScan {
   scanned_at: string;
   current_user: number | null;
   users: AndroidUserRow[];
+  /** The last scan that read every user's companion app; quick scans keep stopped users' details from then. */
+  full_scan_at?: string | null;
 }
 
 export interface AndroidDevice {
@@ -78,6 +82,8 @@ export interface AndroidDevice {
   switch_from_app_only?: boolean;
   /** Scheduled posts wait for each account's active hours; off, they start at their scheduled time. */
   active_hours?: boolean;
+  /** Auto warming may visit this phone's accounts. */
+  auto_warming?: boolean;
   health?: DeviceHealth | null;
   role?: PhoneRole;
   /** Name of the PC that manages the phone, when known. */
