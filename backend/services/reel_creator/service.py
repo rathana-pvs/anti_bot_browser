@@ -18,6 +18,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError, features
 
 from .audio_presets import PRESETS, preset_path
 from .catalog import CATALOG
+from .components import catalog as components_catalog
 from .reel import LOOKS, MAX_SCENES, MAX_SECONDS, RATIOS
 from .composition import Composition, parse_document, plan_for
 from .store import Store, Conflict
@@ -146,7 +147,7 @@ class ReelCreator:
             looks=[dict(id=key, name=value['name'], tag=value['tag'], accent=value['accent'], music=value['music']) for key, value in LOOKS.items()],
             ratios=list(RATIOS), max_scenes=MAX_SCENES, max_seconds=MAX_SECONDS,
             music=[dict(id=key, name=value['name'], description=value['description'], duration=value['duration']) for key, value in PRESETS.items()], max_upload_bytes=MAX_UPLOAD, max_pixels=MAX_PIXELS,
-            catalog=[preset.public() for preset in CATALOG])
+            catalog=[preset.public() for preset in CATALOG], components=components_catalog())
         self._capability_time = time.monotonic()
         return self._capabilities
 

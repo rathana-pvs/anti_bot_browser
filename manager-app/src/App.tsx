@@ -26,6 +26,7 @@ import { ProxyPanel } from './components/ProxyPanel';
 import { CampaignsPanel } from './components/CampaignsPanel';
 import { ReelCreator } from './components/reel-creator/ReelCreator';
 import { ReelCreatorBoundary } from './components/reel-creator/ReelCreatorBoundary';
+import { AIReelStudio } from './components/ai-reel-studio/AIReelStudio';
 import type { CreatedReelMedia } from './types/reelCreator';
 import { CreateProfileModal } from './components/CreateProfileModal';
 import { TelemetryFooter } from './components/TelemetryFooter';
@@ -523,6 +524,10 @@ export const App: React.FC = () => {
 
         <main className={`flex-1 min-w-0 overflow-y-auto bg-background ${page === 'reel_studio' ? '' : 'hidden'}`}>
           <ReelCreatorBoundary><ReelCreator active={page === 'reel_studio'} onUseReel={useCreatedReel} /></ReelCreatorBoundary>
+        </main>
+
+        <main className={`flex-1 min-w-0 overflow-y-auto bg-background ${page === 'ai_studio' ? '' : 'hidden'}`}>
+          <ReelCreatorBoundary><AIReelStudio active={page === 'ai_studio'} onUseReel={useCreatedReel} /></ReelCreatorBoundary>
         </main>
 
         <main className={`flex-1 flex min-w-0 overflow-hidden ${page === 'devices' ? '' : 'hidden'}`}>

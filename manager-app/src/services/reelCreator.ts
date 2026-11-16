@@ -5,7 +5,7 @@ import { isDesktopApp } from './desktopEnvironment';
 import type { AIRequestConfig } from './aiSettings';
 import type { ArticleText, DirectorResult, DirectorTurn, PhotoImport, Reel, ReelAsset, ReelPhoto, ReelRatio, ReelGoal, ReelBrand, ReelCapabilities, HouseStyle, ReelDraft, ReelJob, SceneKind, SceneLayout, WrittenReel } from '../types/reelCreator';
 
-async function request(path: string, init?: RequestInit): Promise<Response> {
+export async function request(path: string, init?: RequestInit): Promise<Response> {
   const response = await fetch(`${API_BASE}/reel-creator${path}`, init);
   if (!response.ok) {
     let message = `Request failed (${response.status})`;
@@ -19,7 +19,7 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
   return response;
 }
 
-function json(method: string, value: unknown): RequestInit {
+export function json(method: string, value: unknown): RequestInit {
   return { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) };
 }
 
@@ -62,7 +62,8 @@ function download(blob: Blob, filename: string) {
 
 export const reelApi = {
   capabilities: async (refresh = false): Promise<ReelCapabilities> => (await request(`/capabilities?refresh=${refresh}`)).json(),
-  drafts: async (): Promise<ReelDraft[]> => (await request('/drafts')).json(),
+  /** Reel Studio's drafts; AI Reel Studio compositions (version 5) share the store and are left out. */
+  drafts: async (): Promise<ReelDraft[]> => ((await (await request('/drafts')).json()) as ReelDraft[]).filter(d => (d.reel as { version?: number }).version !== 5),
   saveDraft: async (id: string, revision: number, draft: Pick<ReelDraft, 'reel' | 'caption' | 'goal' | 'comment' | 'hooks' | 'source_text' | 'source_url' | 'source_title' | 'source_publisher'>): Promise<ReelDraft> =>
     (await request(`/drafts/${id}`, json('PUT', { revision, ...draft }))).json(),
   articleLink: async (id: string): Promise<ReelArticleLink | null> => (await request(`/drafts/${id}/article`)).json(),

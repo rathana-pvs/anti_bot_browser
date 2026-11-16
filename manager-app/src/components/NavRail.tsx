@@ -1,14 +1,15 @@
 import { ReactNode } from 'react';
-import { Clock, Film, Globe, Send, MonitorSmartphone, Settings, Users } from 'lucide-react';
+import { Clock, Film, Globe, Send, MonitorSmartphone, Settings, Users, Wand2 } from 'lucide-react';
 import { cn } from './ui/cn';
 
-export type AppPage = 'accounts' | 'post' | 'queue' | 'reel_studio' | 'devices' | 'proxies';
+export type AppPage = 'accounts' | 'post' | 'queue' | 'reel_studio' | 'ai_studio' | 'devices' | 'proxies';
 
 const ITEMS: { value: AppPage; label: string; icon: ReactNode }[] = [
   { value: 'accounts', label: 'Accounts', icon: <Users className="h-5 w-5" /> },
   { value: 'queue', label: 'Queue', icon: <Clock className="h-5 w-5" /> },
   { value: 'post', label: 'Post', icon: <Send className="h-5 w-5" /> },
   { value: 'reel_studio', label: 'Reel Studio', icon: <Film className="h-5 w-5" /> },
+  { value: 'ai_studio', label: 'AI Studio', icon: <Wand2 className="h-5 w-5" /> },
   { value: 'devices', label: 'Devices', icon: <MonitorSmartphone className="h-5 w-5" /> },
   { value: 'proxies', label: 'Proxies', icon: <Globe className="h-5 w-5" /> },
 ];

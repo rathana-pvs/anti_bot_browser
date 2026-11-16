@@ -9,7 +9,7 @@ from backend.services.website_service import Article
 from backend.services.reel_creator.articles import extract_article
 from backend.services.reel_creator.audio_presets import preset_path
 from backend.services.ai import AIConfig
-from backend.services.reel_creator.composition import AnyDocument, Composition, DocumentRenderInput
+from backend.services.reel_creator.composition import AnyDocument, Composition, DocumentDraftInput, DocumentRenderInput
 from backend.services.reel_creator.quality import review
 from backend.services.reel_creator.composer import ComposeDirectRequest, ComposeRequest, compose, direct_composition
 from backend.services.reel_creator.director import DirectRequest, check_model, direct
@@ -48,7 +48,7 @@ def drafts():
 
 
 @router.put('/drafts/{draft_id}')
-def save_draft(draft_id: Id, value: DraftInput):
+def save_draft(draft_id: Id, value: DocumentDraftInput):
     return checked(get_service().store.save_draft, draft_id, value.revision,
                    dict(reel=value.reel.model_dump(), caption=value.caption, hooks=value.hooks, goal=value.goal, comment=value.comment,
                         source_text=value.source_text, source_url=value.source_url,
@@ -176,7 +176,7 @@ def photo(value: AnyDocument, scene: int = Query(default=0, ge=0, le=7), ratio: 
 
 
 @router.post('/cover')
-def cover(value: Reel):
+def cover(value: AnyDocument):
     return checked(get_service().create_cover, value)
 
 

@@ -10,7 +10,8 @@ interface Props {
   busy: boolean;
   /** This step is running. */
   directing: boolean;
-  result: DirectorResult | null;
+  /** The director's last answer: works for Reel Studio and AI Reel Studio alike. */
+  result: Pick<DirectorResult, 'message' | 'changes' | 'refused' | 'usage'> | null;
   onDirect: (instruction: string) => void;
   onUndo: () => void;
   onScene: (index: number) => void;

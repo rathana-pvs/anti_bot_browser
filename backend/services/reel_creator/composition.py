@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Discriminator, Field, Tag, field_val
 
 from .audio_presets import PRESETS
 from .components import AnimationId, CameraId, LayoutId, LOOK_LAYOUT, Pacing, RECIPE_BY_ID, TextStyleId, TransitionId, layout_look
-from .reel import LOOKS, MAX_SCENES, MAX_SECONDS, ElementStyle, Ratio, Reel, RenderInput, Role, Scene, SceneKind, hex_color
+from .reel import LOOKS, MAX_SCENES, MAX_SECONDS, DraftInput, ElementStyle, Ratio, Reel, RenderInput, Role, Scene, SceneKind, hex_color
 
 TRANSITION_VALUE = {'crossfade': None, 'cut': 'cut', 'slide': 'slide'}    # what a Reel scene can store
 CAMERA_VALUE = {'zoom_in': 'zoom_in', 'zoom_out': 'zoom_out', 'still': 'none'}
@@ -301,6 +301,11 @@ AnyDocument = Annotated[Annotated[Reel, Tag('reel')] | Annotated[Composition, Ta
 
 
 class DocumentRenderInput(RenderInput):
+    reel: AnyDocument
+
+
+class DocumentDraftInput(DraftInput):
+    """A Reel Studio reel or an AI Reel Studio composition; the store keeps either."""
     reel: AnyDocument
 
 
