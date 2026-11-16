@@ -459,6 +459,25 @@ class PostPublishPromptTests(unittest.TestCase):
         task.human.click.assert_called_once_with(850, 800)
         self.assertEqual(task.vision.read_text.call_args.kwargs["region"], (288, 86, 1344, 939))
 
+    def test_finds_publish_original_post_and_never_continue(self):
+        # OCR of the real "Hosting an event?" upsell seen after Reel Post.
+        task = self.make_task([
+            {"text": "Hosting an event?", "confidence": 0.99, "center": (797, 442)},
+            {"text": "Continue", "confidence": 1.0, "center": (1137, 762)},
+            {"text": "Publish Original Post", "confidence": 1.0, "center": (969, 761),
+             "bounds": (894, 752, 1045, 771)},
+        ])
+        match = task.find_publish_original_post()
+        self.assertEqual(match["center"], (969, 761))
+
+    def test_publish_original_post_needs_the_whole_label(self):
+        task = self.make_task([
+            {"text": "Continue", "confidence": 1.0, "center": (1137, 762)},
+            {"text": "Publish", "confidence": 0.9, "center": (100, 900)},
+            {"text": "Original audio", "confidence": 0.9, "center": (300, 340)},
+        ])
+        self.assertIsNone(task.find_publish_original_post())
+
     def test_tolerates_zero_in_not_now_ocr(self):
         task = self.make_task([
             {"text": "Not n0w", "confidence": 0.51, "center": (850, 800)},
@@ -2072,8 +2091,66 @@ class ReelPublicationVerificationTests(unittest.TestCase):
         task.vision.similarity.side_effect = similarities + similarities[-1:]
         task._handle_remix_audio_dialog = Mock(return_value="absent")
         task.check_and_dismiss_post_prompt = Mock(return_value=False)
+        task.find_publish_original_post = Mock(return_value=None)
         task.log = Mock()
         return task
+
+    def event_prompt_task(self, prompt_frames):
+        """A Reel task whose event upsell is visible for the given number of polls."""
+        task = self.make_task([StateObservation(ScreenState.POST_CONFIRMED, 0.98)], [0.7])
+        button = {"text": "Publish Original Post", "confidence": 1.0,
+                  "center": (969, 761), "bounds": (894, 752, 1045, 771)}
+        task.find_publish_original_post = Mock(
+            side_effect=lambda screen: button if task.find_publish_original_post.call_count <= prompt_frames else None)
+        task.click_reversible = Mock()
+        task.capture_evidence = Mock()
+        return task
+
+    def test_event_prompt_is_answered_with_publish_original_post_before_verifying(self):
+        task = self.event_prompt_task(prompt_frames=1)
+        with unittest.mock.patch("modules.reel_post_click_verifier.time.time", return_value=0.0), \
+             unittest.mock.patch("modules.reel_post_click_verifier.time.sleep"):
+            status, _ = task._verify_reel_publication(task.client.screenshot(), timeout=90)
+        self.assertEqual(status, "published")
+        task.click_reversible.assert_called_once_with(
+            (969, 761), label="reel_event_prompt_publish_original",
+            bounds=(894, 752, 1045, 771), max_offset_px=4)
+        # Publication is only judged once the prompt has gone.
+        task.recognizer.observe_publication_gate.assert_called_once()
+        task.client.navigate_to.assert_not_called()
+
+    def test_event_prompt_press_starts_a_fresh_upload_wait(self):
+        task = self.event_prompt_task(prompt_frames=1)
+        task.recognizer.observe_publication_gate.side_effect = None
+        task.recognizer.observe_publication_gate.return_value = StateObservation(ScreenState.PUBLISHING, 0.9)
+        task.vision.similarity.side_effect = None
+        task.vision.similarity.return_value = 0.7
+        # The prompt sat there for 80 s; the full 90 s wait starts after the press.
+        with unittest.mock.patch("modules.reel_post_click_verifier.time.time",
+                                 side_effect=[0, 80, 80, 81, 81, 150, 172]), \
+             unittest.mock.patch("modules.reel_post_click_verifier.time.sleep"):
+            status, _ = task._verify_reel_publication(task.client.screenshot(), timeout=90)
+        self.assertEqual(status, "timed_out")
+        self.assertEqual(task.recognizer.observe_publication_gate.call_count, 3)
+
+    def test_event_prompt_that_stays_open_stops_after_three_presses(self):
+        task = self.event_prompt_task(prompt_frames=99)
+        with unittest.mock.patch("modules.reel_post_click_verifier.time.time", return_value=0.0), \
+             unittest.mock.patch("modules.reel_post_click_verifier.time.sleep"):
+            status, _ = task._verify_reel_publication(task.client.screenshot(), timeout=90)
+        self.assertEqual(status, "event_prompt_blocked")
+        self.assertEqual(task.click_reversible.call_count, 3)
+        task.recognizer.observe_publication_gate.assert_not_called()
+
+    def test_blocked_event_prompt_is_uncertain_not_a_network_timeout(self):
+        task = self.make_task([], [])
+        task.set_stage = Mock()
+        task._before_publish = task.client.screenshot()
+        task.capture_evidence = Mock()
+        task._uncertain = Mock(return_value="uncertain")
+        task._verify_reel_publication = Mock(return_value=("event_prompt_blocked", None))
+        self.assertEqual(task._step_verify(), "uncertain")
+        self.assertEqual(task._uncertain.call_args.args[0], "reel_event_prompt_did_not_close")
 
     def test_post_click_upload_verification_wait_is_ninety_seconds(self):
         self.assertEqual(FacebookReelTask.POST_CLICK_VERIFICATION_TIMEOUT, 90.0)

@@ -1,3 +1,25 @@
+# Version 2.3.2
+
+- Send photos and videos to a phone account's gallery from the account menu,
+  for example to use as a profile picture or cover photo. Drop or pick files,
+  then click Send; copied files are listed and stay until you remove them.
+- Switch a phone to another user from the Devices page without opening its
+  screen, and open the live view of the on-screen user straight away.
+- Scan phones quickly by reading only running users; a separate Full scan
+  reads every user safely.
+- Turn Auto warming on or off for This PC and for each phone separately.
+- Filter the Accounts list by clicking an account's proxy share badge.
+- Give phone accounts a 5-minute screen timeout and keep long jobs watching
+  the screen when it turns off.
+- Find the photo icon in Facebook's new centred composer icon bar.
+- Wait for a loading profile before searching for the Reel button, and stop
+  misreading a loading profile as an open Reel composer.
+- Count a Live comment still showing Posting after 90 seconds as posted when
+  its text was saved.
+
+**Linux only.** After installing, run **Settings → Setup and repair → Install /
+update runtime** when prompted.
+
 # Version 2.3.1
 
 - Give a slow Reel Studio up to 90 seconds to finish opening after it responds
