@@ -963,6 +963,32 @@ class GetReadyTests(unittest.TestCase):
         run(Flows(device, lambda **e: None).open_gallery())
         self.assertIn(("tap", (device.pt(90, 0)[0], 1190.0)), device.actions)
 
+    def test_composer_with_a_centred_icon_bar_taps_the_photo_icon_left_of_gif(self):
+        gif_x = FakeDevice().pt(540, 0)[0]
+        device = FakeDevice([lines(("What's on your mind?", 300)),
+                             [Line("New post", (100.0, 90.0)), Line("GIF", (gif_x, 1390.0))],
+                             lines(("New post", 90), ("Gallery", 200))])
+        run(Flows(device, lambda **e: None).open_gallery())
+        self.assertIn(("tap", (gif_x - device.pt(255, 0)[0], 1390.0)), device.actions)
+
+    def test_composer_icon_bar_without_a_readable_gif_is_found_by_the_photo_icon(self):
+        device = FakeDevice([lines(("What's on your mind?", 300)),
+                             lines(("New post", 90), ("What's on your mind?", 360)),
+                             lines(("New post", 90), ("Gallery", 200))])
+        device.icons["composer_photo"] = (285.0, 1196.0)
+        run(Flows(device, lambda **e: None).open_gallery())
+        self.assertIn(("tap", (285.0, 1196.0)), device.actions)
+
+    def test_composer_photo_template_finds_the_icon_bar(self):
+        import cv2
+        image = np.full((1280, 576, 3), 255, np.uint8)
+        icon = cv2.imread(str(screen.TEMPLATE_DIR / "composer_photo.png"))
+        small = cv2.resize(icon, None, fx=576 / 1080, fy=576 / 1080, interpolation=cv2.INTER_AREA)
+        image[1174:1174 + small.shape[0], 130:130 + small.shape[1]] = small
+        found = screen.find_template(image, screen.load_templates()["composer_photo"])
+        self.assertIsNotNone(found)
+        self.assertLess(abs(found[0] - 152), 4)
+
     def test_prompt_tap_that_opens_nothing_is_tried_again_without_a_fail_screenshot(self):
         feed = lines(("facebook", 100), ("What's on your mind?", 300))
         device = FakeDevice([feed] + [lines(("What's on your mind?", 60), ("Stories", 130))] * 12

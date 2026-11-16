@@ -130,8 +130,10 @@ class Flows:
     # --- waiting ------------------------------------------------------------------------------
     async def wait_for(self, step: str, any_of: list[str], timeout: float = 20.0, exact: bool = False,
                        handle_interruptions: bool = True, evidence: bool = True,
-                       discard_old: bool = False, whole: tuple[str, ...] = ()) -> tuple[str, Point, list[Line]]:
-        """Until one of the texts shows; known pop-ups are closed meanwhile. A caller that recovers from a
+                       discard_old: bool = False, whole: tuple[str, ...] = (),
+                       icons: tuple[str, ...] = ()) -> tuple[str, Point, list[Line]]:
+        """Until one of the texts (or else one of the `icons` templates, returned by name) shows; known
+        pop-ups are closed meanwhile. A caller that recovers from a
         miss passes `evidence=False`, so only real failures leave a fail_ screenshot. `discard_old` is for a
         step before this job has made anything: a prompt about an earlier job's post is answered with discard.
         The texts in `whole` must fill their line (see `match`)."""
@@ -150,6 +152,10 @@ class Flows:
                 point = match(lines, wanted, exact, whole=wanted in whole)
                 if point:
                     return wanted, point, lines
+            for icon in icons:
+                point = dev.find_icon(icon)
+                if point:
+                    return icon, point, lines
             self.check_account(lines)
             if handle_interruptions and await self.close_interruption(lines):
                 continue
@@ -563,19 +569,26 @@ class Flows:
         for last_try in (False, True):
             _, point, _ = await self.wait_for("feed", [FEED_PROMPT])
             await dev.tap(point)
-            # Facebook shows a Gallery tile (tapped above its label), a list with a Photo/video row, or a bottom
-            # bar of icons where only GIF has a label and the photo icon comes first.
+            # Facebook shows a Gallery tile (tapped above its label), a list with a Photo/video row, or a bar
+            # of icons where the photo icon comes first. OCR does not always read the bar's GIF, so the photo
+            # icon is also looked for by its picture.
             try:
                 found, entry, _ = await self.wait_for("composer", ["Gallery", "Photo/video", "GIF"], exact=True,
-                                                      evidence=last_try, discard_old=True)
+                                                      evidence=last_try, discard_old=True,
+                                                      icons=("composer_photo",))
                 break
             except StepFailed as missed:  # a tap while the feed still moves only stops it
                 if last_try:
                     raise
                 self.log(event="retry", step="composer", detail=str(missed)[:200])
                 await self.discard_until_feed()
-        if found == "GIF":
-            await dev.tap((dev.pt(90, 0)[0], entry[1]))
+        if found == "composer_photo":
+            await dev.tap(entry)
+        elif found == "GIF":
+            # A full-width bar starts at the left edge; the newer floating bar is centred, with the photo
+            # icon two slots (about 128 px each at 1080 wide) left of GIF.
+            centred = entry[0] > dev.pt(400, 0)[0]
+            await dev.tap((entry[0] - dev.pt(255, 0)[0] if centred else dev.pt(90, 0)[0], entry[1]))
         else:
             await dev.tap(entry if found == "Photo/video" else (entry[0], entry[1] - dev.pt(0, 35)[1]))
         found, point, lines = await self.wait_for("picker", ["Gallery", "Allow access", "Allow Facebook to access"],
