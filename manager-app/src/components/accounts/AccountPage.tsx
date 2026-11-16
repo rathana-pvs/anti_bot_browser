@@ -13,7 +13,7 @@ import { Button } from '../ui/Button';
 import { useAppDialog } from '../ui/AppDialogProvider';
 import { cn } from '../ui/cn';
 import { AccountHandlers, accountMenu } from './accountActions';
-import { AccountTab, STATUS_LABEL, STATUS_TONE, activityFor, isAndroid, phoneStatus } from './accountModel';
+import { AccountTab, STATUS_LABEL, STATUS_TONE, activityFor, isAndroid, isOnScreen, phoneStatus } from './accountModel';
 import { DeviceChip } from './DeviceChip';
 import { AccountOverview } from './AccountOverview';
 import { AccountActivityTab } from './AccountActivityTab';
@@ -90,7 +90,7 @@ export function AccountPage({ profile, devices, tab: requestedTab, onTabChange, 
               <Button size="sm" variant="outline" disabled={busy} onClick={() => run('stop')}><Square className="h-3 w-3" />Stop</Button>
             </>}
           <ActionMenu ariaLabel={`More actions for ${profile.name}`}
-            items={accountMenu(profile, handlers, { includeOpen: false }).filter(item => !['Start', 'Stop', 'Pause', 'Resume', 'Edit settings'].includes(item.label))} />
+            items={accountMenu(profile, handlers, { includeOpen: false, onScreen: isOnScreen(profile, devices) }).filter(item => !['Start', 'Stop', 'Pause', 'Resume', 'Edit settings'].includes(item.label))} />
         </div>
       </div>
       <nav role="tablist" aria-label="Account sections" className="mt-2 flex gap-1">

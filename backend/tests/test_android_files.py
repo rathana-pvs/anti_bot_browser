@@ -13,12 +13,12 @@ def reply(payload):
 
 
 class FakePhone:
-    """One phone with Android users 0 (on screen) and 11 (the account's)."""
+    """One phone with Android users 0 and 11 (the account's); 11 is on screen unless told otherwise."""
 
-    def __init__(self, running=True, free_mb=10_000):
+    def __init__(self, running=True, free_mb=10_000, on_screen=True):
         self.running = {0: True, 11: running}
         self.free_mb = free_mb
-        self.current = 0
+        self.current = 11 if on_screen and running else 0
         self.events = []
         self.written = []
         self.media_state = "saved"
@@ -87,20 +87,28 @@ def test_copy_saves_into_the_accounts_own_user_and_is_listed(account):
     assert not any(kind in ("start", "stop") for kind, _ in phone.events)
 
 
-def test_a_stopped_user_is_started_for_the_copy_and_stopped_again(account):
+@pytest.mark.parametrize("phone", [FakePhone(running=False), FakePhone(running=True, on_screen=False)],
+                         ids=["stopped", "running in the background"])
+def test_files_go_only_to_the_account_on_screen_and_no_user_is_started(account, phone):
     _, photo = account
-    phone = FakePhone(running=False)
-    android_files.copy_file("profile_020", photo, "a.png", client=phone)
-    assert phone.events[0] == ("start", 11) and phone.events[-1] == ("stop", 11)
-    assert phone.running[11] is False
+    with pytest.raises(AdbError, match="isn't on the phone's screen"):
+        android_files.copy_file("profile_020", photo, "a.png", client=phone)
+    assert phone.events == [] and phone.written == []
 
 
-def test_a_user_brought_on_screen_meanwhile_is_not_stopped(account):
+def test_a_file_is_removed_only_while_the_account_is_on_screen(account):
     _, photo = account
-    phone = FakePhone(running=False)
-    phone.current = 11
-    android_files.copy_file("profile_020", photo, "a.png", client=phone)
-    assert ("stop", 11) not in phone.events
+    record = android_files.copy_file("profile_020", photo, "a.jpg", client=FakePhone())
+    away = FakePhone(on_screen=False)
+    with pytest.raises(AdbError, match="isn't on the phone's screen"):
+        android_files.remove_file("profile_020", record["id"], client=away)
+    assert away.events == []
+    assert [item["id"] for item in android_files.list_files("profile_020", client=away)["files"]] == [record["id"]]
+
+
+def test_the_file_list_says_whether_the_account_is_on_screen(account):
+    assert android_files.list_files("profile_020", client=FakePhone())["on_screen"] is True
+    assert android_files.list_files("profile_020", client=FakePhone(on_screen=False))["on_screen"] is False
 
 
 @pytest.mark.parametrize("name", ["notes.pdf", "clip.mov", "noext"])
@@ -127,14 +135,13 @@ def test_a_nearly_full_phone_is_refused(account):
     assert phone.written == []
 
 
-def test_a_failed_save_is_not_recorded_and_the_user_is_restored(account):
+def test_a_failed_save_is_not_recorded(account):
     _, photo = account
-    phone = FakePhone(running=False)
+    phone = FakePhone()
     phone.media_state = "failed"
     with pytest.raises(AdbError, match="disk full"):
         android_files.copy_file("profile_020", photo, "a.jpg", client=phone)
-    assert android_files.list_files("profile_020")["files"] == []
-    assert phone.running[11] is False
+    assert android_files.list_files("profile_020", client=phone)["files"] == []
 
 
 def test_remove_deletes_on_the_phone_and_forgets_the_file(account):
@@ -176,3 +183,31 @@ def test_upload_route_copies_each_file_and_rejects_other_types(account, monkeypa
     listed = client.get("/api/devices/accounts/profile_020/files").json()["files"]
     assert [item["id"] for item in listed] == [ok.json()["id"]]
     assert client.delete(f"/api/devices/accounts/profile_020/files/{ok.json()['id']}").status_code == 200
+
+
+def test_a_dropped_file_is_copied_from_its_path_on_this_computer(tmp_path, monkeypatch):
+    photo = tmp_path / "Profile Pic.JPG"
+    photo.write_bytes(b"jpeg")
+    copied = []
+    monkeypatch.setattr(android_files, "copy_file", lambda pid, local, name, client=None: copied.append((pid, local, name)) or {"id": "x"})
+    assert android_files.copy_local_file("profile_001", str(photo)) == {"id": "x"}
+    assert copied == [("profile_001", photo.resolve(), "Profile Pic.JPG")]
+
+
+@pytest.mark.parametrize("path, message", [
+    ("relative/photo.jpg", "location could not be read"),
+    ("/no/such/dir/photo.jpg", "could not be found"),
+    ("/etc/passwd", "not a JPEG, PNG or MP4"),
+])
+def test_a_dropped_path_must_be_an_existing_photo_or_video(path, message, monkeypatch):
+    monkeypatch.setattr(android_files, "copy_file", lambda *args, **kwargs: pytest.fail("nothing may be copied"))
+    with pytest.raises(ValueError, match=message):
+        android_files.copy_local_file("profile_001", path)
+
+
+def test_a_dropped_folder_is_refused(tmp_path, monkeypatch):
+    folder = tmp_path / "album.mp4"
+    folder.mkdir()
+    monkeypatch.setattr(android_files, "copy_file", lambda *args, **kwargs: pytest.fail("nothing may be copied"))
+    with pytest.raises(ValueError, match="not a file"):
+        android_files.copy_local_file("profile_001", str(folder))

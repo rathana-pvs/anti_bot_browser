@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { CheckCircle2, Film, Image as ImageIcon, Loader2, Smartphone, Trash2, Upload, X, XCircle } from 'lucide-react';
 import type { Profile } from '../../types/profile';
-import { copyFileToPhone, fetchPhoneFiles, isPhoneFileType, PHONE_FILE_TYPES, PhoneFile, removePhoneFile } from '../../services/devices';
+import { isDesktopApp } from '../../services/desktopEnvironment';
+import { copyFileToPhone, copyPathToPhone, droppedPaths, fetchPhoneFiles, isPhoneFileType, PHONE_FILE_TYPES, PhoneFile, removePhoneFile } from '../../services/devices';
 
-type Job = { key: string; file: File; state: 'waiting' | 'copying' | 'saved' | 'failed'; error?: string };
+/** A picked or dropped File, or a dropped file's path when the web view gives only that (Linux). */
+type Job = { key: string; name: string; size: number | null; source: File | string; state: 'selected' | 'waiting' | 'copying' | 'saved' | 'failed'; error?: string };
 
 const sizeLabel = (bytes: number) => bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GB`
   : bytes >= 1024 ** 2 ? `${(bytes / 1024 ** 2).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
@@ -24,6 +26,8 @@ export const PhoneFilesDialog: React.FC<{ profile: Profile; onClose: () => void 
   const [removing, setRemoving] = useState<string | null>(null);
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
+  // Files go only to the account on screen; checked when the dialog opens and on Check again.
+  const [onScreen, setOnScreen] = useState<boolean | null>(null);
   const picker = useRef<HTMLInputElement>(null);
   const running = useRef(false);
   const queue = useRef<Job[]>([]);
@@ -31,7 +35,7 @@ export const PhoneFilesDialog: React.FC<{ profile: Profile; onClose: () => void 
 
   const reload = useCallback(() => {
     fetchPhoneFiles(profile.id)
-      .then(next => { if (live.current) { setFiles(next); setLoadError(null); } })
+      .then(next => { if (live.current) { setFiles(next.files); setOnScreen(next.on_screen); setLoadError(null); } })
       .catch(err => live.current && setLoadError(err.message || String(err)));
   }, [profile.id]);
 
@@ -52,7 +56,8 @@ export const PhoneFilesDialog: React.FC<{ profile: Profile; onClose: () => void 
         const job = queue.current.shift()!;
         patch(job.key, { state: 'copying' });
         try {
-          const saved = await copyFileToPhone(profile.id, job.file);
+          const saved = typeof job.source === 'string'
+            ? await copyPathToPhone(profile.id, job.source) : await copyFileToPhone(profile.id, job.source);
           patch(job.key, { state: 'saved' });
           if (live.current) setFiles(list => [saved, ...(list || [])]);
         } catch (err: any) {
@@ -64,16 +69,48 @@ export const PhoneFilesDialog: React.FC<{ profile: Profile; onClose: () => void 
     }
   };
 
-  const add = (list: FileList | File[]) => {
-    const picked = Array.from(list);
+  const [dropError, setDropError] = useState<string | null>(null);
+  const add = (list: FileList | File[] | string[]) => {
+    const picked = Array.from(list as ArrayLike<File | string>);
     if (!picked.length) return;
-    const next: Job[] = picked.map(file => isPhoneFileType(file.name)
-      ? { key: `j${++jobCounter}`, file, state: 'waiting' }
-      : { key: `j${++jobCounter}`, file, state: 'failed', error: 'Only JPEG, PNG and MP4 files can be copied.' });
+    setDropError(null);
+    const next: Job[] = picked.map(source => {
+      const name = typeof source === 'string' ? source.split('/').pop() || source : source.name;
+      const job = { key: `j${++jobCounter}`, name, size: typeof source === 'string' ? null : source.size, source };
+      return isPhoneFileType(name) ? { ...job, state: 'selected' as const }
+        : { ...job, state: 'failed' as const, error: 'Only JPEG, PNG and MP4 files can be copied.' };
+    });
+    // Nothing is copied yet: the person picks every file first, then sends them together.
     setJobs(current => [...current, ...next]);
-    queue.current.push(...next.filter(job => job.state === 'waiting'));
+  };
+
+  // In the desktop app the window itself receives dropped files and reports their paths; the
+  // web view is not given them (on Linux it gets neither the files nor their addresses).
+  const addRef = useRef(add);
+  addRef.current = add;
+  useEffect(() => {
+    if (!isDesktopApp()) return;
+    let stop: (() => void) | undefined;
+    let closed = false;
+    void import('@tauri-apps/api/webview').then(({ getCurrentWebview }) => getCurrentWebview().onDragDropEvent(event => {
+      const drag = event.payload;
+      if (drag.type === 'enter' || drag.type === 'over') setDragging(true);
+      else if (drag.type === 'leave') setDragging(false);
+      else {
+        setDragging(false);
+        if (drag.paths.length) addRef.current(drag.paths);
+      }
+    })).then(unlisten => { if (closed) unlisten(); else stop = unlisten; }).catch(() => undefined);
+    return () => { closed = true; stop?.(); };
+  }, []);
+
+  const selected = jobs.filter(job => job.state === 'selected');
+  const send = () => {
+    selected.forEach(job => patch(job.key, { state: 'waiting' }));
+    queue.current.push(...selected);
     void drain();
   };
+  const unselect = (key: string) => setJobs(list => list.filter(job => job.key !== key));
 
   const retry = (job: Job) => {
     patch(job.key, { state: 'waiting', error: undefined });
@@ -110,12 +147,24 @@ export const PhoneFilesDialog: React.FC<{ profile: Profile; onClose: () => void 
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto p-5 text-xs">
           <button type="button" onClick={() => picker.current?.click()}
             onDragOver={e => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)}
-            onDrop={e => { e.preventDefault(); setDragging(false); add(e.dataTransfer.files); }}
+            onDrop={e => {
+              e.preventDefault();
+              setDragging(false);
+              // Linux's web view often hands dropped files over as file:// addresses, with no File objects.
+              if (e.dataTransfer.files.length) add(e.dataTransfer.files);
+              else {
+                const paths = droppedPaths(e.dataTransfer);
+                if (paths.length) add(paths);
+                // The desktop app's own drop event brings these files; only a browser has nothing else.
+                else if (!isDesktopApp()) setDropError('The dropped files couldn’t be read. Click the box to choose them instead.');
+              }
+            }}
             className={`flex flex-col items-center gap-1.5 rounded-lg border border-dashed px-4 py-6 text-center transition-colors ${dragging ? 'border-blue-400 bg-blue-500/10' : 'border-zinc-700 bg-zinc-950 hover:border-zinc-500'}`}>
             <Upload className="h-5 w-5 text-zinc-400" />
             <span className="font-medium text-zinc-200">Drop photos or videos here, or click to browse</span>
             <span className="text-zinc-500">JPEG, PNG or MP4. They go to this account’s gallery only, ready for a profile picture, cover photo and so on.</span>
           </button>
+          {dropError && <p role="alert" className="-mt-2 text-red-300">{dropError}</p>}
           <input ref={picker} type="file" multiple accept={PHONE_FILE_TYPES} className="hidden"
             onChange={e => { if (e.target.files) add(e.target.files); e.target.value = ''; }} />
 
@@ -124,20 +173,35 @@ export const PhoneFilesDialog: React.FC<{ profile: Profile; onClose: () => void 
               <li key={job.key} className="flex items-center gap-3 px-3 py-2">
                 {job.state === 'saved' ? <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
                   : job.state === 'failed' ? <XCircle className="h-4 w-4 shrink-0 text-red-400" />
+                  : job.state === 'selected' ? (/\.mp4$/i.test(job.name) ? <Film className="h-4 w-4 shrink-0 text-zinc-400" /> : <ImageIcon className="h-4 w-4 shrink-0 text-zinc-400" />)
                   : <Loader2 className={`h-4 w-4 shrink-0 text-zinc-400 ${job.state === 'copying' ? 'animate-spin' : 'opacity-40'}`} />}
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-zinc-200">{job.file.name}</span>
+                  <span className="block truncate text-zinc-200">{job.name}</span>
                   <span className={`block ${job.state === 'failed' ? 'text-red-300' : 'text-zinc-500'}`}>
-                    {job.state === 'waiting' ? `Waiting · ${sizeLabel(job.file.size)}`
-                      : job.state === 'copying' ? `Copying to the phone · ${sizeLabel(job.file.size)}`
+                    {job.state === 'selected' ? `Ready to send${job.size != null ? ` · ${sizeLabel(job.size)}` : ''}`
+                      : job.state === 'waiting' ? `Waiting${job.size != null ? ` · ${sizeLabel(job.size)}` : ''}`
+                      : job.state === 'copying' ? `Copying to the phone${job.size != null ? ` · ${sizeLabel(job.size)}` : ''}`
                       : job.state === 'saved' ? 'Saved to the gallery' : job.error}
                   </span>
                 </span>
-                {job.state === 'failed' && isPhoneFileType(job.file.name) &&
+                {job.state === 'failed' && isPhoneFileType(job.name) &&
                   <button onClick={() => retry(job)} className="rounded-md border border-zinc-800 bg-zinc-900 px-2 py-1 text-zinc-300 hover:bg-zinc-800">Retry</button>}
+                {(job.state === 'selected' || (job.state === 'failed' && !isPhoneFileType(job.name))) &&
+                  <button onClick={() => unselect(job.key)} aria-label={`Remove ${job.name} from the list`} title="Remove from the list"
+                    className="rounded p-1 text-zinc-500 hover:text-zinc-200"><X className="h-3.5 w-3.5" /></button>}
               </li>
             ))}
           </ul>}
+          {onScreen === false && <p role="status" className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-900/50 bg-amber-950/20 px-3 py-2 text-amber-200">
+            <span className="min-w-0 flex-1">{profile.name} isn’t on the phone’s screen, so files can’t be sent or removed. Switch to it on the Devices page first.</span>
+            <button type="button" onClick={reload} className="rounded-md border border-amber-900/60 px-2 py-1 hover:bg-amber-950/40">Check again</button>
+          </p>}
+          {selected.length > 0 && <div className="flex justify-end">
+            <button type="button" onClick={send} disabled={onScreen === false}
+              className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50">
+              <Upload className="h-3.5 w-3.5" />Send {selected.length} file{selected.length === 1 ? '' : 's'} to phone
+            </button>
+          </div>}
 
           <section aria-label="Files on phone" className="flex flex-col gap-2">
             <h3 className="text-[10px] uppercase tracking-wide text-zinc-500">On the phone</h3>
@@ -152,7 +216,7 @@ export const PhoneFilesDialog: React.FC<{ profile: Profile; onClose: () => void 
                     <span className="block truncate text-zinc-200" title={`Saved on the phone as ${file.album}/${file.name}`}>{file.original_name || file.name}</span>
                     <span className="block text-zinc-500">{sizeLabel(file.size_bytes)} · {file.album} · {dateLabel(file.copied_at)}</span>
                   </span>
-                  <button onClick={() => void remove(file)} disabled={removing !== null} aria-label={`Remove ${file.original_name || file.name} from the phone`}
+                  <button onClick={() => void remove(file)} disabled={removing !== null || onScreen === false} aria-label={`Remove ${file.original_name || file.name} from the phone`}
                     className="flex items-center gap-1 rounded-md border border-zinc-800 bg-zinc-900 px-2 py-1 text-zinc-300 hover:border-red-500/40 hover:text-red-300 disabled:opacity-50">
                     {removing === file.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}Remove
                   </button>

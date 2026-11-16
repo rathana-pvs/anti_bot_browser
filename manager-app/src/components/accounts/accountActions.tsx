@@ -49,14 +49,18 @@ const renameItem = (profile: Profile, handlers: AccountHandlers): ActionMenuItem
   ({ label: 'Rename…', icon: <PencilLine className={icon} />, onSelect: () => handlers.rename(profile) });
 
 /** The same list backs the ⋯ button and the right-click menu, so they never drift apart. */
-export function accountMenu(profile: Profile, handlers: AccountHandlers, { includeOpen = true, failureCutoff }: { includeOpen?: boolean; failureCutoff?: number } = {}): ActionMenuItem[] {
+export function accountMenu(profile: Profile, handlers: AccountHandlers, { includeOpen = true, failureCutoff, onScreen = false }: {
+  includeOpen?: boolean; failureCutoff?: number;
+  /** A phone account's user is on its phone's screen: only then can files be sent to it. */
+  onScreen?: boolean;
+} = {}): ActionMenuItem[] {
   const items: ActionMenuItem[] = [];
   if (isAndroid(profile)) {
     if (includeOpen) items.push({ label: 'Open', icon: <ExternalLink className={icon} />, onSelect: () => handlers.open(profile.id, 'overview') });
     items.push(
       { label: 'Show in queue', icon: <ListChecks className={icon} />, onSelect: () => handlers.openQueue(profile.id), divider: includeOpen },
-      { label: 'Send files to phone…', icon: <ImagePlus className={icon} />, hint: 'Copy photos or videos into this account’s gallery, e.g. for a profile picture.',
-        onSelect: () => handlers.phoneFiles(profile) },
+      ...(onScreen ? [{ label: 'Send files to phone…', icon: <ImagePlus className={icon} />, hint: 'Copy photos or videos into this account’s gallery, e.g. for a profile picture.',
+        onSelect: () => handlers.phoneFiles(profile) }] : []),
       changeProxyItem(profile, handlers),
       renameItem(profile, handlers),
       { label: 'Move to folder…', icon: <FolderInput className={icon} />, onSelect: () => handlers.moveToGroup([profile]) },

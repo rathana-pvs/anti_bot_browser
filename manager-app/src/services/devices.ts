@@ -187,10 +187,12 @@ export const isPhoneFileType = (name: string) => /\.(jpe?g|png|mp4)$/i.test(name
 
 const accountFilesPath = (profileId: string) => `${API_BASE}/devices/accounts/${encodeURIComponent(profileId)}/files`;
 
-export async function fetchPhoneFiles(profileId: string): Promise<PhoneFile[]> {
+/** The account's copied files, and whether it is on its phone's screen now (null: the phone couldn't be asked). */
+export async function fetchPhoneFiles(profileId: string): Promise<{ files: PhoneFile[]; on_screen: boolean | null }> {
   const res = await fetch(accountFilesPath(profileId));
   if (!res.ok) throw await networkError(res, 'Failed to load the files on the phone');
-  return (await res.json()).files;
+  const body = await res.json();
+  return { files: body.files, on_screen: body.on_screen ?? null };
 }
 
 export async function copyFileToPhone(profileId: string, file: File): Promise<PhoneFile> {
@@ -199,6 +201,23 @@ export async function copyFileToPhone(profileId: string, file: File): Promise<Ph
   const res = await fetch(accountFilesPath(profileId), { method: 'POST', body });
   if (!res.ok) throw await networkError(res, `Failed to copy ${file.name} to the phone`);
   return res.json();
+}
+
+/** A file dropped from this computer that the web view handed over by its path only (Linux). */
+export async function copyPathToPhone(profileId: string, path: string): Promise<PhoneFile> {
+  const res = await fetch(`${accountFilesPath(profileId)}/from-path`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }),
+  });
+  if (!res.ok) throw await networkError(res, `Failed to copy ${path.split('/').pop()} to the phone`);
+  return res.json();
+}
+
+/** Local paths of dropped files from the drop's file:// addresses; empty when it has none. */
+export function droppedPaths(data: Pick<DataTransfer, 'getData'>): string[] {
+  const text = data.getData('text/uri-list') || data.getData('text/plain') || '';
+  return text.split(/\r?\n/).map(line => line.trim()).filter(line => line.startsWith('file://'))
+    .map(line => { try { return decodeURIComponent(new URL(line).pathname); } catch { return ''; } })
+    .filter(Boolean);
 }
 
 export async function removePhoneFile(profileId: string, fileId: string): Promise<void> {

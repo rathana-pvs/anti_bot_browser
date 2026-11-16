@@ -17,7 +17,7 @@ import { ACCOUNT_DRAG_TYPE, ALL_FOLDERS, ATTENTION, FolderList, NO_FOLDER, Syste
 import { STAGE_FOLDER_PREFIX, STAGE_META, STAGE_ORDER, StageBadge, StageView, stageFolder, stageView, useAccountHealth } from './accountHealth';
 import {
   AccountActivity, HealthSignal, STATUS_LABEL, STATUS_TONE, TONE_CLASS, activityFor, browserNotes,
-  deviceLabel, isAndroid, networkSignal, openItemSignals, phoneStatus,
+  deviceLabel, isAndroid, isOnScreen, networkSignal, openItemSignals, phoneStatus,
   ActivityPeriod, PERIOD_OPTIONS, periodStart,
 } from './accountModel';
 import { formatTime, kindLabel } from '../queue/queueModel';
@@ -140,7 +140,7 @@ export function AccountsPage({ profiles, proxies, devices, groups, executions, h
 
   const rowMenu = (profile: Profile) => selected.has(profile.id) && selected.size > 1
     ? { items: bulkMenu(selectedProfiles, handlers, clearSelection), title: `${selected.size} accounts` }
-    : { items: accountMenu(profile, handlers, { failureCutoff: periodStart(period) }), title: profile.name };
+    : { items: accountMenu(profile, handlers, { failureCutoff: periodStart(period), onScreen: isOnScreen(profile, devices) }), title: profile.name };
   const menuForFolder = (name: string) => folderMenu(name, profiles.filter(p => p.group === name), handlers, folderHandlers);
   const blankMenu = [{ label: 'New folder…', icon: <FolderPlus className="h-3.5 w-3.5" />, onSelect: folderHandlers.create }];
 
@@ -253,7 +253,7 @@ export function AccountsPage({ profiles, proxies, devices, groups, executions, h
             network={networkSignal(profile, proxies)} proxyShare={<ProxyShareBadge profile={profile} proxies={proxies} profiles={profiles}
               active={!!filterProxy && proxyHolders(filterProxy).includes(profile.id)} onFilter={toggleProxyFilter} />} selected={selected.has(profile.id)} busy={busyIds.has(profile.id)} onToggle={() => toggle(profile.id)}
             onOpen={() => handlers.open(profile.id, 'browser')} onDragStart={startDrag(profile)}
-            menuItems={() => accountMenu(profile, handlers, { failureCutoff: periodStart(period) })}
+            menuItems={() => accountMenu(profile, handlers, { failureCutoff: periodStart(period), onScreen: isOnScreen(profile, devices) })}
             onOpenQueue={() => handlers.openQueue(profile.id)}
             onContextMenu={(e) => { const m = rowMenu(profile); menu.open(e, m.items, m.title); }}
             onMenuKey={menu.keyboardTrigger(() => rowMenu(profile).items, profile.name)} />)}

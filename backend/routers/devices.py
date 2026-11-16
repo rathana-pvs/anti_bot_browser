@@ -21,6 +21,11 @@ SCREEN_POLL_S = 2.0
 SCREEN_WAKE_GRACE_S = 10.0
 
 
+class PhoneFilePathRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    path: str
+
+
 class DeviceRenameRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     label: str = Field(min_length=1, max_length=80)
@@ -180,6 +185,12 @@ async def copy_phone_file(profile_id: str, file: UploadFile = File(...)):
             os.unlink(temp)
         except OSError:
             pass
+
+
+@router.post("/accounts/{profile_id}/files/from-path", status_code=201)
+def copy_phone_file_from_path(profile_id: str, request: PhoneFilePathRequest):
+    """A file dropped from this computer, given by its path (this API is loopback-only)."""
+    return _call(lambda: android_files.copy_local_file(profile_id, request.path))
 
 
 @router.delete("/accounts/{profile_id}/files/{file_id}")

@@ -84,11 +84,17 @@ def _save(profile_id: str, files: list[dict]) -> None:
     atomic_write_json(_records_path(profile_id), {"files": files})
 
 
-def list_files(profile_id: str) -> dict:
-    _runtime(profile_id)
+def list_files(profile_id: str, client: AdbClient | None = None) -> dict:
+    """The files copied for this account, and whether it is on the phone's screen now (None when the
+    phone can't be asked), since only then can more be sent."""
+    runtime = _runtime(profile_id)
     with _records_lock:
         files = _load(profile_id)
-    return {"files": sorted(files, key=lambda item: item.get("copied_at") or "", reverse=True)}
+    try:
+        on_screen = _on_screen(client or android_devices._client(), runtime["device_serial"], int(runtime["android_user_id"]))
+    except AdbError:
+        on_screen = None
+    return {"files": sorted(files, key=lambda item: item.get("copied_at") or "", reverse=True), "on_screen": on_screen}
 
 
 def _phone_lock(serial: str) -> threading.Lock:
@@ -96,32 +102,22 @@ def _phone_lock(serial: str) -> threading.Lock:
         return _phone_locks.setdefault(serial, threading.Lock())
 
 
-class _UserAwake:
-    """Holds the account's Android user running for the copy, and stops it again afterwards
-    if it was stopped before and is not the one on screen by then."""
+NOT_ON_SCREEN = ("This account isn't on the phone's screen. Switch to it first (Devices page, Switch to), "
+                 "then send the files.")
 
-    def __init__(self, client: AdbClient, serial: str, user_id: int):
-        self.client, self.serial, self.user_id = client, serial, user_id
-        self.started = False
 
-    def __enter__(self):
-        running = next((user.running for user in self.client.users(self.serial) if user.user_id == self.user_id), None)
-        if running is None:
-            raise AdbError("This account's Android user is no longer on the phone.")
-        if not running:
-            self.client.start_user(self.serial, self.user_id)
-            self.started = True
-        return self
+def _on_screen(client: AdbClient, serial: str, user_id: int) -> bool:
+    return client.current_user(serial) == user_id
 
-    def __exit__(self, *_exc):
-        if not self.started:
-            return False
-        try:
-            if self.client.current_user(self.serial) != self.user_id:
-                self.client.stop_user(self.serial, self.user_id)
-        except AdbError:
-            pass  # A job may have switched or stopped users meanwhile; it owns the phone now.
-        return False
+
+def _ensure_on_screen(client: AdbClient, serial: str, user_id: int) -> None:
+    """Files go only to the user on screen. A stopped user cannot take them (its storage is locked and
+    its gallery is not running), and starting one in the background could wake its Facebook on
+    another account's time zone, so it is never started for a copy."""
+    if not any(user.user_id == user_id for user in client.users(serial)):
+        raise AdbError("This account's Android user is no longer on the phone.")
+    if not _on_screen(client, serial, user_id):
+        raise AdbError(NOT_ON_SCREEN)
 
 
 def _ensure_phone_free(serial: str) -> None:
@@ -160,13 +156,13 @@ def copy_file(profile_id: str, local: Path, original_name: str, client: AdbClien
         raise AdbError("Another copy to this phone is taking too long. Try again shortly.")
     try:
         _ensure_phone_free(serial)
+        _ensure_on_screen(client, serial, user_id)
         free = client.free_storage_mb(serial)
         if free is not None and free - size / 1024 ** 2 < SPARE_MB:
             raise AdbError(f"The phone has only {free} MB free. Make room on it first.")
-        with _UserAwake(client, serial, user_id):
-            uri = f"content://{AGENT_AUTHORITY}/media?name={name}&mime={mime}"
-            client.write_content(serial, user_id, uri, str(local), timeout=max(120.0, size / (2 * 1024 ** 2)))
-            saved = _wait_saved(client, serial, user_id, name)
+        uri = f"content://{AGENT_AUTHORITY}/media?name={name}&mime={mime}"
+        client.write_content(serial, user_id, uri, str(local), timeout=max(120.0, size / (2 * 1024 ** 2)))
+        saved = _wait_saved(client, serial, user_id, name)
     finally:
         lock.release()
     record = {"id": token, "name": name, "original_name": Path(original_name.replace("\\", "/")).name[:200],
@@ -177,6 +173,22 @@ def copy_file(profile_id: str, local: Path, original_name: str, client: AdbClien
         files.append(record)
         _save(profile_id, files)
     return record
+
+
+def copy_local_file(profile_id: str, path: str, client: AdbClient | None = None) -> dict:
+    """A photo or video dropped onto the app from this computer, by its path: Linux's web view hands a
+    dropped file over as a file:// address only. Only an existing regular JPEG, PNG or MP4 is copied."""
+    local = Path(path)
+    if not local.is_absolute():
+        raise ValueError("The dropped file's location could not be read. Click the box to choose it instead.")
+    mime_for(local.name)
+    try:
+        resolved = local.resolve(strict=True)
+    except OSError:
+        raise ValueError(f"{local.name} could not be found on this computer.") from None
+    if not resolved.is_file():
+        raise ValueError(f"{local.name} is not a file.")
+    return copy_file(profile_id, resolved, local.name, client)
 
 
 def remove_file(profile_id: str, file_id: str, client: AdbClient | None = None) -> dict:
@@ -196,8 +208,8 @@ def remove_file(profile_id: str, file_id: str, client: AdbClient | None = None) 
         raise AdbError("Another copy to this phone is taking too long. Try again shortly.")
     try:
         _ensure_phone_free(serial)
-        with _UserAwake(client, serial, user_id):
-            reply = agent_call(client, serial, user_id, "delete_media", AGENT_TIMEOUT_S, {"uri": record["uri"]})
+        _ensure_on_screen(client, serial, user_id)
+        reply = agent_call(client, serial, user_id, "delete_media", AGENT_TIMEOUT_S, {"uri": record["uri"]})
     finally:
         lock.release()
     with _records_lock:

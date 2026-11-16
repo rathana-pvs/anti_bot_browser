@@ -72,10 +72,16 @@ export function deviceLabel(profile: Profile, devices: AndroidDevice[]) {
 }
 
 /** A phone account's status comes from its phone: only the Android user on screen can be controlled. */
+/** The account's Android user is the one on its phone's screen now. */
+export function isOnScreen(profile: Profile, devices: AndroidDevice[]): boolean {
+  const phone = phoneOf(profile, devices);
+  return !!phone && phone.state === 'device' && phone.health?.current_user === profile.runtime?.android_user_id;
+}
+
 export function phoneStatus(profile: Profile, devices: AndroidDevice[]): { label: string; tone: string } {
   const phone = phoneOf(profile, devices);
   if (!phone || phone.state !== 'device') return { label: 'Phone offline', tone: 'text-red-400' };
-  return phone.health?.current_user === profile.runtime?.android_user_id
+  return isOnScreen(profile, devices)
     ? { label: 'On screen', tone: 'text-emerald-400' }
     : { label: 'In background', tone: 'text-zinc-500' };
 }
