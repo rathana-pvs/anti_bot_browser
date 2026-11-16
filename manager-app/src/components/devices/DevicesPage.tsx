@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { BatteryCharging, BatteryMedium, Check, ChevronRight, CircleAlert, Copy, Cpu, MemoryStick, Monitor, PencilLine, Plus, Power, RefreshCw, ScanLine, ShieldCheck, Smartphone, Thermometer, Trash2, Usb, UserRound, Wifi } from 'lucide-react';
+import { BatteryCharging, BatteryMedium, Check, ChevronRight, CircleAlert, Loader2, Copy, Cpu, MemoryStick, Monitor, PencilLine, Plus, Power, RefreshCw, ScanLine, ShieldCheck, Smartphone, Thermometer, Trash2, Usb, UserRound, Wifi } from 'lucide-react';
 import { AndroidDevice, AndroidUserRow, DeviceListResponse } from '../../types/device';
 import { Profile, SystemStats } from '../../types/profile';
 import { ProxyItem } from '../../types/proxy';
-import { adoptDeviceUser, fetchDevices, forgetDevice, makeDevicePrimary, renameDevice, restartDevice, scanDevice, setDevicePin, setDeviceTimezone, updateDeviceSettings } from '../../services/devices';
+import { adoptDeviceUser, fetchDevices, forgetDevice, makeDevicePrimary, renameDevice, restartDevice, scanDevice, setDevicePin, setDeviceTimezone, switchDeviceUser, updateDeviceSettings } from '../../services/devices';
 import { PhoneLiveView } from './PhoneLiveView';
 import { Dialog } from '../ui/Dialog';
 import { Checkbox } from '../ui/Checkbox';
@@ -77,6 +77,9 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
   const [taking, setTaking] = useState(false);
   const [viewingUser, setViewingUser] = useState<AndroidUserRow | null>(null);
   useEffect(() => setViewingUser(null), [selected, active]);
+  // A switch from the users table: the phone changes user without opening its screen here.
+  const [switching, setSwitching] = useState<{ serial: string; userId: number } | null>(null);
+  const [switchError, setSwitchError] = useState<{ serial: string; userId: number; message: string } | null>(null);
   const [pollInterval, setPollInterval] = useState(() => {
     try {
       const saved = localStorage.getItem(POLL_STORAGE_KEY);
@@ -126,7 +129,7 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
 
   useEffect(() => {
     const delay = Number(pollInterval);
-    if (!active || !device || device.state !== 'device' || !delay || viewingUser !== null || taking) return;
+    if (!active || !device || device.state !== 'device' || !delay || viewingUser !== null || taking || switching) return;
     const serial = device.serial;
     let stopped = false;
     let polling = false;
@@ -153,7 +156,21 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
       clearTimeout(timer);
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [active, device?.serial, device?.state, pollInterval, viewingUser, taking, scan]);
+  }, [active, device?.serial, device?.state, pollInterval, viewingUser, taking, switching, scan]);
+
+  const switchTo = async (serial: string, user: AndroidUserRow) => {
+    setSwitching({ serial, userId: user.user_id });
+    setSwitchError(null);
+    try {
+      const result = await switchDeviceUser(serial, user.user_id);
+      if (!result.ready) setSwitchError({ serial, userId: user.user_id, message: result.reason || 'The phone did not finish switching.' });
+    } catch (error) {
+      setSwitchError({ serial, userId: user.user_id, message: error instanceof Error ? error.message : 'Failed to switch Android user' });
+    } finally {
+      setSwitching(null);
+      await scan(serial, true);
+    }
+  };
 
   useEffect(() => {
     if (rescan) void scan(rescan.serial).then(load);
@@ -295,18 +312,19 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
       </Button>
     </header>
 
-    <div className="min-h-0 flex-1 overflow-y-auto p-5">
-      {loadError && data && <Alert variant="warning" className="mb-4">
+    {/* Side by side, the device list and the open device scroll on their own; stacked, the page scrolls. */}
+    <div className="min-h-0 flex-1 overflow-y-auto p-5 lg:flex lg:flex-col lg:overflow-hidden">
+      {loadError && data && <Alert variant="warning" className="mb-4 shrink-0">
         <p className="font-medium">Couldn’t refresh phones</p>
         <p className="mt-1">Your last loaded phones are still shown. Try refreshing again.</p>
       </Alert>}
-      {data && !data.adb_available && <Alert variant="warning" className="mb-4">
+      {data && !data.adb_available && <Alert variant="warning" className="mb-4 shrink-0">
         <p className="font-medium">ADB is not available</p>
         <p className="mt-0.5 text-amber-200/80">{data.adb_error} Install Android platform-tools on this computer, then press Refresh.</p>
       </Alert>}
 
-      <div className="grid gap-5 lg:grid-cols-[18rem_minmax(0,1fr)]">
-        <div className="space-y-2" role="list" aria-label="Devices">
+      <div className="grid gap-5 lg:min-h-0 lg:flex-1 lg:grid-cols-[18rem_minmax(0,1fr)] lg:grid-rows-[minmax(0,1fr)]">
+        <div className="space-y-2 lg:-m-1 lg:min-h-0 lg:overflow-y-auto lg:p-1" role="list" aria-label="Devices">
           <PcCard profiles={profiles} stats={stats} selected={selected === THIS_PC} onSelect={() => setSelected(THIS_PC)} />
           {phones.map(item => <DeviceCard key={item.serial} device={item} timeIssue={(() => { const report = phoneTimeReport(item, profiles, proxies); return report.mixed || report.mismatched.length > 0; })()} selected={item.serial === selected}
             onSelect={() => setSelected(item.serial)} />)}
@@ -317,12 +335,13 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
           </button>}
         </div>
 
+        <div className="min-w-0 lg:-m-1 lg:min-h-0 lg:overflow-y-auto lg:p-1">
         {selected === THIS_PC && <PcDetail profiles={profiles} stats={stats} onOpenAccount={onOpenAccount} />}
         {selected === ADD_PHONE && (loadError && !data
           ? <PhoneUnavailable error={loadError} loading={loading} onRetry={() => void load()} />
           : <ConnectPhone loading={loading} onCheck={() => void load()} />)}
-        {device && <section aria-label={device.label} className="min-w-0 rounded-panel border border-zinc-800 bg-surface/70">
-          <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-4 py-3">
+        {device && <section aria-label={device.label} className="min-w-0 rounded-panel border border-zinc-800 bg-surface/70 lg:flex lg:h-full lg:flex-col">
+          <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-zinc-800 px-4 py-3">
             <div className="min-w-0 flex-1">
               <p className="flex items-center gap-2 truncate text-sm font-semibold text-zinc-100">{device.label} {stateBadge(device)} {roleBadge(device)}</p>
               <p className="truncate text-[11px] text-zinc-500">
@@ -336,6 +355,8 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
             <IconButton aria-label="Rename phone" onClick={() => void rename(device)}><PencilLine className="h-4 w-4" /></IconButton>
             <IconButton aria-label="Remove phone" onClick={() => void forget(device)}><Trash2 className="h-4 w-4" /></IconButton>
           </div>
+          {/* Side by side, the phone's settings take at most half the panel and the users table scrolls on its own. */}
+          <div className="lg:max-h-[50%] lg:shrink-0 lg:overflow-y-auto">
           <div className="flex flex-wrap items-center gap-2 px-4 pt-3 text-xs text-zinc-400">
             <span>Auto-scan</span>
             <Select value={pollInterval} options={POLL_INTERVALS} ariaLabel="Phone scan interval" className="w-36"
@@ -393,9 +414,13 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
                   android_user_name: viewingUser.profile_name || viewingUser.name }} />
             </div>
           </Dialog>}
-          <UsersTable device={device} onView={setViewingUser} onImport={(user) => onImport(device, user)}
+          </div>
+          <UsersTable device={device} onView={setViewingUser} onSwitch={(user) => void switchTo(device.serial, user)}
+            switchingUserId={switching?.serial === device.serial ? switching.userId : null}
+            switchError={switchError?.serial === device.serial ? switchError : null} onImport={(user) => onImport(device, user)}
             onAdopt={(user) => void adopt(device, user)} onOpenAccount={onOpenAccount} />
         </section>}
+        </div>
       </div>
     </div>
   </div>;
@@ -609,9 +634,14 @@ function DeviceWarnings({ device, profiles, proxies, onSetTimezone }: {
   </div>;
 }
 
-function UsersTable({ device, onView, onImport, onAdopt, onOpenAccount }: {
+function UsersTable({ device, onView, onSwitch, switchingUserId, switchError, onImport, onAdopt, onOpenAccount }: {
   device: AndroidDevice;
+  /** Only the user on screen can be viewed; viewing never switches. */
   onView: (user: AndroidUserRow) => void;
+  /** Puts this user on the phone's screen without opening the screen here. */
+  onSwitch: (user: AndroidUserRow) => void;
+  switchingUserId: number | null;
+  switchError: { userId: number; message: string } | null;
   onImport: (user: AndroidUserRow) => void; onAdopt: (user: AndroidUserRow) => void; onOpenAccount: (profileId: string) => void;
 }) {
   const scan = device.last_scan;
@@ -620,10 +650,10 @@ function UsersTable({ device, onView, onImport, onAdopt, onOpenAccount }: {
       description={device.state === 'device' ? 'Scan the phone to list its Android users.' : 'Connect the phone, then scan it to list its Android users.'} /></div>;
   }
   const online = device.state === 'device';
-  return <div className="p-4">
-    <div className="overflow-x-auto rounded-control border border-zinc-800">
+  return <div className="p-4 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col">
+    <div className="overflow-x-auto rounded-control border border-zinc-800 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
       <table className="w-full min-w-[36rem] text-left text-xs">
-        <thead className="bg-zinc-900/60 text-[11px] text-zinc-500">
+        <thead className="sticky top-0 z-10 bg-zinc-900 text-[11px] text-zinc-500">
           <tr><th className="px-3 py-2 font-medium">Android user</th><th className="px-3 py-2 font-medium">Facebook</th>
             <th className="px-3 py-2 font-medium">Network</th><th className="px-3 py-2 font-medium">Linked account</th><th className="px-3 py-2" /></tr>
         </thead>
@@ -653,15 +683,21 @@ function UsersTable({ device, onView, onImport, onAdopt, onOpenAccount }: {
             </td>
             <td className="px-3 py-2.5 text-right">
               <div className="flex items-center justify-end gap-2">
-              <Button size="sm" variant="outline" disabled={!online}
-                onClick={() => onView(user)}>View screen</Button>
+              {online && user.current
+                ? <Button size="sm" variant="outline" onClick={() => onView(user)}>View screen</Button>
+                : <Button size="sm" variant="outline" disabled={!online || switchingUserId !== null}
+                    title={online ? 'Show this user on the phone. The screen is not opened here.' : 'Connect the phone first.'}
+                    onClick={() => onSwitch(user)}>
+                    {switchingUserId === user.user_id ? <><Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />Switching…</> : 'Switch to'}
+                  </Button>}
               </div>
+              {switchError?.userId === user.user_id && <p role="alert" className="ml-auto mt-1 max-w-64 text-right text-[11px] text-red-300">{switchError.message}</p>}
             </td>
           </tr>)}
         </tbody>
       </table>
     </div>
-    <p className="mt-2 text-[11px] text-zinc-500">
+    <p className="mt-2 shrink-0 text-[11px] text-zinc-500">
       Scanned {new Date(scan.scanned_at).toLocaleString()}. Accounts set up by another PC are read from the phone; adding one here doesn’t change the phone. Automation for phone accounts isn’t available yet.
     </p>
   </div>;
