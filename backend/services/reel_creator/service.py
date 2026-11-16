@@ -17,6 +17,7 @@ import psutil
 from PIL import Image, ImageOps, UnidentifiedImageError, features
 
 from .audio_presets import PRESETS, preset_path
+from .catalog import CATALOG
 from .reel import LOOKS, MAX_SCENES, MAX_SECONDS, RATIOS, Reel
 from .renderer import Plan
 from .store import Store, Conflict
@@ -144,7 +145,8 @@ class ReelCreator:
             repair='Open Settings → Setup and repair → Install / update runtime.',
             looks=[dict(id=key, name=value['name'], tag=value['tag'], accent=value['accent'], music=value['music']) for key, value in LOOKS.items()],
             ratios=list(RATIOS), max_scenes=MAX_SCENES, max_seconds=MAX_SECONDS,
-            music=[dict(id=key, name=value['name'], description=value['description'], duration=value['duration']) for key, value in PRESETS.items()], max_upload_bytes=MAX_UPLOAD, max_pixels=MAX_PIXELS)
+            music=[dict(id=key, name=value['name'], description=value['description'], duration=value['duration']) for key, value in PRESETS.items()], max_upload_bytes=MAX_UPLOAD, max_pixels=MAX_PIXELS,
+            catalog=[preset.public() for preset in CATALOG])
         self._capability_time = time.monotonic()
         return self._capabilities
 

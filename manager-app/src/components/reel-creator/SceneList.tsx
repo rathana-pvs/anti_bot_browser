@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ArrowDown, ArrowUp, Frame, ImagePlus, Loader2, Paintbrush, Plus, RefreshCw, Sparkles, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, Frame, ImagePlus, Loader2, Lock, LockOpen, Paintbrush, Plus, RefreshCw, Sparkles, Trash2, Wand2 } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { IconButton } from '../ui/IconButton';
 import { Input } from '../ui/Input';
@@ -35,6 +35,8 @@ interface Props {
   onAdd: () => void;
   /** New words for the scene in its current type, from the article. */
   onRewrite: (index: number) => void;
+  /** Scenes the AI director changed in its last answer (by position). */
+  changed?: ReadonlySet<number>;
 }
 
 const kinds = (Object.keys(KIND_NAMES) as SceneKind[]).map(value => ({ value, label: KIND_NAMES[value] }));
@@ -61,7 +63,7 @@ export function SceneList(p: Props) {
 
     <ol className="space-y-2">
       {p.reel.scenes.map((scene, i) => <li key={i} onFocusCapture={() => p.onSelect(i)} onClick={() => p.onSelect(i)}
-        className={`flex gap-3 rounded-xl border p-3 transition-colors ${i === p.selected ? 'border-violet-600/70 bg-zinc-900/60' : 'border-zinc-800'}`}>
+        className={`flex gap-3 rounded-xl border p-3 transition-colors ${i === p.selected ? 'border-violet-600/70 bg-zinc-900/60' : p.changed?.has(i) ? 'border-sky-700/60' : 'border-zinc-800'}`}>
         <button type="button" aria-label={scene.image_id ? `Change photo for scene ${i + 1}` : `Add photo for scene ${i + 1}`} disabled={p.busy}
           onClick={event => { event.stopPropagation(); p.onPhoto(i); }}
           className="group relative h-[72px] w-[72px] shrink-0 overflow-hidden rounded-lg border border-zinc-800 hover:border-zinc-600">
@@ -102,8 +104,14 @@ export function SceneList(p: Props) {
         </div>
         <div className="flex shrink-0 flex-col items-center justify-between">
           <span className="flex items-center gap-1 text-[11px] tabular-nums text-zinc-500">
+            {p.changed?.has(i) && <Wand2 className="h-3 w-3 text-sky-400" aria-label="Changed by the director" />}
             {sceneIsStyled(scene) && <Paintbrush className="h-3 w-3 text-violet-400" aria-label="Has its own style" />}{sceneSeconds(scene)}s</span>
           <div className="flex">
+            <IconButton aria-label={scene.locked ? `Unlock scene ${i + 1}` : `Lock scene ${i + 1}`} aria-pressed={!!scene.locked}
+              title={scene.locked ? 'Locked: the AI director leaves this scene alone' : 'Lock so the AI director leaves this scene alone'}
+              className={scene.locked ? 'text-amber-300' : undefined}
+              onClick={event => { event.stopPropagation(); p.onEdit(i, { locked: scene.locked ? null : true }); }}>
+              {scene.locked ? <Lock className="h-3.5 w-3.5" /> : <LockOpen className="h-3.5 w-3.5" />}</IconButton>
             {p.canWrite && <IconButton aria-label={`Rewrite scene ${i + 1}`} title={`Rewrite this ${KIND_NAMES[scene.kind ?? 'story'].toLowerCase()} from the article`}
               loading={p.rewriting === i} disabled={p.busy} onClick={event => { event.stopPropagation(); rewrite(i); }}><Sparkles className="h-3.5 w-3.5" /></IconButton>}
             {scene.image_id && <IconButton aria-label="Show whole photo" title="Show whole photo (blurred fill)" aria-pressed={scene.fit === 'blur'}

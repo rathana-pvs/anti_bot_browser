@@ -7,6 +7,7 @@ import { Alert } from '../ui/Alert';
 import { Button } from '../ui/Button';
 import { Select } from '../ui/Select';
 import { Spinner } from '../ui/Spinner';
+import { DirectorPanel } from './DirectorPanel';
 import { FinishPanel } from './FinishPanel';
 import { HouseStylePicker } from './HouseStylePicker';
 import { UpdateStoryDialog } from './UpdateStoryDialog';
@@ -18,6 +19,7 @@ import { SceneList } from './SceneList';
 import { SourceInput } from './SourceInput';
 import { reelOnly, StylePanel } from './StylePanel';
 import { useSceneLayout } from '../../hooks/useSceneLayout';
+import { loadAISettings, modelLabel } from '../../services/aiSettings';
 import './reelCreator.css';
 
 interface Props {
@@ -71,6 +73,7 @@ export function ReelCreator({ active, onUseReel }: Props) {
   const supports = doc.sourceText ? articleSupports(doc.sourceText) : { story: true, stat: true, quote: true, end: true };
   const rendering = busy === 'render' || (!!job && fresh && ['queued', 'rendering', 'verifying'].includes(job.state));
   const done = !!job && fresh && job.state === 'completed' ? job : null;
+  const changed = new Set((studio.directed?.changes ?? []).flatMap(c => c.scene ? [c.scene - 1] : []));
   const recent = studio.drafts.map(d => ({ value: d.id, label: draftTitle(d.reel) }));
   const edit = (index: number, patch: Partial<typeof doc.reel.scenes[number]>) =>
     studio.setReel(reel => ({ ...reel, scenes: reel.scenes.map((s, i) => i === index ? { ...s, ...patch } : s) }));
@@ -106,6 +109,8 @@ export function ReelCreator({ active, onUseReel }: Props) {
           <PhonePreview active={active} reel={studio.shown} scene={scene} onScene={setScene} job={job} fresh={fresh}
             onCancel={() => { void studio.updateJob('cancel'); }} onRetry={() => { void studio.updateJob('retry'); }}
             layout={layout} selected={mode === 'advanced' ? role : null} onPick={pick} onFrame={patch => edit(scene, patch)} />
+          <DirectorPanel model={modelLabel(loadAISettings(), 'direct')} busy={!!busy} directing={busy === 'direct'} result={studio.directed}
+            onDirect={instruction => { void studio.direct(instruction); }} onUndo={studio.undoDirected} onScene={setScene} />
           <OutputPanel output={studio.output} onOutput={studio.setOutput} photoRatio={studio.photoRatio} onPhotoRatio={studio.setPhotoRatio}
             scene={scene} seconds={reelSeconds(doc.reel)} reelRatio={doc.reel.ratio} rendering={rendering} busy={!!busy} makingPhoto={busy === 'photo'}
             ready={done?.kind === 'final'} onCreate={kind => { void studio.startRender(kind); }}
@@ -123,7 +128,7 @@ export function ReelCreator({ active, onUseReel }: Props) {
             undoable={studio.undo?.index ?? null} onUndo={studio.undoRewrite} supports={supports}
             onSelect={setScene} onEdit={edit} onHook={studio.pickHook} onMoreHooks={() => { void studio.moreHooks(); }}
             onPhoto={index => { void studio.changePhoto(index); }} onPhotos={() => { void studio.addPhotos(); }}
-            onMove={studio.moveScene} onRemove={studio.removeScene} onAdd={studio.addScene} />
+            onMove={studio.moveScene} onRemove={studio.removeScene} onAdd={studio.addScene} changed={changed} />
           {mode === 'advanced' && <StylePanel reel={doc.reel} looks={capabilities.looks} scene={scene} scope={scope} onScope={setScope} role={role} onRole={setRole}
             onStyle={(target, patch) => {
               if (scope === 'reel' || ['brand', 'logo', 'ticker'].includes(target)) studio.setReel(reel => ({ ...reel, style: patchStyle(reel.style, target, patch) }));

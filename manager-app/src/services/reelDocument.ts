@@ -124,7 +124,8 @@ export function addScene(reel: Reel): Reel {
 export const hasContent = (reel: Reel): boolean => reel.scenes.some(scene => scene.headline.trim() || scene.detail.trim());
 
 /** Stable identity of what a render shows; captions and hooks do not change the video. */
-export const reelKey = (reel: Reel): string => JSON.stringify(reel);
+/** What a render depends on: a scene's lock is for the AI director only and never changes the video. */
+export const reelKey = (reel: Reel): string => JSON.stringify({ ...reel, scenes: reel.scenes.map(({ locked: _locked, ...scene }) => scene) });
 
 /** What a reel becomes on Live: no progress bar (a loop would restart it), and Breaking shows its LIVE badge. */
 export const liveVersion = (reel: Reel): Reel => ({ ...reel, show_progress: false, live: reel.look === 'breaking' ? true : reel.live });

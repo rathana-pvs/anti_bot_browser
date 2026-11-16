@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { reelApi, type WriteRequest } from '../services/reelCreator';
-import { configuredGemini } from '../services/newsSource';
+import { configuredAI } from '../services/aiSettings';
 import { addScene, KIND_NAMES, rewrittenWords, sceneWords, updatedStory, applyHouseStyle, applyWriting, houseStyleOf, datelineFor, liveVersion, photoVersion, emptyReel, fillPhotos, fillScenes, hasContent, headlines, insertIndex, MAX_SCENES, moveScene, placePhotos, reelKey, removeScene, setPhoto, sourceKind, withHook } from '../services/reelDocument';
 import type { ReelArticleLink } from '../services/websites';
-import type { CreatedReelMedia, HouseStyle, Reel, ReelGoal, ReelAsset, ReelBrand, ReelCapabilities, ReelDraft, ReelJob, ReelRatio, ReelScene } from '../types/reelCreator';
+import type { CreatedReelMedia, DirectorResult, DirectorTurn, HouseStyle, Reel, ReelGoal, ReelAsset, ReelBrand, ReelCapabilities, ReelDraft, ReelJob, ReelRatio, ReelScene } from '../types/reelCreator';
 
 interface Doc { reel: Reel; caption: string; goal: ReelGoal; comment: string; hooks: string[]; sourceText: string; sourceUrl: string; sourceTitle: string; sourcePublisher: string }
 /** An article as read once: pasted text, or the text extracted from a link. */
 interface Article { text: string; url: string; title: string; publisher: string; published: string }
-type Busy = null | 'write' | 'hooks' | 'caption' | 'photos' | 'scene' | 'rewrite' | 'logo' | 'music' | 'render' | 'photo';
+type Busy = null | 'write' | 'hooks' | 'caption' | 'photos' | 'scene' | 'rewrite' | 'logo' | 'music' | 'render' | 'photo' | 'direct';
 /** What the reel is used as: a still of one scene for a photo post, the Reel video, or the video for Live. */
 export type ReelOutput = 'photo' | 'reel' | 'live';
 type Tracked = { jobId: string; key: string };
@@ -45,6 +45,9 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
   /** The scene words a rewrite replaced, while its notice offers Undo. */
   const [undo, setUndo] = useState<{ index: number; words: Partial<ReelScene> } | null>(null);
   const [rewriting, setRewriting] = useState<number | null>(null);
+  /** The director's last answer, the reel as it was before it, and the recent turns it is shown for context. */
+  const [directed, setDirected] = useState<(DirectorResult & { before: Reel }) | null>(null);
+  const [turns, setTurns] = useState<DirectorTurn[]>([]);
   const [saveState, setSaveState] = useState('');
   const [renders, setRenders] = useState<Renders>({});
   const [output, setOutput] = useState<ReelOutput>('reel');
@@ -87,7 +90,7 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
       sourceTitle: draft.source_title ?? '', sourcePublisher: draft.source_publisher ?? '' } : blank(brandRef.current);
     savedHash.current = draft ? JSON.stringify(snapshot(next)) : '';
     docRef.current = next;
-    setDocState(next); setDraftId(id); setError(''); setNotice(''); setUndo(null); setSaveState(draft ? 'Saved' : '');
+    setDocState(next); setDraftId(id); setError(''); setNotice(''); setUndo(null); setDirected(null); setTurns([]); setSaveState(draft ? 'Saved' : '');
     try { localStorage.setItem('reel_creator_draft', id); } catch { /* A remembered draft is a convenience. */ }
     setRenders(savedRenders(id));
   }, []);
@@ -157,10 +160,10 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
 
   /** One call to the AI writer; `source` is an article already read, or a pasted article or web address. */
   const requestWriting = async (source: Article | string, look: WriteRequest['look'], extra: Pick<WriteRequest, 'scenes' | 'existing' | 'caption' | 'part' | 'rewrite' | 'position' | 'replacing'> = {}, goal: ReelGoal = docRef.current.goal) => {
-    const gemini = configuredGemini();
+    const ai = configuredAI('write');
     const article = typeof source === 'string' ? await readArticle(source) : source;
     if (article.text.length < 80) throw new Error('Paste the full article text, or a link to it.');
-    const written = await reelApi.write({ ...gemini, text: article.text, source_url: article.url, source_title: article.title, publisher: article.publisher, look, goal, ...extra });
+    const written = await reelApi.write({ ...ai, text: article.text, source_url: article.url, source_title: article.title, publisher: article.publisher, look, goal, ...extra });
     return { written, article };
   };
 
@@ -370,6 +373,25 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
     else if (job?.output) setNotice(await reelApi.export(job.id, job.output.filename));
   });
 
+  /** Ask the AI director to change the reel; the answer replaces the reel in one step that Undo restores. */
+  const direct = (instruction: string) => attempt('direct', async () => {
+    const ai = configuredAI('direct');
+    const base = docRef.current;
+    const result = await reelApi.direct({ ...ai, reel: base.reel, instruction: instruction.trim(), source_text: base.sourceText, goal: base.goal, history: turns.slice(-6) });
+    if (docRef.current.reel !== base.reel) throw new Error('The reel changed while the director was working. Send the instruction again.');
+    if (result.changes.length) setReel(() => result.reel);
+    setDirected({ ...result, before: base.reel });
+    setTurns(old => [...old, { instruction: instruction.trim().slice(0, 500), message: result.message.slice(0, 400) }].slice(-6));
+  });
+
+  const undoDirected = () => {
+    if (!directed) return;
+    const before = directed.before;
+    setReel(() => before);
+    setDirected(null);
+    setTurns(old => [...old, { instruction: 'Undo your last change.', message: 'Undone: the reel is back as it was.' }].slice(-6));
+  };
+
   const discard = async () => {
     const id = draftRef.current.id;
     try { if (draftRef.current.revision > 0) await reelApi.deleteDraft(id); } catch (err) { setError(message(err)); return; }
@@ -382,6 +404,7 @@ export function useReelStudio(active: boolean, onUseReel: (media: CreatedReelMed
     capabilities, drafts, doc, draftId, articleLink, houseStyles, saveHouseStyle, deleteHouseStyle, pickHouseStyle, loaded, busy, error, notice, saveState, job, fresh,
     setError, setNotice, setReel, setDoc, open, discard,
     create, updateStory, moreHooks, rewriteScene, undoRewrite, undo, rewriting, rewriteCaption, importImages,
+    direct, directed, undoDirected, clearDirected: () => setDirected(null),
     setGoal, addPhotos, changePhoto, setBrand, uploadLogo, pickMusic, setMusic, startRender, updateJob, send, saveFile, output, setOutput, photoRatio, setPhotoRatio, shown,
     pickHook: (hook: string) => setReel(reel => withHook(reel, hook)),
     moveScene: (from: number, to: number) => setReel(reel => moveScene(reel, from, to)),

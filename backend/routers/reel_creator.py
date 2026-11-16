@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 from backend.services.website_service import Article
 from backend.services.reel_creator.articles import extract_article
 from backend.services.reel_creator.audio_presets import preset_path
+from backend.services.ai import AIConfig
+from backend.services.reel_creator.director import DirectRequest, check_model, direct
 from backend.services.reel_creator.reel import MAX_HOUSE_STYLES, DraftInput, HouseStyle, Reel, RenderInput
 from backend.services.reel_creator.service import MAX_UPLOAD, get_service
 from backend.services.reel_creator.store import Conflict
@@ -87,6 +89,16 @@ def article(value: ArticleInput):
 @router.post('/write')
 def write(value: WriteRequest):
     return checked(write_reel, value)
+
+
+@router.post('/direct')
+def direct_reel(value: DirectRequest):
+    return checked(direct, value)
+
+
+@router.post('/ai-check')
+def ai_check(value: AIConfig):
+    return checked(check_model, value)
 
 
 @router.post('/assets/{kind}')

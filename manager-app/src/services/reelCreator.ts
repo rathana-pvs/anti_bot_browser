@@ -2,7 +2,8 @@ import type { ReelArticleLink } from './websites';
 import { invoke } from '@tauri-apps/api/core';
 import { API_BASE } from './api';
 import { isDesktopApp } from './desktopEnvironment';
-import type { ArticleText, PhotoImport, Reel, ReelAsset, ReelPhoto, ReelRatio, ReelGoal, ReelBrand, ReelCapabilities, HouseStyle, ReelDraft, ReelJob, SceneKind, SceneLayout, WrittenReel } from '../types/reelCreator';
+import type { AIRequestConfig } from './aiSettings';
+import type { ArticleText, DirectorResult, DirectorTurn, PhotoImport, Reel, ReelAsset, ReelPhoto, ReelRatio, ReelGoal, ReelBrand, ReelCapabilities, HouseStyle, ReelDraft, ReelJob, SceneKind, SceneLayout, WrittenReel } from '../types/reelCreator';
 
 async function request(path: string, init?: RequestInit): Promise<Response> {
   const response = await fetch(`${API_BASE}/reel-creator${path}`, init);
@@ -22,7 +23,12 @@ function json(method: string, value: unknown): RequestInit {
   return { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) };
 }
 
+export interface DirectRequest extends AIRequestConfig {
+  reel: Reel; instruction: string; source_text: string; goal: ReelGoal; history: DirectorTurn[];
+}
+
 export interface WriteRequest {
+  provider?: AIRequestConfig['provider']; base_url?: string;
   api_key: string; model: string; text: string; source_url: string; source_title: string; publisher: string;
   look: 'auto' | Reel['look'];
   goal?: ReelGoal;
@@ -64,6 +70,8 @@ export const reelApi = {
   deleteDraft: async (id: string): Promise<void> => { await request(`/drafts/${id}`, { method: 'DELETE' }); },
   article: async (url: string, signal?: AbortSignal): Promise<ArticleText> => (await request('/article', { ...json('POST', { url }), signal })).json(),
   write: async (value: WriteRequest, signal?: AbortSignal): Promise<WrittenReel> => (await request('/write', { ...json('POST', value), signal })).json(),
+  checkAI: async (value: AIRequestConfig): Promise<{ ok: boolean; model: string; seconds: number }> => (await request('/ai-check', json('POST', value))).json(),
+  direct: async (value: DirectRequest): Promise<DirectorResult> => (await request('/direct', json('POST', value))).json(),
   upload: async (kind: ReelAsset['kind'], file: File): Promise<ReelAsset> => {
     const data = new FormData();
     data.append('file', file);

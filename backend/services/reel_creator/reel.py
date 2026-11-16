@@ -108,6 +108,8 @@ class Scene(BaseModel):
     # How big the photo is against the text on looks that split the frame between them, 0 = the look's smallest photo,
     # 1 = its largest; None = as big as the text leaves room for. Politics, Clean, Editorial and Pop Art only.
     photo_size: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+    # The operator locked this scene: the AI director leaves it as it is. Never drawn.
+    locked: bool | None = None
 
     @field_validator('backdrop')
     @classmethod

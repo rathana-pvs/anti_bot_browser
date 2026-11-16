@@ -8,16 +8,20 @@ from hashlib import sha256
 from typing import Literal
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import ConfigDict, Field, SecretStr
+
+from backend.services.ai.request import AIConfig
 
 logger = logging.getLogger(__name__)
 # Short writing (captions, hooks) needs the top of an article, not all of it. Checks still read what they were given.
 SHORT_COPY_SOURCE_CHARS = 4000
 
 
-def log_usage(action, model, body):
+def log_usage(action, model, body, out=None):
     """What one Gemini call cost, by action. Counts only: never the prompt, the answer or the key."""
     usage = body.get('usageMetadata') or {}
+    if out is not None:
+        out.update(input=usage.get('promptTokenCount') or 0, output=(usage.get('candidatesTokenCount') or 0) + (usage.get('thoughtsTokenCount') or 0))
     logger.info('Gemini usage action=%s model=%s input=%s output=%s thinking=%s total=%s', action, model, usage.get('promptTokenCount'),
                 usage.get('candidatesTokenCount'), usage.get('thoughtsTokenCount'), usage.get('totalTokenCount'))
 
@@ -40,10 +44,10 @@ def normalize_hashtags(value):
     return result
 
 
-class NewsRequest(BaseModel):
+class NewsRequest(AIConfig):
+    """An article to write from, and the AI to write with (Gemini unless the request names another provider)."""
     model_config = ConfigDict(extra='forbid')
     api_key: SecretStr
-    model: str = Field(pattern=r'^gemini-[a-zA-Z0-9.-]{1,80}$')
     text: str = Field(min_length=80, max_length=120000)
     source_url: str = Field(default='', max_length=2048)
     source_title: str = Field(default='', max_length=300)
@@ -64,13 +68,28 @@ def numbers(value):
     return set(re.findall(r'\d+(?:[.,]\d+)*', value))
 
 
-def provider_generate(request, client_factory=httpx.Client, *, system, schema, action='news'):
+def provider_said(response, limit=240):
+    """The provider's own short error text, for the operator. Anything shaped like a key is removed."""
+    try:
+        raw = response.read()[:8000]
+        error = json.loads(raw).get('error', {})
+        text = error.get('message', '') if isinstance(error, dict) else str(error)
+    except (ValueError, AttributeError, httpx.HTTPError):
+        return ''
+    text = re.sub(r'AIza[0-9A-Za-z_-]{20,}|sk-[0-9A-Za-z_-]{16,}', '[key]', ' '.join(str(text).split()))
+    return text[:limit].rstrip() + ('…' if len(text) > limit else '')
+
+
+def provider_generate(request, client_factory=httpx.Client, *, system, schema, action='news', context=None, prefix='', usage=None):
+    """One Gemini call that answers in `schema`. `prefix` is stable text sent before the per-call `context`."""
     key = request.api_key.get_secret_value().strip()
     if not key:
         raise ValueError('Add your Gemini API key in Settings first.')
-    context = request.provider_context() if hasattr(request, 'provider_context') else request.model_dump(exclude={'api_key', 'model'})
+    if context is None:
+        context = request.provider_context() if hasattr(request, 'provider_context') else request.model_dump(exclude={'api_key', 'model', 'provider', 'base_url'})
+    parts = ([{'text': prefix}] if prefix else []) + [{'text': json.dumps(context, ensure_ascii=False)}]
     payload = {'systemInstruction': {'parts': [{'text': system}]},
-               'contents': [{'role': 'user', 'parts': [{'text': json.dumps(context, ensure_ascii=False)}]}],
+               'contents': [{'role': 'user', 'parts': parts}],
                'generationConfig': {'responseMimeType': 'application/json',
                                     'responseJsonSchema': schema.model_json_schema(),
                                     'maxOutputTokens': 5000}}
@@ -84,19 +103,26 @@ def provider_generate(request, client_factory=httpx.Client, *, system, schema, a
                                 403: 'Gemini access was denied. Check the API key and model in Settings.',
                                 404: 'The selected Gemini model is unavailable. Choose an available model in Settings.',
                                 429: 'Gemini quota or rate limit reached. Wait or check your API quota.'}
-                    raise ValueError(messages.get(response.status_code, 'Gemini could not generate this draft. Check your key/model or try again.'))
+                    said = provider_said(response)
+                    if response.status_code == 400 and 'api key' in said.lower():
+                        raise ValueError('Gemini rejected the API key. Check Settings.')
+                    message = messages.get(response.status_code, f'Gemini could not answer (error {response.status_code}).')
+                    raise ValueError(f'{message} Gemini said: {said}' if said else message)
                 data = bytearray()
                 for chunk in response.iter_bytes(64 * 1024):
                     data.extend(chunk)
                     if len(data) > 256000 or time.monotonic() - started > 65:
                         raise ValueError('The Gemini response exceeded the size or time limit. Try again.')
         body = json.loads(data)
-        log_usage(action, request.model, body)
+        log_usage(action, request.model, body, usage)
         candidate = body.get('candidates', [{}])[0]
-        if candidate.get('finishReason') not in (None, 'STOP'):
-            raise ValueError('Gemini did not finish a usable news draft. Try clearer or shorter source text.')
+        reason = candidate.get('finishReason') or (body.get('promptFeedback') or {}).get('blockReason')
+        if reason not in (None, 'STOP'):
+            hint = {'MAX_TOKENS': 'It ran out of room for its answer; try a shorter article or another model.',
+                    'SAFETY': 'It was stopped by its safety filter.'}.get(reason, f'It stopped early ({reason}).')
+            raise ValueError(f'Gemini did not finish a usable answer. {hint}')
         parts = candidate.get('content', {}).get('parts', [])
         text = ''.join(p.get('text', '') for p in parts if not p.get('thought'))
         return json.loads(text)
     except (httpx.HTTPError, KeyError, IndexError, TypeError, AttributeError, json.JSONDecodeError):
-        raise ValueError('Gemini did not return a usable news draft. Check your model/key and try again.') from None
+        raise ValueError('Gemini did not return a usable answer. Check your model and key in Settings, then try again.') from None
