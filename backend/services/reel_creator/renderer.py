@@ -1161,7 +1161,8 @@ class Plan:
         if self._bare(scene):
             self._scene_rect = (0, 0, 0, 0, 0)
         ink = self._ink_on(self.accent)
-        return self._block_text((hl, hs, dl, ds, block), px(panel_top + 60), ink, ink, shadow=False)[0]
+        room = px(self.limit - panel_top - 40) - block  # the text sits in the middle of the panel's safe part
+        return self._block_text((hl, hs, dl, ds, block), px(panel_top + 20) + max(0, room // 2), ink, ink, shadow=False)[0]
 
     def _pop_art(self, scene):
         """Photo or cutout on top; an accent seam carrying the label; a centered uppercase headline on a black panel."""
