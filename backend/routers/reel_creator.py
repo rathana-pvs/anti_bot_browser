@@ -9,7 +9,8 @@ from backend.services.website_service import Article
 from backend.services.reel_creator.articles import extract_article
 from backend.services.reel_creator.audio_presets import preset_path
 from backend.services.ai import AIConfig
-from backend.services.reel_creator.composition import AnyDocument, DocumentRenderInput
+from backend.services.reel_creator.composition import AnyDocument, Composition, DocumentRenderInput
+from backend.services.reel_creator.quality import review
 from backend.services.reel_creator.director import DirectRequest, check_model, direct
 from backend.services.reel_creator.reel import MAX_HOUSE_STYLES, DraftInput, HouseStyle, Reel
 from backend.services.reel_creator.service import MAX_UPLOAD, get_service
@@ -95,6 +96,17 @@ def write(value: WriteRequest):
 @router.post('/direct')
 def direct_reel(value: DirectRequest):
     return checked(direct, value)
+
+
+@router.post('/compositions/review')
+def review_composition(value: Composition):
+    """The composition with what the quality rules could fix fixed, what was changed, and what still needs the operator."""
+    def run():
+        service = get_service()
+        ids = value.image_ids()
+        fixed, fixes, problems = review(value, {i: service.store.asset(i) for i in ids}, {i: service.asset_path(i, 'image') for i in ids})
+        return dict(composition=fixed.model_dump(), fixes=[vars(f) for f in fixes], problems=[vars(p) for p in problems])
+    return checked(run)
 
 
 @router.post('/ai-check')
