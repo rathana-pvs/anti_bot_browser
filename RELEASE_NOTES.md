@@ -1,3 +1,12 @@
+# Version 2.3.3
+
+- Handle Facebook's “Hosting an event?” prompt after Reel Post by choosing
+  Publish Original Post to finish the existing publication attempt.
+- Report an uncertain result if the prompt remains open after three attempts.
+
+**Linux only.** After installing, run **Settings → Setup and repair → Install /
+update runtime** when prompted.
+
 # Version 2.3.2
 
 - Send photos and videos to a phone account's gallery from the account menu,
