@@ -86,8 +86,14 @@ class Element:
 class Plan:
     """Layout for one reel at one output width. Built once, then sampled by time."""
 
-    def __init__(self, reel: Reel, width: int, images: dict, logo=None, fps=30):
+    def __init__(self, reel: Reel, width: int, images: dict, logo=None, fps=30, layout=None, cameras=None, motions=None):
+        """`layout` draws every scene with that layout instead of the look's own (the composition renderer uses it);
+        `cameras` and `motions` are per-scene camera moves and per-role entrances beyond what a Reel can store."""
         self.reel, self.fps = reel, fps
+        self.look = layout or reel.look
+        self.cameras, self.motions = cameras or {}, motions or {}
+        # The next scene's opening background, for transitions; a composition draws that scene with another plan.
+        self.background_of = self.background
         self.W = width
         self.s = width / DESIGN_W
         self.DH = reel.design_height
@@ -98,8 +104,8 @@ class Plan:
         self.limit = self.DH - (380 if portrait else 100)  # text must end above this line
         self.right = RIGHT_REELS if portrait else LEFT     # text keeps clear of the Reels button column
         self.text_w = DESIGN_W - LEFT - self.right
-        self.look_type = self.type = TYPE[reel.look]
-        self.ink = INK + (255,) if reel.look in LIGHT_PAGE else WHITE
+        self.look_type = self.type = TYPE[self.look]
+        self.ink = INK + (255,) if self.look in LIGHT_PAGE else WHITE
         self.images, self.logo_path = images, logo
         self.lengths = [scene.length() for scene in reel.scenes]
         self.starts = [sum(self.lengths[:i]) for i in range(len(self.lengths))]
@@ -195,13 +201,13 @@ class Plan:
 
         Returns where the block now sits on that scale, or None when this look or scene cannot move its text.
         """
-        if self.reel.look not in MOVABLE or not elements:
+        if self.look not in MOVABLE or not elements:
             return None
         top = min(e.y for e in elements)
         bottom = max(e.y + e.tile.height for e in elements)
         # Below the logo row and above the ticker; the look's own place is always in range, padding and all.
         highest = min(top, self.px(self.inset + 120))
-        lowest = max(top, self.px(self.limit - (80 if self.reel.look == 'breaking' else 0)) - (bottom - top))
+        lowest = max(top, self.px(self.limit - (80 if self.look == 'breaking' else 0)) - (bottom - top))
         if lowest - highest < self.px(40):
             return None
         if position is None:
@@ -219,7 +225,7 @@ class Plan:
         """
         if not scene.credit or not scene.image_id or not self._scene_rect[3]:
             return []
-        px, look = self.px, self.reel.look
+        px, look = self.px, self.look
         text, size = self._one_line(scene.credit, 520, 26, 22, 'condensed-semi')
         tile, _ = self._text(text, size, self._ink('credit', (255, 255, 255, 225)), 'condensed-semi')  # always over the photo
         x0, y0, rw, rh, _ = self._scene_rect
@@ -259,7 +265,7 @@ class Plan:
     def _photo_box(self, index):
         """Where a croppable photo shows, as fractions of the frame, so the app can drag it; None when nothing is cropped."""
         scene, (x0, y0, rw, rh, _) = self.reel.scenes[index], self.rects[index]
-        if not scene.image_id or scene.fit == 'blur' or self.reel.look == 'pop_art' or not rw or not rh:
+        if not scene.image_id or scene.fit == 'blur' or self.look == 'pop_art' or not rw or not rh:
             return None
         return dict(x=round(x0 / self.W, 4), y=round(y0 / self.H, 4), w=round(rw / self.W, 4), h=round(rh / self.H, 4))
 
@@ -304,10 +310,11 @@ class Plan:
         following = self.reel.scenes[index + 1].transition if index + 1 < len(self.lengths) else 'cut'
         if following != 'cut' and local > length - CROSSFADE:
             blend = ease_out((local - (length - CROSSFADE)) / CROSSFADE)
+            following_image = self.background_of(index + 1, 0)
             if following == 'slide':  # the next photo pushes in from the right
-                image.paste(self.background(index + 1, 0), (round(self.W * (1 - blend)), 0))
+                image.paste(following_image, (round(self.W * (1 - blend)), 0))
             else:
-                image = Image.blend(image, self.background(index + 1, 0), blend)
+                image = Image.blend(image, following_image, blend)
         for element in self.scene_elements[index]:
             self._draw(image, element, local, local, length, entrance_complete=index == 0)
         for element in self.global_elements:
@@ -319,7 +326,7 @@ class Plan:
     # ---- background -----------------------------------------------------
     def _frame(self):
         """Where the photo sits by default: (x, y, w, h, radius) in pixels, and the color around it."""
-        px, look = self.px, self.reel.look
+        px, look = self.px, self.look
         if look == 'pop_art':
             rect, page = (0, 0, DESIGN_W, round(self.DH * .62), 0), (17, 17, 17)
         elif look == 'politics':   # photo on top, text panel below
@@ -374,8 +381,8 @@ class Plan:
         path = self.images.get(scene.image_id) if scene.image_id else None
         if path:
             with Image.open(path) as source:
-                photo = source.convert('RGBA' if self.reel.look == 'pop_art' and source.mode in ('RGBA', 'LA', 'P') else 'RGB')
-            if self.reel.look == 'pop_art' and photo.mode == 'RGBA' and photo.getchannel('A').getextrema()[0] < 255:
+                photo = source.convert('RGBA' if self.look == 'pop_art' and source.mode in ('RGBA', 'LA', 'P') else 'RGB')
+            if self.look == 'pop_art' and photo.mode == 'RGBA' and photo.getchannel('A').getextrema()[0] < 255:
                 base = self._collage_photo(photo, size)
             elif scene.fit == 'blur':
                 base = self._blur_fill(photo, size)
@@ -383,7 +390,7 @@ class Plan:
                 base = ImageOps.fit(zoom_crop(photo, size, scene), size, Image.Resampling.LANCZOS, centering=(scene.focal_x, scene.focal_y))
         elif scene.backdrop:
             base = Image.new('RGB', size, rgb(scene.backdrop))
-        elif self.reel.look == 'pop_art':
+        elif self.look == 'pop_art':
             base = self._collage_photo(None, size)
         else:
             base = self._plain_background(size)
@@ -462,13 +469,13 @@ class Plan:
 
     def _scrim(self, base, shade=1, low=False):
         """Darken where text sits so it stays readable on any photo; `shade` scales it. Clean needs none."""
-        if self.reel.look == 'hot' and low:  # Hot's text moved below the subject: dark at the bottom, light up top
+        if self.look == 'hot' and low:  # Hot's text moved below the subject: dark at the bottom, light up top
             spec = ((.36, .82, .9), (.18, .5), (6, 8, 14))
         else:
             spec = {'breaking': ((.40, .78, .86), (.2, .55), (6, 8, 14)),
                     'hot': ((.62, .95, .55), (.64, .86), (6, 8, 14)),         # mostly the top, where the headline and sticker sit
                     'wire': ((.45, .86, .9), (.2, .5), (6, 8, 14)),
-                    'politics': ((.74, 1.0, 1.0), (.25, .5), PANEL)}.get(self.reel.look)  # photo melts into the panel
+                    'politics': ((.74, 1.0, 1.0), (.25, .5), PANEL)}.get(self.look)  # photo melts into the panel
         if not spec or not shade:
             return base
         (start, end, strength), (reach, top_strength), color = spec
@@ -531,8 +538,8 @@ class Plan:
 
     def _progress(self, image, t, index, local):
         draw = ImageDraw.Draw(image, 'RGBA')
-        accent, light = self.accent + (255,), self.reel.look in LIGHT_PAGE
-        if self.reel.look in ('hot', 'politics'):  # segmented: one bar per scene
+        accent, light = self.accent + (255,), self.look in LIGHT_PAGE
+        if self.look in ('hot', 'politics'):  # segmented: one bar per scene
             count, gap, height = len(self.lengths), self.px(8), max(3, self.px(7))
             y = self.px(46 if self.reel.ratio == '9:16' else 22)
             width = (self.W - 2 * self.px(40) - gap * (count - 1)) / count
@@ -542,7 +549,7 @@ class Plan:
                 fill = 1 if i < index else clamp(local / self.lengths[i]) if i == index else 0
                 if fill > 0:
                     draw.rounded_rectangle((x0, y, x0 + max(height, width * fill), y + height), height // 2,
-                                           fill=WHITE if self.reel.look == 'politics' else accent)
+                                           fill=WHITE if self.look == 'politics' else accent)
         else:  # one continuous line
             height = max(4, self.px(12))
             draw.rectangle((0, 0, self.W, height), fill=(0, 0, 0, 40 if light else 120))
@@ -604,7 +611,7 @@ class Plan:
     def _marker(self):
         """Breaking sets highlights on an accent block, like a broadcast strap; light pages do too when the accent is pale."""
         r, g, b = self.accent
-        return self.reel.look == 'breaking' or (self.reel.look in LIGHT_PAGE and .2126 * r + .7152 * g + .0722 * b > 150)
+        return self.look == 'breaking' or (self.look in LIGHT_PAGE and .2126 * r + .7152 * g + .0722 * b > 150)
 
     def _box(self, size, color, radius=0):
         tile = Image.new('RGBA', size)
@@ -651,7 +658,7 @@ class Plan:
 
     # ---- looks ----------------------------------------------------------
     def _layout(self, scene):
-        return getattr(self, '_' + self.reel.look)(scene)
+        return getattr(self, '_' + self.look)(scene)
 
     def _fit(self, headline, detail, width, avail, head=None, detail_type=None, det_pitch=1.38, gap=16, lead=True, max_head_lines=5):
         """Largest type, headline and detail shrinking together, whose block fits `avail` design px.
@@ -1015,7 +1022,7 @@ class Plan:
     def _identity(self):
         """Logo, brand name and (for Breaking) the live badge and ticker: present for the whole reel."""
         px, out, x = self.px, [], 56
-        if self.reel.look == 'pop_art':  # the brand on a dark pill, centered over the photo
+        if self.look == 'pop_art':  # the brand on a dark pill, centered over the photo
             if self.reel.brand:
                 face = self._face('brand', 'bold')
                 text, size = self._one_line(self.reel.brand, self.text_w - 60, 56, 30, face)
@@ -1025,7 +1032,7 @@ class Plan:
             return out
         right = DESIGN_W - 56
         badge = None
-        if self.reel.look == 'breaking' and self.reel.live:
+        if self.look == 'breaking' and self.reel.live:
             badge = self._label('LIVE', px(36), WHITE, self.accent + (255,), 10, 56, 46, face='condensed')
             right -= badge.width / self.s + 24            # the brand must never run under the badge
         if self.logo_path and not self._hidden('logo'):
@@ -1036,17 +1043,17 @@ class Plan:
         if self.reel.brand:  # the whole width that is left, on a single line
             face = self._face('brand', 'condensed')
             text, size = self._one_line(self.reel.brand, right - x, 56, 30, face)
-            tile, base = self._text(text, size, self._ink('brand', self.ink), face, shadow=self.reel.look not in LIGHT_PAGE)
+            tile, base = self._text(text, size, self._ink('brand', self.ink), face, shadow=self.look not in LIGHT_PAGE)
             middle = px(self.inset) + (px(104) if self.logo_path and not self._hidden('logo') else px(44)) // 2
             out.append(Element(tile, px(x - 8), middle + round(size * .36) - base, .15, .5, 'rise', fades_out=False, role='brand'))
-        if self.reel.look == 'clean':  # a masthead rule under the brand row, like a news site's header
+        if self.look == 'clean':  # a masthead rule under the brand row, like a news site's header
             below = self.inset + (104 if self.logo_path and not self._hidden('logo') else 64) + 14
             out.append(Element(self._box((px(DESIGN_W - 112), px(5)), self.accent + (255,)), px(56), px(below), .1, .6, 'wipe', fades_out=False))
         if badge:
             bx, by = self.W - px(56) - badge.width, px(self.inset + 24)
             out.append(Element(badge, bx, by, .3, .4, 'pop', fades_out=False))
             out.append(Element(self._box((px(16), px(16)), WHITE, px(8)), bx + px(17), by + px(20), .7, .3, 'blink', fades_out=False))
-        if self.reel.look == 'breaking':
+        if self.look == 'breaking':
             out.append(self._ticker())
         return out
 

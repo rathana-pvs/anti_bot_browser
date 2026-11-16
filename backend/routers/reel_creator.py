@@ -9,8 +9,9 @@ from backend.services.website_service import Article
 from backend.services.reel_creator.articles import extract_article
 from backend.services.reel_creator.audio_presets import preset_path
 from backend.services.ai import AIConfig
+from backend.services.reel_creator.composition import AnyDocument, DocumentRenderInput
 from backend.services.reel_creator.director import DirectRequest, check_model, direct
-from backend.services.reel_creator.reel import MAX_HOUSE_STYLES, DraftInput, HouseStyle, Reel, RenderInput
+from backend.services.reel_creator.reel import MAX_HOUSE_STYLES, DraftInput, HouseStyle, Reel
 from backend.services.reel_creator.service import MAX_UPLOAD, get_service
 from backend.services.reel_creator.store import Conflict
 from backend.services.reel_creator.writer import WriteRequest, write_reel
@@ -128,13 +129,13 @@ def thumbnail(asset_id: Id):
 
 
 @router.post('/poster')
-def poster(value: Reel, scene: int = Query(default=0, ge=0, le=7)):
+def poster(value: AnyDocument, scene: int = Query(default=0, ge=0, le=7)):
     image = checked(get_service().render_poster, value, scene)
     return Response(image, media_type='image/jpeg', headers={'Cache-Control': 'no-store'})
 
 
 @router.post('/photo')
-def photo(value: Reel, scene: int = Query(default=0, ge=0, le=7), ratio: str = Query(default='4:5')):
+def photo(value: AnyDocument, scene: int = Query(default=0, ge=0, le=7), ratio: str = Query(default='4:5')):
     return checked(get_service().create_photo, value, scene, ratio)
 
 
@@ -152,7 +153,7 @@ def download_photo(photo_id: Id):
 
 
 @router.post('/layout')
-def layout(value: Reel, scene: int = Query(default=0, ge=0, le=7)):
+def layout(value: AnyDocument, scene: int = Query(default=0, ge=0, le=7)):
     return checked(get_service().scene_layout, value, scene)
 
 
@@ -196,7 +197,7 @@ def jobs():
 
 
 @router.post('/jobs')
-def render(value: RenderInput):
+def render(value: DocumentRenderInput):
     return public(checked(get_service().enqueue, value))
 
 

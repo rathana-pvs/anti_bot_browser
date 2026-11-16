@@ -18,8 +18,8 @@ from PIL import Image, ImageOps, UnidentifiedImageError, features
 
 from .audio_presets import PRESETS, preset_path
 from .catalog import CATALOG
-from .reel import LOOKS, MAX_SCENES, MAX_SECONDS, RATIOS, Reel
-from .renderer import Plan
+from .reel import LOOKS, MAX_SCENES, MAX_SECONDS, RATIOS
+from .composition import Composition, parse_document, plan_for
 from .store import Store, Conflict
 from .typeset import FACES, FONTS
 
@@ -221,7 +221,7 @@ class ReelCreator:
         logo = self.asset_path(reel.logo_id, 'logo') if reel.logo_id else None
         if not any(scene.headline or scene.detail for scene in reel.scenes):
             raise ValueError('Add a headline to at least one scene.')
-        Plan(reel, 360, images, logo)  # lays out all text; raises a readable error if it cannot fit
+        plan_for(reel, 360, images, logo)  # lays out all text; raises a readable error if it cannot fit
         if reel.music == 'custom':
             music = self.asset_path(reel.music_id, 'audio')
         else:
@@ -239,10 +239,15 @@ class ReelCreator:
             return path
 
     def _prepare_images(self, reel, images, scene_index=None):
-        if reel.look != 'pop_art':
+        # Pop art cuts its subject out of the photo; a composition does that only for scenes in the pop collage layout.
+        if isinstance(reel, Composition):
+            popped = {s.image_id for s in reel.scenes if s.layout == 'pop_collage' and s.image_id}
+        else:
+            popped = set(images) if reel.look == 'pop_art' else set()
+        if not popped:
             return images
         from .cutout import prepare_cutout
-        selected = {reel.scenes[scene_index].image_id} if scene_index is not None else set(images)
+        selected = ({reel.scenes[scene_index].image_id} if scene_index is not None else set(images)) & popped
         return {key: prepare_cutout(path, self.root / 'cutouts') if key in selected else path
                 for key, path in images.items()}
 
@@ -256,7 +261,7 @@ class ReelCreator:
                 return self._posters[key]
             images, logo, _ = self.validate_assets(reel)
             images = self._prepare_images(reel, images, scene_index)
-            plan = Plan(reel, PREVIEW_WIDTH, images, logo, FPS)
+            plan = plan_for(reel, PREVIEW_WIDTH, images, logo, FPS)
             output = io.BytesIO()
             plan.frame(plan.settled(scene_index)).save(output, format='JPEG', quality=88)
             result = output.getvalue()
@@ -270,7 +275,7 @@ class ReelCreator:
         if not 0 <= scene_index < len(reel.scenes):
             raise ValueError('That scene does not exist.')
         images, logo, _ = self.validate_assets(reel)  # Hot places its text by where the photo's faces land
-        return Plan(reel, PREVIEW_WIDTH, images, logo, FPS).layout(scene_index)
+        return plan_for(reel, PREVIEW_WIDTH, images, logo, FPS).layout(scene_index)
 
     def create_photo(self, reel, scene_index, ratio):
         """The scene, fully drawn, as a full-size JPEG in shared media for a photo post. The same reel gives the same file."""
@@ -285,7 +290,7 @@ class ReelCreator:
             with self.poster_lock:
                 images, logo, _ = self.validate_assets(reel)
                 images = self._prepare_images(reel, images, scene_index)
-                plan = Plan(reel, FINAL_WIDTH, images, logo, FPS)
+                plan = plan_for(reel, FINAL_WIDTH, images, logo, FPS)
                 self.media_dir.mkdir(parents=True, exist_ok=True)
                 partial = path.with_suffix('.part')
                 plan.frame(plan.settled(scene_index)).save(partial, format='JPEG', quality=92)
@@ -332,7 +337,7 @@ class ReelCreator:
             return job
         if job['state'] not in ('failed', 'interrupted', 'cancelled'):
             raise Conflict('Only a stopped render can be retried.')
-        self.validate_assets(Reel(**job['reel']))
+        self.validate_assets(parse_document(job['reel']))
         # The backend is the sole owner; transactionally ensure concurrent retries
         # cannot turn an already running attempt back into queued work.
         with self.store.db() as db:
@@ -506,7 +511,7 @@ class ReelCreator:
                         lines = progress_file.read_text(errors='replace')[-8192:].splitlines()
                         times = [line.split('=', 1)[1] for line in lines if line.startswith('out_time_us=')]
                         if times and times[-1].isdigit():
-                            fraction = min(0.98, int(times[-1]) / 1_000_000 / Reel(**job['reel']).duration)
+                            fraction = min(0.98, int(times[-1]) / 1_000_000 / parse_document(job['reel']).duration)
                             if fraction > current.get('progress', 0) + 0.01:
                                 self.store.update(job['id'], progress=fraction)
                     self.stop_event.wait(0.3)
@@ -524,7 +529,7 @@ class ReelCreator:
         meta = json.loads(self._run(job, [tool('ffprobe'), '-v', 'error', '-show_streams', '-show_format',
                                          '-of', 'json', str(path)], 'probe', recovery))
         video = next((s for s in meta.get('streams', []) if s['codec_type'] == 'video'), None)
-        reel = Reel(**job['reel'])
+        reel = parse_document(job['reel'])
         if reel.music != 'off' and not any(s.get('codec_type') == 'audio' and s.get('codec_name') == 'aac' for s in meta.get('streams', [])):
             raise RuntimeError('Output verification failed: music is missing.')
         expected = reel.size(PREVIEW_WIDTH if job['kind'] == 'preview' else FINAL_WIDTH)
@@ -553,7 +558,7 @@ class ReelCreator:
     def _encode_attempt(self, job, reel, images, logo, music, output, use_nvenc):
         """Draw frames in this process and pipe them to FFmpeg, which stays supervised."""
         directory = Path(job['workdir'])
-        plan = Plan(reel, PREVIEW_WIDTH if job['kind'] == 'preview' else FINAL_WIDTH, images, logo, FPS)
+        plan = plan_for(reel, PREVIEW_WIDTH if job['kind'] == 'preview' else FINAL_WIDTH, images, logo, FPS)
         frames = round(plan.duration * FPS)
         seconds = frames / FPS
         command = [tool('ffmpeg'), '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-threads', '2',
@@ -644,7 +649,7 @@ class ReelCreator:
             self.media_dir.mkdir(parents=True, exist_ok=True)
             if min(shutil.disk_usage(workdir).free, shutil.disk_usage(self.media_dir).free) < 512 * 1024 * 1024:
                 raise RuntimeError('At least 512 MB of free disk space is required to render.')
-            reel = Reel(**job['reel'])
+            reel = parse_document(job['reel'])
             images, logo, music = self.validate_assets(reel)
             images = self._prepare_images(reel, images)
             output = workdir / 'output.mp4'
