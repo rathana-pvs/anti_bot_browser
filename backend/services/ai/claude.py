@@ -24,10 +24,13 @@ def log_usage(action, model, usage, out=None):
                 counts['input'], counts['cache_read'], counts['cache_write'], counts['output'])
 
 
-def claude_generate(config, *, system, schema, context, prefix='', action, effort='low', max_tokens=16000, usage=None, client_factory=None):
+def claude_generate(config, *, system, schema, context, prefix='', action, effort='low', max_tokens=16000, usage=None, client_factory=None, images=()):
     import anthropic
     client = (client_factory or default_client)(config.key())
-    user = ([{'type': 'text', 'text': prefix, 'cache_control': {'type': 'ephemeral'}}] if prefix else []) + \
+    import base64
+    pictures = [{'type': 'image', 'source': {'type': 'base64', 'media_type': mime, 'data': base64.standard_b64encode(data).decode()}}
+                for mime, data in images]
+    user = ([{'type': 'text', 'text': prefix, 'cache_control': {'type': 'ephemeral'}}] if prefix else []) + pictures + \
         [{'type': 'text', 'text': json.dumps(context, ensure_ascii=False)}]
     extra = dict(betas=[FALLBACK_BETA], fallbacks='default') if config.model in FALLBACK_MODELS else {}
     try:

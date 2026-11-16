@@ -23,6 +23,8 @@ export const compositionApi = {
     (await request(`/poster?scene=${scene}`, { ...json('POST', composition), signal })).blob(),
   render: async (composition: Composition, kind: ReelJob['kind'], request_id: string, caption = ''): Promise<ReelJob> =>
     (await request('/jobs', json('POST', { reel: composition, kind, request_id, caption }))).json(),
+  visionCheck: async (value: AIRequestConfig & { composition: Composition }): Promise<{ composition: Composition; message: string; notes: QualityNote[]; refused: string[]; usage: { input: number; output: number } }> =>
+    (await request('/compositions/vision-check', json('POST', value))).json(),
   voiceover: async (value: AIRequestConfig & { composition: Composition; voice: string }): Promise<{ composition: Composition; characters: number }> =>
     (await request('/compositions/voiceover', json('POST', value))).json(),
   cover: async (composition: Composition): Promise<{ filename: string }> => (await request('/cover', json('POST', composition))).json(),

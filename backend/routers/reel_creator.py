@@ -12,6 +12,7 @@ from backend.services.ai import AIConfig
 from backend.services.reel_creator.composition import AnyDocument, Composition, DocumentDraftInput, DocumentRenderInput
 from backend.services.reel_creator.quality import review
 from backend.services.reel_creator.composer import ComposeDirectRequest, ComposeRequest, compose, direct_composition
+from backend.services.reel_creator.vision_check import VisionRequest, check_with_ai
 from backend.services.reel_creator.director import DirectRequest, check_model, direct
 from backend.services.reel_creator.reel import MAX_HOUSE_STYLES, DraftInput, HouseStyle, Reel
 from backend.services.reel_creator.service import MAX_UPLOAD, get_service
@@ -132,6 +133,15 @@ def voiceover(value: VoiceoverInput):
     """Narrate each scene (Gemini text-to-speech) and turn on captions that follow the voice."""
     config = AIConfig(provider=value.provider, api_key=value.api_key, model=value.model, base_url=value.base_url)
     return checked(get_service().add_voiceover, config, value.composition, value.voice)
+
+
+@router.post('/compositions/vision-check')
+def vision_check(value: VisionRequest):
+    """One picture of every scene to a vision model; its visual fixes are applied only where they pass every rule."""
+    def run():
+        assets, images = _photo_facts(value.composition.image_ids())
+        return check_with_ai(value, assets, images)
+    return checked(run)
 
 
 @router.post('/compositions/review')

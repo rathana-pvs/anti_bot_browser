@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CircleAlert, Film, ImagePlus, Lock, LockOpen, Mic, Plus, Send, ShieldCheck, Sparkles, Wand2, X } from 'lucide-react';
+import { CircleAlert, Eye, Film, ImagePlus, Lock, LockOpen, Mic, Plus, Send, ShieldCheck, Sparkles, Wand2, X } from 'lucide-react';
 import { useAIReelStudio } from '../../hooks/useAIReelStudio';
 import { compositionApi } from '../../services/compositionApi';
 import { loadAISettings, modelLabel } from '../../services/aiSettings';
@@ -249,10 +249,12 @@ export function AIReelStudio({ active, onUseReel }: Props) {
                 onValueChange={pacing => studio.setComposition(c => ({ ...c, pacing: pacing as Composition['pacing'] }))} /></div>
             <Button variant="outline" size="sm" loading={busy === 'review'} disabled={!!busy} onClick={studio.reviewNow}
               title="Fix anything unreadable: text over faces, bright photos, too much motion"><ShieldCheck className="h-3.5 w-3.5" />Check quality</Button>
+            <Button variant="outline" size="sm" loading={busy === 'vision'} disabled={!!busy} onClick={studio.visionCheck}
+              title="Sends one picture of every scene to the director's AI, which fixes crops and layouts. Costs about 2-3k tokens."><Eye className="h-3.5 w-3.5" />Check with AI</Button>
             <Button variant="outline" size="sm" loading={busy === 'photos'} disabled={!!busy} onClick={() => { void studio.addPhotos(); }}><ImagePlus className="h-3.5 w-3.5" />Photos</Button>
           </div>
           {studio.notes.length > 0 && <div className="space-y-1 rounded-xl border border-zinc-800 bg-zinc-950/60 p-3 text-[11px]" aria-live="polite">
-            <div className="flex items-center justify-between"><p className="font-medium text-zinc-300">Quality check</p>
+            <div className="flex items-center justify-between"><p className="font-medium text-zinc-300">Checks</p>
               <button type="button" aria-label="Dismiss quality notes" className="text-zinc-500 hover:text-zinc-200" onClick={() => studio.setNotes([])}><X className="h-3.5 w-3.5" /></button></div>
             {studio.notes.map((note, i) => <p key={i} className={`flex gap-1.5 ${note.rule === 'fit' ? 'text-red-400' : 'text-zinc-400'}`}>
               <CircleAlert className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />{note.scene ? `Scene ${note.scene}: ` : ''}{note.message}</p>)}

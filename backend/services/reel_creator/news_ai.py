@@ -80,14 +80,16 @@ def provider_said(response, limit=240):
     return text[:limit].rstrip() + ('…' if len(text) > limit else '')
 
 
-def provider_generate(request, client_factory=httpx.Client, *, system, schema, action='news', context=None, prefix='', usage=None):
+def provider_generate(request, client_factory=httpx.Client, *, system, schema, action='news', context=None, prefix='', usage=None, images=()):
     """One Gemini call that answers in `schema`. `prefix` is stable text sent before the per-call `context`."""
     key = request.api_key.get_secret_value().strip()
     if not key:
         raise ValueError('Add your Gemini API key in Settings first.')
     if context is None:
         context = request.provider_context() if hasattr(request, 'provider_context') else request.model_dump(exclude={'api_key', 'model', 'provider', 'base_url'})
-    parts = ([{'text': prefix}] if prefix else []) + [{'text': json.dumps(context, ensure_ascii=False)}]
+    import base64
+    pictures = [{'inlineData': {'mimeType': mime, 'data': base64.b64encode(data).decode()}} for mime, data in images]
+    parts = ([{'text': prefix}] if prefix else []) + pictures + [{'text': json.dumps(context, ensure_ascii=False)}]
     payload = {'systemInstruction': {'parts': [{'text': system}]},
                'contents': [{'role': 'user', 'parts': parts}],
                'generationConfig': {'responseMimeType': 'application/json',

@@ -1,4 +1,5 @@
 """OpenAI-compatible chat completions (OpenAI, OpenRouter, Ollama, LM Studio) asked for JSON in a schema."""
+import base64
 import json
 import logging
 import time
@@ -10,11 +11,13 @@ MAX_BYTES = 256000
 MAX_SECONDS = 95  # a model on this computer can be slow
 
 
-def openai_generate(config, *, system, schema, context, prefix='', action, usage=None, client_factory=httpx.Client, **_):
+def openai_generate(config, *, system, schema, context, prefix='', action, usage=None, client_factory=httpx.Client, images=(), **_):
     key = config.key()
     user = (prefix + '\n\n' if prefix else '') + json.dumps(context, ensure_ascii=False)
     payload = {'model': config.model,
-               'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': user}],
+               'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': user if not images else
+                            [*({'type': 'image_url', 'image_url': {'url': f'data:{mime};base64,{base64.b64encode(data).decode()}'}} for mime, data in images),
+                             {'type': 'text', 'text': user}]}],
                'response_format': {'type': 'json_schema', 'json_schema': {'name': schema.__name__, 'schema': schema.model_json_schema()}}}
     headers = {'Authorization': f'Bearer {key}'} if key else {}
     started = time.monotonic()

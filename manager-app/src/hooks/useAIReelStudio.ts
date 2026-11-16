@@ -6,7 +6,7 @@ import { sourceKind } from '../services/reelDocument';
 import type { Composition, CompositionDoc, CompositionScene, PartsCatalog, QualityNote } from '../types/composition';
 import type { CreatedReelMedia, DirectorTurn, ReelAsset, ReelGoal, ReelJob } from '../types/reelCreator';
 
-type Busy = null | 'compose' | 'direct' | 'review' | 'photos' | 'render' | 'send' | 'voice';
+type Busy = null | 'compose' | 'direct' | 'review' | 'photos' | 'render' | 'send' | 'voice' | 'vision';
 const ACTIVE = ['queued', 'rendering', 'verifying'];
 const DRAFT_KEY = 'ai_reel_studio_draft';
 const message = (err: unknown) => err instanceof Error ? err.message : 'Something went wrong.';
@@ -169,6 +169,18 @@ export function useAIReelStudio(active: boolean, onUseReel: (media: CreatedReelM
     setNotes([...result.fixes, ...result.problems]);
   });
 
+  /** One picture of every scene to the director's AI, which fixes how scenes look; the words stay as they are. */
+  const visionCheck = () => attempt('vision', async () => {
+    const base = docRef.current;
+    if (!base) return;
+    const result = await compositionApi.visionCheck({ ...configuredAI('direct'), composition: base.composition });
+    if (docRef.current?.composition !== base.composition) throw new Error('The reel changed during the check. Run it again.');
+    setComposition(() => result.composition);
+    const tokens = result.usage.input + result.usage.output;
+    setNotes([{ scene: 0, rule: 'seen', message: `${result.message}${tokens ? ` (~${(tokens / 1000).toFixed(1)}k tokens)` : ''}` }, ...result.notes,
+      ...result.refused.map(message => ({ scene: 0, rule: 'refused', message: `Not done: ${message}` }))]);
+  });
+
   const editScene = (index: number, patch: Partial<CompositionScene>) =>
     setComposition(c => ({ ...c, scenes: c.scenes.map((s, i) => i === index ? { ...s, ...patch } : s) }));
 
@@ -227,7 +239,7 @@ export function useAIReelStudio(active: boolean, onUseReel: (media: CreatedReelM
 
   return {
     catalog, drafts, doc, draftId, loaded, busy, error, setError, notes, setNotes, saveState, job, fresh, working,
-    voiceNote, addVoiceover, removeVoiceover,
+    voiceNote, addVoiceover, removeVoiceover, visionCheck,
     open, discard, compose, direct, directed, undoDirected, reviewNow, editScene, setDoc, setComposition, addPhotos, startRender, send,
     cancelJob: () => job && attempt('render', async () => { const r = await reelApi.cancel(job.id); setJobs(old => old.map(j => j.id === r.id ? r : j)); }),
   };
