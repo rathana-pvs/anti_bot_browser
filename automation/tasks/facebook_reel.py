@@ -2105,6 +2105,13 @@ class FacebookReelTask(BaseTask):
                     final_screen,
                 )
             return self._fail("reel_publish_rejected", "Facebook displayed an error after Reel publication.", final_screen)
+        if result == "event_prompt_blocked":
+            return self._uncertain(
+                "reel_event_prompt_did_not_close",
+                "Facebook's \"Hosting an event?\" prompt stayed open after 3 Publish Original Post "
+                "clicks; the Reel may not have been published. Check the profile before retrying.",
+                final_screen,
+            )
         if result == "timed_out":
             extension = getattr(self, "reel_upload_extension", None)
             if extension:

@@ -24,10 +24,51 @@ class ReelPostClickVerifier:
     # continues only while Facebook's "Uploading N%" keeps rising.
     MAX_UPLOAD_SECONDS = 240.0
     UPLOAD_STALL_SECONDS = 30.0
+    # Facebook's "Hosting an event?" upsell holds the Reel until its
+    # "Publish Original Post" button is pressed.
+    EVENT_PROMPT_ATTEMPTS = 3
+    EVENT_PROMPT_SETTLE_SECONDS = 3.0
 
     def __init__(self, task):
         self.task = task
         self.upload_extension = None
+        self.event_prompt_clicks = 0
+        self.event_prompt_status = "not_seen"
+
+    def _handle_event_prompt(self, screen) -> str:
+        """Press "Publish Original Post" on the event upsell, never "Continue".
+
+        The modal belongs to the Post click already sent, like the audio
+        policy step, so this completes that one attempt rather than posting
+        again. Returns absent, clicked, closed or failed.
+        """
+        finder = getattr(self.task, "find_publish_original_post", None)
+        if finder is None:
+            return "absent"
+        match = finder(screen)
+        if match is None:
+            if self.event_prompt_clicks:
+                self.event_prompt_status = "closed"
+                self.task.log("INFO", "The \"Hosting an event?\" prompt closed after Publish Original Post.")
+                return "closed"
+            return "absent"
+        if self.event_prompt_clicks >= self.EVENT_PROMPT_ATTEMPTS:
+            self.event_prompt_status = "failed"
+            self.task.log("ERROR", f"The \"Hosting an event?\" prompt stayed open after "
+                          f"{self.EVENT_PROMPT_ATTEMPTS} Publish Original Post clicks.")
+            self.task.capture_evidence("reel_event_prompt_failed", screen, attempts=self.event_prompt_clicks)
+            return "failed"
+        self.event_prompt_clicks += 1
+        self.event_prompt_status = "clicked"
+        self.task.log("INFO", f"Facebook asked \"Hosting an event?\" after Post. Attempt "
+                      f"{self.event_prompt_clicks}/{self.EVENT_PROMPT_ATTEMPTS}: clicking Publish Original Post "
+                      f"at {match['center']} (never Continue).")
+        self.task.capture_evidence("reel_event_prompt_publish_original", screen,
+                                   target=list(match["center"]), attempt=self.event_prompt_clicks)
+        self.task.click_reversible(match["center"], label="reel_event_prompt_publish_original",
+                                   bounds=match.get("bounds"), max_offset_px=4)
+        time.sleep(self.EVENT_PROMPT_SETTLE_SECONDS)
+        return "clicked"
 
     def upload_percent(self, screen) -> int | None:
         """The percentage Facebook shows on the Reel preview while uploading."""
@@ -197,6 +238,24 @@ class ReelPostClickVerifier:
                     self.task.log("INFO", "Dismissed post-publish prompt ('Not now').")
                     self.task.log("INFO", f"Starting a fresh {timeout:g}-second composer/upload wait after Not now closed.")
                     screen = self.task.client.screenshot()
+
+            # Check the event upsell until it has closed; the upload only
+            # starts once Publish Original Post is pressed, so each press gets
+            # a fresh upload wait.
+            if self.event_prompt_status != "closed":
+                event_status = self._handle_event_prompt(screen)
+                if event_status == "failed":
+                    return "event_prompt_blocked", (
+                        self.task.recognizer.observe(screen), screen,
+                        self.task.vision.similarity(before_publish, screen),
+                    )
+                if event_status in {"clicked", "closed"}:
+                    now = time.time()
+                    upload_deadline = now + timeout
+                    hard_deadline = now + max(timeout, self.MAX_UPLOAD_SECONDS)
+                    popup_deadline = None
+                if event_status == "clicked":
+                    continue
 
             observation = self.task.recognizer.observe_publication_gate(
                 screen,

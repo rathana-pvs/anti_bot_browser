@@ -668,6 +668,9 @@ class BaseTask:
     def find_post_publish_prompt(self, screen=None):
         return KnownDialogs(self).find_post_publish_prompt(screen)
 
+    def find_publish_original_post(self, screen=None):
+        return KnownDialogs(self).find_publish_original_post(screen)
+
     def check_and_dismiss_post_prompt(self, screen=None) -> bool:
         return KnownDialogs(self).dismiss_post_prompt(screen)
 

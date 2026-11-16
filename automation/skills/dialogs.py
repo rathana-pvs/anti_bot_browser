@@ -99,6 +99,33 @@ class KnownDialogs:
                     match = item
         return match
 
+    def find_publish_original_post(self, screen=None):
+        """Return the "Publish Original Post" button of Facebook's event upsell.
+
+        After the final Reel Post click Facebook can hold the upload behind a
+        "Hosting an event?" modal offering "Publish Original Post" or
+        "Continue". Only the first finishes the same publication; "Continue"
+        starts the event flow and is never matched here.
+        """
+        task = self.task
+        if screen is None:
+            screen = task.client.screenshot() if getattr(task, "client", None) else None
+        if screen is None:
+            return None
+        height, width = screen.shape[:2]
+        modal_region = (
+            int(width * 0.15), int(height * 0.08),
+            int(width * 0.70), int(height * 0.87),
+        )
+        match = None
+        for item in task.vision.read_text(screen, region=modal_region, min_confidence=0.3):
+            normalized = re.sub(r"[^a-z0-9]+", " ", str(item.get("text", "")).casefold()).strip()
+            if normalized.replace(" ", "") != "publishoriginalpost":
+                continue
+            if match is None or item.get("confidence", 0) > match.get("confidence", 0):
+                match = item
+        return match
+
     def dismiss_post_prompt(self, screen=None) -> bool:
         """
         Detect and dismiss Facebook post-publish prompts (e.g. 'Speak With People Directly',
