@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { configuredAI } from '../services/aiSettings';
+import { configuredAI, loadAISettings, providerConfig } from '../services/aiSettings';
 import { compositionApi, type CompositionDirectorResult, type CompositionDraft } from '../services/compositionApi';
 import { reelApi } from '../services/reelCreator';
 import { sourceKind } from '../services/reelDocument';
 import type { Composition, CompositionDoc, CompositionScene, PartsCatalog, QualityNote } from '../types/composition';
 import type { CreatedReelMedia, DirectorTurn, ReelAsset, ReelGoal, ReelJob } from '../types/reelCreator';
 
-type Busy = null | 'compose' | 'direct' | 'review' | 'photos' | 'render' | 'send';
+type Busy = null | 'compose' | 'direct' | 'review' | 'photos' | 'render' | 'send' | 'voice';
 const ACTIVE = ['queued', 'rendering', 'verifying'];
 const DRAFT_KEY = 'ai_reel_studio_draft';
 const message = (err: unknown) => err instanceof Error ? err.message : 'Something went wrong.';
@@ -38,6 +38,7 @@ export function useAIReelStudio(active: boolean, onUseReel: (media: CreatedReelM
   const [render, setRender] = useState<{ jobId: string; key: string } | null>(null);
   const [directed, setDirected] = useState<(CompositionDirectorResult & { before: Composition }) | null>(null);
   const [turns, setTurns] = useState<DirectorTurn[]>([]);
+  const [voiceNote, setVoiceNote] = useState('');
   const docRef = useRef<CompositionDoc | null>(null);
   const draftRef = useRef({ id: draftId, revision: 0 });
   const savedHash = useRef('');
@@ -184,6 +185,16 @@ export function useAIReelStudio(active: boolean, onUseReel: (media: CreatedReelM
     }) }));
   });
 
+  /** Narrate every scene with Gemini and turn on captions that follow the voice. Unchanged narration is reused, not paid for again. */
+  const addVoiceover = (voice: string) => attempt('voice', async () => {
+    const base = docRef.current;
+    if (!base) return;
+    const result = await compositionApi.voiceover({ ...providerConfig(loadAISettings(), 'gemini'), composition: base.composition, voice });
+    setComposition(() => result.composition);
+    setVoiceNote(result.characters ? `Voiced ${result.characters.toLocaleString()} characters.` : 'Voiceover is up to date; nothing new was voiced.');
+  });
+  const removeVoiceover = () => setComposition(c => ({ ...c, captions: 'off', scenes: c.scenes.map(s => ({ ...s, voice: null })) }));
+
   const startRender = (kind: 'final' | 'preview') => attempt('render', async () => {
     const base = docRef.current;
     if (!base) return;
@@ -216,6 +227,7 @@ export function useAIReelStudio(active: boolean, onUseReel: (media: CreatedReelM
 
   return {
     catalog, drafts, doc, draftId, loaded, busy, error, setError, notes, setNotes, saveState, job, fresh, working,
+    voiceNote, addVoiceover, removeVoiceover,
     open, discard, compose, direct, directed, undoDirected, reviewNow, editScene, setDoc, setComposition, addPhotos, startRender, send,
     cancelJob: () => job && attempt('render', async () => { const r = await reelApi.cancel(job.id); setJobs(old => old.map(j => j.id === r.id ? r : j)); }),
   };

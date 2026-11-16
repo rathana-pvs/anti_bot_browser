@@ -223,11 +223,55 @@ class ReelCreator:
         if not any(scene.headline or scene.detail for scene in reel.scenes):
             raise ValueError('Add a headline to at least one scene.')
         plan_for(reel, 360, images, logo)  # lays out all text; raises a readable error if it cannot fit
+        if isinstance(reel, Composition):
+            for asset_id, _ in reel.voice_tracks():  # every narration file is still here
+                self.asset_path(asset_id, 'audio')
         if reel.music == 'custom':
             music = self.asset_path(reel.music_id, 'audio')
         else:
             music = preset_path(reel.music_preset) if reel.music_preset else None
         return images, logo, music
+
+    def add_voiceover(self, config, composition, voice='Kore', model=None, synthesize=None):
+        """Narrate every scene from its own words, with word timings for captions. The same words in the same voice are
+        generated once and reused. Returns the composition, and how many characters were sent to be voiced."""
+        from backend.services.ai import speech
+        from .composition import VoiceClip
+        from .voice_timing import find_pauses, word_timings
+        synthesize = synthesize or speech.synthesize
+        model = model or speech.DEFAULT_MODEL
+        cache_file = self.root / 'voices.json'
+        try:
+            cache = json.loads(cache_file.read_text())
+        except (OSError, ValueError):
+            cache = {}
+        sent, scenes = 0, []
+        for number, scene in enumerate(composition.scenes, 1):
+            text = narration(scene)
+            if not text:
+                scenes.append(scene.model_copy(update={'voice': None}))
+                continue
+            key = hashlib.sha256(json.dumps([text, voice, model]).encode()).hexdigest()
+            asset = cache.get(key)
+            try:
+                if asset:
+                    self.asset_path(asset['id'], 'audio')
+            except ValueError:
+                asset = None
+            if not asset:
+                wav = synthesize(config, text, voice=voice, model=model)
+                sent += len(text)
+                imported = self.import_asset(wav, f'voice-{number}.wav', 'audio')
+                path = self.asset_path(imported['id'], 'audio')
+                seconds = imported.get('duration') or speech.wav_seconds(wav)
+                asset = dict(id=imported['id'], seconds=seconds, words=word_timings(text, seconds, find_pauses(path, tool('ffmpeg') or 'ffmpeg')))
+                cache[key] = asset
+                cache_file.write_text(json.dumps(cache))
+            if asset['seconds'] > 19:
+                raise ValueError(f'Scene {number}: the narration is too long for one scene. Shorten its text.')
+            scenes.append(scene.model_copy(update={'voice': VoiceClip(asset_id=asset['id'], text=text, seconds=asset['seconds'], words=asset['words'])}))
+        result = composition.model_copy(update={'scenes': scenes, 'captions': 'voice'})
+        return dict(composition=type(composition).model_validate(result.model_dump()).model_dump(), characters=sent)
 
     def thumbnail_path(self, asset_id):
         source = self.asset_path(asset_id, 'image')
@@ -531,8 +575,11 @@ class ReelCreator:
                                          '-of', 'json', str(path)], 'probe', recovery))
         video = next((s for s in meta.get('streams', []) if s['codec_type'] == 'video'), None)
         reel = parse_document(job['reel'])
-        if reel.music != 'off' and not any(s.get('codec_type') == 'audio' and s.get('codec_name') == 'aac' for s in meta.get('streams', [])):
+        has_audio = any(s.get('codec_type') == 'audio' and s.get('codec_name') == 'aac' for s in meta.get('streams', []))
+        if reel.music != 'off' and not has_audio:
             raise RuntimeError('Output verification failed: music is missing.')
+        if isinstance(reel, Composition) and reel.voice_tracks() and not has_audio:
+            raise RuntimeError('Output verification failed: the voiceover is missing.')
         expected = reel.size(PREVIEW_WIDTH if job['kind'] == 'preview' else FINAL_WIDTH)
         duration = float(meta.get('format', {}).get('duration', 0))
         if not video or (video['width'], video['height']) != expected or video['codec_name'] != 'h264' or video.get('pix_fmt') != 'yuv420p':
@@ -566,10 +613,16 @@ class ReelCreator:
                    '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', f'{plan.W}x{plan.H}', '-r', str(FPS), '-i', 'pipe:0']
         if music:
             command += ['-stream_loop', '-1', '-protocol_whitelist', 'file,pipe', '-i', str(music)]
+        voices = [(self.asset_path(asset_id, 'audio'), start) for asset_id, start in reel.voice_tracks()] if isinstance(reel, Composition) else []
+        for path, _ in voices:
+            command += ['-i', str(path)]
         command += ['-map', '0:v']
-        if music:
-            command += ['-map', '1:a', '-af', f'volume={MUSIC_VOLUME},afade=t=in:d=0.5,afade=t=out:st={max(0, seconds - 1):.2f}:d=1',
-                        '-c:a', 'aac', '-b:a', '128k']
+        fades = f'afade=t=in:d=0.5,afade=t=out:st={max(0, seconds - 1):.2f}:d=1'
+        if voices:
+            command += ['-filter_complex', voice_mix(bool(music), [start for _, start in voices], fades), '-map', '[mix]',
+                        '-c:a', 'aac', '-b:a', '160k']
+        elif music:
+            command += ['-map', '1:a', '-af', f'volume={MUSIC_VOLUME},{fades}', '-c:a', 'aac', '-b:a', '128k']
         else:
             command += ['-an']
         quality = '24' if job['kind'] == 'preview' else '20'
@@ -713,6 +766,32 @@ class ReelCreator:
 
 
 _service = None
+
+
+def narration(scene):
+    """What a scene says aloud: its own checked words, as a sentence or two."""
+    def sentence(text):
+        text = ' '.join(text.split()).strip()
+        return text if not text or text[-1] in '.!?' else text + '.'
+    if scene.kind == 'quote' and scene.headline:
+        return f'{scene.attribution} said: “{sentence(scene.headline)}”' if scene.attribution else sentence(scene.headline)
+    lead = sentence(scene.stat) + ' ' if scene.kind == 'stat' and scene.stat else ''
+    return ' '.join(filter(None, [lead + sentence(scene.headline), sentence(scene.detail)])).strip()
+
+
+def voice_mix(music, starts, fades):
+    """FFmpeg filters: each narration clip at its start, together; the music under them, ducked while the voice speaks."""
+    first = 2 if music else 1
+    parts = [f'[{first + k}:a]aresample=48000,adelay={round(start * 1000)}:all=1[v{k}]' for k, start in enumerate(starts)]
+    voices = ''.join(f'[v{k}]' for k in range(len(starts)))
+    parts.append(f'{voices}amix=inputs={len(starts)}:normalize=0:dropout_transition=0,volume=1.6[voice]')
+    if not music:
+        parts.append(f'[voice]{fades}[mix]')
+        return ';'.join(parts)
+    parts += [f'[1:a]aresample=48000,volume={MUSIC_VOLUME}[music]', '[voice]asplit=2[say][key]',
+              '[music][key]sidechaincompress=threshold=0.02:ratio=10:attack=15:release=350[ducked]',
+              f'[ducked][say]amix=inputs=2:normalize=0:duration=first,{fades}[mix]']
+    return ';'.join(parts)
 
 
 def get_service():

@@ -122,6 +122,18 @@ def direct_composition_reel(value: ComposeDirectRequest):
     return checked(run)
 
 
+class VoiceoverInput(AIConfig):
+    composition: Composition
+    voice: str = Field(default='Kore', max_length=40)
+
+
+@router.post('/compositions/voiceover')
+def voiceover(value: VoiceoverInput):
+    """Narrate each scene (Gemini text-to-speech) and turn on captions that follow the voice."""
+    config = AIConfig(provider=value.provider, api_key=value.api_key, model=value.model, base_url=value.base_url)
+    return checked(get_service().add_voiceover, config, value.composition, value.voice)
+
+
 @router.post('/compositions/review')
 def review_composition(value: Composition):
     """The composition with what the quality rules could fix fixed, what was changed, and what still needs the operator."""

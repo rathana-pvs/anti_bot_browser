@@ -28,6 +28,8 @@ export interface CompositionScene {
   text_position: number | null;
   photo_size: number | null;
   locked: boolean | null;
+  /** The scene's narration and when each word is spoken (seconds from the narration's start). */
+  voice?: { asset_id: string; text: string; seconds: number; words: [string, number, number][] } | null;
 }
 
 export interface Composition {
@@ -45,6 +47,8 @@ export interface Composition {
   show_progress: boolean;
   music: string;
   music_id: string | null;
+  /** Word-by-word captions that follow the narration. */
+  captions?: 'off' | 'voice';
 }
 
 export interface Part { id: string; kind: PartKind; label: string; use_when: string; avoid_when: string; applies_to: SceneKind[]; mood: string[]; needs_photo: boolean; loud: boolean; look: string }

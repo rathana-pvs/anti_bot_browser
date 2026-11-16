@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Discriminator, Field, Tag, field_val
 
 from .audio_presets import PRESETS
 from .components import AnimationId, CameraId, LayoutId, LOOK_LAYOUT, Pacing, RECIPE_BY_ID, TextStyleId, TransitionId, layout_look
-from .reel import LOOKS, MAX_SCENES, MAX_SECONDS, DraftInput, ElementStyle, Ratio, Reel, RenderInput, Role, Scene, SceneKind, hex_color
+from .reel import LOOKS, MAX_SCENES, MAX_SECONDS, RATIOS, DraftInput, ElementStyle, Ratio, Reel, RenderInput, Role, Scene, SceneKind, hex_color
 
 TRANSITION_VALUE = {'crossfade': None, 'cut': 'cut', 'slide': 'slide'}    # what a Reel scene can store
 CAMERA_VALUE = {'zoom_in': 'zoom_in', 'zoom_out': 'zoom_out', 'still': 'none'}
@@ -65,6 +65,24 @@ class Background(BaseModel):
         return Scene.asset_id(value)
 
 
+VOICE_DELAY = .25   # narration starts this long after its scene
+VOICE_TAIL = .45    # and the scene runs this long after it ends
+
+
+class VoiceClip(BaseModel):
+    """A scene's narration: the audio asset, what it says, and when each word is spoken (seconds from its start)."""
+    model_config = ConfigDict(extra='forbid')
+    asset_id: str
+    text: str = Field(max_length=600)
+    seconds: float = Field(gt=0, le=19, allow_inf_nan=False)
+    words: list[tuple[str, float, float]] = Field(default_factory=list, max_length=200)
+
+    @field_validator('asset_id')
+    @classmethod
+    def asset(cls, value):
+        return Scene.asset_id(value)
+
+
 class CScene(BaseModel):
     model_config = ConfigDict(extra='forbid')
     layout: LayoutId = 'light_card'
@@ -83,10 +101,19 @@ class CScene(BaseModel):
     text_position: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
     photo_size: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
     locked: bool | None = None
+    voice: VoiceClip | None = None
 
     @property
     def image_id(self):
         return self.background.image_id
+
+    def timed_seconds(self):
+        """The scene's length: its own, or long enough to read, and never shorter than its narration."""
+        if not self.voice:
+            return self.seconds
+        reading = self.seconds or Scene(headline=self.headline, detail=self.detail, kind=self.kind, stat=self.stat,
+                                        attribution=self.attribution).length()
+        return round(min(20, max(reading, VOICE_DELAY + self.voice.seconds + VOICE_TAIL)), 2)
 
     def to_scene(self, camera=None):
         """This scene as the renderer's Scene; validation of the text is the Scene's own."""
@@ -96,7 +123,7 @@ class CScene(BaseModel):
                      focal_y=bg.focal_y, zoom=bg.zoom, backdrop=bg.color, shade=bg.shade,
                      motion=CAMERA_VALUE.get(camera or self.camera) if (camera or self.camera) else None,
                      transition=TRANSITION_VALUE.get(self.transition) if self.transition else None,
-                     style={role: s.element_style() for role, s in self.styles.items()}, seconds=self.seconds,
+                     style={role: s.element_style() for role, s in self.styles.items()}, seconds=self.timed_seconds(),
                      text_position=self.text_position, photo_size=self.photo_size)
 
 
@@ -128,6 +155,7 @@ class Composition(BaseModel):
     show_progress: bool = True
     music: str = 'auto'
     music_id: str | None = None
+    captions: Literal['off', 'voice'] = 'off'  # word-by-word captions that follow the narration
 
     @field_validator('recipe')
     @classmethod
@@ -177,6 +205,19 @@ class Composition(BaseModel):
 
     def image_ids(self):
         return [s.image_id for s in self.scenes if s.image_id]
+
+    def size(self, width):
+        """Pixel size at this width, as a Reel's: H.264 needs an even height."""
+        return width, round(RATIOS[self.ratio] * width / 1080 / 2) * 2
+
+    def voice_tracks(self):
+        """(asset id, start in seconds) of each scene's narration on the reel's timeline."""
+        out, start = [], 0.
+        for scene in self.scenes:
+            if scene.voice:
+                out.append((scene.voice.asset_id, round(start + VOICE_DELAY, 3)))
+            start += scene.to_scene().length()
+        return out
 
     def cameras(self):
         """Each scene's camera: its own, or the recipe's cameras in turn."""
@@ -263,6 +304,7 @@ class CompositionPlan:
         self.ref = self.scene_plans[0]
         self.W, self.H, self.fps = self.ref.W, self.ref.H, fps
         self.lengths, self.starts, self.duration = self.ref.lengths, self.ref.starts, self.ref.duration
+        self._chunk_cache, self._bands, self._caption_tiles = {}, {}, {}
 
     def background(self, index, local):
         return self.scene_plans[index].background(index, local)
@@ -273,9 +315,61 @@ class CompositionPlan:
     def frame(self, t):
         """As Plan.frame: the opening frame is a settled later frame, drawn by the plan of the scene it falls in."""
         from .renderer import OPENING_COVER_SECONDS
-        if 0 <= t < 1 / self.fps:
+        opening = 0 <= t < 1 / self.fps
+        if opening:
             t = OPENING_COVER_SECONDS if self.duration > OPENING_COVER_SECONDS else self.settled(0)
-        return self.scene_plans[self.locate(t)[0]]._timeline_frame(t)
+        index = self.locate(t)[0]
+        image = self.scene_plans[index]._timeline_frame(t)
+        if self.composition.captions == 'voice' and not opening:
+            self._caption(image, index, t - self.starts[index] - VOICE_DELAY)
+        return image
+
+    # ---- captions ------------------------------------------------------------
+    def _chunks(self, index):
+        if index not in self._chunk_cache:
+            from .voice_timing import caption_chunks
+            voice = self.composition.scenes[index].voice
+            self._chunk_cache[index] = caption_chunks([tuple(w) for w in voice.words]) if voice else []
+        return self._chunk_cache[index]
+
+    def _band(self, index):
+        """The middle of the widest free stretch of frame between the scene's text and the bottom of the safe area."""
+        if index not in self._bands:
+            plan = self.scene_plans[index]
+            top, bottom = (plan.inset + 150) / plan.DH, plan.limit / plan.DH
+            taken = sorted((b['y'], b['y'] + b['h']) for b in plan.layout(index)['boxes'] if b['role'] in ('headline', 'detail', 'lead', 'label'))
+            gaps, at = [], top
+            for a, b in taken:
+                if a > at:
+                    gaps.append((at, min(a, bottom)))
+                at = max(at, b)
+            gaps.append((at, bottom))
+            best = max(gaps, key=lambda g: g[1] - g[0])
+            self._bands[index] = (best[0] + best[1]) / 2 if best[1] - best[0] > .07 else bottom - .04
+        return self._bands[index]
+
+    def _caption(self, image, index, local):
+        chunks = self._chunks(index)
+        current = next(((i, c) for i, c in enumerate(chunks) if c[1] <= local < c[2] + .15), None)
+        if not current:
+            return
+        number, (words, _, _) = current
+        spoken = max(0, sum(1 for w in self.composition.scenes[index].voice.words if w[1] <= local) - sum(len(c[0]) for c in chunks[:number]) - 1)
+        spoken = min(spoken, len(words) - 1)
+        key = (index, number, spoken)
+        if key not in self._caption_tiles:
+            plan = self.scene_plans[index]
+            text = ' '.join(words)
+            start = len(' '.join(words[:spoken])) + (1 if spoken else 0)
+            size = plan.px(64)
+            tile, _ = plan._text(text, size, (255, 255, 255, 255), 'bold', mark=(start, start + len(words[spoken])), stroke=plan.px(5))
+            if tile.width > plan.W - plan.px(80):  # long words: shrink to the safe width
+                tile = tile.resize((plan.W - plan.px(80), round(tile.height * (plan.W - plan.px(80)) / tile.width)))
+            self._caption_tiles[key] = tile
+        tile = self._caption_tiles[key]
+        x = (self.W - tile.width) // 2
+        y = round(self._band(index) * self.H - tile.height / 2)
+        image.paste(tile, (x, y), tile)
 
     def settled(self, index):
         return self.scene_plans[index].settled(index)

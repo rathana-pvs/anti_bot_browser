@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CircleAlert, Film, ImagePlus, Lock, LockOpen, Plus, Send, ShieldCheck, Sparkles, Wand2, X } from 'lucide-react';
+import { CircleAlert, Film, ImagePlus, Lock, LockOpen, Mic, Plus, Send, ShieldCheck, Sparkles, Wand2, X } from 'lucide-react';
 import { useAIReelStudio } from '../../hooks/useAIReelStudio';
 import { compositionApi } from '../../services/compositionApi';
 import { loadAISettings, modelLabel } from '../../services/aiSettings';
@@ -158,6 +158,38 @@ function SceneCard({ scene, index, count, catalog, selected, busy, onSelect, onE
   </li>;
 }
 
+const VOICES = ['Kore', 'Puck', 'Charon', 'Aoede', 'Fenrir', 'Leda', 'Orus', 'Zephyr', 'Schedar', 'Sulafat'].map(v => ({ value: v, label: v }));
+
+/** What each scene will say aloud: its own words (the backend writes the same). */
+const narrationLength = (c: Composition) => c.scenes.reduce((n, s) => n + [s.kind === 'stat' ? s.stat : '', s.headline, s.detail, s.kind === 'quote' ? s.attribution : '']
+  .filter(Boolean).join(' ').length, 0);
+
+function VoicePanel({ composition, busy, voicing, note, onAdd, onRemove, onCaptions }: { composition: Composition; busy: boolean; voicing: boolean; note: string;
+  onAdd: (voice: string) => void; onRemove: () => void; onCaptions: (on: boolean) => void }) {
+  const [voice, setVoice] = useState('Kore');
+  const voiced = composition.scenes.some(s => s.voice);
+  const stale = composition.scenes.some(s => s.voice && !s.voice.text.includes(s.headline.trim()));
+  return <section aria-label="Voice and captions" className="space-y-2 rounded-xl border border-zinc-800 bg-zinc-950/60 p-3">
+    <div className="flex items-center gap-2"><Mic className="h-3.5 w-3.5 text-sky-400" aria-hidden="true" /><h3 className="text-xs font-semibold text-zinc-100">Voice and captions</h3>
+      <span className="ml-auto text-[10px] text-zinc-500">Gemini voice · English</span></div>
+    <div className="flex flex-wrap items-end gap-2">
+      <div className="w-32 space-y-1"><p className="text-[10px] uppercase tracking-wide text-zinc-500">Voice</p>
+        <Select ariaLabel="Voice" value={voice} options={VOICES} onValueChange={setVoice} /></div>
+      <Button size="sm" loading={voicing} disabled={busy} onClick={() => onAdd(voice)}
+        title="Each scene reads its own headline and detail. Text that has not changed is not voiced again.">
+        {voiced ? 'Update voiceover' : 'Add voiceover'} <span className="text-[10px] opacity-70">~{narrationLength(composition).toLocaleString()} characters</span></Button>
+      {voiced && <>
+        <div className="w-40 space-y-1"><p className="text-[10px] uppercase tracking-wide text-zinc-500">Captions</p>
+          <Select ariaLabel="Captions" value={composition.captions === 'voice' ? 'voice' : 'off'} options={[{ value: 'voice', label: 'Follow the voice' }, { value: 'off', label: 'Off' }]}
+            onValueChange={value => onCaptions(value === 'voice')} /></div>
+        <Button variant="ghost" size="sm" disabled={busy} onClick={onRemove}>Remove voice</Button>
+      </>}
+    </div>
+    {stale && <p className="text-[11px] text-amber-300">Some scenes changed after they were voiced. Update the voiceover so it matches.</p>}
+    {note && <p className="text-[11px] text-zinc-400" aria-live="polite">{note}</p>}
+  </section>;
+}
+
 /** AI Reel Studio: the AI composes each scene from independent parts; the operator can change any part or ask the director. */
 export function AIReelStudio({ active, onUseReel }: Props) {
   const studio = useAIReelStudio(active, onUseReel);
@@ -225,6 +257,9 @@ export function AIReelStudio({ active, onUseReel }: Props) {
             {studio.notes.map((note, i) => <p key={i} className={`flex gap-1.5 ${note.rule === 'fit' ? 'text-red-400' : 'text-zinc-400'}`}>
               <CircleAlert className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />{note.scene ? `Scene ${note.scene}: ` : ''}{note.message}</p>)}
           </div>}
+          <VoicePanel composition={doc.composition} busy={!!busy} voicing={busy === 'voice'} note={studio.voiceNote}
+            onAdd={voice => { void studio.addVoiceover(voice); }} onRemove={studio.removeVoiceover}
+            onCaptions={on => studio.setComposition(c => ({ ...c, captions: on ? 'voice' : 'off' }))} />
           <ol className="space-y-2" aria-label="Scenes">
             {doc.composition.scenes.map((s, i) => <SceneCard key={i} scene={s} index={i} count={doc.composition.scenes.length} catalog={catalog}
               selected={i === scene || changed.has(i)} busy={!!busy} onSelect={() => setScene(i)} onEdit={patch => studio.editScene(i, patch)} />)}
