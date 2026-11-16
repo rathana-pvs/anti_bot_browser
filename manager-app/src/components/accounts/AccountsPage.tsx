@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { FolderPlus, Loader2, Plus, Search, Smartphone, Users, X } from 'lucide-react';
 import { Profile } from '../../types/profile';
-import { ProxyItem } from '../../types/proxy';
+import { ProxyItem, proxyHolders } from '../../types/proxy';
 import { QueueExecutionItem } from '../../types/automation';
 import { AndroidDevice } from '../../types/device';
 import { ActionMenu } from '../ui/ActionMenu';
@@ -55,6 +55,8 @@ export function AccountsPage({ profiles, proxies, devices, groups, executions, h
   const [kind, setKind] = useState<TypeFilter>('all');
   const [folder, setFolder] = useState(ALL_FOLDERS);
   const [search, setSearch] = useState('');
+  // Set by a row's "accounts on this proxy" badge.
+  const [proxyFilter, setProxyFilter] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   // Always opens on Today; longer ranges are a deliberate, temporary choice.
   const [period, setPeriod] = useState<ActivityPeriod>(1);
@@ -91,9 +93,16 @@ export function AccountsPage({ profiles, proxies, devices, groups, executions, h
       && !folders.some(f => f.name === folder)) setFolder(ALL_FOLDERS);
   }, [folder, folders]);
 
+  // A removed proxy must not leave the list filtered to nothing.
+  const filterProxy = proxyFilter ? proxies.find(proxy => proxy.id === proxyFilter) ?? null : null;
+  useEffect(() => { if (proxyFilter && !filterProxy) setProxyFilter(null); }, [proxyFilter, filterProxy]);
+  const toggleProxyFilter = (proxyId: string) => setProxyFilter(current => current === proxyId ? null : proxyId);
+
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
+    const onProxy = filterProxy ? new Set(proxyHolders(filterProxy)) : null;
     const filtered = profiles.filter(p => {
+      if (onProxy && !onProxy.has(p.id)) return false;
       if (stageFilter && stages.get(p.id)?.stage !== stageFilter) return false;
       if (folder === NO_FOLDER && p.group) return false;
       if (!stageFilter && ![ALL_FOLDERS, NO_FOLDER].includes(folder) && (p.group || '') !== folder) return false;
@@ -106,7 +115,7 @@ export function AccountsPage({ profiles, proxies, devices, groups, executions, h
     // A clicked column sorts the whole list; otherwise group accounts by folder, then name.
     if (sort) return sortRows(filtered, sort, (p, key) => accountSortValue(p, key, { devices, proxies, activity }));
     return filtered.sort((a, b) => Number(!a.group) - Number(!b.group) || (a.group || '').localeCompare(b.group || '') || a.name.localeCompare(b.name));
-  }, [profiles, devices, proxies, status, kind, folder, search, stages, stageFilter, sort, activity]);
+  }, [profiles, devices, proxies, status, kind, folder, search, stages, stageFilter, sort, activity, filterProxy]);
 
   const attentionCount = profiles.filter(p => stages.get(p.id)?.stage === 'attention').length;
   const runningCount = profiles.filter(p => p.status === 'running').length;
@@ -191,6 +200,15 @@ export function AccountsPage({ profiles, proxies, devices, groups, executions, h
           <button type="button" className={chip(kind === 'browser')} onClick={() => setKind('browser')}>This PC</button>
           <button type="button" className={chip(kind === 'android')} onClick={() => setKind('android')}>Phones</button>
         </>}
+        {filterProxy && <>
+          <span className="mx-1 h-4 w-px bg-zinc-800" aria-hidden="true" />
+          <button type="button" className={cn(chip(true), 'inline-flex items-center gap-1.5')} onClick={() => setProxyFilter(null)}
+            title="Show all accounts again" aria-label={`Showing accounts on proxy ${filterProxy.host}:${filterProxy.port}; clear this filter`}>
+            <Users className="h-3 w-3" aria-hidden="true" />
+            <span className="font-mono">{filterProxy.host}:{filterProxy.port}</span>
+            <X className="h-3 w-3" aria-hidden="true" />
+          </button>
+        </>}
         <div role="radiogroup" aria-label="Activity period" className="ml-auto flex items-center gap-2">
           <span className="text-[11px] text-zinc-500">{totals.posted} posted{totals.warmed ? ` · ${totals.warmed} warmed` : ''}</span>
           <div className="flex rounded-control border border-zinc-800 bg-zinc-950 p-0.5">
@@ -232,7 +250,8 @@ export function AccountsPage({ profiles, proxies, devices, groups, executions, h
             {stageFilter && !search && status === 'all' ? 'No accounts are in this stage right now.'
               : folder !== ALL_FOLDERS && !search && status === 'all' ? 'This folder is empty. Drag accounts here, or use Move to folder.' : 'No accounts match these filters.'}</p>}
           {visible.map(profile => <AccountRow key={profile.id} profile={profile} devices={devices} onOpenDevice={onOpenDevice} activity={activity.get(profile.id)!} stage={stages.get(profile.id)!}
-            network={networkSignal(profile, proxies)} proxyShare={<ProxyShareBadge profile={profile} proxies={proxies} profiles={profiles} />} selected={selected.has(profile.id)} busy={busyIds.has(profile.id)} onToggle={() => toggle(profile.id)}
+            network={networkSignal(profile, proxies)} proxyShare={<ProxyShareBadge profile={profile} proxies={proxies} profiles={profiles}
+              active={!!filterProxy && proxyHolders(filterProxy).includes(profile.id)} onFilter={toggleProxyFilter} />} selected={selected.has(profile.id)} busy={busyIds.has(profile.id)} onToggle={() => toggle(profile.id)}
             onOpen={() => handlers.open(profile.id, 'browser')} onDragStart={startDrag(profile)}
             menuItems={() => accountMenu(profile, handlers, { failureCutoff: periodStart(period) })}
             onOpenQueue={() => handlers.openQueue(profile.id)}
