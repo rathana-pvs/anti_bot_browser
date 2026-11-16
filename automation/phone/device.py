@@ -52,6 +52,9 @@ def media_mime(path: str) -> str:
 
 # A judged frame older than this is not what a failure was decided on.
 JUDGED_MAX_AGE_S = 120.0
+# How often a read asks the phone whether its screen is still on. The screen times out in a long wait
+# with no input (a slow upload), and its stream then repeats the last frame, so it cannot show this.
+AWAKE_CHECK_S = 30.0
 # Mean grey-level change (0-255, on a small copy) above which the live screen differs from it.
 SCREEN_CHANGED = 2.0
 
@@ -89,6 +92,7 @@ class PhoneDevice:
         self._lock = threading.Lock()
         self._tasks: list[asyncio.Task] = []
         self._warmed = False
+        self._awake_checked = time.monotonic()
 
     # --- session ------------------------------------------------------------------------------
     async def open(self) -> None:
@@ -120,14 +124,33 @@ class PhoneDevice:
         if self.client.current_user(self.serial) != self.user_id:
             self.client.switch_user(self.serial, self.user_id)
             time.sleep(4)
-        if not self.client.screen_awake(self.serial):
-            self.client.wake_screen(self.serial)
-            time.sleep(0.8)
+        self._wake_screen()
+
+    def _wake_screen(self) -> bool:
+        """Screen on and past a swipe lock screen; True when it had gone off."""
+        if self.client.screen_awake(self.serial):
+            return False
+        self.client.wake_screen(self.serial)
+        time.sleep(0.8)
         if self.client.lock_screen_showing(self.serial):
             self.client.dismiss_lock_screen(self.serial)
             time.sleep(1)
             if self.client.lock_screen_showing(self.serial):
                 raise PhoneError("The phone is locked with a PIN or pattern; remove the lock for this user")
+        return True
+
+    async def keep_awake(self) -> None:
+        """Wakes the screen when it has timed out, checked at most every AWAKE_CHECK_S. Nothing is
+        tapped, so a wait such as an upload is not disturbed."""
+        if time.monotonic() - self._awake_checked < AWAKE_CHECK_S:
+            return
+        self._awake_checked = time.monotonic()
+        try:
+            woke = await asyncio.to_thread(self._wake_screen)
+        except AdbError:
+            return  # the next read asks again
+        if woke:
+            self.log(event="screen", state="off", action="woke")
 
     async def _pump(self) -> None:
         while True:
@@ -166,6 +189,7 @@ class PhoneDevice:
         return self.image()
 
     async def read(self) -> list[Line]:
+        await self.keep_awake()
         image = self._judge()
         if image is None:
             return []

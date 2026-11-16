@@ -49,6 +49,7 @@ def make_device(directory):
     dev._lock = threading.Lock()
     dev._judged = None
     dev._acted_at = 0.0
+    dev._awake_checked = float("inf")  # no phone to ask whether its screen is on
     dev.client = None
     dev.serial, dev.user_id = "fixture", 10
     return dev

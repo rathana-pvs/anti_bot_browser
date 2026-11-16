@@ -337,6 +337,40 @@ class FeedTests(unittest.TestCase):
             run(Flows(device, lambda **e: None).wait_for("feed", ["What's on your mind?"]))
 
 
+class KeepAwakeTests(unittest.TestCase):
+    def device(self, awake):
+        class Client:
+            calls = []
+
+            def screen_awake(self, serial):
+                return awake.pop(0)
+
+            def wake_screen(self, serial):
+                self.calls.append("wake")
+
+            def lock_screen_showing(self, serial):
+                return False
+        events = []
+        device = phone_device.PhoneDevice("S", 12, phone_device.Path(tempfile.mkdtemp()),
+                                          lambda **e: events.append(e), client=Client())
+        return device, Client.calls, events
+
+    def test_a_screen_gone_off_in_a_long_wait_is_woken_without_input(self):
+        device, calls, events = self.device([False])
+        device._awake_checked -= phone_device.AWAKE_CHECK_S
+        with patch.object(phone_device.time, "sleep", lambda s: None):
+            run(device.keep_awake())
+        self.assertEqual(calls, ["wake"])
+        self.assertIn({"event": "screen", "state": "off", "action": "woke"}, events)
+
+    def test_the_phone_is_asked_at_most_every_check_interval(self):
+        device, calls, _ = self.device([True])
+        device._awake_checked -= phone_device.AWAKE_CHECK_S
+        run(device.keep_awake())
+        run(device.keep_awake())  # within the interval: the phone is not asked again
+        self.assertEqual(calls, [])
+
+
 class ApprovalScreenTests(unittest.TestCase):
     APPROVAL = "com.facebook.katana/com.facebook.fxcal.approvefromanotherdevice.BloksApproveFromAnotherDeviceActivity"
     FEED = "com.facebook.katana/com.facebook.katana.LoginActivity"

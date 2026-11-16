@@ -27,7 +27,7 @@ AGENT_APK = VENDOR_DIR / "agent.apk"
 AGENT_MANIFEST = VENDOR_DIR / "manifest.json"
 MIN_SDK = 33
 KILL_SWITCH_TIMEOUT_S = 45.0
-SCREEN_OFF_TIMEOUT_MS = str(15 * 60 * 1000)
+SCREEN_OFF_TIMEOUT_MS = str(5 * 60 * 1000)
 POLL_S = 1.0
 LOCATION_PERMISSIONS = ("android.permission.ACCESS_FINE_LOCATION", "android.permission.ACCESS_COARSE_LOCATION")
 # Without these, Facebook drops a shared photo and opens its feed instead of the composer.
@@ -214,7 +214,7 @@ def _kill_switch(ctx: _Context) -> None:
 
 def _phone_settings(ctx: _Context) -> None:
     wanted = ((ctx.user_id, "secure", "location_mode", "0"),
-              # Long enough that a job never has to wake the screen midway.
+              # Short, to spare the screen; a job wakes it again if a long wait outlasts this.
               (ctx.user_id, "system", "screen_off_timeout", SCREEN_OFF_TIMEOUT_MS),
               (None, "global", "wifi_scan_always_enabled", "0"),
               (None, "global", "ble_scan_always_enabled", "0"))
