@@ -237,7 +237,7 @@ async def live_view(websocket: WebSocket, serial: str, user_id: int | None = Non
     await websocket.accept()
     session = None
     try:
-        if user_id is not None:
+        if user_id is not None and not await run_in_threadpool(android_devices.show_if_on_screen, serial, user_id):
             state = await _switch_with_progress(websocket, serial, user_id)
             if not state["ready"]:
                 await websocket.send_json({"type": "error", "message": state["reason"]})

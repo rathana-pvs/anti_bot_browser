@@ -75,6 +75,21 @@ def test_live_websocket_accepts_the_token_header_from_the_dev_proxy(monkeypatch)
         assert ws.receive_json() == {"type": "error", "message": "no phone"}
 
 
+def test_viewing_the_user_on_screen_streams_without_switching(monkeypatch):
+    monkeypatch.setenv("MANAGER_API_TOKEN", "secret-token")
+    monkeypatch.setattr(android_live, "open_session", _no_phone)
+    monkeypatch.setattr(devices.android_devices, "show_if_on_screen", lambda serial, user_id: True)
+
+    def no_switch(*args, **kwargs):
+        raise AssertionError("the user on screen must not be switched to")
+    monkeypatch.setattr(devices.android_devices, "switch_user", no_switch)
+    client = TestClient(app)
+    with client.websocket_connect("/api/devices/R58M12345ABC/live?user_id=10",
+                                  headers={"X-Manager-Token": "secret-token"}) as ws:
+        assert ws.receive_json() == {"type": "status", "message": "Starting the screen stream…"}
+        assert ws.receive_json() == {"type": "error", "message": "no phone"}
+
+
 async def _no_phone(serial):
     raise android_live.LiveViewError("no phone")
 

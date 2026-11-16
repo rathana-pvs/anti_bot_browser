@@ -446,8 +446,9 @@ def switch_and_wait(client: AdbClient, serial: str, user_id: int,
 
     `progress` hears each step, so a viewer can say what the phone is waiting for."""
     report = progress or (lambda _message: None)
-    report("Switching the phone to this user…")
-    client.switch_user(serial, user_id)
+    if client.current_user(serial) != user_id:  # switching to the user on screen would only replay the switch
+        report("Switching the phone to this user…")
+        client.switch_user(serial, user_id)
     deadline = time.monotonic() + SWITCH_READY_TIMEOUT_S
     last_reason = None
     while True:
@@ -497,6 +498,25 @@ def switch_user(serial: str, user_id: int, progress: Callable[[str], None] | Non
         return {**opened["switch"], "ready": opened["ready"], "reason": opened["reason"]}
     with phone_lock(serial):
         return switch_and_wait(client, serial, user_id, progress)
+
+
+def show_if_on_screen(serial: str, user_id: int) -> bool:
+    """True when user N is already the phone's user on screen; its screen is then woken and a swipe
+    lock dismissed. A viewer of that user needs no switch, so the account opening's checks, which ran
+    when it was put on screen, are not repeated. Refused while a job or a switch holds the phone."""
+    validate_serial(serial)
+    serial = canonical_serial(serial)
+    client = _client()
+    with phone_lock(serial):
+        if client.current_user(serial) != user_id:
+            return False
+        if not next((user.running for user in client.users(serial) if user.user_id == user_id), False):
+            return False
+        if client.screen_awake(serial) is False:
+            client.wake_screen(serial)
+        elif client.lock_screen_showing(serial):
+            client.dismiss_lock_screen(serial)
+        return True
 
 
 def restart_phone(serial: str) -> None:

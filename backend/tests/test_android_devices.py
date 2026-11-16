@@ -427,6 +427,34 @@ def test_switch_user_waits_until_user_is_running_awake_and_unlocked(phone):
     assert error.value.status_code == 404
 
 
+def test_switching_to_the_user_already_on_screen_sends_no_switch(phone):
+    phone.current = 10
+    phone.users_list = [AndroidUser(u.user_id, u.name, u.flags, u.running or u.user_id == 10) for u in phone.users_list]
+    result = android_devices.switch_user("R58M12345ABC", 10)
+    assert result["ready"] is True
+    assert phone.switched == []
+
+
+def test_viewing_the_user_on_screen_skips_the_switch_and_wakes_the_screen(phone):
+    phone.current = 10
+    phone.users_list = [AndroidUser(u.user_id, u.name, u.flags, u.running or u.user_id == 10) for u in phone.users_list]
+    phone.awake = False
+    assert android_devices.show_if_on_screen("R58M12345ABC", 10) is True
+    assert phone.switched == [] and phone.woken == 1
+    # Another user still needs the switch (and its checks).
+    assert android_devices.show_if_on_screen("R58M12345ABC", 11) is False
+
+
+def test_viewing_the_user_on_screen_is_refused_while_a_job_holds_the_phone(phone):
+    phone.current = 10
+    assert android_devices.hold_for_job("R58M12345ABC", "job")
+    try:
+        with pytest.raises(adb_client.AdbError, match="queued post"):
+            android_devices.show_if_on_screen("R58M12345ABC", 10)
+    finally:
+        android_devices.release_job("R58M12345ABC")
+
+
 def test_opening_a_users_screen_clears_its_existing_welcome_wizard(phone):
     phone.focus = "com.google.android.setupwizard/.user.UserWarningActivity"
     result = android_devices.switch_user("R58M12345ABC", 11)
