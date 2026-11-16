@@ -310,19 +310,23 @@ def default_provider(request, *, system, context, prefix, usage):
     return generate_json(request, system=system, schema=EditPlan, context=context, prefix=prefix, action='direct', effort='low', usage=usage)
 
 
-def direct(request, provider=None, attempts=2):
-    """Ask the AI for a plan, apply what passes; a plan with refused operations is asked for once more."""
+def direct(request, provider=None, attempts=2, *, schema=EditPlan, apply=None, system=None, ctx=None):
+    """Ask the AI for a plan, apply what passes; a plan with refused operations is asked for once more.
+
+    The AI Reel Studio passes its own plan `schema`, `apply` function, `system` prompt and context.
+    """
     provider = provider or default_provider
+    apply = apply or apply_plan
     usage, total = {}, dict(input=0, output=0)
-    system, prefix, ctx = system_for(request.reel), article_prefix(request), context(request)
+    system, prefix, ctx = system or system_for(request.reel), article_prefix(request), ctx or context(request)
     best = None
     for attempt in range(attempts):
         usage.clear()
         raw = provider(request, system=system, context=ctx, prefix=prefix, usage=usage)
         total.update(input=total['input'] + usage.get('input', 0), output=total['output'] + usage.get('output', 0))
         try:
-            plan = EditPlan.model_validate(raw)
-            reel, changes, refused = apply_plan(request, plan)
+            plan = schema.model_validate(raw)
+            reel, changes, refused = apply(request, plan)
         except (ValidationError, Rejected) as exc:
             refused, plan, reel, changes = [str(exc) if isinstance(exc, Rejected) else 'The plan was not in the expected form.'], None, None, []
         if reel is not None and (best is None or not refused):

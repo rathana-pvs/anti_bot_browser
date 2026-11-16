@@ -11,6 +11,7 @@ from backend.services.reel_creator.audio_presets import preset_path
 from backend.services.ai import AIConfig
 from backend.services.reel_creator.composition import AnyDocument, Composition, DocumentRenderInput
 from backend.services.reel_creator.quality import review
+from backend.services.reel_creator.composer import ComposeDirectRequest, ComposeRequest, compose, direct_composition
 from backend.services.reel_creator.director import DirectRequest, check_model, direct
 from backend.services.reel_creator.reel import MAX_HOUSE_STYLES, DraftInput, HouseStyle, Reel
 from backend.services.reel_creator.service import MAX_UPLOAD, get_service
@@ -96,6 +97,29 @@ def write(value: WriteRequest):
 @router.post('/direct')
 def direct_reel(value: DirectRequest):
     return checked(direct, value)
+
+
+def _photo_facts(ids):
+    """Each photo's record (size, faces) and file, for the composer and the quality rules."""
+    service = get_service()
+    ids = list(dict.fromkeys(i for i in ids if i))
+    return {i: service.store.asset(i, 'image') for i in ids}, {i: service.asset_path(i, 'image') for i in ids}
+
+
+@router.post('/compositions/compose')
+def compose_reel(value: ComposeRequest):
+    def run():
+        assets, images = _photo_facts(value.photos)
+        return compose(value, assets, images)
+    return checked(run)
+
+
+@router.post('/compositions/direct')
+def direct_composition_reel(value: ComposeDirectRequest):
+    def run():
+        assets, images = _photo_facts(value.reel.image_ids())
+        return direct_composition(value, assets=assets, images=images)
+    return checked(run)
 
 
 @router.post('/compositions/review')
