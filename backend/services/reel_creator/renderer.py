@@ -1,5 +1,6 @@
 """Frame renderer for news reels. Posters and videos come from the same Plan.frame()."""
 import math
+import re
 from dataclasses import dataclass
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps
@@ -38,7 +39,16 @@ TYPE = {
     'clean': dict(head=('bold', 86, 50), detail=('regular', 44, 34), label='bold', head_pitch=1.2),
     'wire': dict(head=('bold', 84, 50), detail=('regular', 44, 34), label='condensed-semi', head_pitch=1.18),
     'editorial': dict(head=('serif', 96, 54), detail=('serif-italic', 50, 36), label='condensed-semi', head_pitch=1.12),
+    # AI Reel Studio layouts; a composition picks them per scene.
+    'big_number': dict(head=('bold', 66, 44), detail=('regular', 42, 34), label='condensed-semi', head_pitch=1.15),
+    'quote_card': dict(head=('serif-italic', 78, 48), detail=('regular', 40, 32), label='condensed-semi', head_pitch=1.18),
+    'centered_card': dict(head=('bold', 80, 50), detail=('regular', 42, 34), label='bold', head_pitch=1.15),
+    'split': dict(head=('display', 94, 56), detail=('regular', 42, 34), label='condensed', head_pitch=1.08),
 }
+# Per-word and per-letter reveal speeds, in seconds.
+WORD_STEP, LETTER_STEP = .13, .035
+COUNT_FRAMES = 24
+NUMBER = re.compile(r'\d[\d,]*(?:\.\d+)?')
 
 
 def clamp(value, low=0., high=1.):
@@ -81,17 +91,23 @@ class Element:
     shine: bool = False          # periodic light sweep across the tile
     period: int = 0              # marquee: width of one repeat, in pixels
     role: str = ''               # what advanced-mode styles call this element; '' for backgrounds and rules
+    source: tuple = ()           # (text, size, face, left inset) of a text line, for word and letter reveals
+    cuts: tuple = ()             # words / typewriter: x positions where each word or letter ends
+    frames: tuple = ()           # count_up: the figure's tiles on the way to its final value
 
 
 class Plan:
     """Layout for one reel at one output width. Built once, then sampled by time."""
 
-    def __init__(self, reel: Reel, width: int, images: dict, logo=None, fps=30, layout=None, cameras=None, motions=None):
-        """`layout` draws every scene with that layout instead of the look's own (the composition renderer uses it);
-        `cameras` and `motions` are per-scene camera moves and per-role entrances beyond what a Reel can store."""
+    def __init__(self, reel: Reel, width: int, images: dict, logo=None, fps=30, layout=None, cameras=None, motions=None,
+                 transitions=None, pace=1.0):
+        """`layout` draws every scene with that layout instead of the look's own (the composition renderer uses it).
+        Beyond what a Reel stores: `cameras` {scene: camera}, `motions` {(scene, role): animation}, `transitions`
+        {scene: how it replaces the one before} and `pace`, which scales every entrance (under 1 is faster)."""
         self.reel, self.fps = reel, fps
         self.look = layout or reel.look
-        self.cameras, self.motions = cameras or {}, motions or {}
+        self.cameras, self.motions, self.transitions, self.pace = cameras or {}, motions or {}, transitions or {}, pace
+        self._index = None
         # The next scene's opening background, for transitions; a composition draws that scene with another plan.
         self.background_of = self.background
         self.W = width
@@ -117,6 +133,7 @@ class Plan:
         self.scene_elements, self.rects, self.positions, self.photo_sizes = [], [], [], []
         self.text_low = []  # per scene: the text block sits in the lower half, so the scrim darkens the bottom
         for index, scene in enumerate(reel.scenes):
+            self._index = index
             self._scene_rect, self._lead_plan, self._photo_size = default, None, None
             self._scene = self._shown(scene)
             self.type = self._type_for(scene)
@@ -133,7 +150,7 @@ class Plan:
             elements += self._restyle(self._credit(scene, elements))
             self.scene_elements.append(elements)
             self.rects.append(self._scene_rect)
-        self._scene, self.type = None, self.look_type   # the identity row follows the reel's styles only
+        self._scene, self.type, self._index = None, self.look_type, None   # the identity row follows the reel's styles only
         self.rect = self.rects[0]
         self.mask = self._mask(self.rect)
         self.global_elements = self._restyle(self._identity())
@@ -186,15 +203,61 @@ class Plan:
 
     def _restyle(self, elements):
         """Apply each role's visibility and entrance; the ticker and blinking dots keep their motion."""
-        out = []
+        out, follows = [], {}
         for element in elements:
             style = self._style(element.role) if element.role else None
             if style and style.hidden:
                 continue
             if style and style.animation and element.anim not in ('marquee', 'blink'):
                 element.anim = style.animation
+            motion = self.motions.get((self._index, element.role)) if element.role and self._index is not None else None
+            if motion and element.anim not in ('marquee', 'blink'):
+                self._set_motion(element, motion, follows)
+            if self.pace != 1 and element.anim not in ('marquee', 'blink'):
+                element.start, element.dur = element.start * self.pace, element.dur * self.pace
             out.append(element)
         return out
+
+    def _set_motion(self, element, motion, follows):
+        """A composition's entrance beyond the Reel ones. Lines revealed word by word or letter by letter run one after another."""
+        if motion in ('words', 'typewriter') and element.source:
+            text, size, face, inset = element.source
+            if motion == 'words':
+                ends = [m.end() for m in re.finditer(r'\S+', text)]
+                step = WORD_STEP
+            else:
+                ends = [i + 1 for i, c in enumerate(text) if not c.isspace()]
+                step = LETTER_STEP
+            element.cuts = tuple(inset + math.ceil(text_width(text[:end], size, face)) for end in ends)
+            element.start = max(element.start, follows.get(element.role, 0))
+            element.dur = max(.45, len(ends) * step)
+            follows[element.role] = element.start + element.dur
+        elif motion == 'count_up' and element.role == 'lead' and element.source:
+            frames = self._counting(*element.source)
+            if frames:
+                element.frames, element.dur = frames, 1.1
+            else:  # not a number this can count: a figure written in words, a score
+                motion = 'pop'
+        element.anim = motion
+
+    def _counting(self, text, size, face, color, style):
+        """The figure's tiles from zero up to its value, each on a canvas the size of the final one."""
+        found = NUMBER.findall(text)
+        if len(found) != 1:
+            return ()
+        number = found[0]
+        decimals = len(number.split('.')[1]) if '.' in number else 0
+        value = float(number.replace(',', ''))
+        final, base = self._text(text, size, color, face, **style)
+        frames = []
+        for k in range(COUNT_FRAMES):
+            share = ease_out(k / COUNT_FRAMES)
+            shown = f'{value * share:,.{decimals}f}' if ',' in number else f'{value * share:.{decimals}f}'
+            tile, _ = self._text(text.replace(number, shown, 1), size, color, face, **style)
+            canvas = Image.new('RGBA', final.size)
+            canvas.alpha_composite(tile.crop((0, 0, min(tile.width, final.width), min(tile.height, final.height))))
+            frames.append(canvas)
+        return tuple(frames) + (final,)
 
     def _place(self, elements, position):
         """Move the scene's text block to `position` (0 top to 1 bottom of the room it has), inside the safe area.
@@ -307,12 +370,22 @@ class Plan:
             local = max(0., local - OPENING_COVER_HOLD) * length / (length - OPENING_COVER_HOLD)
             clock = local
         image = self.background(index, local)
-        following = self.reel.scenes[index + 1].transition if index + 1 < len(self.lengths) else 'cut'
+        following = (self.transitions.get(index + 1) or self.reel.scenes[index + 1].transition) if index + 1 < len(self.lengths) else 'cut'
         if following != 'cut' and local > length - CROSSFADE:
             blend = ease_out((local - (length - CROSSFADE)) / CROSSFADE)
             following_image = self.background_of(index + 1, 0)
             if following == 'slide':  # the next photo pushes in from the right
                 image.paste(following_image, (round(self.W * (1 - blend)), 0))
+            elif following == 'wipe':  # the next photo is uncovered left to right behind an accent edge
+                edge = round(self.W * blend)
+                if edge:
+                    image.paste(following_image.crop((0, 0, edge, self.H)), (0, 0))
+                image.paste(self.accent, (max(0, edge - self.px(10)), 0, min(self.W, edge), self.H))
+            elif following == 'zoom_through':  # rush into this photo while the next fades up
+                k = 1 + .35 * blend
+                w, h = round(self.W / k), round(self.H / k)
+                left, top = (self.W - w) // 2, (self.H - h) // 2
+                image = Image.blend(image.crop((left, top, left + w, top + h)).resize((self.W, self.H), Image.Resampling.BILINEAR), following_image, blend)
             else:
                 image = Image.blend(image, following_image, blend)
         for element in self.scene_elements[index]:
@@ -333,6 +406,8 @@ class Plan:
             rect, page = (0, 0, DESIGN_W, round(self.DH * .52), 0), PANEL
         elif look == 'clean':  # photo card under a masthead rule, on a light page
             rect, page = (48, self.inset + 140, 984, round(self.DH * .41), 12), PAGE
+        elif look == 'split':  # photo on top, the text on an accent panel below
+            rect, page = (0, 0, DESIGN_W, round(self.DH * .5), 0), self.accent
         elif look == 'editorial':  # headline on top, photo across the bottom
             top = round(self.DH * (.46 if self.reel.ratio == '9:16' else .52))
             rect, page = (0, top, DESIGN_W, self.DH - top, 0), PAPER
@@ -356,8 +431,13 @@ class Plan:
         base = self._base(index)
         x0, y0, rw, rh, _ = rect
         progress = clamp(local / self.lengths[index])
+        camera = self.cameras.get(index)
         motion = scene.motion or self.reel.motion
-        if motion == 'none':
+        if camera in ('pan_left', 'pan_right', 'pan_up'):
+            push = 1  # the closest steady view, so there is room to travel
+        elif camera == 'push_face':
+            push = 1.6 * ease_out(progress)  # a deeper push toward the face
+        elif motion == 'none':
             push = .5
         else:  # simple zoom: in, out, or alternating by scene
             push = 1 - progress if motion == 'zoom_out' or (motion == 'auto' and index % 2) else progress
@@ -366,6 +446,13 @@ class Plan:
         fx, fy = (.5, .5) if scene.fit == 'blur' and scene.image_id else (scene.focal_x, scene.focal_y)
         x = clamp(fx * base.width - view_w / 2, 0, base.width - view_w)
         y = clamp(fy * base.height - view_h / 2, 0, base.height - view_h)
+        travel = ease_out(progress) if camera in ('pan_left', 'pan_right', 'pan_up') else 0
+        if camera == 'pan_left':  # the view travels across all the spare photo there is
+            x = (base.width - view_w) * (1 - travel)
+        elif camera == 'pan_right':
+            x = (base.width - view_w) * travel
+        elif camera == 'pan_up':
+            y = (base.height - view_h) * (1 - travel)
         photo = resize_photo(base, (rw, rh), (x, y, x + view_w, y + view_h))
         if self.page is None:
             return photo
@@ -475,7 +562,11 @@ class Plan:
             spec = {'breaking': ((.40, .78, .86), (.2, .55), (6, 8, 14)),
                     'hot': ((.62, .95, .55), (.64, .86), (6, 8, 14)),         # mostly the top, where the headline and sticker sit
                     'wire': ((.45, .86, .9), (.2, .5), (6, 8, 14)),
-                    'politics': ((.74, 1.0, 1.0), (.25, .5), PANEL)}.get(self.look)  # photo melts into the panel
+                    'politics': ((.74, 1.0, 1.0), (.25, .5), PANEL),  # photo melts into the panel
+                    'big_number': ((.0, .7, .62), (.4, .5), (6, 8, 14)),   # the figure sits mid-frame: darken it all
+                    'quote_card': ((.0, .6, .78), (.4, .6), (6, 8, 14)),
+                    'centered_card': ((.3, .9, .5), (.25, .4), (6, 8, 14)),
+                    'split': ((.8, 1.0, .9), (.2, .3), self.accent)}.get(self.look)
         if not spec or not shade:
             return base
         (start, end, strength), (reach, top_strength), color = spec
@@ -511,6 +602,17 @@ class Plan:
                 if width < 1:
                     return
                 tile = tile.crop((0, 0, width, tile.height))
+            case 'punch_in':  # arrives large and settles, with a little overshoot
+                k = 1 + .38 * (1 - ease_back(p)) if p < 1 else 1
+                size = (max(1, round(tile.width * k)), max(1, round(tile.height * k)))
+                x, y = x + (tile.width - size[0]) // 2, y + (tile.height - size[1]) // 2
+                tile, alpha = tile.resize(size, Image.Resampling.BILINEAR), clamp(p * 3)
+            case 'words' | 'typewriter' if element.cuts and p < 1:
+                tile = self._revealed(tile, element.cuts, p, element.anim == 'words')
+                if tile is None:
+                    return
+            case 'count_up' if element.frames:
+                tile, alpha = element.frames[min(len(element.frames) - 1, round(clamp(p) * (len(element.frames) - 1)))], clamp(p * 4)
             case 'marquee':
                 x -= round((clock * self.px(110)) % element.period)
             case 'blink':
@@ -525,6 +627,21 @@ class Plan:
             tile = tile.copy()
             tile.putalpha(tile.getchannel('A').point([round(i * alpha) for i in range(256)]))
         image.paste(tile, (x, y), tile)
+
+    @staticmethod
+    def _revealed(tile, cuts, p, fade_newest):
+        """The line up to the current word or letter; with words, the newest one fades in."""
+        q = clamp(p) * len(cuts)
+        done = int(q)
+        shown = Image.new('RGBA', tile.size)
+        if done:
+            shown.paste(tile.crop((0, 0, cuts[done - 1], tile.height)), (0, 0))
+        if fade_newest and done < len(cuts):
+            left = cuts[done - 1] if done else 0
+            piece = tile.crop((left, 0, cuts[done], tile.height))
+            piece.putalpha(piece.getchannel('A').point([round(i * (q - done)) for i in range(256)]))
+            shown.alpha_composite(piece, (left, 0))
+        return shown if done or fade_newest else None
 
     @staticmethod
     def _shine(tile, phase):
@@ -631,15 +748,18 @@ class Plan:
             tile, base = self._text(line, size, color, face, mark=marks[k] if marks else None, **style)
             baseline = top + k * step_px + round(size * 1.0)
             left = x - self.px(8) - style.get('stroke', 0) - (self.px(BOX_PAD) if box else 0)
-            elements.append(Element(tile, left, baseline - base, start + k * step, .45, anim, role=role))
+            inset = self.px(8) + style.get('stroke', 0) + (self.px(BOX_PAD) if box else 0)
+            elements.append(Element(tile, left, baseline - base, start + k * step, .45, anim, role=role,
+                                    source=(line, max(1, round(size)), resolve(line, face), inset)))
         return elements, top + len(lines) * step_px
 
     def _lead(self, x, y, start, centered=False, **style):
         """The scene's large figure, quote mark or end-card sign, as planned by _fit. Returns (element, height)."""
         mark, face, size, height, rise = self._lead_plan
-        tile, base = self._text(mark, size, self._ink('lead', self.accent + (255,)), face, **style)
+        color = self._ink('lead', self.accent + (255,))
+        tile, base = self._text(mark, size, color, face, **style)
         left = (self.px(DESIGN_W - self.right + LEFT) - tile.width) // 2 if centered else x - self.px(8) - style.get('stroke', 0)
-        return Element(tile, left, y - (base - rise), start, .5, 'pop', role='lead'), height
+        return Element(tile, left, y - (base - rise), start, .5, 'pop', role='lead', source=(mark, size, face, color, style)), height
 
     def _headline(self, lines, size, color, x, top, start, **style):
         """The scene's lead (figure or mark) if it has one, then the headline with its highlighted words."""
@@ -982,6 +1102,66 @@ class Plan:
             details, y = self._details(dl, ds, MUTED + (255,), px(LEFT), y + px(36), .4 + len(hl) * .1, pitch=1.4)
             out += details
         return out
+
+    def _centred_block(self, scene, gap=18, room=0):
+        """Fit the scene's text into the safe area below the identity row; returns the fit and the top of the block."""
+        top_room = self.inset + 150 + room
+        fitted = self._fit(scene.headline, scene.detail_text, self.text_w, self.limit - top_room - 40, gap=gap)
+        block = fitted[-1]
+        return fitted, self.px(top_room) + max(0, (self.px(self.limit - top_room) - block) // 2)
+
+    def _block_text(self, fitted, top, ink, detail_ink, start=.25, shadow=True):
+        hl, hs, dl, ds, _ = fitted
+        out, y = self._headline(hl, hs, ink, self.px(LEFT), top, start, shadow=shadow)
+        if dl:
+            details, y = self._details(dl, ds, detail_ink, self.px(LEFT), y + self.px(16), start + .1 + len(hl) * .12)
+            out += details
+        return out, y
+
+    def _big_number(self, scene):
+        """One figure, as large as the frame allows, over a darkened photo; what it counts below it."""
+        px, accent, tag = self.px, self.accent + (255,), self.reel.tag_text
+        fitted, top = self._centred_block(scene, room=86 if tag else 0)
+        if not fitted[-1]:
+            return []
+        out = []
+        if tag:
+            chip = self._tag(tag, px(34), self._ink_on(self.accent), accent, 8, 62, 22)
+            out.append(Element(chip, px(LEFT), top - px(86), .05, .45, 'pop', role='label'))
+        lines, _ = self._block_text(fitted, top, WHITE, (225, 229, 236, 255))
+        return out + lines
+
+    def _quote_card(self, scene):
+        """Someone's words in a large serif on a dark frame, an accent rule beside them, the speaker underneath."""
+        px, accent = self.px, self.accent + (255,)
+        fitted, top = self._centred_block(scene, gap=26)
+        if not fitted[-1]:
+            return []
+        lines, bottom = self._block_text(fitted, top, WHITE, accent, start=.3)
+        rule = Element(self._box((px(10), max(1, bottom - top)), accent, px(5)), px(LEFT - 34), top, .1, .6, 'wipe')
+        return [rule] + lines
+
+    def _centered_card(self, scene):
+        """The text on a rounded dark card in the middle of a full photo."""
+        px = self.px
+        fitted, top = self._centred_block(scene, room=40)
+        if not fitted[-1]:
+            return []
+        lines, bottom = self._block_text(fitted, top, WHITE, (225, 229, 236, 255), shadow=False)
+        card = self._box((px(self.text_w + 64), bottom - top + px(72)), self._fill('detail', (10, 12, 18, 214)), px(32))
+        return [Element(card, px(LEFT - 32), top - px(36), .05, .5, 'fade')] + lines
+
+    def _split(self, scene):
+        """Photo on the top half, a bold headline on an accent panel below it."""
+        px = self.px
+        panel_top = round(self.DH * .5) if not self._bare(scene) else self.inset + 150
+        hl, hs, dl, ds, block = self._fit(scene.headline, scene.detail_text, self.text_w, self.limit - panel_top - 70, gap=16)
+        if not block:
+            return []
+        if self._bare(scene):
+            self._scene_rect = (0, 0, 0, 0, 0)
+        ink = self._ink_on(self.accent)
+        return self._block_text((hl, hs, dl, ds, block), px(panel_top + 60), ink, ink, shadow=False)[0]
 
     def _pop_art(self, scene):
         """Photo or cutout on top; an accent seam carrying the label; a centered uppercase headline on a black panel."""

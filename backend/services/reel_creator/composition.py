@@ -13,8 +13,10 @@ from .audio_presets import PRESETS
 from .components import AnimationId, CameraId, LayoutId, LOOK_LAYOUT, Pacing, RECIPE_BY_ID, TextStyleId, TransitionId, layout_look
 from .reel import LOOKS, MAX_SCENES, MAX_SECONDS, ElementStyle, Ratio, Reel, RenderInput, Role, Scene, SceneKind, hex_color
 
-TRANSITION_VALUE = {'crossfade': None, 'cut': 'cut', 'slide': 'slide'}
+TRANSITION_VALUE = {'crossfade': None, 'cut': 'cut', 'slide': 'slide'}    # what a Reel scene can store
 CAMERA_VALUE = {'zoom_in': 'zoom_in', 'zoom_out': 'zoom_out', 'still': 'none'}
+REEL_ANIMATIONS = ('fade', 'rise', 'left', 'pop', 'wipe', 'none')
+PACE = {'calm': 1.2, 'normal': 1.0, 'fast': .8}
 
 
 class PartStyle(BaseModel):
@@ -33,7 +35,8 @@ class PartStyle(BaseModel):
         return hex_color(value)
 
     def element_style(self):
-        values = dict(font=self.text_style, animation=self.animation, scale=self.scale, color=self.color,
+        animation = self.animation if self.animation in REEL_ANIMATIONS else None  # the others go to the plan as motions
+        values = dict(font=self.text_style, animation=animation, scale=self.scale, color=self.color,
                       background=self.background, hidden=self.hidden)
         return ElementStyle(**{k: v for k, v in values.items() if v is not None})
 
@@ -91,8 +94,8 @@ class CScene(BaseModel):
         return Scene(headline=self.headline, detail=self.detail, kind=self.kind, stat=self.stat, attribution=self.attribution,
                      highlight=self.highlight, credit=self.credit, image_id=bg.image_id, fit=bg.fit, focal_x=bg.focal_x,
                      focal_y=bg.focal_y, zoom=bg.zoom, backdrop=bg.color, shade=bg.shade,
-                     motion=CAMERA_VALUE[camera or self.camera] if (camera or self.camera) else None,
-                     transition=TRANSITION_VALUE[self.transition] if self.transition else None,
+                     motion=CAMERA_VALUE.get(camera or self.camera) if (camera or self.camera) else None,
+                     transition=TRANSITION_VALUE.get(self.transition) if self.transition else None,
                      style={role: s.element_style() for role, s in self.styles.items()}, seconds=self.seconds,
                      text_position=self.text_position, photo_size=self.photo_size)
 
@@ -157,7 +160,10 @@ class Composition(BaseModel):
     @property
     def look(self):
         """The look whose tag, accent and music this reel starts from."""
-        return RECIPE_BY_ID[self.recipe].look if self.recipe else layout_look(self.scenes[0].layout)
+        if self.recipe:
+            return RECIPE_BY_ID[self.recipe].look
+        look = layout_look(self.scenes[0].layout)
+        return look if look in LOOKS else 'clean'
 
     @property
     def duration(self):
@@ -176,6 +182,23 @@ class Composition(BaseModel):
         """Each scene's camera: its own, or the recipe's cameras in turn."""
         turn = RECIPE_BY_ID[self.recipe].cameras if self.recipe else ('zoom_in', 'zoom_out')
         return [s.camera or turn[i % len(turn)] for i, s in enumerate(self.scenes)]
+
+    def plan_cameras(self):
+        return {i: c for i, c in enumerate(self.cameras()) if c not in CAMERA_VALUE}
+
+    def plan_transitions(self):
+        return {i: s.transition for i, s in enumerate(self.scenes) if s.transition and s.transition not in TRANSITION_VALUE}
+
+    def plan_motions(self):
+        """(scene, role) -> an entrance a Reel cannot store; a scene's own style wins over the reel's."""
+        motions = {}
+        for index, scene in enumerate(self.scenes):
+            for role, style in {**self.styles, **scene.styles}.items():
+                own = scene.styles.get(role, style)
+                animation = own.animation or style.animation
+                if animation and animation not in REEL_ANIMATIONS:
+                    motions[(index, role)] = animation
+        return motions
 
     def reel_for(self, layout=None):
         """The renderer's Reel for the scenes drawn with `layout` (all scenes when None); other scenes keep their length, empty."""
@@ -225,16 +248,15 @@ class CompositionPlan:
     def __init__(self, composition: Composition, width, images, logo=None, fps=30):
         from .renderer import Plan
         self.composition = composition
+        extra = dict(cameras=composition.plan_cameras(), motions=composition.plan_motions(), transitions=composition.plan_transitions(),
+                     pace=PACE[composition.pacing])
         layouts = list(dict.fromkeys(s.layout for s in composition.scenes))
         if len(layouts) == 1:
-            plans = {layouts[0]: Plan(composition.reel_for(), width, images, logo, fps, layout=layout_look(layouts[0]))}
+            plans = {layouts[0]: Plan(composition.reel_for(), width, images, logo, fps, layout=layout_look(layouts[0]), **extra)}
         else:
             plans = {}
-            for layout in layouts:
-                try:
-                    plans[layout] = Plan(composition.reel_for(layout), width, images, logo, fps, layout=layout_look(layout))
-                except ValueError as exc:  # stand-in scenes have no text, so any error names a scene of this layout
-                    raise ValueError(str(exc)) from None
+            for layout in layouts:  # stand-in scenes have no text, so a fitting error always names a scene of this layout
+                plans[layout] = Plan(composition.reel_for(layout), width, images, logo, fps, layout=layout_look(layout), **extra)
         self.scene_plans = [plans[s.layout] for s in composition.scenes]
         for plan in plans.values():
             plan.background_of = self.background

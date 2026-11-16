@@ -70,7 +70,7 @@ def runs(text, size, face=True):
     face = resolve(clean, face)
     cmap = font_data(face)[1]
     for char in clean:
-        if ord(char) not in cmap:
+        if char != '\n' and ord(char) not in cmap:  # a line break (a quote's speaker, then its detail) is wrapped, not drawn
             raise ValueError(f'The font cannot display {char!r}. Remove it from the text.')
     return [(clean, font_at(size, face))] if clean else []
 

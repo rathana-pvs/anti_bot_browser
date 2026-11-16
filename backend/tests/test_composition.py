@@ -50,7 +50,8 @@ def test_parts_registry_matches_the_schema_literals():
     for kind, literal in components.LITERALS.items():
         assert {p.id for p in components.PARTS if p.kind == kind} == components.literal_values(kind), kind
     assert {r.look for r in components.RECIPES} == set(LOOKS)
-    assert all(p.look in LOOKS for p in components.parts('layout'))
+    from backend.services.reel_creator.renderer import TYPE
+    assert all(p.look in TYPE and hasattr(Plan, '_' + p.look) for p in components.parts('layout'))
     assert all(p.use_when for p in components.PARTS)
 
 
@@ -130,3 +131,84 @@ def test_the_service_renders_a_composition_poster_and_layout(tmp_path):
         assert isinstance(plan_for(composition, 180, images), CompositionPlan)
     finally:
         creator.stop()
+
+
+# --- new parts --------------------------------------------------------------
+
+def composed(image_id, **scene):
+    base = dict(headline='Council approves the flood relief plan today', detail='Payments begin next week.',
+                background=Background(image_id=image_id))
+    return Composition(scenes=[CScene(**{**base, **scene}), CScene(headline='What do you think?', kind='end')])
+
+
+@pytest.mark.parametrize('layout', ['big_number', 'quote_card', 'centered_card', 'split'])
+def test_new_layouts_draw_their_text_and_photo(tmp_path, layout):
+    images = {'a' * 32: photo(tmp_path)}
+    kind = {'big_number': dict(kind='stat', stat='300,000', headline='Homes without power'),
+            'quote_card': dict(kind='quote', headline='We will rebuild every home', attribution='Mayor Lina Chan')}.get(layout, {})
+    plan = CompositionPlan(composed('a' * 32, layout=layout, **kind), WIDTH, images)
+    boxes = {b['role'] for b in plan.layout(0)['boxes']}
+    assert 'headline' in boxes and ('lead' in boxes) == bool(kind)
+    settled = plan.frame(plan.settled(0))
+    assert settled.size == (plan.W, plan.H)
+    bare = CompositionPlan(composed(None, layout=layout, **kind), WIDTH, images)  # no photo still draws
+    assert bare.frame(bare.settled(0)).size == (plan.W, plan.H)
+
+
+def test_word_by_word_and_typewriter_reveal_the_headline_in_steps(tmp_path):
+    images = {'a' * 32: photo(tmp_path)}
+    from backend.services.reel_creator.composition import PartStyle
+    for motion in ('words', 'typewriter'):
+        plan = CompositionPlan(composed('a' * 32, styles={'headline': PartStyle(animation=motion)}), WIDTH, images)
+        line = next(e for e in plan.scene_plans[0].scene_elements[0] if e.role == 'headline')
+        assert line.anim == motion and len(line.cuts) >= 2 and list(line.cuts) == sorted(line.cuts)
+        assert line.dur >= .45  # takes as long as its words or letters need, never less than a plain entrance
+        early, late = plan.scene_plans[0]._revealed(line.tile, line.cuts, .3, motion == 'words'), line.tile
+        drawn = lambda tile: sum(1 for a in tile.getchannel('A').getdata() if a)
+        assert early is not None and 0 < drawn(early) < drawn(late)
+
+
+def test_count_up_climbs_to_the_figure_and_words_fall_back_to_pop(tmp_path):
+    images = {'a' * 32: photo(tmp_path)}
+    from backend.services.reel_creator.composition import PartStyle
+    plan = CompositionPlan(composed('a' * 32, layout='big_number', kind='stat', stat='$1,250', headline='Paid to each family',
+                                    styles={'lead': PartStyle(animation='count_up')}), WIDTH, images)
+    lead = next(e for e in plan.scene_plans[0].scene_elements[0] if e.role == 'lead')
+    assert lead.anim == 'count_up' and len(lead.frames) > 10 and lead.frames[-1].tobytes() == lead.tile.tobytes()
+    assert all(f.size == lead.tile.size for f in lead.frames)
+    words = CompositionPlan(composed('a' * 32, layout='big_number', kind='stat', stat='half', headline='Of homes damaged',
+                                     styles={'lead': PartStyle(animation='count_up')}), WIDTH, images)
+    assert next(e for e in words.scene_plans[0].scene_elements[0] if e.role == 'lead').anim == 'pop'
+
+
+@pytest.mark.parametrize('camera', ['pan_left', 'pan_right', 'pan_up', 'push_face'])
+def test_new_cameras_move_the_photo(tmp_path, camera):
+    images = {'a' * 32: photo(tmp_path, size=(1600, 1600))}
+    plan = CompositionPlan(composed('a' * 32, camera=camera, layout='news_strap'), WIDTH, images)
+    start, end = plan.background(0, .1), plan.background(0, plan.lengths[0] - .1)
+    assert not same(start, end)
+
+
+@pytest.mark.parametrize('transition', ['wipe', 'zoom_through'])
+def test_new_transitions_blend_into_the_next_scene(tmp_path, transition):
+    images = {'a' * 32: photo(tmp_path), 'b' * 32: photo(tmp_path, 'other.png', color='#aa2233')}
+    composition = Composition(scenes=[CScene(headline='First scene of the story', background=Background(image_id='a' * 32)),
+                                      CScene(headline='Second scene', background=Background(image_id='b' * 32), transition=transition)])
+    plan = CompositionPlan(composition, WIDTH, images)
+    end = plan.lengths[0]
+    middle = plan.frame(end - .25)
+    assert not same(middle, plan.frame(end - .9)) and not same(middle, plan.frame(end + .3))
+
+
+def test_pacing_scales_entrances():
+    from backend.services.reel_creator.composition import PartStyle  # noqa: F401
+    calm, fast = (CompositionPlan(Composition(pacing=pace, scenes=[CScene(headline='A steady headline for pacing')]), WIDTH, {})
+                  for pace in ('calm', 'fast'))
+    first = lambda plan: next(e for e in plan.scene_plans[0].scene_elements[0] if e.role == 'headline')
+    assert first(calm).dur > first(fast).dur
+
+
+def test_a_quote_with_a_speaker_and_a_detail_line_lays_out_in_every_look():
+    for look in LOOKS:
+        Plan(Reel(look=look, scenes=[Scene(kind='quote', headline='We will rebuild every home', attribution='Mayor Lina Chan',
+                                           detail='Payments begin next week.')]), WIDTH, {})

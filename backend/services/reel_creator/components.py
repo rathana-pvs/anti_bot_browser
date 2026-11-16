@@ -6,10 +6,11 @@ checker and the AI composer all read these lists, so adding a part means: draw i
 from dataclasses import asdict, dataclass, field
 from typing import Literal, get_args
 
-LayoutId = Literal['news_strap', 'big_headline', 'photo_panel', 'light_card', 'wire_report', 'magazine', 'pop_collage']
-CameraId = Literal['zoom_in', 'zoom_out', 'still']
-TransitionId = Literal['crossfade', 'cut', 'slide']
-AnimationId = Literal['fade', 'rise', 'left', 'pop', 'wipe', 'none']
+LayoutId = Literal['news_strap', 'big_headline', 'photo_panel', 'light_card', 'wire_report', 'magazine', 'pop_collage',
+                   'big_number', 'quote_card', 'centered_card', 'split']
+CameraId = Literal['zoom_in', 'zoom_out', 'still', 'pan_left', 'pan_right', 'pan_up', 'push_face']
+TransitionId = Literal['crossfade', 'cut', 'slide', 'wipe', 'zoom_through']
+AnimationId = Literal['fade', 'rise', 'left', 'pop', 'wipe', 'none', 'words', 'typewriter', 'count_up', 'punch_in']
 TextStyleId = Literal['bold', 'regular', 'display', 'condensed', 'condensed-semi', 'serif', 'serif-italic']
 Pacing = Literal['calm', 'normal', 'fast']
 KINDS = frozenset({'story', 'stat', 'quote', 'end'})
@@ -46,14 +47,29 @@ PARTS = (
     Part('magazine', 'layout', 'Magazine', 'Headline on top, photo across the bottom: explainers and analysis.', mood=('calm', 'explainer'), look='editorial'),
     Part('pop_collage', 'layout', 'Pop collage', 'One clear person in a bold collage: entertainment and trends.', 'Tragedy, conflict, politics.',
          mood=('energetic',), needs_photo=True, loud=True, look='pop_art'),
+    Part('big_number', 'layout', 'Big number', 'One figure the story turns on, as large as the frame allows.', 'Scenes without a figure.',
+         applies_to=frozenset({'stat'}), mood=('energetic', 'explainer'), look='big_number'),
+    Part('quote_card', 'layout', 'Quote card', 'Someone\'s exact words, large, with the speaker underneath.', 'Reported speech.',
+         applies_to=frozenset({'quote'}), mood=('serious', 'calm'), look='quote_card'),
+    Part('centered_card', 'layout', 'Centred card', 'A key fact on a card over a strong photo; also good for end cards.',
+         mood=('calm', 'explainer'), look='centered_card'),
+    Part('split', 'layout', 'Split', 'Photo on top, a bold headline on an accent panel: a punchy hook or a new development.',
+         'Long headlines.', mood=('energetic',), look='split'),
     # Cameras: how the photo moves.
     Part('zoom_in', 'camera', 'Push in', 'Building tension or focus on one subject.', mood=('urgent', 'serious')),
     Part('zoom_out', 'camera', 'Pull out', 'Revealing context; the end of a story.', mood=('calm', 'explainer')),
     Part('still', 'camera', 'Still', 'Photos with details that motion would crop.'),
+    Part('pan_left', 'camera', 'Pan left', 'Wide photos: a crowd, a skyline, a scene with things to see.', mood=('explainer', 'calm')),
+    Part('pan_right', 'camera', 'Pan right', 'Wide photos, the other way: vary it with pan left.', mood=('explainer', 'calm')),
+    Part('pan_up', 'camera', 'Tilt up', 'Tall subjects: buildings, a person standing, a reveal.', mood=('serious',)),
+    Part('push_face', 'camera', 'Push to face', 'A strong push toward the person in the photo, for a quote or the hook.', 'Photos without a face.',
+         mood=('urgent', 'serious'), loud=True),
     # Transitions: how a scene replaces the one before.
     Part('crossfade', 'transition', 'Crossfade', 'The default between scenes.', mood=('calm', 'serious')),
     Part('cut', 'transition', 'Cut', 'Fast, urgent pacing; a sharp change of subject.', 'Calm explainers.', mood=('urgent', 'energetic')),
     Part('slide', 'transition', 'Slide', 'Moving to the next fact in a sequence.', mood=('energetic', 'explainer')),
+    Part('wipe', 'transition', 'Wipe', 'A clean change of topic, edged in the accent colour.', mood=('explainer', 'serious')),
+    Part('zoom_through', 'transition', 'Zoom through', 'High energy: into the next big moment.', 'Calm or sad stories.', mood=('energetic', 'urgent'), loud=True),
     # Text animations: how a headline, detail or figure arrives.
     Part('fade', 'animation', 'Fade', 'Calm, serious or sad stories; works everywhere.', mood=('calm', 'serious')),
     Part('rise', 'animation', 'Rise', 'The default for headlines and detail lines.', mood=('calm', 'explainer')),
@@ -61,6 +77,13 @@ PARTS = (
     Part('pop', 'animation', 'Pop', 'A big figure or a short, punchy hook.', 'Tragedy, deaths or injuries.', mood=('energetic',), loud=True),
     Part('wipe', 'animation', 'Wipe', 'Revealing a headline for emphasis; quotes.', mood=('serious', 'explainer')),
     Part('none', 'animation', 'No animation', 'Text that must be readable from the first frame.', 'Use rarely.'),
+    Part('words', 'animation', 'Word by word', 'Headlines that build as they are read; the hook.', mood=('energetic', 'explainer')),
+    Part('typewriter', 'animation', 'Typewriter', 'Quotes and statements, letter by letter.', 'Long text.', applies_to=frozenset({'quote', 'story', 'end'}),
+         mood=('serious',)),
+    Part('count_up', 'animation', 'Count up', 'A figure that climbs from zero to its value. For the big figure only.', 'Figures in words, scores.',
+         applies_to=frozenset({'stat'}), mood=('energetic', 'explainer')),
+    Part('punch_in', 'animation', 'Punch in', 'A short, strong hook that lands hard.', 'Sad news; more than one per reel.',
+         mood=('energetic', 'urgent'), loud=True),
     # Text styles: the typeface of a role.
     Part('bold', 'text_style', 'Bold sans', 'Clear, modern headlines.'),
     Part('regular', 'text_style', 'Regular sans', 'Detail lines and captions.'),
