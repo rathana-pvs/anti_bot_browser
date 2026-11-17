@@ -1,7 +1,7 @@
 import {
   AccountHealth, NetworkIntent, Profile, ProfileCreateRequest, ProfileDefaults, ProfileUpdateRequest, SystemStats,
 } from '../types/profile';
-import { ProxyItem } from '../types/proxy';
+import { ProxyItem, ProxySource } from '../types/proxy';
 import { BrainActionResponse, BrainCatalogResponse, BrainUploadResponse } from '../types/brain';
 import { invoke } from '@tauri-apps/api/core';
 import { isDesktopApp } from './desktopEnvironment';
@@ -373,7 +373,8 @@ export interface ProxyChoice {
   country?: string | null; country_code?: string | null; region?: string | null; city?: string | null; timezone?: string | null;
   geo_source?: string; latency_ms: number | null; reachable?: boolean | null; rating?: import('../types/proxy').ProxyRating;
   replaced_by?: string | null; replaced_by_address?: string | null; replaced_from?: string | null; accounts: number;
-  travel_hours?: number; rest_hours?: number; suggested?: boolean; same_country?: boolean;
+  account_limit?: number; source_id?: string; source_name?: string;
+  travel_hours?: number; rest_hours?: number; suggested?: boolean; same_country?: boolean; same_source?: boolean;
 }
 
 export interface ProxyChangeOptions {
@@ -405,8 +406,6 @@ export async function changeAccountProxy(profileId: string, proxyId: string): Pr
 
 export interface ProxySettings {
   accounts_per_proxy: number;
-  webshare_key_set: boolean;
-  webshare_key_hint: string | null;
 }
 
 export async function fetchProxySettings(): Promise<ProxySettings> {
@@ -415,15 +414,41 @@ export async function fetchProxySettings(): Promise<ProxySettings> {
   return res.json();
 }
 
-/** Saves the Webshare API key on this PC after Webshare accepts it. An empty key removes it. */
-export async function saveWebshareKey(key: string): Promise<ProxySettings> {
-  const res = await fetch(`${API_BASE}/proxies/settings`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ webshare_api_key: key }),
-  });
-  if (!res.ok) throw await apiError(res, 'Could not save the Webshare API key');
+export interface ProxySourceInput {
+  name?: string;
+  provider?: import('../types/proxy').ProxyProvider;
+  protocol?: import('../types/proxy').ProxyProtocol;
+  accounts_per_proxy?: number | null;
+  use_on?: import('../types/proxy').ProxyUse;
+  /** Checked with the provider before it is saved. On an update, leave it out to keep the saved key, or send "" to remove it. */
+  api_key?: string;
+}
+
+export async function fetchProxySources(): Promise<ProxySource[]> {
+  const res = await fetch(`${API_BASE}/proxies/sources`);
+  if (!res.ok) throw await apiError(res, 'Could not read the proxy sources');
   return res.json();
+}
+
+export async function createProxySource(input: ProxySourceInput): Promise<ProxySource> {
+  const res = await fetch(`${API_BASE}/proxies/sources`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input),
+  });
+  if (!res.ok) throw await apiError(res, 'Could not add the proxy source');
+  return res.json();
+}
+
+export async function updateProxySource(id: string, input: ProxySourceInput): Promise<ProxySource> {
+  const res = await fetch(`${API_BASE}/proxies/sources/${encodeURIComponent(id)}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input),
+  });
+  if (!res.ok) throw await apiError(res, 'Could not save the proxy source');
+  return res.json();
+}
+
+export async function deleteProxySource(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/proxies/sources/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (!res.ok) throw await apiError(res, 'Could not delete the proxy source');
 }
 
 export interface WebshareReplaceResult {
@@ -464,13 +489,13 @@ export async function fetchWebshareReplace(): Promise<WebshareReplaceRun> {
   return res.json();
 }
 
-export async function importProxies(text: string, group = ''): Promise<{ added: number; total: number; status_checked: number; online: number; offline: number; geo_checked: number; geo_failed: number }> {
+export async function importProxies(text: string, sourceId: string): Promise<{ added: number; skipped: number; total: number; status_checked: number; online: number; offline: number; geo_checked: number; geo_failed: number }> {
   const res = await fetch(`${API_BASE}/proxies/import`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, group }),
+    body: JSON.stringify({ text, source_id: sourceId }),
   });
-  if (!res.ok) throw new Error('Failed to import proxies');
+  if (!res.ok) throw await apiError(res, 'Failed to import proxies');
   return res.json();
 }
 

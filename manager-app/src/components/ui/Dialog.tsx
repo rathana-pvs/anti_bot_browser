@@ -4,9 +4,11 @@ import { X } from 'lucide-react';
 import { IconButton } from './IconButton';
 import { cn } from './cn';
 
-export function Dialog({ open, onOpenChange, title, description, children, footer, className }: {
+export function Dialog({ open, onOpenChange, title, description, children, footer, actions, className }: {
   open: boolean; onOpenChange: (open: boolean) => void; title: string; description?: string;
-  children: ReactNode; footer?: ReactNode; className?: string;
+  children: ReactNode; footer?: ReactNode;
+  /** Shown in the header, before the close button. */
+  actions?: ReactNode; className?: string;
 }) {
   return <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
     <DialogPrimitive.Portal>
@@ -20,6 +22,7 @@ export function Dialog({ open, onOpenChange, title, description, children, foote
             <DialogPrimitive.Title className="text-sm font-semibold text-foreground">{title}</DialogPrimitive.Title>
             {description && <DialogPrimitive.Description className="mt-1 text-xs text-zinc-400">{description}</DialogPrimitive.Description>}
           </div>
+          {actions}
           <DialogPrimitive.Close asChild><IconButton aria-label="Close dialog"><X className="h-4 w-4" /></IconButton></DialogPrimitive.Close>
         </header>
         <div className="p-5">{children}</div>

@@ -4,7 +4,11 @@ import React, { useEffect, useRef, useState } from 'react';
 import { ChevronDown, Cpu, Globe, Loader2, Monitor, Shield, Smartphone, X } from 'lucide-react';
 import { fetchProfileDefaults } from '../services/api';
 import { BehaviorMode, ProfileCreateRequest, ReelTemplateSelection, RequestedEnvironment, ResourceLimits } from '../types/profile';
-import { formatProxyGeography, freeProxies, isPoorProxy, proxyOptionLabel, ProxyItem } from '../types/proxy';
+import { formatProxyGeography, freeProxies, isPoorProxy, proxyOptionLabel, ProxyItem, usableOn } from '../types/proxy';
+import { useProxySourceFilter } from './ProxySourceFilter';
+
+/** Free proxies a PC account may use: its source must allow PC accounts. */
+const pcProxies = (proxies: ProxyItem[]) => freeProxies(proxies.filter(proxy => usableOn(proxy, 'pc')));
 import { SavedProxyCheck } from './SavedProxyCheck';
 import { RESOLUTION_OPTIONS, getHostTimezone } from '../services/fingerprintPool';
 import { Select } from './ui/Select';
@@ -57,7 +61,7 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
   const [cpuOptions, setCpuOptions] = useState([1, 2, 4, 6, 8]);
   const [memoryOptions, setMemoryOptions] = useState([1024, 2048, 3072, 4096, 6144, 8192]);
   const [resolutions, setResolutions] = useState(RESOLUTION_OPTIONS.map((item) => item.value));
-  const [networkChoice, setNetworkChoice] = useState(() => freeProxies(proxies).find((proxy) => !isPoorProxy(proxy))?.id || 'direct');
+  const [networkChoice, setNetworkChoice] = useState(() => pcProxies(proxies).find((proxy) => !isPoorProxy(proxy))?.id || 'direct');
   const networkChoiceRef = useRef(networkChoice);
   const networkTouched = useRef(false);
   const proxiesRef = useRef(proxies);
@@ -79,7 +83,7 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
     setName(`Account ${existingCountRef.current + 1}`);
     setGroup('');
     networkTouched.current = false;
-    const defaultChoice = freeProxies(proxiesRef.current).find((proxy) => !isPoorProxy(proxy))?.id || 'direct';
+    const defaultChoice = pcProxies(proxiesRef.current).find((proxy) => !isPoorProxy(proxy))?.id || 'direct';
     networkChoiceRef.current = defaultChoice;
     setNetworkChoice(defaultChoice);
     setAdvancedOpen(false);
@@ -118,7 +122,7 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
 
   useEffect(() => {
     if (!isOpen || isSaving || networkTouched.current) return;
-    const firstAvailable = freeProxies(proxies).find((proxy) => !isPoorProxy(proxy));
+    const firstAvailable = pcProxies(proxies).find((proxy) => !isPoorProxy(proxy));
     const choice = firstAvailable?.id || 'direct';
     if (choice === networkChoiceRef.current) return;
     networkChoiceRef.current = choice;
@@ -130,7 +134,12 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
     }));
   }, [isOpen, proxies, isSaving]);
 
-  const location = useProxyLocationFilter(freeProxies(proxies), networkChoice);
+  // Choosing a source moves the choice to that source's best free proxy.
+  const sourceFilter = useProxySourceFilter(pcProxies(proxies), networkChoice, (inSource) => {
+    const best = inSource.find((proxy) => !isPoorProxy(proxy)) ?? inSource[0];
+    if (best && !inSource.some((proxy) => proxy.id === networkChoiceRef.current)) handleNetworkChange(best.id);
+  });
+  const location = useProxyLocationFilter(sourceFilter.filtered, networkChoice);
 
   if (!isOpen) return null;
 
@@ -138,7 +147,7 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
   const takenNames = new Set(existingNames.map((value) => value.trim().toLowerCase()));
   const nameExists = name.trim() !== '' && takenNames.has(name.trim().toLowerCase());
 
-  const availableProxies = freeProxies(proxies);
+  const availableProxies = pcProxies(proxies);
   const selectedProxy = availableProxies.find((proxy) => proxy.id === networkChoice);
 
   const speedTestNetwork = networkChoice === 'custom'
@@ -273,6 +282,7 @@ export const CreateProfileModal: React.FC<CreateProfileModalProps> = ({
           )}
             <div className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
               <div className="flex items-center gap-1.5 font-medium text-zinc-300"><Globe className="h-3.5 w-3.5" />Network</div>
+              {sourceFilter.controls({ icon: true })}
               {location.controls({ icon: true })}
               <Select value={networkChoice} onValueChange={handleNetworkChange}
                 ariaLabel="Network connection"

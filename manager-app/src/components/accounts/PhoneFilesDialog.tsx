@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { CheckCircle2, Film, Image as ImageIcon, Loader2, Smartphone, Trash2, Upload, X, XCircle } from 'lucide-react';
 import type { Profile } from '../../types/profile';
 import { isDesktopApp } from '../../services/desktopEnvironment';
@@ -17,12 +18,29 @@ const dateLabel = (iso: string) => {
 
 let jobCounter = 0;
 
+/** A picked or dropped File, or a dropped file's path. */
+export type PhoneDrop = File | string;
+
+/** Nothing is copied yet: the person picks every file first, then sends them together. */
+function toJobs(list: ArrayLike<PhoneDrop>): Job[] {
+  return Array.from(list).map(source => {
+    const name = typeof source === 'string' ? source.split('/').pop() || source : source.name;
+    const job = { key: `j${++jobCounter}`, name, size: typeof source === 'string' ? null : source.size, source };
+    return isPhoneFileType(name) ? { ...job, state: 'selected' as const }
+      : { ...job, state: 'failed' as const, error: 'Only JPEG, PNG and MP4 files can be copied.' };
+  });
+}
+
 /** Copies photos and videos by hand into one phone account's gallery, for the person to use
  * on the phone themselves (profile picture, cover photo…). Nothing here is posted. */
-export const PhoneFilesDialog: React.FC<{ profile: Profile; onClose: () => void }> = ({ profile, onClose }) => {
+export const PhoneFilesDialog: React.FC<{
+  profile: Profile; onClose: () => void;
+  /** Files dropped on the phone's screen, listed ready to send. */
+  initialFiles?: PhoneDrop[];
+}> = ({ profile, onClose, initialFiles }) => {
   const [files, setFiles] = useState<PhoneFile[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [jobs, setJobs] = useState<Job[]>([]);
+  const [jobs, setJobs] = useState<Job[]>(() => initialFiles ? toJobs(initialFiles) : []);
   const [removing, setRemoving] = useState<string | null>(null);
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -70,17 +88,10 @@ export const PhoneFilesDialog: React.FC<{ profile: Profile; onClose: () => void 
   };
 
   const [dropError, setDropError] = useState<string | null>(null);
-  const add = (list: FileList | File[] | string[]) => {
-    const picked = Array.from(list as ArrayLike<File | string>);
-    if (!picked.length) return;
+  const add = (list: FileList | PhoneDrop[]) => {
+    if (!list.length) return;
     setDropError(null);
-    const next: Job[] = picked.map(source => {
-      const name = typeof source === 'string' ? source.split('/').pop() || source : source.name;
-      const job = { key: `j${++jobCounter}`, name, size: typeof source === 'string' ? null : source.size, source };
-      return isPhoneFileType(name) ? { ...job, state: 'selected' as const }
-        : { ...job, state: 'failed' as const, error: 'Only JPEG, PNG and MP4 files can be copied.' };
-    });
-    // Nothing is copied yet: the person picks every file first, then sends them together.
+    const next = toJobs(list);
     setJobs(current => [...current, ...next]);
   };
 
@@ -134,12 +145,16 @@ export const PhoneFilesDialog: React.FC<{ profile: Profile; onClose: () => void 
   const busy = jobs.some(job => job.state === 'waiting' || job.state === 'copying');
   const close = () => { if (!busy) onClose(); };
 
+  // A Radix dialog, so it stacks correctly over the phone screen's own dialog.
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
-      <div role="dialog" aria-modal="true" aria-label={`Files on phone for ${profile.name}`}
-        className="flex max-h-[85vh] w-full max-w-xl flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-2xl">
+    <DialogPrimitive.Root open onOpenChange={open => { if (!open) close(); }}>
+      <DialogPrimitive.Portal>
+      <DialogPrimitive.Overlay className="fixed inset-0 z-[310] bg-black/80 backdrop-blur-sm" />
+      <DialogPrimitive.Content aria-describedby={undefined} aria-label={`Files on phone for ${profile.name}`} data-phone-files-dialog=""
+        onPointerDownOutside={e => e.preventDefault()} onInteractOutside={e => e.preventDefault()}
+        className="fixed left-1/2 top-1/2 z-[311] flex max-h-[85vh] w-[calc(100vw-2rem)] max-w-xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-2xl outline-none">
         <div className="flex items-center justify-between border-b border-border px-5 py-4">
-          <h2 className="flex items-center gap-2 text-sm font-semibold text-zinc-100"><Smartphone className="h-4 w-4 text-zinc-400" />Send files to phone · {profile.name}</h2>
+          <DialogPrimitive.Title className="flex items-center gap-2 text-sm font-semibold text-zinc-100"><Smartphone className="h-4 w-4 text-zinc-400" />Send files to phone · {profile.name}</DialogPrimitive.Title>
           <button onClick={close} disabled={busy} aria-label="Close" title={busy ? 'Wait for the copy to finish.' : undefined}
             className="rounded p-1 text-zinc-400 hover:text-zinc-200 disabled:opacity-40"><X className="h-4 w-4" /></button>
         </div>
@@ -232,7 +247,8 @@ export const PhoneFilesDialog: React.FC<{ profile: Profile; onClose: () => void 
           <button onClick={close} disabled={busy}
             className="rounded-md border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-zinc-300 hover:bg-zinc-800 disabled:opacity-50">{busy ? 'Copying…' : 'Close'}</button>
         </div>
-      </div>
-    </div>
+      </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
   );
 };

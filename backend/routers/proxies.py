@@ -16,9 +16,10 @@ from backend.services.proxy_service import (
     check_proxy_speed,
     update_proxy_metadata,
     account_limit,
+    limit_of,
     set_account_limit,
 )
-from backend.services import proxy_check, webshare_service
+from backend.services import proxy_check, proxy_sources, webshare_service
 
 router = APIRouter(prefix="/api/proxies", tags=["proxies"])
 
@@ -137,20 +138,25 @@ def remove_selected_proxies(request: ProxySelection):
 
 @router.get("")
 def get_proxies():
-    # Each entry carries the per-proxy limit so pickers can show "2/3 accounts" without another request.
+    # Each entry carries its limit and source, so pickers can show "2/3 accounts" and group by
+    # source without another request.
     limit = account_limit()
-    return [{**proxy, "account_limit": limit} for proxy in load_proxy_pool()]
+    sources = {s["id"]: s for s in proxy_sources.list_public()}
+    out = []
+    for proxy in load_proxy_pool():
+        source = sources.get(proxy.get("source_id")) or sources[proxy_sources.DEFAULT_ID]
+        out.append({**proxy, "account_limit": limit_of(proxy, limit), "source_id": source["id"],
+                    "source_name": source["name"], "source_use_on": source["use_on"]})
+    return out
 
 
 class ProxySettings(BaseModel):
     model_config = ConfigDict(extra='forbid')
     accounts_per_proxy: int | None = None
-    # "" removes the saved key. The key itself is never sent back.
-    webshare_api_key: str | None = Field(default=None, max_length=200)
 
 
 def _settings():
-    return {"accounts_per_proxy": account_limit(), **webshare_service.key_status()}
+    return {"accounts_per_proxy": account_limit()}
 
 
 @router.get("/settings")
@@ -163,13 +169,60 @@ def update_proxy_settings(request: ProxySettings):
     try:
         if request.accounts_per_proxy is not None:
             set_account_limit(request.accounts_per_proxy)
-        if request.webshare_api_key is not None:
-            webshare_service.set_api_key(request.webshare_api_key)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except webshare_service.WebshareError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _settings()
+
+
+class SourceRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    name: str | None = Field(default=None, max_length=200)
+    provider: str | None = None
+    protocol: str | None = None
+    # null follows the global Accounts per proxy.
+    accounts_per_proxy: int | None = None
+    use_on: str | None = None
+    # Never sent back. On an update, null keeps the saved key and "" removes it.
+    api_key: str | None = Field(default=None, max_length=200)
+
+
+def _source_changes(request: SourceRequest) -> dict:
+    sent = request.model_dump(exclude_unset=True)
+    return {k: v for k, v in sent.items() if v is not None or k in ("accounts_per_proxy", "api_key")}
+
+
+@router.get("/sources")
+def list_proxy_sources():
+    return proxy_sources.list_public()
+
+
+@router.post("/sources", status_code=201)
+def create_proxy_source(request: SourceRequest):
+    try:
+        return proxy_sources.create(_source_changes(request))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.put("/sources/{source_id}")
+def update_proxy_source(source_id: str, request: SourceRequest):
+    try:
+        return proxy_sources.update(source_id, _source_changes(request))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.delete("/sources/{source_id}")
+def delete_proxy_source(source_id: str):
+    try:
+        proxy_sources.delete(source_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"success": True}
 
 
 @router.post("/webshare/replace", status_code=202)
@@ -193,10 +246,13 @@ def import_proxies(payload: dict = Body(...)):
     text = payload.get("text")
     if not text or not isinstance(text, str):
         raise HTTPException(status_code=400, detail="No proxy text provided")
-    group = payload.get("group", "")
-    if not isinstance(group, str) or len(group) > 80:
-        raise HTTPException(status_code=422, detail="Folder name must be at most 80 characters")
-    result = import_proxies_from_text(text)
+    source_id = payload.get("source_id") or proxy_sources.DEFAULT_ID
+    if not isinstance(source_id, str):
+        raise HTTPException(status_code=422, detail="Choose a proxy source")
+    try:
+        result = import_proxies_from_text(text, source_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     added_ids = result.pop("added_ids", [])
     status = refresh_proxy_statuses(added_ids) if added_ids else {
         "online": 0, "offline": 0, "geo_checked": 0, "geo_failed": 0,

@@ -18,6 +18,7 @@ from backend.services.adb_client import AdbError, AdbUnavailable
 router = APIRouter(prefix="/api/devices", tags=["devices"])
 
 SCREEN_POLL_S = 2.0
+JOB_WATCH_INTERVAL_S = 1.0
 SCREEN_WAKE_GRACE_S = 10.0
 
 
@@ -250,7 +251,9 @@ async def live_view(websocket: WebSocket, serial: str, user_id: int | None = Non
     await websocket.accept()
     session = None
     try:
-        if user_id is not None and not await run_in_threadpool(android_devices.show_if_on_screen, serial, user_id):
+        # While a queued job holds the phone, the job's own account can be watched, never switched or touched.
+        watching = user_id is not None and await run_in_threadpool(android_devices.watch_job, serial, user_id)
+        if user_id is not None and not watching and not await run_in_threadpool(android_devices.show_if_on_screen, serial, user_id):
             state = await _switch_with_progress(websocket, serial, user_id)
             if not state["ready"]:
                 await websocket.send_json({"type": "error", "message": state["reason"]})
@@ -259,6 +262,9 @@ async def live_view(websocket: WebSocket, serial: str, user_id: int | None = Non
         session = await android_live.open_session(serial)
         await websocket.send_json({"type": "meta", "device_name": session.device_name, **(session.size or {})})
         await _bridge(websocket, session)
+    except android_devices.PhoneBusy as exc:
+        # The viewer retries on its own until the job is done.
+        await websocket.send_json({"type": "busy", "message": str(exc)})
     except (android_devices.DeviceNotFound, AdbError, android_live.LiveViewError, ValueError) as exc:
         await _send_error(websocket, str(exc))
     except WebSocketDisconnect:
@@ -297,12 +303,15 @@ async def _bridge(websocket: WebSocket, session: android_live.LiveSession) -> No
     async def control():
         while True:
             try:
-                await session.send(json.loads(await websocket.receive_text()))
-            except (ValueError, KeyError, TypeError):
+                message = json.loads(await websocket.receive_text())
+                if _input_allowed(session.serial, message):
+                    await session.send(message)
+            except (ValueError, KeyError, TypeError, AttributeError):
                 continue  # Ignore malformed input instead of dropping the view.
 
     tasks = [asyncio.create_task(video()), asyncio.create_task(control()),
-             asyncio.create_task(session.drain_device_messages()), asyncio.create_task(_watch_screen(websocket, session))]
+             asyncio.create_task(session.drain_device_messages()), asyncio.create_task(_watch_screen(websocket, session)),
+             asyncio.create_task(_watch_job(websocket, session.serial))]
     try:
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in done:
@@ -314,6 +323,24 @@ async def _bridge(websocket: WebSocket, session: android_live.LiveSession) -> No
     finally:
         for task in tasks:
             task.cancel()
+
+
+def _input_allowed(serial: str, message: dict) -> bool:
+    """While a queued job drives the phone, taps and keys would break it; asking for a fresh key
+    frame only touches the stream."""
+    return android_devices.job_on(serial) is None or message.get("type") == "reset_video"
+
+
+async def _watch_job(websocket: WebSocket, serial: str) -> None:
+    """Tells the viewer when a queued job starts or stops driving the phone: input is off meanwhile."""
+    view_only = False
+    while True:
+        busy = android_devices.job_on(serial) is not None
+        if busy != view_only:
+            view_only = busy
+            message = await asyncio.to_thread(android_devices.view_only_message, serial) if busy else None
+            await websocket.send_json({"type": "view_only", "on": busy, "message": message})
+        await asyncio.sleep(JOB_WATCH_INTERVAL_S)
 
 
 async def _watch_screen(websocket: WebSocket, session: android_live.LiveSession) -> None:

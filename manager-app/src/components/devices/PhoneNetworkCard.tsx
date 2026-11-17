@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Gauge, Loader2, ShieldCheck } from 'lucide-react';
 import { Profile } from '../../types/profile';
-import { ProxyItem, freeProxies, nearestFirst, nearnessLabel, proxyOptionLabel, savedSpeedSummary } from '../../types/proxy';
+import { ProxyItem, freeProxies, nearestFirst, usableOn, nearnessLabel, proxyOptionLabel, savedSpeedSummary } from '../../types/proxy';
 import { AndroidDevice } from '../../types/device';
 import { AccountNetworkStatus, fetchAccountNetwork, replaceAccountProxy, verifyAccountNetwork } from '../../services/devices';
 import { NetworkSpeedResult, testSavedProxySpeed } from '../../services/api';
 import { Button } from '../ui/Button';
 import { Select } from '../ui/Select';
 import { useProxyLocationFilter } from '../ProxyLocationFilter';
+import { useProxySourceFilter } from '../ProxySourceFilter';
 import { cn } from '../ui/cn';
 import { formatUtcOffset, phoneZone, sameTime } from './phoneTime';
 
@@ -28,9 +29,12 @@ export function PhoneNetworkCard({ profile, proxies, devices, onChanged, canChan
   const [tested, setTested] = useState<NetworkSpeedResult | null>(null);
   const [testError, setTestError] = useState('');
   // Nearest to the current proxy first: a replacement close by keeps the account where Facebook knows it.
-  const choices = nearestFirst(freeProxies(proxies).filter(item => item.password), proxy);
+  // The account's own source first, then nearest within each.
+  const choices = nearestFirst(freeProxies(proxies).filter(item => item.password && usableOn(item, 'phone')), proxy)
+    .sort((a, b) => Number((b.source_id || 'default') === (proxy?.source_id || 'default')) - Number((a.source_id || 'default') === (proxy?.source_id || 'default')));
   const [replacement, setReplacement] = useState('');
-  const location = useProxyLocationFilter(choices, replacement);
+  const sourceFilter = useProxySourceFilter(choices, replacement);
+  const location = useProxyLocationFilter(sourceFilter.filtered, replacement);
   const [replacing, setReplacing] = useState(false);
   const [replaceError, setReplaceError] = useState('');
   const check = profile.android_network;
@@ -130,6 +134,7 @@ export function PhoneNetworkCard({ profile, proxies, devices, onChanged, canChan
     </>}
     {canChangeProxy && choices.length > 0 && <div className="mt-4 space-y-2 border-t border-zinc-800 pt-3">
       <p className="font-medium text-zinc-300">{proxy && !proxy.held_by_phone ? 'Change proxy' : 'Choose a proxy'}</p>
+      {sourceFilter.controls({ icon: true })}
       {location.controls({ icon: true })}
       <div className="flex flex-wrap items-center gap-2">
         <div className="min-w-[14rem] flex-1"><Select value={replacement} onValueChange={setReplacement} ariaLabel="New proxy"

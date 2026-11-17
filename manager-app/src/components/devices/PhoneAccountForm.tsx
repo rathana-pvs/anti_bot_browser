@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Globe, Loader2, ScanLine } from 'lucide-react';
 import { AndroidDevice } from '../../types/device';
-import { freeProxies, isPoorProxy, proxyOptionLabel, ProxyItem } from '../../types/proxy';
+import { freeProxies, isPoorProxy, proxyOptionLabel, ProxyItem, usableOn } from '../../types/proxy';
+import { useProxySourceFilter } from '../ProxySourceFilter';
 import { SavedProxyCheck } from '../SavedProxyCheck';
 import { formatUtcOffset, phoneZone, sameTime } from './phoneTime';
 import { scanDevice } from '../../services/devices';
@@ -40,9 +41,13 @@ export function PhoneAccountForm({ devices, preset, proxies, groups, existingNam
   // The phone has one time zone for all its accounts, so proxies on the phone's time come first.
   const zone = phoneZone(phone);
   const matchesPhone = (proxy: ProxyItem) => Boolean(zone && proxy.timezone && sameTime(proxy.timezone, zone));
-  const available = freeProxies(proxies).sort((a, b) => Number(matchesPhone(b)) - Number(matchesPhone(a)));
+  const available = freeProxies(proxies.filter(proxy => usableOn(proxy, 'phone'))).sort((a, b) => Number(matchesPhone(b)) - Number(matchesPhone(a)));
   const [proxyChoice, setProxyChoice] = useState(available.find(proxy => !isPoorProxy(proxy))?.id ?? OWN_NETWORK);
-  const location = useProxyLocationFilter(available, proxyChoice);
+  const sourceFilter = useProxySourceFilter(available, proxyChoice, inSource => {
+    const best = inSource.find(proxy => !isPoorProxy(proxy)) ?? inSource[0];
+    if (best && !inSource.some(proxy => proxy.id === proxyChoice)) setProxyChoice(best.id);
+  });
+  const location = useProxyLocationFilter(sourceFilter.filtered, proxyChoice);
   const [scanning, setScanning] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -120,6 +125,7 @@ export function PhoneAccountForm({ devices, preset, proxies, groups, existingNam
 
         <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
           <div className="flex items-center gap-1.5 font-medium text-zinc-300"><Globe className="h-3.5 w-3.5" />Proxy</div>
+          {sourceFilter.controls({ icon: true })}
           {location.controls({ icon: true })}
           <Select value={proxyChoice} onValueChange={setProxyChoice} ariaLabel="Proxy"
             options={[

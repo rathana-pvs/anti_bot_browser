@@ -93,7 +93,7 @@ def _network_from_intent(profile_id: str, intent: dict) -> tuple[dict, str | Non
             "proxy_host": "", "proxy_port": None, "proxy_user": "", "proxy_pass": "",
         }, None
     if mode == "pool":
-        proxy = assign_proxy_by_id(profile_id, str(intent["proxy_id"]))
+        proxy = assign_proxy_by_id(profile_id, str(intent["proxy_id"]), surface="pc")
         network = {
             "mode": "pool", "proxy_id": proxy["id"],
             "proxy_type": proxy.get("type") or "socks5",

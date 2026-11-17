@@ -30,6 +30,11 @@ class FacebookIdentityTests(unittest.TestCase):
         self.assertIsNone(facebook_identity(items("Memories", "Saved", "Groups")))
         self.assertEqual(facebook_identity(items("Grace Murray", "Business Dashboard", "Memories", "Reels")), "page")
 
+    def test_personal_composer_and_friend_prompt_mark_the_personal_profile(self):
+        self.assertEqual(facebook_identity(items("Live video", "Photo/video", "Life update")), "personal")
+        self.assertEqual(facebook_identity(items("Add more friends to get recommendations")), "personal")
+        self.assertEqual(facebook_identity(items("Manage Page", "Life update")), "page")
+
     def test_unclear_screens_stay_unknown(self):
         self.assertIsNone(facebook_identity(items("Facebook", "Search Facebook", "Reels")))
         self.assertIsNone(facebook_identity([]))

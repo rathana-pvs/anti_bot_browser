@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from backend.config import DATA_DIR, PROFILES_DIR
-from backend.services import account_activity, account_hold, android_devices, android_network, proxy_service
+from backend.services import account_activity, account_hold, android_devices, android_network, proxy_service, proxy_sources
 from backend.services.adb_client import AdbClient, AdbError
 from backend.services.android_devices import CONTROL_USER_ID, DeviceNotFound, _client
 from backend.services.android_network import AGENT_PACKAGE, STATUS_TIMEOUT_S, AgentRefused, agent_call
@@ -387,11 +387,13 @@ def replace_proxy(profile_id: str, proxy_id: str) -> dict:
         raise ValueError("This PC doesn't have this proxy's password.")
     if not proxy_service.has_room(entry, profile_id):
         raise ValueError("Selected proxy already serves as many accounts as the limit per proxy allows.")
+    if not proxy_sources.allowed_on(entry, "phone"):
+        raise ValueError(proxy_sources.surface_message(entry, "phone"))
     with android_devices.phone_lock(serial):
         tried = _with_user(client, serial, user_id, lambda: _try_proxy(client, serial, user_id, entry))
     if not tried.get("applied"):
         raise AdbError("Traffic didn't get through this proxy, so the phone kept its old one.")
-    entry = proxy_service.assign_proxy_by_id(profile_id, proxy_id)
+    entry = proxy_service.assign_proxy_by_id(profile_id, proxy_id, surface="phone")
     _link_proxy(profile_id, entry, previous)
     # A placeholder only kept the old proxy from being given away; it can't be used without its password.
     if previous and previous.get("held_by_phone") and not previous.get("password") and previous["id"] != proxy_id:

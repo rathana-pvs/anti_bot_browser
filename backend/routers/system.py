@@ -10,7 +10,7 @@ from backend.services.queue_service import load_posting_queue
 from backend.services.reliability_service import build_reliability_scorecard, flatten_queue_executions
 from backend.services.ocr_worker_service import shared_ocr_worker_snapshot
 from backend.worker.service import status as worker_status
-from backend.services.proxy_service import account_limit, load_proxy_pool
+from backend.services.proxy_service import account_limit, has_room, load_proxy_pool
 from backend.services.docker_service import (
     count_running_profile_containers,
     get_current_cpu_percent,
@@ -136,7 +136,7 @@ def get_system_stats():
 
     pool = load_proxy_pool()
     limit = account_limit()
-    available_proxies = len([p for p in pool if len(p.get("profile_ids") or []) < limit])
+    available_proxies = len([p for p in pool if has_room(p, "", limit)])
 
     cpu_model_str = "x86_64 CPU"
     try:

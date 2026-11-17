@@ -90,6 +90,69 @@ def test_viewing_the_user_on_screen_streams_without_switching(monkeypatch):
         assert ws.receive_json() == {"type": "error", "message": "no phone"}
 
 
+def test_a_phone_busy_with_another_accounts_job_tells_the_viewer_to_wait(monkeypatch):
+    monkeypatch.setenv("MANAGER_API_TOKEN", "secret-token")
+    monkeypatch.setattr(devices.android_devices, "watch_job", lambda serial, user_id: False)
+
+    def busy(serial, user_id):
+        raise devices.android_devices.PhoneBusy("This phone is posting for P6_2. The screen opens when it finishes.")
+    monkeypatch.setattr(devices.android_devices, "show_if_on_screen", busy)
+    client = TestClient(app)
+    with client.websocket_connect("/api/devices/R58M12345ABC/live?user_id=10",
+                                  headers={"X-Manager-Token": "secret-token"}) as ws:
+        assert ws.receive_json() == {"type": "busy", "message": "This phone is posting for P6_2. The screen opens when it finishes."}
+
+
+def test_the_jobs_own_account_is_watched_without_switching_or_waking(monkeypatch):
+    monkeypatch.setenv("MANAGER_API_TOKEN", "secret-token")
+    monkeypatch.setattr(android_live, "open_session", _no_phone)
+    monkeypatch.setattr(devices.android_devices, "watch_job", lambda serial, user_id: True)
+
+    def untouched(*args, **kwargs):
+        raise AssertionError("a phone running a job must not be switched or woken")
+    monkeypatch.setattr(devices.android_devices, "show_if_on_screen", untouched)
+    monkeypatch.setattr(devices.android_devices, "switch_user", untouched)
+    client = TestClient(app)
+    with client.websocket_connect("/api/devices/R58M12345ABC/live?user_id=11",
+                                  headers={"X-Manager-Token": "secret-token"}) as ws:
+        assert ws.receive_json() == {"type": "status", "message": "Starting the screen stream…"}
+        assert ws.receive_json() == {"type": "error", "message": "no phone"}
+
+
+def test_input_is_dropped_while_a_job_drives_the_phone(monkeypatch):
+    holders = {"R58M12345ABC": "post:e1"}
+    monkeypatch.setattr(devices.android_devices, "job_on", lambda serial: holders.get(serial))
+    touch = {"type": "touch", "action": 0, "x": 1, "y": 1, "width": 2, "height": 2}
+    assert devices._input_allowed("R58M12345ABC", touch) is False
+    assert devices._input_allowed("R58M12345ABC", {"type": "key", "keycode": 4}) is False
+    assert devices._input_allowed("R58M12345ABC", {"type": "reset_video"}) is True
+    holders.clear()  # the job finished
+    assert devices._input_allowed("R58M12345ABC", touch) is True
+
+
+def test_viewer_hears_when_a_job_starts_and_stops_driving_the_phone(monkeypatch):
+    readings = iter([None, "post:e1", "post:e1", None])
+    sent = []
+
+    def job_on(serial):
+        value = next(readings, StopAsyncIteration)
+        if value is StopAsyncIteration:
+            raise asyncio.CancelledError
+        return value
+    monkeypatch.setattr(devices.android_devices, "job_on", job_on)
+    monkeypatch.setattr(devices.android_devices, "view_only_message", lambda serial: "Posting for P6_5. View only until it finishes.")
+    monkeypatch.setattr(devices, "JOB_WATCH_INTERVAL_S", 0)
+
+    class Socket:
+        async def send_json(self, message):
+            sent.append(message)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(devices._watch_job(Socket(), "R58M12345ABC"))
+    assert sent == [{"type": "view_only", "on": True, "message": "Posting for P6_5. View only until it finishes."},
+                    {"type": "view_only", "on": False, "message": None}]
+
+
 async def _no_phone(serial):
     raise android_live.LiveViewError("no phone")
 

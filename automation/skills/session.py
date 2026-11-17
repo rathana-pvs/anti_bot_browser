@@ -59,7 +59,8 @@ def has_strong_facebook_visual(observation: StateObservation) -> bool:
 
 _PAGE_MARKERS = ("manage page", "professional dashboard", "creator dashboard", "business dashboard", "meta business suite")
 # A Page's own feed also lists Memories, so only profile-page signs count.
-_PERSONAL_MARKERS = re.compile(r"\b\d[\d.,]*k?\s+friends?\b|\badd to story\b", re.I)
+# "Life update" is a personal-profile composer action; Pages never offer friend suggestions.
+_PERSONAL_MARKERS = re.compile(r"\b\d[\d.,]*k?\s+friends?\b|\badd to story\b|\blife update\b|\badd more friends\b", re.I)
 
 
 def facebook_identity(items) -> str | None:

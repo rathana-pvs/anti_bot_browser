@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { FolderPlus, Loader2, Plus, Search, Smartphone, Users, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, ExternalLink, FolderOpen, FolderPlus, ListChecks, Loader2, Monitor, Plus, Rows3, Search, Smartphone, Users, X } from 'lucide-react';
 import { Profile } from '../../types/profile';
 import { ProxyItem, proxyHolders } from '../../types/proxy';
 import { QueueExecutionItem } from '../../types/automation';
@@ -24,9 +24,16 @@ import { formatTime, kindLabel } from '../queue/queueModel';
 import { DeviceChip } from './DeviceChip';
 import { ProxyShareBadge } from './ProxyShareBadge';
 import { pageCells } from './facebookPage';
+import { DeviceEntry, PC_DEVICE, deviceEntries, deviceKeyOf, deviceSummary } from './accountDevices';
+import { DeviceList } from './DeviceList';
+import type { ActionMenuItem } from '../ui/ActionMenu';
+
+/** Folder value of a device's folder: the prefix, then This PC's key or a phone's serial. */
+const DEVICE_FOLDER_PREFIX = 'device:';
+const GROUP_BY_DEVICE_KEY = 'accounts.groupByDevice';
+const readGroupByDevice = () => { try { return localStorage.getItem(GROUP_BY_DEVICE_KEY) === '1'; } catch { return false; } };
 
 type StatusFilter = 'all' | 'running' | 'stopped';
-type TypeFilter = 'all' | 'browser' | 'android';
 type AccountSortKey = 'name' | 'page' | 'followers' | 'device' | 'status' | 'network' | 'period';
 
 function accountSortValue(profile: Profile, key: AccountSortKey,
@@ -42,7 +49,7 @@ function accountSortValue(profile: Profile, key: AccountSortKey,
   }
 }
 
-export function AccountsPage({ profiles, proxies, devices, groups, executions, handlers, folderHandlers, busyIds, onCreate, onOpenDevice }: {
+export function AccountsPage({ profiles, proxies, devices, groups, executions, handlers, folderHandlers, busyIds, onCreate, onOpenDevice, deviceFocus, onDeviceFocused }: {
   profiles: Profile[]; proxies: ProxyItem[]; devices: AndroidDevice[]; groups: string[]; executions: QueueExecutionItem[];
   handlers: AccountHandlers; folderHandlers: FolderHandlers;
   /** Accounts with a start/stop request in flight. */
@@ -50,9 +57,14 @@ export function AccountsPage({ profiles, proxies, devices, groups, executions, h
   onCreate: () => void;
   /** Opens the Devices page on this phone serial, or on This PC when null. */
   onOpenDevice: (serial: string | null) => void;
+  /** Set by the Devices page's View accounts: shows only that device's accounts. */
+  deviceFocus?: { key: string } | null;
+  /** Called once deviceFocus is applied, so coming back to the list later doesn't apply it again. */
+  onDeviceFocused?: () => void;
 }) {
   const [status, setStatus] = useState<StatusFilter>('all');
-  const [kind, setKind] = useState<TypeFilter>('all');
+  const [groupByDevice, setGroupByDevice] = useState(readGroupByDevice);
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [folder, setFolder] = useState(ALL_FOLDERS);
   const [search, setSearch] = useState('');
   // Set by a row's "accounts on this proxy" badge.
@@ -90,13 +102,32 @@ export function AccountsPage({ profiles, proxies, devices, groups, executions, h
   // A deleted or renamed folder must not leave the list filtered to nothing.
   useEffect(() => {
     if (![ALL_FOLDERS, ATTENTION, NO_FOLDER].includes(folder) && !folder.startsWith(STAGE_FOLDER_PREFIX)
-      && !folders.some(f => f.name === folder)) setFolder(ALL_FOLDERS);
+      && !folder.startsWith(DEVICE_FOLDER_PREFIX) && !folders.some(f => f.name === folder)) setFolder(ALL_FOLDERS);
   }, [folder, folders]);
 
   // A removed proxy must not leave the list filtered to nothing.
   const filterProxy = proxyFilter ? proxies.find(proxy => proxy.id === proxyFilter) ?? null : null;
   useEffect(() => { if (proxyFilter && !filterProxy) setProxyFilter(null); }, [proxyFilter, filterProxy]);
   const toggleProxyFilter = (proxyId: string) => setProxyFilter(current => current === proxyId ? null : proxyId);
+
+  // Each device is a folder of its own: This PC (PC_DEVICE) or a phone's serial.
+  const deviceList = useMemo(() => deviceEntries(profiles, devices), [profiles, devices]);
+  const deviceFilter = activeFolder.startsWith(DEVICE_FOLDER_PREFIX) ? activeFolder.slice(DEVICE_FOLDER_PREFIX.length) : null;
+  const filterDevice = deviceFilter ? deviceList.find(entry => entry.key === deviceFilter) ?? null : null;
+  // A removed phone must not leave the list showing nothing.
+  useEffect(() => { if (deviceFilter && !filterDevice) setFolder(ALL_FOLDERS); }, [deviceFilter, filterDevice]);
+  const openDeviceFolder = (key: string) => setFolder(DEVICE_FOLDER_PREFIX + key);
+  // The Devices page's View accounts opens that device's folder.
+  useEffect(() => {
+    if (!deviceFocus) return;
+    openDeviceFolder(deviceFocus.key);
+    setProxyFilter(null);
+    onDeviceFocused?.();
+  }, [deviceFocus]); // eslint-disable-line react-hooks/exhaustive-deps
+  const setGrouping = (on: boolean) => {
+    setGroupByDevice(on);
+    try { localStorage.setItem(GROUP_BY_DEVICE_KEY, on ? '1' : '0'); } catch { /* remembered for this visit only */ }
+  };
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -105,17 +136,27 @@ export function AccountsPage({ profiles, proxies, devices, groups, executions, h
       if (onProxy && !onProxy.has(p.id)) return false;
       if (stageFilter && stages.get(p.id)?.stage !== stageFilter) return false;
       if (folder === NO_FOLDER && p.group) return false;
-      if (!stageFilter && ![ALL_FOLDERS, NO_FOLDER].includes(folder) && (p.group || '') !== folder) return false;
+      if (!stageFilter && !deviceFilter && ![ALL_FOLDERS, NO_FOLDER].includes(folder) && (p.group || '') !== folder) return false;
       if (status === 'running' && p.status !== 'running') return false;
       if (status === 'stopped' && p.status === 'running') return false;
-      if (kind === 'browser' && isAndroid(p)) return false;
-      if (kind === 'android' && !isAndroid(p)) return false;
+      if (deviceFilter && deviceKeyOf(p, devices) !== deviceFilter) return false;
       return !q || [p.name, p.id, p.group || '', deviceLabel(p, devices)].some(value => value.toLowerCase().includes(q));
     });
     // A clicked column sorts the whole list; otherwise group accounts by folder, then name.
     if (sort) return sortRows(filtered, sort, (p, key) => accountSortValue(p, key, { devices, proxies, activity }));
     return filtered.sort((a, b) => Number(!a.group) - Number(!b.group) || (a.group || '').localeCompare(b.group || '') || a.name.localeCompare(b.name));
-  }, [profiles, devices, proxies, status, kind, folder, search, stages, stageFilter, sort, activity, filterProxy]);
+  }, [profiles, devices, proxies, status, deviceFilter, folder, search, stages, stageFilter, sort, activity, filterProxy]);
+
+  // Grouped, each device's accounts keep the list's order under that device's header.
+  const sections = useMemo(() => {
+    if (!groupByDevice) return null;
+    const byDevice = new Map<string, Profile[]>();
+    visible.forEach(p => {
+      const key = deviceKeyOf(p, devices);
+      byDevice.set(key, [...(byDevice.get(key) ?? []), p]);
+    });
+    return deviceList.filter(entry => byDevice.has(entry.key)).map(entry => ({ entry, rows: byDevice.get(entry.key)! }));
+  }, [groupByDevice, visible, devices, deviceList]);
 
   const attentionCount = profiles.filter(p => stages.get(p.id)?.stage === 'attention').length;
   const runningCount = profiles.filter(p => p.status === 'running').length;
@@ -138,9 +179,24 @@ export function AccountsPage({ profiles, proxies, devices, groups, executions, h
     });
   }, [profiles]);
 
+  const entryOf = (profile: Profile) => deviceList.find(entry => entry.key === deviceKeyOf(profile, devices));
+  const deviceMenu = (entry: DeviceEntry, { selectAccounts = true } = {}): ActionMenuItem[] => [
+    ...(deviceFilter === entry.key ? [] : [{ label: `Open ${entry.label} folder`, icon: <FolderOpen className="h-3.5 w-3.5" />, onSelect: () => openDeviceFolder(entry.key) }]),
+    ...(selectAccounts ? [{ label: `Select its shown accounts`, icon: <ListChecks className="h-3.5 w-3.5" />,
+      disabled: !visible.some(p => deviceKeyOf(p, devices) === entry.key),
+      onSelect: () => setSelected(new Set(visible.filter(p => deviceKeyOf(p, devices) === entry.key).map(p => p.id))) }] : []),
+    { label: `Go to ${entry.label} on Devices`, icon: <ExternalLink className="h-3.5 w-3.5" />,
+      onSelect: () => onOpenDevice(entry.key === PC_DEVICE ? null : entry.key) },
+  ];
+  const singleMenu = (profile: Profile) => {
+    const entry = entryOf(profile);
+    const items = accountMenu(profile, handlers, { failureCutoff: periodStart(period), onScreen: isOnScreen(profile, devices) });
+    if (entry) items.push(...deviceMenu(entry, { selectAccounts: false }).map((item, index) => index === 0 ? { ...item, divider: true } : item));
+    return items;
+  };
   const rowMenu = (profile: Profile) => selected.has(profile.id) && selected.size > 1
     ? { items: bulkMenu(selectedProfiles, handlers, clearSelection), title: `${selected.size} accounts` }
-    : { items: accountMenu(profile, handlers, { failureCutoff: periodStart(period), onScreen: isOnScreen(profile, devices) }), title: profile.name };
+    : { items: singleMenu(profile), title: profile.name };
   const menuForFolder = (name: string) => folderMenu(name, profiles.filter(p => p.group === name), handlers, folderHandlers);
   const blankMenu = [{ label: 'New folder…', icon: <FolderPlus className="h-3.5 w-3.5" />, onSelect: folderHandlers.create }];
 
@@ -158,6 +214,16 @@ export function AccountsPage({ profiles, proxies, devices, groups, executions, h
     void folderHandlers.moveTo(moving, target).then(done => { if (done && draggedSelection) clearSelection(); });
   };
 
+  const renderRow = (profile: Profile) => <AccountRow key={profile.id} profile={profile} devices={devices}
+    onOpenDevice={() => { const key = deviceKeyOf(profile, devices); onOpenDevice(key === PC_DEVICE ? null : key); }} activity={activity.get(profile.id)!} stage={stages.get(profile.id)!}
+            network={networkSignal(profile, proxies)} proxyShare={<ProxyShareBadge profile={profile} proxies={proxies} profiles={profiles}
+              active={!!filterProxy && proxyHolders(filterProxy).includes(profile.id)} onFilter={toggleProxyFilter} />} selected={selected.has(profile.id)} busy={busyIds.has(profile.id)} onToggle={() => toggle(profile.id)}
+            onOpen={() => handlers.open(profile.id, 'browser')} onDragStart={startDrag(profile)}
+            menuItems={() => singleMenu(profile)}
+            onOpenQueue={() => handlers.openQueue(profile.id)}
+            onContextMenu={(e) => { const m = rowMenu(profile); menu.open(e, m.items, m.title); }}
+            onMenuKey={menu.keyboardTrigger(() => rowMenu(profile).items, profile.name)} />;
+
   if (!profiles.length) {
     return <div className="flex flex-1 items-center justify-center p-6">
       <EmptyState icon={<Users className="h-6 w-6" />} title="Create your first account"
@@ -168,14 +234,18 @@ export function AccountsPage({ profiles, proxies, devices, groups, executions, h
 
   const chip = (active: boolean) => cn('rounded-full border px-3 py-1 text-xs transition-colors',
     active ? 'border-blue-600 bg-blue-950/40 text-blue-200' : 'border-zinc-800 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200');
-  const heading = folder === ALL_FOLDERS ? 'All accounts' : stageFilter ? STAGE_META[stageFilter as keyof typeof STAGE_META].label : folder === NO_FOLDER ? 'No folder' : folder;
+  const heading = filterDevice ? filterDevice.label : folder === ALL_FOLDERS ? 'All accounts' : stageFilter ? STAGE_META[stageFilter as keyof typeof STAGE_META].label : folder === NO_FOLDER ? 'No folder' : folder;
 
   return <div className="flex min-h-0 flex-1">
     <FolderList value={activeFolder} onChange={setFolder} folders={folders} total={profiles.length} attention={attentionCount} system={systemFolders}
       unfiled={profiles.filter(p => !p.group).length} onCreate={folderHandlers.create} onDropAccounts={dropAccounts}
       onFolderMenu={(event, name) => menu.open(event, menuForFolder(name), name)}
       onBlankMenu={(event) => menu.open(event, blankMenu)}
-      menuKey={(name) => menu.keyboardTrigger(() => menuForFolder(name), name)} />
+      menuKey={(name) => menu.keyboardTrigger(() => menuForFolder(name), name)}>
+      {deviceList.length > 1 && <DeviceList entries={deviceList} value={deviceFilter} onChange={openDeviceFolder}
+        onMenu={(event, entry) => menu.open(event, deviceMenu(entry), entry.label)}
+        menuKey={(entry) => menu.keyboardTrigger(() => deviceMenu(entry), entry.label)} />}
+    </FolderList>
 
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <header className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border bg-surface/50 px-6 py-3">
@@ -194,12 +264,6 @@ export function AccountsPage({ profiles, proxies, devices, groups, executions, h
         <button type="button" className={chip(status === 'all')} onClick={() => setStatus('all')}>Any status</button>
         <button type="button" className={chip(status === 'running')} onClick={() => setStatus('running')}>Running</button>
         <button type="button" className={chip(status === 'stopped')} onClick={() => setStatus('stopped')}>Not running</button>
-        {profiles.some(isAndroid) && <>
-          <span className="mx-1 h-4 w-px bg-zinc-800" aria-hidden="true" />
-          <button type="button" className={chip(kind === 'all')} onClick={() => setKind('all')}>Any device</button>
-          <button type="button" className={chip(kind === 'browser')} onClick={() => setKind('browser')}>This PC</button>
-          <button type="button" className={chip(kind === 'android')} onClick={() => setKind('android')}>Phones</button>
-        </>}
         {filterProxy && <>
           <span className="mx-1 h-4 w-px bg-zinc-800" aria-hidden="true" />
           <button type="button" className={cn(chip(true), 'inline-flex items-center gap-1.5')} onClick={() => setProxyFilter(null)}
@@ -209,7 +273,9 @@ export function AccountsPage({ profiles, proxies, devices, groups, executions, h
             <X className="h-3 w-3" aria-hidden="true" />
           </button>
         </>}
-        <div role="radiogroup" aria-label="Activity period" className="ml-auto flex items-center gap-2">
+        {deviceList.length > 1 && <button type="button" aria-pressed={groupByDevice} onClick={() => setGrouping(!groupByDevice)} title="Show each device's accounts under its own header"
+          className={cn(chip(groupByDevice), 'ml-auto inline-flex items-center gap-1.5')}><Rows3 className="h-3 w-3" aria-hidden="true" />Group by device</button>}
+        <div role="radiogroup" aria-label="Activity period" className={cn('flex items-center gap-2', deviceList.length > 1 ? 'ml-3' : 'ml-auto')}>
           <span className="text-[11px] text-zinc-500">{totals.posted} posted{totals.warmed ? ` · ${totals.warmed} warmed` : ''}</span>
           <div className="flex rounded-control border border-zinc-800 bg-zinc-950 p-0.5">
             {PERIOD_OPTIONS.map(option => <button key={option.value} type="button" role="radio" aria-checked={period === option.value}
@@ -248,15 +314,35 @@ export function AccountsPage({ profiles, proxies, devices, groups, executions, h
           </div>
           {visible.length === 0 && <p className="px-3 py-10 text-center text-xs text-zinc-500">
             {stageFilter && !search && status === 'all' ? 'No accounts are in this stage right now.'
+              : filterDevice && !search && status === 'all' ? 'No accounts on this device yet.'
               : folder !== ALL_FOLDERS && !search && status === 'all' ? 'This folder is empty. Drag accounts here, or use Move to folder.' : 'No accounts match these filters.'}</p>}
-          {visible.map(profile => <AccountRow key={profile.id} profile={profile} devices={devices} onOpenDevice={onOpenDevice} activity={activity.get(profile.id)!} stage={stages.get(profile.id)!}
-            network={networkSignal(profile, proxies)} proxyShare={<ProxyShareBadge profile={profile} proxies={proxies} profiles={profiles}
-              active={!!filterProxy && proxyHolders(filterProxy).includes(profile.id)} onFilter={toggleProxyFilter} />} selected={selected.has(profile.id)} busy={busyIds.has(profile.id)} onToggle={() => toggle(profile.id)}
-            onOpen={() => handlers.open(profile.id, 'browser')} onDragStart={startDrag(profile)}
-            menuItems={() => accountMenu(profile, handlers, { failureCutoff: periodStart(period), onScreen: isOnScreen(profile, devices) })}
-            onOpenQueue={() => handlers.openQueue(profile.id)}
-            onContextMenu={(e) => { const m = rowMenu(profile); menu.open(e, m.items, m.title); }}
-            onMenuKey={menu.keyboardTrigger(() => rowMenu(profile).items, profile.name)} />)}
+          {sections
+            ? sections.map(({ entry, rows }) => {
+              const closed = collapsed.has(entry.key);
+              const Icon = entry.kind === 'pc' ? Monitor : Smartphone;
+              return <section key={entry.key} aria-label={`${entry.label} accounts`}>
+                <div onContextMenu={(event) => menu.open(event, deviceMenu(entry), entry.label)}
+                  className="flex items-center gap-2 border-b border-zinc-800 bg-zinc-900/60 px-3 py-2 text-xs">
+                  <button type="button" aria-expanded={!closed} onClick={() => setCollapsed(current => {
+                    const next = new Set(current);
+                    if (next.has(entry.key)) next.delete(entry.key); else next.add(entry.key);
+                    return next;
+                  })} className="flex min-w-0 flex-1 items-center gap-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                    {closed ? <ChevronRight className="h-3.5 w-3.5 shrink-0 text-zinc-500" /> : <ChevronDown className="h-3.5 w-3.5 shrink-0 text-zinc-500" />}
+                    <Icon className={cn('h-3.5 w-3.5 shrink-0', entry.kind === 'pc' ? 'text-violet-300' : 'text-teal-300')} aria-hidden="true" />
+                    <span className="truncate font-semibold text-zinc-100">{entry.label}</span>
+                    {entry.kind === 'phone' && <span className={cn('rounded-full px-1.5 py-px text-[10px]',
+                      entry.online ? 'bg-emerald-500/15 text-emerald-300' : 'bg-zinc-800 text-zinc-400')}>{entry.online ? 'Online' : entry.online === false ? 'Offline' : 'Not connected'}</span>}
+                    <span className="truncate text-[11px] text-zinc-500">
+                      {entry.kind === 'pc' ? deviceSummary(entry) : deviceSummary(entry).split(' · ').slice(0, 1).join('')}
+                      {' · '}{rows.length === entry.count ? `${rows.length} account${rows.length === 1 ? '' : 's'}` : `${rows.length} of ${entry.count} shown`}</span>
+                  </button>
+                  <ActionMenu items={deviceMenu(entry)} ariaLabel={`Actions for ${entry.label}`} className="[&>button]:min-h-7 [&>button]:border-transparent [&>button]:px-1.5" />
+                </div>
+                {!closed && rows.map(renderRow)}
+              </section>;
+            })
+            : visible.map(renderRow)}
         </div>
       </div>
     </div>
@@ -274,7 +360,9 @@ function Signal({ signal, onOpenQueue }: { signal: HealthSignal; onOpenQueue?: (
 }
 
 function AccountRow({ profile, devices, onOpenDevice, network, proxyShare, activity, stage, selected, busy, onToggle, onOpen, onOpenQueue, onDragStart, menuItems, onContextMenu, onMenuKey }: {
-  profile: Profile; devices: AndroidDevice[]; onOpenDevice: (serial: string | null) => void; network: HealthSignal; proxyShare: React.ReactNode; activity: AccountActivity; stage: StageView; selected: boolean; busy: boolean;
+  profile: Profile; devices: AndroidDevice[];
+  /** Opens the account's device on the Devices page. */
+  onOpenDevice: () => void; network: HealthSignal; proxyShare: React.ReactNode; activity: AccountActivity; stage: StageView; selected: boolean; busy: boolean;
   onToggle: () => void; onOpen: () => void; onOpenQueue: () => void; onDragStart: (event: React.DragEvent) => void; menuItems: () => ReturnType<typeof accountMenu>;
   onContextMenu: (event: React.MouseEvent) => void; onMenuKey: (event: React.KeyboardEvent) => void;
 }) {
@@ -303,7 +391,7 @@ function AccountRow({ profile, devices, onOpenDevice, network, proxyShare, activ
     </div>
     <div className="min-w-0 truncate text-[11px] text-zinc-300" title={page.pageHint}>{page.page}</div>
     <div className="text-[11px] tabular-nums text-zinc-300" title={page.followersHint}>{page.followers}</div>
-    <div className="min-w-0"><DeviceChip profile={profile} devices={devices} onClick={() => onOpenDevice(profile.runtime?.device_serial ?? null)} /></div>
+    <div className="min-w-0"><DeviceChip profile={profile} devices={devices} onClick={onOpenDevice} /></div>
     <div className="min-w-0">
       {phone
         ? <span className={cn('flex items-center gap-1.5', phone.tone)}><span className="h-1.5 w-1.5 rounded-full bg-current" />{phone.label}</span>

@@ -113,3 +113,31 @@ test('a silent decoder retries in software, then shows a reconnect error', async
   assert.match(view.states.at(-1).message, /did not show a video frame/);
   assert.equal(socket.closed, true);
 });
+
+test('a phone busy with another account’s job shows why and connects again on its own', async () => {
+  const view = mount(true);
+  view.effects.forEach(setup => setup());
+  view.flush();
+  const socket = view.sockets[0];
+  socket.onmessage({ data: JSON.stringify({ type: 'busy', message: 'This phone is posting for P6_2. The screen opens when it finishes.' }) });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(view.states.at(-1).kind, 'busy');
+  assert.match(view.states.at(-1).message, /posting for P6_2/);
+  assert.equal(socket.closed, true);
+  view.flush();
+  assert.equal(view.sockets.length, 2);
+});
+
+test('a queued job on the account being watched turns the view to view only, then back', async () => {
+  const view = mount(true);
+  view.effects.forEach(setup => setup());
+  view.flush();
+  const socket = view.sockets[0];
+  socket.onmessage({ data: JSON.stringify({ type: 'view_only', on: true, message: 'Posting for P6_5. View only until it finishes.' }) });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(view.states.at(-1), 'Posting for P6_5. View only until it finishes.');
+  socket.onmessage({ data: JSON.stringify({ type: 'view_only', on: false }) });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(view.states.at(-1), null);
+  assert.equal(socket.closed, undefined);
+});
