@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Profile } from '../types/profile';
 import RFB from '@novnc/novnc';
 import { startVncConnection } from '../services/vncConnection';
+import { vncWebSocketUrl } from '../services/vncUrl';
 import { pasteToProfile } from '../services/api';
 import { readHostClipboardText, writeHostClipboardText } from '../services/clipboard';
 import {
@@ -109,14 +110,12 @@ export const VncViewer: React.FC<VncViewerProps> = ({
       return;
     }
 
-    const vncHost = (!window.location.hostname || window.location.hostname === 'tauri.localhost' || window.location.protocol === 'tauri:')
-      ? '127.0.0.1'
-      : window.location.hostname;
+    const screenUrl = vncWebSocketUrl(profile.id, wsPort, window.location);
     const stopConnection = startVncConnection({
       createClient: () => {
         const container = containerRef.current!;
         container.innerHTML = '';
-        const rfb = new RFB(container, `ws://${vncHost}:${wsPort}`, { wsProtocols: ['binary'] });
+        const rfb = new RFB(container, screenUrl, { wsProtocols: ['binary'] });
         rfb.scaleViewport = true;
         rfb.resizeSession = false;
         setContainerClipboardText('');

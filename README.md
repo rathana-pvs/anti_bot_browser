@@ -324,6 +324,53 @@ server process and is not included in browser JavaScript. This is a local
 development workflow. Browser mode uses normal file pickers/downloads; native
 setup, update and desktop integration actions require the desktop app.
 
+To open the running web app from another device on the same trusted Wi-Fi,
+leave `npm run dev:web` running and start the password-protected LAN gateway
+from the repository root:
+
+```bash
+automation/venv/bin/python scripts/lan_web.py --host 192.168.1.20
+```
+
+Replace the address with this PC's Wi-Fi/LAN IPv4 address. Open the printed
+`http://<address>:5173/` URL on the other device and sign in with username
+`manager` and the random password printed by the gateway. The login also
+protects API, media, and WebSocket traffic. The backend and Vite remain on
+loopback; the gateway binds only the specified private IPv4 address. Local
+`http://127.0.0.1:5173/` access continues to work without this extra login.
+Stop the gateway to close LAN access; restarting it invalidates old login
+sessions and generates a new password. `MANAGER_LAN_PASSWORD` can supply an
+explicit password of at least 16 characters. This is HTTP on a trusted LAN,
+not an encrypted internet service; use the SSH tunnel for encrypted access
+and do not forward this port through the router.
+Running PC accounts' container screens also pass through this authenticated
+gateway. Open an account and start it to view and control its browser; no VNC
+or container display ports need to be exposed on the LAN.
+
+Phone screen decoding uses WebCodecs, which needs a browser that supports it and
+a trusted HTTPS origin (or localhost). For private internet access, use
+Tailscale Serve and sign the viewing device into the same Tailscale network.
+Sign this host into Tailscale, then run the gateway on loopback
+using this device's exact Tailscale HTTPS name:
+
+```bash
+automation/venv/bin/python scripts/lan_web.py --host 127.0.0.1 --port 5175 --https-origin https://device.tailnet.ts.net
+tailscale serve --bg http://127.0.0.1:5175
+```
+
+Use the real name reported by Tailscale, not the example above. Serve keeps
+the URL private to authorized Tailscale devices; the gateway login also protects every
+application, API, media and screen request. HTTPS session cookies are Secure,
+HttpOnly and SameSite=Strict. Keep the authenticated gateway in front of Vite;
+never forward the development UI or backend directly. Stop the gateway
+and run `tailscale serve --https=443 off` when finished. HTTPS certificate permissions may
+require approval in the Tailscale admin console. This does not enable Funnel
+or public internet access. Keep exit nodes, subnet routes, and Tailscale DNS changes
+off when preserving the host's existing network route and container proxy setup.
+For LAN-only HTTPS with an
+existing trusted certificate, the gateway also accepts `--tls-cert` and
+`--tls-key`. Private keys belong outside the source checkout.
+
 To open the native desktop app during development:
 ```bash
 cd manager-app
