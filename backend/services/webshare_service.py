@@ -1,7 +1,8 @@
 """Replace bad pool proxies through the Webshare API.
 
-The API key stays on this PC: `data/webshare.json`, readable only by this user and never sent
-anywhere but proxy.webshare.io. The API never returns it, only whether one is saved.
+Each Webshare proxy source keeps its own API key (see proxy_sources), saved only on this PC and
+never sent anywhere but proxy.webshare.io. A proxy is replaced with its own source's key, and the
+new proxy joins that same source.
 
 A replacement asks Webshare to swap one proxy's IP for another in the same country, then adds
 the new proxy to the pool as Available and looks up its location.
@@ -14,82 +15,41 @@ One proxy per Webshare replacement, so the old→new pair is never ambiguous.
 """
 from __future__ import annotations
 
-import json
-import os
 import threading
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Callable
 
 import httpx
 
-from backend.config import DATA_DIR
-from backend.services import proxy_service
+from backend.services import proxy_service, proxy_sources
 
 API_BASE = "https://proxy.webshare.io/api"
 REQUEST_TIMEOUT = 20
 POLL_SECONDS = 3
 REPLACE_TIMEOUT = 300
-KEY_FILE = DATA_DIR / "webshare.json"
-_key_lock = threading.Lock()
 
 
 class WebshareError(RuntimeError):
     pass
 
 
-# --- API key --------------------------------------------------------------------------------------
-
-def _read_key_file() -> dict:
-    try:
-        data = json.loads(KEY_FILE.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def api_key() -> str | None:
-    key = _read_key_file().get("api_key")
-    return key if isinstance(key, str) and key else None
-
-
-def key_status() -> dict:
-    key = api_key()
-    return {"webshare_key_set": bool(key), "webshare_key_hint": f"…{key[-4:]}" if key and len(key) > 8 else None}
-
-
-def _write_key(key: str | None) -> None:
-    with _key_lock:
-        KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        if not key:
-            KEY_FILE.unlink(missing_ok=True)
-            return
-        tmp = KEY_FILE.with_suffix(".tmp")
-        # Created owner-only, so the key is never readable by other users on this PC, even briefly.
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"api_key": key}, f)
-        tmp.replace(KEY_FILE)
-
-
-def set_api_key(key: str | None, verify: Callable[[str], None] | None = None) -> dict:
-    """Saves the key after Webshare accepts it. An empty key removes it."""
-    key = (key or "").strip()
-    if key:
-        if len(key) > 200 or any(c.isspace() for c in key):
-            raise ValueError("That doesn't look like a Webshare API key.")
-        (verify or verify_key)(key)
-    _write_key(key or None)
-    return key_status()
+def key_for(proxy: dict) -> str:
+    """The API key of the proxy's own source, or why it can't be replaced."""
+    source = proxy_sources.source_of(proxy)
+    if source["provider"] != "webshare":
+        raise WebshareError(f"{source['name']} isn't a Webshare source, so its proxies can't be replaced here.")
+    key = proxy_sources.api_key(source["id"])
+    if not key:
+        raise WebshareError(f"Add the Webshare API key to {source['name']} first (its settings on the Proxies page).")
+    return key
 
 
 # --- HTTP ---------------------------------------------------------------------------------------
 
 def _request(method: str, path: str, key: str | None = None, **kwargs) -> dict:
-    key = key or api_key()
     if not key:
-        raise WebshareError("Add your Webshare API key on the Proxies page first.")
+        raise WebshareError("Add the source's Webshare API key on the Proxies page first.")
     try:
         response = httpx.request(method, f"{API_BASE}{path}", headers={"Authorization": f"Token {key}"},
                                  timeout=REQUEST_TIMEOUT, **kwargs)
@@ -110,23 +70,23 @@ def verify_key(key: str) -> None:
     _request("GET", "/v2/proxy/list/", key, params={"mode": "direct", "page": 1, "page_size": 1})
 
 
-def find_webshare_proxy(ip: str) -> dict | None:
-    data = _request("GET", "/v2/proxy/list/", params={"mode": "direct", "proxy_address": ip, "page_size": 10})
+def find_webshare_proxy(ip: str, key: str) -> dict | None:
+    data = _request("GET", "/v2/proxy/list/", key, params={"mode": "direct", "proxy_address": ip, "page_size": 10})
     return next((p for p in data.get("results") or [] if p.get("proxy_address") == ip), None)
 
 
-def _replace(ip: str, country_code: str | None) -> dict:
+def _replace(ip: str, country_code: str | None, key: str) -> dict:
     replace_with = ([{"type": "country", "country_code": country_code, "count": 1}] if country_code
                     else [{"type": "any", "count": 1}])
-    return _request("POST", "/v3/proxy/replace/", json={
+    return _request("POST", "/v3/proxy/replace/", key, json={
         "to_replace": {"type": "ip_address", "ip_addresses": [ip], "count": 1},
         "replace_with": replace_with, "dry_run": False})
 
 
-def _wait_for(replacement_id: int, sleep=time.sleep, timeout: float = REPLACE_TIMEOUT) -> dict:
+def _wait_for(replacement_id: int, key: str, sleep=time.sleep, timeout: float = REPLACE_TIMEOUT) -> dict:
     deadline = time.monotonic() + timeout
     while True:
-        state = _request("GET", f"/v3/proxy/replace/{replacement_id}/")
+        state = _request("GET", f"/v3/proxy/replace/{replacement_id}/", key)
         if state.get("state") == "completed":
             return state
         if state.get("state") == "failed":
@@ -140,11 +100,11 @@ REPLACED_PAGES = 20
 MAX_HOPS = 5
 
 
-def _replaced_rows(**params) -> list[dict]:
+def _replaced_rows(key: str, **params) -> list[dict]:
     """Rows of Webshare's replaced-proxy list, following its pages."""
     rows, page = [], 1
     while page <= REPLACED_PAGES:
-        data = _request("GET", "/v2/proxy/list/replaced/", params={**params, "page": page, "page_size": 100})
+        data = _request("GET", "/v2/proxy/list/replaced/", key, params={**params, "page": page, "page_size": 100})
         rows += data.get("results") or []
         if not data.get("next"):
             break
@@ -161,25 +121,25 @@ def _latest(rows: list[dict], ip: str, port: int | None = None) -> tuple[str, in
     return row["replaced_with"], int(row["replaced_with_port"])
 
 
-def _replaced_with(replacement_id: int, ip: str) -> tuple[str, int]:
-    found = _latest(_replaced_rows(proxy_list_replacement=replacement_id), ip) or _latest(_replaced_rows(), ip)
+def _replaced_with(replacement_id: int, ip: str, key: str) -> tuple[str, int]:
+    found = _latest(_replaced_rows(key, proxy_list_replacement=replacement_id), ip) or _latest(_replaced_rows(key), ip)
     if not found:
         raise WebshareError("Webshare finished, but didn't say which proxy replaced this one.")
     return found
 
 
-def already_replaced(ip: str, port: int | None) -> tuple[str, int, dict] | None:
+def already_replaced(ip: str, port: int | None, key: str) -> tuple[str, int, dict] | None:
     """The proxy that now stands in for an IP Webshare already swapped (by an earlier run that
     stopped before adding it, the dashboard or auto-replace), following a chain of swaps to the
     one still in the account. None when Webshare never replaced it."""
-    rows = _replaced_rows()
+    rows = _replaced_rows(key)
     current, current_port = ip, port
     for _ in range(MAX_HOPS):
         nxt = _latest(rows, current, current_port)
         if not nxt:
             return None
         current, current_port = nxt
-        found = find_webshare_proxy(current)
+        found = find_webshare_proxy(current, key)
         if found:
             return current, current_port, found
     return None
@@ -194,20 +154,21 @@ def replace_one(proxy_id: str, sleep=time.sleep) -> dict:
         raise WebshareError("This proxy is no longer in the pool.")
     if old.get("replaced_by"):
         raise WebshareError(f"Already replaced by {old.get('replaced_by_address') or 'another proxy'}.")
+    key = key_for(old)
     ip = old["host"]
-    found = find_webshare_proxy(ip)
+    found = find_webshare_proxy(ip, key)
     if not found:
         # Webshare may have swapped it already; then only the pool is behind, and is caught up.
-        earlier = already_replaced(ip, old.get("port"))
+        earlier = already_replaced(ip, old.get("port"), key)
         if not earlier:
             raise WebshareError(f"{ip} isn't one of your Webshare proxies.")
         new_ip, new_port, fresh = earlier
         return {**_adopt(old, new_ip, new_port, fresh, {}), "already_replaced": True,
                 "country_code": fresh.get("country_code")}
-    replacement = _replace(ip, found.get("country_code"))
-    _wait_for(int(replacement["id"]), sleep=sleep)
-    new_ip, new_port = _replaced_with(int(replacement["id"]), ip)
-    return {**_adopt(old, new_ip, new_port, find_webshare_proxy(new_ip) or {}, found),
+    replacement = _replace(ip, found.get("country_code"), key)
+    _wait_for(int(replacement["id"]), key, sleep=sleep)
+    new_ip, new_port = _replaced_with(int(replacement["id"]), ip, key)
+    return {**_adopt(old, new_ip, new_port, find_webshare_proxy(new_ip, key) or {}, found),
             "country_code": found.get("country_code")}
 
 
@@ -217,7 +178,8 @@ def _adopt(old: dict, new_ip: str, new_port: int, fresh: dict, found: dict) -> d
     username = fresh.get("username") or found.get("username") or old.get("username") or ""
     password = fresh.get("password") or found.get("password") or old.get("password") or ""
 
-    added = proxy_service.import_proxies_from_text(f"{new_ip}:{new_port}:{username}:{password}")["added_ids"]
+    added = proxy_service.import_proxies_from_text(f"{new_ip}:{new_port}:{username}:{password}",
+                                                   old.get("source_id"))["added_ids"]
     new_entry = (proxy_service.find_proxy(new_ip, new_port, username) if not added else
                  next((p for p in proxy_service.load_proxy_pool() if p["id"] == added[0]), None))
     if not new_entry:
@@ -260,9 +222,12 @@ class ReplaceRun:
             return bool(self._state and self._state["state"] == "running")
 
     def start(self, proxy_ids: list[str], replace_fn=None) -> dict:
-        if not api_key():
-            raise WebshareError("Add your Webshare API key on the Proxies page first.")
         ids = list(dict.fromkeys(proxy_ids))
+        by_id = {p.get("id"): p for p in proxy_service.load_proxy_pool()}
+        # Every selected proxy needs a Webshare source with a key before anything is replaced.
+        for proxy_id in ids:
+            if proxy_id in by_id:
+                key_for(by_id[proxy_id])
         with self._lock:
             if self._state and self._state["state"] == "running":
                 raise RuntimeError("Proxies are already being replaced")

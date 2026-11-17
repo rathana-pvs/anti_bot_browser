@@ -38,7 +38,8 @@ export function Select({
           className,
         )}
       >
-        <SelectPrimitive.Value placeholder={placeholder} />
+        {/* The chosen option stays on one line; the full text is in the open list. */}
+        <span className="min-w-0 flex-1 truncate"><SelectPrimitive.Value placeholder={placeholder} /></span>
         <SelectPrimitive.Icon className="shrink-0 text-zinc-500">
           <ChevronDown className="h-4 w-4" />
         </SelectPrimitive.Icon>
@@ -55,24 +56,28 @@ export function Select({
           )}
         >
           <SelectPrimitive.Viewport>
-            {options.map((option) => (
-              <SelectPrimitive.Item
-                key={option.value}
-                value={option.value}
-                disabled={option.disabled}
-                className="relative flex cursor-default select-none items-center rounded-md py-2 pl-8 pr-3 outline-none data-[disabled]:pointer-events-none data-[highlighted]:bg-zinc-800 data-[highlighted]:text-white data-[disabled]:opacity-40"
-              >
-                <span className="absolute left-2.5 flex h-4 w-4 items-center justify-center text-blue-400">
-                  <SelectPrimitive.ItemIndicator>
-                    <Check className="h-3.5 w-3.5" />
-                  </SelectPrimitive.ItemIndicator>
-                </span>
-                <SelectPrimitive.ItemText>{option.label}</SelectPrimitive.ItemText>
-              </SelectPrimitive.Item>
-            ))}
+            {options.map(renderItem)}
           </SelectPrimitive.Viewport>
         </SelectPrimitive.Content>
       </SelectPrimitive.Portal>
     </SelectPrimitive.Root>
+  );
+}
+
+function renderItem(option: SelectOption) {
+  return (
+    <SelectPrimitive.Item
+      key={option.value}
+      value={option.value}
+      disabled={option.disabled}
+      className={`relative flex cursor-default select-none items-center rounded-md py-2 pl-8 pr-3 outline-none data-[disabled]:pointer-events-none data-[highlighted]:bg-zinc-800 data-[highlighted]:text-white data-[disabled]:opacity-40`}
+    >
+      <span className={`absolute left-2.5 flex h-4 w-4 items-center justify-center text-blue-400`}>
+        <SelectPrimitive.ItemIndicator>
+          <Check className="h-3.5 w-3.5" />
+        </SelectPrimitive.ItemIndicator>
+      </span>
+      <SelectPrimitive.ItemText>{option.label}</SelectPrimitive.ItemText>
+    </SelectPrimitive.Item>
   );
 }

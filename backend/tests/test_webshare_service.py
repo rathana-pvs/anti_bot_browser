@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from backend.services import proxy_service, webshare_service
+from backend.services import proxy_service, proxy_sources, webshare_service
 
 
 @pytest.fixture
@@ -19,7 +19,8 @@ def pool(tmp_path, monkeypatch):
     monkeypatch.setattr(proxy_service, 'PROXY_POOL_FILE', path)
     monkeypatch.setattr(proxy_service, 'account_limit', lambda: 5)
     monkeypatch.setattr(proxy_service, 'refresh_proxy_statuses', lambda ids: {})
-    monkeypatch.setattr(webshare_service, 'KEY_FILE', tmp_path / 'webshare.json')
+    monkeypatch.setattr(proxy_sources, 'LEGACY_KEY_FILE', tmp_path / 'webshare.json')
+    proxy_sources.update(proxy_sources.DEFAULT_ID, {'provider': 'webshare', 'api_key': 'abcdefgh1234'}, verify=lambda key: None)
     return lambda: {p['id']: p for p in json.loads(path.read_text())}
 
 
@@ -29,6 +30,7 @@ class FakeWebshare:
         self.state = state
 
     def __call__(self, method, path, key=None, **kwargs):
+        assert key == 'abcdefgh1234'
         self.calls.append((method, path, kwargs))
         if path == '/v2/proxy/list/':
             ip = kwargs['params'].get('proxy_address')
@@ -44,21 +46,22 @@ class FakeWebshare:
         raise AssertionError(path)
 
 
-def test_key_is_saved_owner_only_and_never_returned(pool):
-    status = webshare_service.set_api_key('  abcdefgh1234 ', verify=lambda key: None)
-    assert status == {'webshare_key_set': True, 'webshare_key_hint': '…1234'}
-    assert webshare_service.api_key() == 'abcdefgh1234'
-    assert stat.S_IMODE(webshare_service.KEY_FILE.stat().st_mode) == 0o600
-    assert webshare_service.set_api_key('', verify=lambda key: None)['webshare_key_set'] is False
-    assert not webshare_service.KEY_FILE.exists()
+def test_the_key_is_saved_owner_only_and_never_returned(pool):
+    assert proxy_sources.api_key(proxy_sources.DEFAULT_ID) == 'abcdefgh1234'
+    assert stat.S_IMODE(proxy_sources._keys_file().stat().st_mode) == 0o600
+    shown = proxy_sources.list_public()[0]
+    assert shown['key_set'] is True and shown['key_hint'] == '…1234' and 'abcdefgh1234' not in json.dumps(shown)
+    proxy_sources.update(proxy_sources.DEFAULT_ID, {'api_key': ''})
+    assert proxy_sources.api_key(proxy_sources.DEFAULT_ID) is None
+    assert not proxy_sources._keys_file().exists()
 
 
 def test_a_key_webshare_rejects_is_not_saved(pool):
     def reject(key):
-        raise webshare_service.WebshareError('Webshare rejected the API key.')
-    with pytest.raises(webshare_service.WebshareError):
-        webshare_service.set_api_key('badkey123', verify=reject)
-    assert webshare_service.api_key() is None
+        raise proxy_sources.SourceError('Webshare rejected the API key.')
+    with pytest.raises(ValueError):
+        proxy_sources.update(proxy_sources.DEFAULT_ID, {'api_key': 'badkey123'}, verify=reject)
+    assert proxy_sources.api_key(proxy_sources.DEFAULT_ID) == 'abcdefgh1234'
 
 
 def test_replace_keeps_accounts_on_the_old_proxy_and_leaves_the_new_one_available(pool, monkeypatch):
@@ -162,7 +165,6 @@ def test_a_swapped_proxy_with_no_account_is_removed_once_caught_up(pool, monkeyp
 
 
 def test_run_continues_after_one_proxy_fails(pool):
-    webshare_service.set_api_key('abcdefgh1234', verify=lambda key: None)
     run = webshare_service.ReplaceRun()
 
     def replace(pid):
@@ -181,5 +183,6 @@ def test_run_continues_after_one_proxy_fails(pool):
 
 
 def test_run_needs_a_key(pool):
-    with pytest.raises(webshare_service.WebshareError):
+    proxy_sources.update(proxy_sources.DEFAULT_ID, {'api_key': ''})
+    with pytest.raises(webshare_service.WebshareError, match='Add the Webshare API key'):
         webshare_service.ReplaceRun().start(['old'])

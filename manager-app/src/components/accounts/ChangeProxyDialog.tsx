@@ -85,6 +85,8 @@ export const ChangeProxyDialog: React.FC<{ profile: Profile; onClose: () => void
                       <span className="font-mono text-zinc-200">{o.host}:{o.port}</span>
                       {o.suggested && <span className="rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-300">Webshare replacement</span>}
                       {o.accounts > 0 && <span className="text-[10px] text-zinc-500">{o.accounts} account(s) on it</span>}
+                      {o.source_name && <span title={o.same_source ? 'Same source as the account’s current proxy' : 'A different source from the account’s current proxy'}
+                        className={`rounded-md px-1.5 py-0.5 text-[10px] ${o.same_source || !data.current ? 'bg-zinc-800 text-zinc-400' : 'bg-amber-500/10 text-amber-300'}`}>{o.source_name}</span>}
                     </span>
                     <span className="mt-0.5 block text-[11px] text-zinc-500">{place(o)}{o.latency_ms != null ? ` · ${o.latency_ms} ms` : ''}{o.rating ? ` · ${o.rating.grade}` : ''}</span>
                   </span>

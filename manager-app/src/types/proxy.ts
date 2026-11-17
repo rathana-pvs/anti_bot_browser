@@ -1,5 +1,44 @@
 export const PROXY_FOLDERS = ['Used', 'Available', 'Poor proxy'] as const;
 
+/** Which accounts a source's proxies may serve. */
+export type ProxyUse = 'both' | 'pc' | 'phone';
+export type ProxyProvider = 'manual' | 'webshare';
+export type ProxyProtocol = 'socks5' | 'http';
+
+/** Where a set of proxies comes from: one provider account or one batch. The API key never reaches the page. */
+export interface ProxySource {
+  id: string;
+  name: string;
+  provider: ProxyProvider;
+  provider_label: string;
+  protocol: ProxyProtocol;
+  /** null follows the global Accounts per proxy. */
+  accounts_per_proxy: number | null;
+  use_on: ProxyUse;
+  key_set: boolean;
+  key_hint: string | null;
+  is_default: boolean;
+  proxy_count?: number;
+}
+
+export const PROXY_USE_LABEL: Record<ProxyUse, string> = { both: 'PC and phone', pc: 'PC only', phone: 'Phone only' };
+
+/** True when the proxy's source may serve an account on this device. */
+export const usableOn = (proxy: ProxyItem, surface: 'pc' | 'phone') =>
+  !proxy.source_use_on || proxy.source_use_on === 'both' || proxy.source_use_on === surface;
+
+/** Every source that has proxies in this list, by name, with how many. */
+export function proxySourceCounts(proxies: ProxyItem[]): { id: string; name: string; count: number }[] {
+  const seen = new Map<string, { id: string; name: string; count: number }>();
+  proxies.forEach(proxy => {
+    const id = proxy.source_id || 'default';
+    const entry = seen.get(id) ?? { id, name: proxy.source_name || 'My proxies', count: 0 };
+    entry.count += 1;
+    seen.set(id, entry);
+  });
+  return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+}
+
 export interface ProxyItem {
   id: string;
   group?: string;
@@ -21,8 +60,12 @@ export interface ProxyItem {
   /** First account using the proxy; `profile_ids` lists all of them. */
   profile_id: string | null;
   profile_ids?: string[];
-  /** How many accounts one proxy may serve, from the Proxies page setting. */
+  /** How many accounts one proxy may serve: its source's limit, else the Proxies page setting. */
   account_limit?: number;
+  /** The proxy source it belongs to (see ProxySource). */
+  source_id?: string;
+  source_name?: string;
+  source_use_on?: ProxyUse;
   latency_ms: number | null;
   reachable?: boolean | null;
   country?: string | null;
@@ -204,9 +247,18 @@ export function nearestFirst(proxies: ProxyItem[], from: ProxyItem | undefined):
 export const proxyOfProfile = (profile: { network: { mode?: string; proxy_id?: string | null } }, proxies: ProxyItem[]) =>
   profile.network.mode === 'pool' && profile.network.proxy_id ? proxies.find(p => p.id === profile.network.proxy_id) : undefined;
 
-export const proxyOptionLabel = (proxy: ProxyItem) =>
-  `${proxyQualityLabel(proxy)} · ${proxy.host}:${proxy.port} — ${formatProxyGeography(proxy)}` +
-  (accountLimit(proxy) > 1 ? ` · ${proxyUsageLabel(proxy)}` : '');
+/** One short line for pickers: "Slow · 1.2.3.4:5515 · New York City, US · 1/3 accounts". A plain
+ * working proxy has no status word; the timezone shows under the picker instead. */
+export const proxyOptionLabel = (proxy: ProxyItem) => {
+  const status = proxyQualityLabel(proxy);
+  const place = proxy.geo_source === 'unknown' ? 'Location unknown'
+    : [proxy.city, proxy.country_code || proxy.country].filter(Boolean).join(', ') || 'Location unknown';
+  return [
+    status === 'Working' || status === 'Good' ? null : status === 'Working · slow' ? 'Slow' : status,
+    `${proxy.host}:${proxy.port}`, place,
+    accountLimit(proxy) > 1 ? proxyUsageLabel(proxy) : null,
+  ].filter(Boolean).join(' · ');
+};
 
 /** The speed test saved on the Proxies page, so choosing a proxy never tests it again. */
 export function savedSpeedSummary(proxy: ProxyItem): string {

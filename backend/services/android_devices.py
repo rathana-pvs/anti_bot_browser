@@ -860,7 +860,7 @@ def import_user(serial: str, user_id: int, name: str, group: str = "", proxy_id:
             profile_id, _, _ = allocate_profile_identity(PROFILES_DIR)
         profile_dir = PROFILES_DIR / profile_id
         # The pool refuses a proxy already serving as many accounts as the per-proxy limit allows.
-        proxy = proxy_service.assign_proxy_by_id(profile_id, proxy_id) if proxy_id else None
+        proxy = proxy_service.assign_proxy_by_id(profile_id, proxy_id, surface="phone") if proxy_id else None
         try:
             profile = _android_profile(profile_id, name, group.strip(), serial, user, proxy)
             profile_dir.mkdir(parents=True, exist_ok=False)

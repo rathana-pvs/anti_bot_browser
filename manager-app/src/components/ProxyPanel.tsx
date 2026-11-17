@@ -1,17 +1,18 @@
 import React, { useEffect, useState } from 'react';
-import { accountLimit, formatProxyGeography, hasRoom, ProxyItem, proxyHolders, proxyIpListText, qualityRank } from '../types/proxy';
-import { checkProxyGeography, importProxies, refreshProxyStatuses, testProxyPing, deleteSelectedProxies, saveProxyList, updateAccountsPerProxy } from '../services/api';
-import { Download, Globe, Plus, Trash2, Activity, MapPin, X, Loader2, Search, Lock, Folder, Gauge, Monitor, Smartphone, Users, RefreshCw } from 'lucide-react';
+import { accountLimit, formatProxyGeography, hasRoom, PROXY_FOLDERS, PROXY_USE_LABEL, ProxyItem, ProxySource, proxyHolders, proxyIpListText, qualityRank } from '../types/proxy';
+import { checkProxyGeography, fetchProxySettings, fetchProxySources, importProxies, refreshProxyStatuses, testProxyPing, deleteSelectedProxies, saveProxyList, updateAccountsPerProxy } from '../services/api';
+import { Download, Globe, Plus, Trash2, Activity, MapPin, X, Loader2, Search, Lock, Folder, Gauge, Monitor, Smartphone, Users, RefreshCw, Settings2 } from 'lucide-react';
 import { useAppDialog } from './ui/AppDialogProvider';
 import { Checkbox } from './ui/Checkbox';
 import { Select } from './ui/Select';
 import { SortButton, sortRows, useSort } from './ui/sort';
 import { useProxyLocationFilter } from './ProxyLocationFilter';
 import { CheckRunBar, ProxyQualityCell, useProxyCheckRun } from './ProxyCheck';
-import { useWebshare, WebshareButton, WebshareRunBar } from './WebshareReplace';
-import { FolderList, ALL_FOLDERS } from './accounts/FolderList';
+import { useWebshare, WebshareRunBar } from './WebshareReplace';
+import { ALL_FOLDERS } from './accounts/FolderList';
+import { ALL_SOURCES, ProxySourceList } from './ProxySourceList';
+import { ProxySourceDialog } from './ProxySourceDialog';
 import { isAndroid } from './accounts/accountModel';
-import { PROXY_FOLDERS } from '../types/proxy';
 import { Profile } from '../types/profile';
 
 const ACCOUNT_LIMIT_OPTIONS = Array.from({ length: 20 }, (_, i) => i + 1);
@@ -33,7 +34,19 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
 }) => {
   const { showAlert, showConfirm } = useAppDialog();
   const [folder, setFolder] = useState(ALL_FOLDERS);
-  const folderEntries = PROXY_FOLDERS.map(name => ({ name, count: proxies.filter(p => p.group === name).length }));
+  const [sourceId, setSourceId] = useState(ALL_SOURCES);
+  const [sources, setSources] = useState<ProxySource[]>([]);
+  // null: closed · 'new': adding one · otherwise the source being edited.
+  const [editing, setEditing] = useState<ProxySource | 'new' | null>(null);
+  const loadSources = () => fetchProxySources().then(setSources).catch(() => {});
+  useEffect(() => { void loadSources(); }, [proxies]);
+  const source = sources.find(s => s.id === sourceId) ?? null;
+  const sourceById = new Map(sources.map(s => [s.id, s]));
+  // A source that was deleted, or never loaded, falls back to all proxies.
+  useEffect(() => { if (sourceId !== ALL_SOURCES && sources.length && !source) setSourceId(ALL_SOURCES); }, [sources, sourceId, source]);
+  const inSource = (proxy: ProxyItem) => sourceId === ALL_SOURCES || (proxy.source_id || 'default') === sourceId;
+  const sourceProxies = proxies.filter(inSource);
+  const [importSource, setImportSource] = useState('default');
   const checkRun = useProxyCheckRun(onRefresh);
   const checkingIds = new Set(checkRun.run.running_ids || []);
   const [isImportOpen, setIsImportOpen] = useState(false);
@@ -51,6 +64,7 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
   const [isDeleting, setIsDeleting] = useState(false);
   const webshare = useWebshare(onRefresh);
   const busy = isDeleting || isImporting || isRefreshingStatus || checkRun.running || webshare.running;
+  const openImport = () => { setImportSource(source?.id ?? sources[0]?.id ?? 'default'); setIsImportOpen(true); };
   const inUse = (proxy: ProxyItem) => proxyHolders(proxy).length > 0;
   const accountsOf = (proxy: ProxyItem) => proxyHolders(proxy).map(id => ({ id, profile: profiles.find(profile => profile.id === id) }));
   const { sort, toggle } = useSort<ProxySortKey>();
@@ -63,22 +77,24 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
       case 'quality': return qualityRank(proxy);
     }
   };
-  // Every listed proxy carries the setting; an empty pool shows the last value saved here.
-  const [savedLimit, setSavedLimit] = useState(1);
-  const limit = proxies.length ? accountLimit(proxies[0]) : savedLimit;
+  // The global setting; a source may set its own limit instead.
+  const [globalLimit, setGlobalLimit] = useState(1);
+  useEffect(() => { fetchProxySettings().then(s => setGlobalLimit(s.accounts_per_proxy)).catch(() => {}); }, []);
+  const limit = source?.accounts_per_proxy ?? globalLimit;
+  const anyShared = sourceProxies.some(p => accountLimit(p) > 1);
   const [savingLimit, setSavingLimit] = useState(false);
-  const assigned = proxies.filter(inUse).length;
-  const withRoom = proxies.filter(p => p.group !== 'Poor proxy' && hasRoom(p)).length;
-  const available = proxies.filter(p => p.group === 'Available').length;
-  const poor = proxies.filter(p => p.group === 'Poor proxy').length;
+  const assigned = sourceProxies.filter(inUse).length;
+  const withRoom = sourceProxies.filter(p => p.group !== 'Poor proxy' && hasRoom(p)).length;
+  const available = sourceProxies.filter(p => p.group === 'Available').length;
+  const poor = sourceProxies.filter(p => p.group === 'Poor proxy').length;
   const query = search.trim().toLowerCase();
-  const filteredProxies = proxies.filter((proxy) => {
+  const filteredProxies = sourceProxies.filter((proxy) => {
     if (folder !== ALL_FOLDERS && proxy.group !== folder) return false;
     if (filter === 'available' && inUse(proxy)) return false;
     if (filter === 'assigned' && !inUse(proxy)) return false;
     if (!inLocation.has(proxy.id)) return false;
     return !query || [proxy.host, String(proxy.port), proxy.username, ...accountsOf(proxy).flatMap(a => [a.id, a.profile?.name]),
-      proxy.exit_ip, proxy.group, formatProxyGeography(proxy)].filter(Boolean).join(' ').toLowerCase().includes(query);
+      proxy.exit_ip, proxy.group, proxy.source_name, formatProxyGeography(proxy)].filter(Boolean).join(' ').toLowerCase().includes(query);
   });
   // A clicked column sorts within each folder; otherwise assigned proxies come first.
   const visibleProxies = sort
@@ -87,6 +103,11 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
   const selectableIds = visibleProxies.map((proxy) => proxy.id);
   const groups = PROXY_FOLDERS.filter(group => visibleProxies.some(p => p.group === group));
   const selectedVisible = selectableIds.filter((id) => selectedIds.has(id)).length;
+  // Only proxies from a Webshare source with a saved key can get a new IP from here.
+  const replaceable = proxies.filter(p => selectedIds.has(p.id) && !p.replaced_by && (() => {
+    const from = sourceById.get(p.source_id || 'default');
+    return from?.provider === 'webshare' && from.key_set;
+  })());
   const allVisibleSelected = selectableIds.length > 0 && selectedVisible === selectableIds.length;
 
   useEffect(() => {
@@ -120,8 +141,11 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
 
     setIsImporting(true);
     try {
-      const result = await importProxies(importText);
-      await showAlert(`Added ${result.added} proxies (${result.total} total). Online: ${result.online}; offline: ${result.offline}; locations found: ${result.geo_checked}.`, { title: 'Proxy import complete' });
+      const result = await importProxies(importText, importSource);
+      const into = sourceById.get(importSource)?.name;
+      await showAlert(`Added ${result.added} proxies${into ? ` to ${into}` : ''} (${result.total} total).`
+        + (result.skipped ? ` ${result.skipped} already in the pool were skipped.` : '')
+        + ` Online: ${result.online}; offline: ${result.offline}; locations found: ${result.geo_checked}.`, { title: 'Proxy import complete' });
       setImportText('');
       setIsImportOpen(false);
       onRefresh();
@@ -200,10 +224,10 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
 
   const changeLimit = async (value: string) => {
     const next = Number(value);
-    if (next === limit) return;
+    if (next === globalLimit) return;
     setSavingLimit(true);
     try {
-      setSavedLimit((await updateAccountsPerProxy(next)).accounts_per_proxy);
+      setGlobalLimit((await updateAccountsPerProxy(next)).accounts_per_proxy);
       onRefresh();
     } catch (err: any) {
       await showAlert(err.message || String(err), { title: 'Could not change accounts per proxy', variant: 'danger' });
@@ -226,27 +250,35 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden bg-background select-none">
-      <FolderList automatic value={folder} onChange={setFolder} folders={folderEntries} total={proxies.length} attention={0}
-        unfiled={0} onCreate={() => {}} onDropAccounts={() => {}} allLabel="All proxies"
-        onFolderMenu={() => {}} onBlankMenu={() => {}} menuKey={() => () => {}} />
+      <ProxySourceList sources={sources} proxies={proxies} sourceId={sourceId} folder={folder}
+        onSelect={(nextSource, nextFolder) => { setSourceId(nextSource); setFolder(nextFolder); }}
+        onAdd={() => setEditing('new')} onEdit={setEditing} />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-hidden p-4 sm:p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <div>
-            <h1 className="flex items-center gap-2 text-base font-semibold text-zinc-100"><Globe className="h-4 w-4 text-zinc-400" />{folder === ALL_FOLDERS ? 'Proxies' : folder}</h1>
-            <p className="mt-1 text-xs text-zinc-500">Proxies your accounts connect through.</p>
+            <h1 className="flex items-center gap-2 text-base font-semibold text-zinc-100"><Globe className="h-4 w-4 text-zinc-400" />
+              {source ? source.name : 'Proxies'}{folder !== ALL_FOLDERS && <span className="font-normal text-zinc-500">· {folder}</span>}</h1>
+            <p className="mt-1 text-xs text-zinc-500">{source
+              ? [source.provider_label, source.protocol.toUpperCase(),
+                source.provider === 'webshare' && (source.key_set ? `key ${source.key_hint ?? 'saved'}` : 'no API key'),
+                `${limit} ${limit === 1 ? 'account' : 'accounts'} per proxy${source.accounts_per_proxy ? '' : ' (default)'}`,
+                PROXY_USE_LABEL[source.use_on]].filter(Boolean).join(' · ')
+              : 'Proxies your accounts connect through, from every source.'}</p>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <label className="flex items-center gap-2 text-xs text-zinc-400" title="How many accounts can share one proxy. Accounts already on a proxy keep it when you lower this.">
-            <Users className="h-3.5 w-3.5" />Accounts per proxy
+          {source ? <button onClick={() => setEditing(source)} disabled={busy}
+            className="flex items-center gap-1.5 rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-40">
+            <Settings2 className="h-3.5 w-3.5" />Source settings
+          </button> : <label className="flex items-center gap-2 text-xs text-zinc-400" title="How many accounts can share one proxy, for sources without their own limit. Accounts already on a proxy keep it when you lower this.">
+            <Users className="h-3.5 w-3.5" />Default accounts per proxy
             <div className="w-20">
-              <Select value={String(limit)} onValueChange={changeLimit} ariaLabel="Accounts per proxy" disabled={savingLimit || busy} className="min-h-8 py-1.5"
+              <Select value={String(globalLimit)} onValueChange={changeLimit} ariaLabel="Default accounts per proxy" disabled={savingLimit || busy} className="min-h-8 py-1.5"
                 options={ACCOUNT_LIMIT_OPTIONS.map(n => ({ value: String(n), label: String(n) }))} />
             </div>
-          </label>
-          <WebshareButton keySet={webshare.keySet} disabled={busy} onClick={webshare.openKey} />
-          <button onClick={() => void checkProxies()} disabled={busy || !proxies.length}
+          </label>}
+          <button onClick={() => void checkProxies(source ? sourceProxies.map(p => p.id) : undefined)} disabled={busy || !sourceProxies.length}
             title="Connection, Facebook, exit IP and speed, several proxies at once. Skips proxies that worked in the last 24 hours; Poor ones are always checked again."
             className="flex items-center gap-1.5 rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-40">
             <Gauge className="h-3.5 w-3.5" />Check proxies
@@ -256,7 +288,7 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
             {isRefreshingStatus ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Activity className="h-3.5 w-3.5" />}
             {isRefreshingStatus ? 'Checking…' : 'Check status'}
           </button>
-          <button onClick={() => setIsImportOpen(true)} disabled={busy}
+          <button onClick={openImport} disabled={busy}
             className="flex items-center gap-1.5 rounded-md bg-white px-3 py-1.5 text-xs font-semibold text-zinc-950 hover:bg-zinc-200 disabled:opacity-40">
             <Plus className="h-3.5 w-3.5" />Import proxies
           </button>
@@ -264,15 +296,18 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
       </div>
 
       <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-zinc-500">
-        <span><strong className="font-medium text-zinc-200">{proxies.length}</strong> total</span>
+        <span><strong className="font-medium text-zinc-200">{sourceProxies.length}</strong> total</span>
         <span><strong className="font-medium text-emerald-400">{available}</strong> available</span>
         <span><strong className="font-medium text-zinc-300">{assigned}</strong> used</span>
-        {limit > 1 && <span><strong className="font-medium text-sky-300">{withRoom}</strong> with room for another account</span>}
+        {anyShared && <span><strong className="font-medium text-sky-300">{withRoom}</strong> with room for another account</span>}
         <span><strong className="font-medium text-amber-400">{poor}</strong> poor</span>
       </div>
 
       <div className="text-[11px] text-zinc-500" aria-live="polite">
-        {`${limit === 1 ? 'Each proxy serves one account.' : `Each proxy serves up to ${limit} accounts.`} Used proxies stay locked to their accounts. `}
+        {source || !sources.some(s => s.accounts_per_proxy)
+          ? `${limit === 1 ? 'Each proxy serves one account.' : `Each proxy serves up to ${limit} accounts.`} `
+          : 'Each source sets how many accounts share one proxy. '}
+        {'Used proxies stay locked to their accounts. '}
         Proxies move to Poor proxy only when download or upload times out, or they can't connect. Speeds under 1 Mbps show in yellow but stay in Available.
       </div>
       <CheckRunBar run={checkRun.run} showSummary={checkRun.showSummary} onStop={() => void checkRun.stop()} onDismiss={checkRun.dismiss}
@@ -290,7 +325,7 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
             <Select value={filter} onValueChange={setFilter} ariaLabel="Filter proxies" className="min-h-8 py-2"
               options={[{ value: 'all', label: 'All proxies' }, { value: 'available', label: 'Available' }, { value: 'assigned', label: 'Assigned' }]} />
           </div>
-          {location.controls({ className: "w-80", selectClassName: "min-h-8 py-2" })}
+          {location.controls({ className: "w-48", selectClassName: "min-h-8 py-2" })}
           {selectedIds.size > 0 && (
             <>
               <button onClick={() => void checkProxies([...selectedIds], true)} disabled={busy} className="px-2 py-1.5 text-xs text-blue-300 disabled:opacity-40">Check selected</button>
@@ -298,11 +333,11 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
                 className="flex items-center gap-1.5 rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800">
                 <Download className="h-3.5 w-3.5" />Export IPs ({selectedIds.size})
               </button>
-              {webshare.keySet && <button disabled={busy || proxies.filter(p => selectedIds.has(p.id)).every(p => p.replaced_by)}
-                onClick={() => { const ids = [...selectedIds]; void webshare.replace(ids, new Set(proxies.filter(p => selectedIds.has(p.id)).flatMap(proxyHolders)).size); }}
-                title="Replace: Webshare gives each selected proxy a new IP in the same country. Accounts stay put until you change their proxy."
+              {replaceable.length > 0 && <button disabled={busy}
+                onClick={() => void webshare.replace(replaceable.map(p => p.id), new Set(replaceable.flatMap(proxyHolders)).size)}
+                title={`Replace: Webshare gives each selected proxy a new IP in the same country, using its own source's key. Accounts stay put until you change their proxy.${replaceable.length < selectedIds.size ? ` ${selectedIds.size - replaceable.length} selected can't be replaced (not from a Webshare source with a key, or already replaced).` : ''}`}
                 className="flex items-center gap-1.5 rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-40">
-                <RefreshCw className="h-3.5 w-3.5" />Replace IP · Webshare ({selectedIds.size})
+                <RefreshCw className="h-3.5 w-3.5" />Replace IP · Webshare ({replaceable.length})
               </button>}
               <button onClick={() => setSelectedIds(new Set())} disabled={busy} className="px-2 py-1.5 text-xs text-zinc-400 hover:text-white disabled:opacity-40">Clear selection</button>
               <button onClick={() => handleDelete([...selectedIds])} disabled={busy || !proxies.some(p => selectedIds.has(p.id) && !inUse(p))}
@@ -337,8 +372,8 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
                   <div className="flex items-center gap-3">
                     <Folder className="h-3.5 w-3.5 text-blue-300" />
                     <span className="font-medium text-zinc-200">{group}</span>
-                    <span className="text-zinc-500">{proxies.filter(p => (p.group || '') === group).length} proxies</span>
-                    <button disabled={busy} onClick={() => void checkProxies(proxies.filter(p => (p.group || '') === group).map(p => p.id), true)}
+                    <span className="text-zinc-500">{sourceProxies.filter(p => (p.group || '') === group).length} proxies</span>
+                    <button disabled={busy} onClick={() => void checkProxies(sourceProxies.filter(p => (p.group || '') === group).map(p => p.id), true)}
                       className="ml-auto flex items-center gap-1.5 text-blue-300 disabled:opacity-40"><Gauge className="h-3.5 w-3.5" />Check folder</button>
                   </div>
                 </td></tr>
@@ -362,17 +397,17 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
                       {proxy.replaced_from && !proxy.replaced_by && <span title={`New IP for ${proxy.replaced_from}`}
                         className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300">New</span>}
                     </div>
-                    <p className="mt-1 pl-3.5 text-[10px] text-zinc-500">{proxy.username || 'No authentication'} · {proxy.type.toUpperCase()}</p>
+                    <p className="mt-1 pl-3.5 text-[10px] text-zinc-500">{proxy.username || 'No authentication'} · {proxy.type.toUpperCase()}{!source && proxy.source_name ? ` · ${proxy.source_name}` : ''}</p>
                   </td>
                   <td className="max-w-64 px-3 py-2.5" title={proxy.geo_last_error || formatProxyGeography(proxy)}>
                     <p className="truncate text-[11px] text-zinc-300">{proxy.geo_source === 'unknown' ? 'Location unknown' : [proxy.city, proxy.country_code || proxy.country].filter(Boolean).join(', ') || 'Location unknown'}</p>
                     <p className="mt-1 truncate text-[10px] text-zinc-500">{proxy.geo_source !== 'unknown' && proxy.timezone ? proxy.timezone : 'Timezone not detected'}</p>
                   </td>
                   <td className="px-3 py-2.5">
-                    {(limit > 1 || accounts.length > 1) && <p className={`mb-1 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium ${
-                      accounts.length > limit ? 'bg-amber-500/10 text-amber-300' : accounts.length === limit ? 'bg-zinc-800 text-zinc-300' : 'bg-sky-500/10 text-sky-300'}`}
-                      title={accounts.length > limit ? 'More accounts than the current limit. They keep this proxy, but no new account can join.' : undefined}>
-                      <Users className="h-3 w-3" aria-label="Accounts" />{accounts.length}/{limit}</p>}
+                    {(accountLimit(proxy) > 1 || accounts.length > 1) && <p className={`mb-1 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium ${
+                      accounts.length > accountLimit(proxy) ? 'bg-amber-500/10 text-amber-300' : accounts.length === accountLimit(proxy) ? 'bg-zinc-800 text-zinc-300' : 'bg-sky-500/10 text-sky-300'}`}
+                      title={accounts.length > accountLimit(proxy) ? 'More accounts than the current limit. They keep this proxy, but no new account can join.' : undefined}>
+                      <Users className="h-3 w-3" aria-label="Accounts" />{accounts.length}/{accountLimit(proxy)}</p>}
                     {inUse(proxy) ? (<div className="space-y-1">{accounts.map(({ id, profile: account }) => <div key={id} className="flex flex-wrap items-center gap-2">
                       <button disabled={!onSelectProfile} onClick={() => onSelectProfile?.(id)} title={id}
                         className="inline-flex items-center gap-1.5 text-[11px] text-blue-300 hover:text-blue-200 disabled:text-zinc-400">
@@ -416,9 +451,9 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
               </React.Fragment>)}
               {visibleProxies.length === 0 && (
                 <tr><td colSpan={7} className="py-16 text-center">
-                  <p className="text-xs text-zinc-400">{proxies.length === 0 ? 'Your proxy pool is empty.' : folder !== ALL_FOLDERS ? 'No proxies in this folder match your filters.' : 'No proxies match your search.'}</p>
-                  {proxies.length === 0 ? (
-                    <button onClick={() => setIsImportOpen(true)} disabled={busy} className="mt-3 text-xs text-blue-300 hover:text-blue-200">Import your first proxies</button>
+                  <p className="text-xs text-zinc-400">{proxies.length === 0 ? 'Your proxy pool is empty.' : sourceProxies.length === 0 ? `${source?.name ?? 'This source'} has no proxies yet.` : folder !== ALL_FOLDERS ? 'No proxies in this folder match your filters.' : 'No proxies match your search.'}</p>
+                  {sourceProxies.length === 0 ? (
+                    <button onClick={openImport} disabled={busy} className="mt-3 text-xs text-blue-300 hover:text-blue-200">{source ? `Import proxies into ${source.name}` : 'Import your first proxies'}</button>
                   ) : <button onClick={() => { setSearch(''); setFilter('all'); location.reset(); setFolder(ALL_FOLDERS); }} className="mt-3 text-xs text-blue-300 hover:text-blue-200">Clear filters</button>}
                 </td></tr>
               )}
@@ -426,19 +461,25 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
           </table>
         </div>
         <div role="status" className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-3 py-2 text-[10px] text-zinc-500">
-          <span>{visibleProxies.length} of {proxies.length} proxies{selectedIds.size > 0 ? ` · ${selectedIds.size} selected${selectedIds.size > selectedVisible ? ` (${selectedIds.size - selectedVisible} outside this view)` : ''}` : ''}</span>
+          <span>{visibleProxies.length} of {sourceProxies.length} proxies{selectedIds.size > 0 ? ` · ${selectedIds.size} selected${selectedIds.size > selectedVisible ? ` (${selectedIds.size - selectedVisible} outside this view)` : ''}` : ''}</span>
           <span>Automatic folders · A check uses up to 6 MB per proxy · Assigned proxies stay locked.</span>
         </div>
       </div>
 
       </div>
-      {webshare.keyDialog}
+      {editing && <ProxySourceDialog source={editing === 'new' ? null : editing} globalLimit={globalLimit} onClose={() => setEditing(null)}
+        onSaved={saved => {
+          // Shown at once, so opening a new source doesn't wait for the list to reload.
+          if (saved) setSources(current => [...current.filter(s => s.id !== saved.id), saved]);
+          if (saved && editing === 'new') { setSourceId(saved.id); setFolder(ALL_FOLDERS); }
+          void loadSources(); onRefresh();
+        }} />}
       {/* Import Modal */}
       {isImportOpen && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-surface border border-border w-full max-w-lg rounded-xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
             <div className="px-5 py-4 border-b border-border flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-zinc-100">Import Proxy List</h2>
+              <h2 className="text-sm font-semibold text-zinc-100">Import proxies</h2>
               <button
                 disabled={isImporting}
                 onClick={() => setIsImportOpen(false)}
@@ -450,6 +491,12 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
 
             <form onSubmit={handleImport} className="p-5 space-y-4 text-xs">
               <p className="text-zinc-500">New proxies appear in Available with an Untested badge. Run a download/upload check to measure their quality.</p>
+              <div className="space-y-1.5">
+                <span className="block font-medium text-zinc-400">Source</span>
+                <Select value={importSource} onValueChange={setImportSource} ariaLabel="Import into source" disabled={isImporting}
+                  options={sources.map(s => ({ value: s.id, label: `${s.name} · ${s.provider_label} · ${s.protocol.toUpperCase()}` }))} />
+                <p className="text-[11px] text-zinc-500">They get this source's protocol, limit and key. A proxy already in the pool is skipped.</p>
+              </div>
               <div>
                 <label className="block text-zinc-400 font-medium mb-1.5">
                   Paste Proxies (one per line):
@@ -482,7 +529,7 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
                   disabled={isImporting}
                   className="px-4 py-1.5 rounded-md bg-white text-zinc-950 font-semibold hover:bg-zinc-200 transition-colors shadow-sm disabled:opacity-50"
                 >
-                  {isImporting ? 'Importing...' : 'Add to Pool'}
+                  {isImporting ? 'Importing…' : 'Add to source'}
                 </button>
               </div>
             </form>

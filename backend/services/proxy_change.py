@@ -12,7 +12,7 @@ import json
 from datetime import datetime, timezone
 
 from backend.config import PROFILES_DIR
-from backend.services import account_activity, account_hold, proxy_service
+from backend.services import account_activity, account_hold, proxy_service, proxy_sources
 from backend.services.proxy_quality import is_poor
 
 
@@ -79,7 +79,9 @@ def _public(proxy: dict) -> dict:
     return {key: proxy.get(key) for key in (
         "id", "host", "port", "username", "type", "group", "country", "country_code", "region", "city", "timezone",
         "geo_source", "latency_ms", "reachable", "rating", "speed_quality", "replaced_by", "replaced_by_address",
-        "replaced_from")} | {"accounts": len(proxy_service.holders(proxy))}
+        "replaced_from", "source_id")} | {"accounts": len(proxy_service.holders(proxy)),
+                                          "account_limit": proxy_service.limit_of(proxy),
+                                          "source_name": proxy_sources.source_of(proxy)["name"]}
 
 
 def options(profile_id: str, now: datetime | None = None) -> dict:
@@ -94,6 +96,9 @@ def options(profile_id: str, now: datetime | None = None) -> dict:
     here = account_hold.place_of(network, by_id, zone)
     last = account_activity.last_active(profile_id, config, now)
     limit = proxy_service.account_limit()
+    surface = "phone" if _phone_serial(config) else "pc"
+    # Proxies from the account's own source come first, so a residential account stays residential.
+    source_id = current.get("source_id") if current else None
     choices = []
     for proxy in pool:
         if proxy is current or is_poor(proxy) or proxy.get("group") == "Poor proxy":
@@ -102,14 +107,17 @@ def options(profile_id: str, now: datetime | None = None) -> dict:
             continue
         if not proxy_service.has_room(proxy, profile_id, limit):
             continue
+        if not proxy_sources.allowed_on(proxy, surface):
+            continue
         there = account_hold.place_of({"mode": "pool", "proxy_id": proxy["id"]}, by_id, proxy.get("timezone"))
         travel = account_hold.travel_hours(here, there, now)
         start = min(last, now) if last else now
         rest = max(0.0, (start - now).total_seconds() / 3600 + travel)
         choices.append({**_public(proxy), "travel_hours": travel, "rest_hours": round(rest, 1),
                         "suggested": bool(current and current.get("replaced_by") == proxy["id"]),
+                        "same_source": bool(source_id and proxy.get("source_id") == source_id),
                         "same_country": bool(here and here.get("country_code") and here.get("country_code") == proxy.get("country_code"))})
-    choices.sort(key=lambda c: (not c["suggested"], not c["same_country"], c["rest_hours"], c["latency_ms"] or 10**6))
+    choices.sort(key=lambda c: (not c["suggested"], not c["same_source"], not c["same_country"], c["rest_hours"], c["latency_ms"] or 10**6))
     return {"profile_id": profile_id, "phone": bool(_phone_serial(config)), "running_reason": running_reason(profile_id, config),
             "current": _public(current) if current else None,
             "current_network": {"mode": network.get("mode"), "host": network.get("proxy_host"), "port": network.get("proxy_port")},

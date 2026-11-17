@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from backend.config import ROOT_DIR
 from backend.services.proxy_quality import is_poor, normalize_proxy
+from backend.services import proxy_sources
 
 PROXY_POOL_FILE = ROOT_DIR / "proxies" / "proxy_pool.json"
 _proxy_assignment_lock = threading.Lock()
@@ -30,6 +31,10 @@ def load_proxy_pool(*, raise_errors: bool = False) -> list:
             needs_save = False
             for p in data:
                 normalize_proxy(p)
+                if not p.get("source_id"):
+                    # Proxies saved before sources existed belong to the first source.
+                    p["source_id"] = proxy_sources.DEFAULT_ID
+                    needs_save = True
                 # Older imports fabricated Los Angeles metadata whenever the
                 # proxy provider supplied no geography. Do not present those
                 # defaults as observed facts.
@@ -75,12 +80,19 @@ def save_proxy_pool(pool: list, *, raise_errors: bool = False):
             raise
         print(f"Error saving proxy pool: {err}")
 
-def import_proxies_from_text(text: str) -> dict:
+def import_proxies_from_text(text: str, source_id: str | None = None) -> dict:
+    """Adds each new `host:port[:user:pass]` line to the source (the first source when None).
+    A proxy already in the pool, in any source, is skipped."""
+    source_id = source_id or proxy_sources.DEFAULT_ID
+    if not proxy_sources.exists(source_id):
+        raise ValueError("This proxy source no longer exists.")
+    protocol = proxy_sources.get(source_id)["protocol"]
     with _proxy_assignment_lock:
         pool = load_proxy_pool()
         existing_keys = {f"{p.get('host')}:{p.get('port')}" for p in pool}
         lines = text.splitlines()
         added_count = 0
+        skipped = 0
         added_ids = []
 
         for raw_line in lines:
@@ -100,6 +112,8 @@ def import_proxies_from_text(text: str) -> dict:
                 password = parts[3].strip() if len(parts) >= 4 else ""
 
                 key = f"{host}:{port}"
+                if key in existing_keys:
+                    skipped += 1
                 if key not in existing_keys and port > 0:
                     existing_keys.add(key)
                     now_id = int(time.time() * 1000)
@@ -110,7 +124,8 @@ def import_proxies_from_text(text: str) -> dict:
                         "port": port,
                         "username": username,
                         "password": password,
-                        "type": "socks5",
+                        "type": protocol,
+                        "source_id": source_id,
                         "assigned": False,
                         "profile_id": None,
                         "profile_ids": [],
@@ -127,7 +142,7 @@ def import_proxies_from_text(text: str) -> dict:
                     added_count += 1
 
         save_proxy_pool(pool)
-        return {"added": added_count, "total": len(pool), "added_ids": added_ids}
+        return {"added": added_count, "skipped": skipped, "total": len(pool), "added_ids": added_ids}
 
 def update_proxy_metadata(proxy_ids: list[str], **changes) -> dict:
     """Merge metadata into the latest pool without changing reservations."""
@@ -194,13 +209,20 @@ def holders(proxy: dict) -> list[str]:
     return [proxy["profile_id"]] if proxy.get("profile_id") else []
 
 
+def limit_of(proxy: dict, default: int | None = None) -> int:
+    """How many accounts this proxy may serve: its source's own limit, else the global one."""
+    return proxy_sources.limit_for(proxy_sources.source_of(proxy), account_limit() if default is None else default)
+
+
 def has_room(proxy: dict, profile_id: str, limit: int | None = None) -> bool:
-    """True when the account already uses the proxy or the proxy is below the limit."""
+    """True when the account already uses the proxy or the proxy is below its limit. `limit` is the
+    global setting, read once by callers that check many proxies; a source's own limit wins."""
     current = holders(proxy)
-    return profile_id in current or len(current) < (account_limit() if limit is None else limit)
+    return profile_id in current or len(current) < limit_of(proxy, limit)
 
 
 def _full_message(proxy: dict, limit: int) -> str:
+    limit = limit_of(proxy, limit)
     return (f"Proxy {proxy.get('host')}:{proxy.get('port')} already serves {len(holders(proxy))} "
             f"{'account' if limit == 1 else 'accounts'}, the limit per proxy. Choose another proxy "
             f"or raise the limit on the Proxies page.")
@@ -222,13 +244,16 @@ def _add_holder(pool: list, entry: dict, profile_id: str) -> None:
         _set_holders(entry, holders(entry) + [profile_id])
 
 
-def assign_proxy(profile_id: str) -> dict | None:
-    """Gives the account a pool proxy with room, preferring the least shared one."""
+def assign_proxy(profile_id: str, surface: str | None = None, source_id: str | None = None) -> dict | None:
+    """Gives the account a pool proxy with room, preferring the least shared one. `surface`
+    ('pc' or 'phone') keeps to sources allowed there; `source_id` keeps to one source."""
     with _proxy_assignment_lock:
         pool = load_proxy_pool()
         limit = account_limit()
         choices = [p for p in pool if not is_poor(p) and p.get("group") != "Poor proxy"
-                   and not p.get("held_by_phone") and has_room(p, profile_id, limit)]
+                   and not p.get("held_by_phone") and has_room(p, profile_id, limit)
+                   and proxy_sources.allowed_on(p, surface)
+                   and (source_id is None or p.get("source_id") == source_id)]
         if not choices:
             return None
         proxy = min(choices, key=lambda p: len(holders(p)))
@@ -236,8 +261,9 @@ def assign_proxy(profile_id: str) -> dict | None:
         save_proxy_pool(pool)
         return proxy
 
-def assign_proxy_by_id(profile_id: str, proxy_id: str) -> dict:
-    """Atomically reserve one explicit pool proxy for a profile, within the per-proxy limit."""
+def assign_proxy_by_id(profile_id: str, proxy_id: str, surface: str | None = None) -> dict:
+    """Atomically reserve one explicit pool proxy for a profile, within the per-proxy limit.
+    `surface` ('pc' or 'phone') refuses a proxy whose source isn't allowed there."""
     with _proxy_assignment_lock:
         pool = load_proxy_pool()
         selected = next((p for p in pool if p.get("id") == proxy_id), None)
@@ -246,6 +272,8 @@ def assign_proxy_by_id(profile_id: str, proxy_id: str) -> dict:
         if selected.get("replaced_by") and profile_id not in holders(selected):
             raise ValueError(f"Proxy {selected.get('host')}:{selected.get('port')} was replaced at Webshare and no "
                              f"longer works. Change to {selected.get('replaced_by_address') or 'another proxy'} instead.")
+        if surface and profile_id not in holders(selected) and not proxy_sources.allowed_on(selected, surface):
+            raise ValueError(proxy_sources.surface_message(selected, surface))
         limit = account_limit()
         if not has_room(selected, profile_id, limit):
             raise ValueError(_full_message(selected, limit))
@@ -301,7 +329,8 @@ def hold_phone_proxy(profile_id: str, host: str, port: int, username: str, passw
             raise ValueError(_full_message(entry, limit))
         if entry is None:
             entry = {"id": f"proxy_{int(time.time() * 1000)}_{str(time.time())[-4:]}", "host": host, "port": int(port),
-                     "username": username or "", "password": "", "type": "socks5", "latency_ms": None,
+                     "username": username or "", "password": "", "type": "socks5",
+                     "source_id": proxy_sources.DEFAULT_ID, "latency_ms": None,
                      "last_checked": None, "timezone": None, "country": None, "country_code": None,
                      "region": None, "city": None, "geo_source": "unknown"}
             pool.append(entry)
