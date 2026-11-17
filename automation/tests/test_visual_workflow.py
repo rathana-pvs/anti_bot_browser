@@ -1983,6 +1983,108 @@ class ReelProfileActionTests(unittest.TestCase):
         self.assertEqual(task.human.scroll.call_count, 1)
 
 
+class ReelEntryFallbackTests(unittest.TestCase):
+    """No composer Reel button: Pages use Reels tab > Create reel; personal profiles post nothing."""
+
+    def make_task(self, ocr_pages, identity=None):
+        task = FacebookReelTask.__new__(FacebookReelTask)
+        stub_verified_entry(task)
+        task.client = Mock()
+        task.client.screenshot.return_value = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task.vision = Mock()
+        task.vision.read_text.side_effect = list(ocr_pages) + [ocr_pages[-1]] * 20
+        task.telemetry = None
+        task.human = Mock()
+        task.log = Mock()
+        task.log_decision = Mock()
+        task.capture_evidence = Mock()
+        task.click_reversible = Mock()
+        task.judged_frame = Mock(return_value=None)
+        task._fail = Mock(return_value=False)
+        task.skip_unverified_session = Mock(return_value=False)
+        task._profile_reel_composer_visible = True
+        task._find_profile_reel_action = Mock(return_value=None)
+        task._wait_for_target = lambda locate, **kwargs: ("timeout", None, None)
+        if identity:
+            task.facebook_identity = identity
+        return task
+
+    PAGE_ALL_TAB = [
+        {"text": "Manage Page", "center": (92, 171)},
+        {"text": "All", "center": (565, 437)}, {"text": "About", "center": (628, 437)},
+        {"text": "Reels", "center": (701, 437)}, {"text": "Photos", "center": (779, 437)},
+        {"text": "What's on your mind?", "center": (1203, 515)},
+    ]
+    PAGE_REELS_TAB = [
+        {"text": "Manage Page", "center": (92, 171)},
+        {"text": "All", "center": (565, 277)}, {"text": "Reels", "center": (701, 277)},
+        {"text": "Followers", "center": (871, 277)},
+        {"text": "Reels", "center": (582, 357)}, {"text": "Create reel", "center": (1658, 357)},
+    ]
+
+    def test_page_left_on_reels_tab_clicks_create_reel(self):
+        task = self.make_task([self.PAGE_REELS_TAB])
+        with patch("tasks.facebook_reel.time.sleep"):
+            self.assertIsNone(task._step_open_reel_entry())
+        task.click_reversible.assert_called_once()
+        self.assertEqual(task.click_reversible.call_args.args[0], (1658, 357))
+        self.assertEqual(task.click_reversible.call_args.kwargs["label"], "reels_tab_create_reel")
+        task._fail.assert_not_called()
+
+    def test_page_without_composer_reel_opens_reels_tab_then_create_reel(self):
+        task = self.make_task([self.PAGE_ALL_TAB, self.PAGE_REELS_TAB])
+        with patch("tasks.facebook_reel.time.sleep"):
+            self.assertIsNone(task._step_open_reel_entry())
+        labels = [call.kwargs["label"] for call in task.click_reversible.call_args_list]
+        self.assertEqual(labels, ["page_reels_tab", "reels_tab_create_reel"])
+        # The tab row's Reels, never the section heading or a Reels icon elsewhere.
+        self.assertEqual(task.click_reversible.call_args_list[0].args[0], (701, 437))
+
+    def test_reels_heading_without_tab_row_is_not_clicked(self):
+        heading_only = [{"text": "Manage Page", "center": (92, 171)}, {"text": "Reels", "center": (582, 357)}]
+        task = self.make_task([heading_only])
+        with patch("tasks.facebook_reel.time.sleep"):
+            task._step_open_reel_entry()
+        task.click_reversible.assert_not_called()
+        self.assertEqual(task._fail.call_args.args[0], "profile_reel_button_not_found")
+
+    def test_create_reel_that_never_appears_fails_before_posting(self):
+        task = self.make_task([self.PAGE_ALL_TAB])
+        clock = [0.0]
+
+        def tick(*_):
+            clock[0] += 2.0
+
+        with patch("tasks.facebook_reel.time.sleep", side_effect=tick), \
+             patch("tasks.facebook_reel.time.monotonic", side_effect=lambda: clock[0]):
+            task._step_open_reel_entry()
+        self.assertEqual([c.kwargs["label"] for c in task.click_reversible.call_args_list], ["page_reels_tab"])
+        self.assertEqual(task._fail.call_args.args[0], "profile_reel_button_not_found")
+
+    def test_personal_profile_posts_nothing(self):
+        personal = [{"text": "Add more friends to get recommendations", "center": (952, 294)},
+                    {"text": "Live video", "center": (1005, 536)}, {"text": "Life update", "center": (1437, 536)},
+                    {"text": "Reels", "center": (690, 397)}, {"text": "About", "center": (448, 397)}]
+        task = self.make_task([personal])
+        task._step_open_reel_entry()
+        task.click_reversible.assert_not_called()
+        task.skip_unverified_session.assert_called_once()
+        self.assertEqual(task.session_check_status, "personal_profile")
+
+    def test_personal_profile_with_a_reel_button_posts_nothing(self):
+        task = self.make_task([[]], identity="personal")
+        task._find_profile_reel_action = Mock(return_value=(1401, 401))
+        task._wait_for_target = lambda locate, **kwargs: ("ready", (1401, 401), None)
+        task._step_open_reel_entry()
+        task.click_reversible.assert_not_called()
+        task.skip_unverified_session.assert_called_once()
+
+    def test_unknown_account_without_reel_button_keeps_old_failure(self):
+        task = self.make_task([[]])
+        task._step_open_reel_entry()
+        task.click_reversible.assert_not_called()
+        self.assertEqual(task._fail.call_args.args[0], "profile_reel_button_not_found")
+
 class PublicationVerificationTests(unittest.TestCase):
     def make_task(self, observations, similarities):
         task = FacebookPostTask.__new__(FacebookPostTask)

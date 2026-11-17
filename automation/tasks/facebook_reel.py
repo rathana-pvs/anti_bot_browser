@@ -29,6 +29,7 @@ from modules.reel_top_post import (
 from modules.reel_post_click_verifier import ReelPostClickVerifier
 from modules.reel_profile_readiness import wait_for_profile_ready
 from modules.post_timestamp import parse_header_timestamp
+from skills.session import facebook_identity
 from .base_task import BaseTask
 
 
@@ -1764,8 +1765,25 @@ class FacebookReelTask(BaseTask):
         )
         if reel_btn_status == "error":
             return self._fail("profile_error", "Facebook displayed an error dialog on the profile page.", self._screen)
+        # Reels are posted only as a Page, never on the personal profile behind it.
+        screen = self.client.screenshot()
+        screen_text = self._read_profile_text(screen)
+        identity = facebook_identity(screen_text) or getattr(self, "facebook_identity", None)
+        if identity == "personal":
+            return self._skip_personal_profile(screen)
+
         if not reel_button:
-            return self._fail("profile_reel_button_not_found", "Reel creation button could not be located on the profile page.")
+            if identity != "page":
+                return self._fail("profile_reel_button_not_found", "Reel creation button could not be located on the profile page.")
+            # Some Pages, or a browser left on another tab, show no Reel action in
+            # the composer; the Page's Reels tab offers Create reel instead.
+            self.log("INFO", "No Reel button in the Page's composer; trying Reels tab > Create reel.")
+            if not self._open_create_reel_from_reels_tab(screen, screen_text):
+                return self._fail(
+                    "profile_reel_button_not_found",
+                    "Neither the Reel button nor the Reels tab's Create reel could be located on the Page.",
+                )
+            return None
 
         self.log_decision(
             "Open Reel Studio",
@@ -1780,6 +1798,86 @@ class FacebookReelTask(BaseTask):
         self.click_reversible(reel_button, label="profile_reel", max_offset_px=4)
         time.sleep(2.5)
         return None
+
+    # Words on a Page's tab row; the Reels tab is accepted only beside one of them.
+    PAGE_TAB_WORDS = {"all", "about", "photos", "followers", "more", "videos", "mentions", "reviews", "posts"}
+    # How long the Reels tab may take to show its Create reel link after the click.
+    REELS_TAB_LOAD_TIMEOUT_S = 15.0
+
+    def _read_profile_text(self, screen) -> list[dict]:
+        try:
+            return self.vision.read_text(screen, min_confidence=0.5)
+        except Exception as exc:  # Unreadable text keeps the old behaviour: identity unknown.
+            self.log("DEBUG", f"Could not read the profile page text: {exc}")
+            return []
+
+    def _skip_personal_profile(self, screen) -> bool:
+        self.capture_evidence("personal_profile_not_posted", screen)
+        self.session_check_status = "personal_profile"
+        return self.skip_unverified_session()
+
+    @classmethod
+    def _find_reels_tab(cls, items, height: int):
+        """The Reels tab in the Page's tab row, not the Reels section heading."""
+        tabs = [item for item in items if cls._normalized_ocr_text(item["text"]) in cls.PAGE_TAB_WORDS]
+        for item in items:
+            if cls._normalized_ocr_text(item["text"]) != "reels":
+                continue
+            _, ry = item["center"]
+            if any(abs(tab["center"][1] - ry) <= 0.02 * height for tab in tabs):
+                return item
+        return None
+
+    @classmethod
+    def _find_reels_create_link(cls, items, height: int):
+        """Create reel at the right end of the Reels section's heading row."""
+        headings = [item for item in items if cls._normalized_ocr_text(item["text"]) == "reels"]
+        for item in items:
+            if cls._normalized_ocr_text(item["text"]) != "create reel":
+                continue
+            lx, ly = item["center"]
+            if any(abs(heading["center"][1] - ly) <= 0.03 * height and heading["center"][0] < lx
+                   for heading in headings):
+                return item
+        return None
+
+    def _open_create_reel_from_reels_tab(self, screen, items) -> bool:
+        height = screen.shape[0]
+        link = self._find_reels_create_link(items, height)
+        if link is None:
+            tab = self._find_reels_tab(items, height)
+            if tab is None:
+                # The tab row may have scrolled off the top of the Page.
+                self.human.key_press("ctrl+home", check=False)
+                time.sleep(1.5)
+                screen = self.client.screenshot()
+                tab = self._find_reels_tab(self._read_profile_text(screen), height)
+            if tab is None:
+                self.capture_evidence("reels_tab_not_found", screen)
+                return False
+            self.remember_reversible_click_bounds(tab["center"], tab.get("bounds"))
+            self.click_reversible(tab["center"], label="page_reels_tab", max_offset_px=4)
+            deadline = time.monotonic() + self.REELS_TAB_LOAD_TIMEOUT_S
+            while link is None and time.monotonic() < deadline:
+                time.sleep(2.0)
+                screen = self.client.screenshot()
+                link = self._find_reels_create_link(self._read_profile_text(screen), height)
+            if link is None:
+                self.capture_evidence("reels_tab_create_reel_not_found", screen)
+                return False
+
+        self.log_decision(
+            "Open Reel Studio",
+            "Create reel beside the Reels heading on the Page's Reels tab",
+            f"target={link['center']}",
+            "click Create reel to open the Reel creator",
+        )
+        self.capture_evidence("before_click_create_reel", screen, target=list(link["center"]))
+        self._reel_pre_click_frame = screen
+        self.remember_reversible_click_bounds(link["center"], link.get("bounds"))
+        self.click_reversible(link["center"], label="reels_tab_create_reel", max_offset_px=4)
+        time.sleep(2.5)
+        return True
 
     def _step_detect_entry(self):
         self.set_stage("composing")
