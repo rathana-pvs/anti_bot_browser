@@ -2244,6 +2244,22 @@ class ReelPublicationVerificationTests(unittest.TestCase):
         self.assertEqual(task.click_reversible.call_count, 3)
         task.recognizer.observe_publication_gate.assert_not_called()
 
+    def test_closed_composer_without_error_counts_as_published(self):
+        task = self.make_task([], [])
+        task.set_stage = Mock()
+        task._before_publish = task.client.screenshot()
+        task.capture_evidence = Mock()
+        task._uncertain = Mock(return_value="uncertain")
+        task._refresh_until_latest_reel_visible = Mock(return_value=False)
+        observation = StateObservation(ScreenState.FEED_READY, 0.8)
+        task._verify_reel_publication = Mock(
+            return_value=("profile_fallback", (observation, task.client.screenshot(), 0.6)))
+        self.assertIsNone(task._step_verify())
+        self.assertEqual(task._publication_result, "published")
+        task._uncertain.assert_not_called()
+        labels = [c.args[0] for c in task.capture_evidence.call_args_list]
+        self.assertIn("reel_composer_closed_published", labels)
+
     def test_blocked_event_prompt_is_uncertain_not_a_network_timeout(self):
         task = self.make_task([], [])
         task.set_stage = Mock()
@@ -2493,6 +2509,36 @@ class ReelPublicationVerificationTests(unittest.TestCase):
         ]
         self.assertFalse(task._reel_composer_has_closed(
             task.client.screenshot(), StateObservation(ScreenState.FEED_READY, 0.84)))
+
+    def test_reels_tab_create_reel_link_does_not_block(self):
+        # Facebook lands Pages on their Reels tab after Post; its "Create reel"
+        # link must not read as the composer still being open.
+        reels_tab = [
+            {"text": "Manage Page", "bounds": (16, 160, 170, 184)},
+            {"text": "Reels", "bounds": (556, 347, 609, 369)},
+            {"text": "Create reel", "bounds": (1620, 348, 1697, 368)},
+            {"text": "Your reels", "bounds": (572, 405, 644, 423)},
+            {"text": "Saved reels", "bounds": (676, 405, 759, 423)},
+        ]
+        task = self.make_task([], [])
+        task.vision.read_text.return_value = reels_tab
+        self.assertTrue(task._reel_composer_has_closed(
+            task.client.screenshot(), StateObservation(ScreenState.FEED_READY, 0.8)))
+        # A composer still open over the tab keeps blocking.
+        task.vision.read_text.return_value = reels_tab + [
+            {"text": "Describe your reel", "bounds": (20, 300, 200, 322)},
+        ]
+        self.assertFalse(task._reel_composer_has_closed(
+            task.client.screenshot(), StateObservation(ScreenState.FEED_READY, 0.8)))
+
+    def test_create_reel_without_reels_tab_still_blocks(self):
+        task = self.make_task([], [])
+        task.vision.read_text.return_value = [
+            {"text": "Manage Page", "bounds": (16, 160, 170, 184)},
+            {"text": "Create reel", "bounds": (56, 152, 160, 174)},
+        ]
+        self.assertFalse(task._reel_composer_has_closed(
+            task.client.screenshot(), StateObservation(ScreenState.FEED_READY, 0.8)))
 
     def test_composer_blocks_navigation_even_when_feed_text_is_visible(self):
         task = self.make_task([], [])

@@ -1,8 +1,8 @@
 """Shared post-click prompt, upload, and closure verification for every Reel template.
 
 This module never clicks Post or navigates. It returns profile_fallback only
-once the composer has closed; the first profile navigation must recheck that
-guard.
+once the composer has closed with no error dialog; the Reel task accepts that
+as publication.
 """
 
 from __future__ import annotations
@@ -145,6 +145,14 @@ class ReelPostClickVerifier:
             " ".join(self.task._normalized_ocr_text(item.get("text", "")) for item in line)
             for line in self.text_lines(items)
         ]
+        # After Post, Facebook may land on the profile's Reels tab, whose
+        # header has its own "Create reel" link next to "Your reels" and
+        # "Saved reels". That link is not the composer; the other composer
+        # markers still block if a composer is open over the tab.
+        reels_tab = (any("your reels" in line for line in lines)
+                     and any("saved reels" in line for line in lines))
+        if reels_tab:
+            composer_markers = tuple(m for m in composer_markers if m not in {"create reel", "reels create"})
         if any(marker in line for line in lines for marker in composer_markers):
             return False
         if observation.state == ScreenState.POST_CONFIRMED:
@@ -156,7 +164,8 @@ class ReelPostClickVerifier:
         )
         # A Facebook logo alone cannot prove that the composer closed.
         return (
-            any(marker in blob for marker in feed_markers)
+            reels_tab
+            or any(marker in blob for marker in feed_markers)
             or all(word in blob.split() for word in ("like", "comment", "share"))
             or all(word in blob.split() for word in ("posts", "friends", "photos"))
         )
