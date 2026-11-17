@@ -2207,6 +2207,9 @@ class FacebookReelTask(BaseTask):
                 reason="composer_closed_without_error",
             )
             result = "published"
+        # Closure is already proven; the first-comment profile navigation must
+        # not recheck it and turn a published Reel into an uncertain one.
+        self._reel_composer_closed = result == "published"
         self._publication_result = result
         self._final_screen = final_screen
 
