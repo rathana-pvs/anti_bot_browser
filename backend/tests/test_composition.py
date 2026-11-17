@@ -212,3 +212,60 @@ def test_a_quote_with_a_speaker_and_a_detail_line_lays_out_in_every_look():
     for look in LOOKS:
         Plan(Reel(look=look, scenes=[Scene(kind='quote', headline='We will rebuild every home', attribution='Mayor Lina Chan',
                                            detail='Payments begin next week.')]), WIDTH, {})
+
+
+def motion_reel(tmp_path, **scene):
+    images = {'a' * 32: photo(tmp_path, size=(1400, 1000))}
+    first = CScene(layout='news_strap', headline='Metro Line 4 gets the green light', highlight='green light',
+                   background=Background(image_id='a' * 32), camera='zoom_in', seconds=5, **scene)
+    return Composition(scenes=[first, CScene(layout='news_strap', headline='Work starts in March')]), images
+
+
+def test_the_camera_waits_for_the_text(tmp_path):
+    composition, images = motion_reel(tmp_path)
+    plan = CompositionPlan(composition, 360, images).scene_plans[0]
+    arrived = plan.text_ends[0]
+    assert .4 < arrived < 1.5
+    still = [plan.background(0, t).tobytes() for t in (0, arrived / 2, arrived - .02)]
+    assert still[0] == still[1] == still[2]
+    assert plan.background(0, arrived + 1).tobytes() != still[0]
+    moving = CompositionPlan(composition.model_copy(update={'camera_waits': False}), 360, images).scene_plans[0]
+    assert moving.background(0, arrived / 2).tobytes() != moving.background(0, 0).tobytes()
+
+
+@pytest.mark.parametrize('emphasis', ['highlight_sweep', 'underline', 'word_pop', 'drift'])
+def test_text_keeps_moving_once_it_is_in(tmp_path, emphasis):
+    composition, images = motion_reel(tmp_path, emphasis=emphasis)
+    plain = CompositionPlan(composition.model_copy(update={'text_drift': False, 'scenes': [composition.scenes[0].model_copy(update={'emphasis': None}), composition.scenes[1]]}), 360, images)
+    plan = CompositionPlan(composition, 360, images)
+    p = plan.scene_plans[0]
+    during = p.text_ends[0] + (2 if emphasis == 'drift' else .5)  # drift is slow
+    assert plan.frame(during).tobytes() != plain.frame(during).tobytes()
+    assert plan.settled(0) >= p.hold_ends[0] or emphasis == 'drift'  # the cover shows the finished emphasis
+
+
+@pytest.mark.parametrize('leave', ['fade_up', 'slide_out', 'wipe_out'])
+def test_text_leaves_its_own_way(tmp_path, leave):
+    composition, images = motion_reel(tmp_path, exit=leave)
+    faded, _ = motion_reel(tmp_path)
+    t = composition.scenes[0].seconds - .15
+    assert CompositionPlan(composition, 360, images).frame(t).tobytes() != CompositionPlan(faded, 360, images).frame(t).tobytes()
+
+
+def test_text_drifts_under_its_emphasis_unless_turned_off(tmp_path):
+    composition, images = motion_reel(tmp_path, emphasis='underline')
+    plan = CompositionPlan(composition, 360, images)
+    late = composition.scenes[0].seconds - .6
+    still = CompositionPlan(composition.model_copy(update={'text_drift': False}), 360, images)
+    assert plan.frame(late).tobytes() != still.frame(late).tobytes()
+    lines = [e for e in plan.scene_plans[0].scene_elements[0] if e.role == 'headline']
+    assert all(e.drift[1] < 0 for e in lines)  # every line floats up
+    assert [e.hold for e in lines][-1] == 'underline' and all(not e.hold for e in lines[:-1])  # only the last is underlined
+
+
+def test_the_first_scene_text_arrives_but_the_video_opens_on_the_finished_card(tmp_path):
+    composition, images = motion_reel(tmp_path)
+    plan = CompositionPlan(composition, 360, images)
+    old = CompositionPlan(composition.model_copy(update={'animate_opening': False}), 360, images)
+    assert plan.frame(.1).tobytes() != old.frame(.1).tobytes()        # the text is still arriving
+    assert plan.duration > 3 and plan.frame(0).tobytes() == plan.frame(3.).tobytes()  # frame zero: a finished card

@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from backend.services.ai import AIConfig, generate_json
 
-from .composer import CompOp, CompositionEditor, describe_parts
+from .composer import CompOp, CompositionEditor, describe_parts, light_schema
 from .composition import Composition, CompositionPlan
 from .director import Rejected, plain_schema
 from .quality import review
@@ -71,7 +71,21 @@ class VisionPlan(BaseModel):
 
     @classmethod
     def model_json_schema(cls, *args, **kwargs):
-        return plain_schema(super().model_json_schema(*args, **kwargs))
+        return light_schema(plain_schema(super().model_json_schema(*args, **kwargs)))
+
+
+def usable(raw):
+    """The answer with operations that are not in the expected form set aside, so one bad id does not lose the check."""
+    if not isinstance(raw, dict) or not isinstance(raw.get('operations'), list):
+        return raw, 0
+    kept = []
+    for op in raw['operations']:
+        try:
+            CompOp.model_validate(op)
+            kept.append(op)
+        except ValidationError:
+            pass
+    return {**raw, 'operations': kept[:12]}, len(raw['operations']) - len(kept)
 
 
 class VisionRequest(AIConfig):
@@ -96,12 +110,13 @@ def check_with_ai(request: VisionRequest, assets=None, images=None, provider=Non
                    mood=request.mood or None)
     ask = provider or (lambda req, **kw: generate_json(req, schema=VisionPlan, action='vision', effort='low', **kw))
     try:
-        plan = VisionPlan.model_validate(ask(request, system=SYSTEM + describe_parts(), context=context, images=[sheet], usage=usage))
+        answer, dropped = usable(ask(request, system=SYSTEM + describe_parts(), context=context, images=[sheet], usage=usage))
+        plan = VisionPlan.model_validate(answer)
     except ValidationError:
         raise ValueError('The AI did not return a usable check. Try again, or use another model.') from None
     holder = type('Edit', (), dict(reel=first, source_text='', instruction=''))()  # visual changes only: the editor's checks, no words
     editor = CompositionEditor(holder)
-    refused = []
+    refused = ['A suggested change used a part that does not exist; skipped it.'] * min(dropped, 1)
     for op in plan.operations:
         if op.op not in VISUAL_OPS:
             refused.append('Only how scenes look can change here.')

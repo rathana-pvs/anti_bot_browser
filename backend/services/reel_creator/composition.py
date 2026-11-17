@@ -10,7 +10,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Discriminator, Field, Tag, field_validator, model_validator
 
 from .audio_presets import PRESETS
-from .components import AnimationId, CameraId, LayoutId, LOOK_LAYOUT, Pacing, RECIPE_BY_ID, TextStyleId, TransitionId, layout_look
+from .components import AnimationId, CameraId, EmphasisId, ExitId, LayoutId, LOOK_LAYOUT, Pacing, RECIPE_BY_ID, TextStyleId, TransitionId, layout_look
 from .reel import LOOKS, MAX_SCENES, MAX_SECONDS, RATIOS, DraftInput, ElementStyle, Ratio, Reel, RenderInput, Role, Scene, SceneKind, hex_color
 
 TRANSITION_VALUE = {'crossfade': None, 'cut': 'cut', 'slide': 'slide'}    # what a Reel scene can store
@@ -67,6 +67,25 @@ class Background(BaseModel):
 
 VOICE_DELAY = .25   # narration starts this long after its scene
 VOICE_TAIL = .45    # and the scene runs this long after it ends
+SAY_LIMIT = 280     # characters a scene's own narration may have: about 18 seconds spoken
+CAPTION_SIZES = {'small': 52, 'medium': 64, 'large': 80}
+QUALITY_WIDTH = {'sd': 480, 'hd': 720, 'fhd': 1080}  # the finished video's width; the height follows the ratio
+STING_GAP = .15     # between the voice and the intro sound after it
+END_FADE = 1.0      # the reel's sound fades out over its last second; an end sound finishes before it
+
+
+class Sting(BaseModel):
+    """An intro sound from My music, played before the voice starts, after it ends, or both. It plays for `seconds`
+    (the first part of a longer track, faded out at the cut)."""
+    model_config = ConfigDict(extra='forbid')
+    asset_id: str
+    seconds: float = Field(gt=0, le=8, allow_inf_nan=False)
+    at: Literal['start', 'end', 'both'] = 'both'
+
+    @field_validator('asset_id')
+    @classmethod
+    def asset(cls, value):
+        return Scene.asset_id(value)
 
 
 class VoiceClip(BaseModel):
@@ -96,34 +115,40 @@ class CScene(BaseModel):
     background: Background = Field(default_factory=Background)
     camera: CameraId | None = None          # None: the recipe's turn of cameras
     transition: TransitionId | None = None  # how this scene replaces the one before; None = crossfade
+    emphasis: EmphasisId | None = None      # what the text does once it is in
+    exit: ExitId | None = None              # how the text leaves; None = it fades with the scene
     styles: Styles = Field(default_factory=dict)
     seconds: float | None = Field(default=None, ge=2, le=20, allow_inf_nan=False)
     text_position: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
     photo_size: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
     locked: bool | None = None
     voice: VoiceClip | None = None
+    hide_detail: bool | None = None  # the detail stays off the screen; the voice still reads it
+    say: str = Field(default='', max_length=SAY_LIMIT)  # what the voice says instead of the screen text; '' reads the screen text
 
     @property
     def image_id(self):
         return self.background.image_id
 
-    def timed_seconds(self):
-        """The scene's length: its own, or long enough to read, and never shorter than its narration."""
-        if not self.voice:
+    def timed_seconds(self, lead=VOICE_DELAY, tail=None):
+        """The scene's length: its own, or long enough to read, and never shorter than its narration, which starts `lead`
+        seconds in and is followed by `tail` seconds (an intro sound after it, say)."""
+        if not self.voice and not tail:
             return self.seconds
         reading = self.seconds or Scene(headline=self.headline, detail=self.detail, kind=self.kind, stat=self.stat,
                                         attribution=self.attribution).length()
-        return round(min(20, max(reading, VOICE_DELAY + self.voice.seconds + VOICE_TAIL)), 2)
+        spoken = lead + self.voice.seconds if self.voice else .3
+        return round(min(20, max(reading, spoken + (VOICE_TAIL if tail is None else tail))), 2)
 
-    def to_scene(self, camera=None):
+    def to_scene(self, camera=None, lead=VOICE_DELAY, tail=None):
         """This scene as the renderer's Scene; validation of the text is the Scene's own."""
         bg = self.background
-        return Scene(headline=self.headline, detail=self.detail, kind=self.kind, stat=self.stat, attribution=self.attribution,
+        return Scene(headline=self.headline, detail='' if self.hide_detail else self.detail, kind=self.kind, stat=self.stat, attribution=self.attribution,
                      highlight=self.highlight, credit=self.credit, image_id=bg.image_id, fit=bg.fit, focal_x=bg.focal_x,
                      focal_y=bg.focal_y, zoom=bg.zoom, backdrop=bg.color, shade=bg.shade,
                      motion=CAMERA_VALUE.get(camera or self.camera) if (camera or self.camera) else None,
                      transition=TRANSITION_VALUE.get(self.transition) if self.transition else None,
-                     style={role: s.element_style() for role, s in self.styles.items()}, seconds=self.timed_seconds(),
+                     style={role: s.element_style() for role, s in self.styles.items()}, seconds=self.timed_seconds(lead, tail),
                      text_position=self.text_position, photo_size=self.photo_size)
 
 
@@ -156,6 +181,13 @@ class Composition(BaseModel):
     music: str = 'auto'
     music_id: str | None = None
     captions: Literal['off', 'voice'] = 'off'  # word-by-word captions that follow the narration
+    caption_size: Literal['small', 'medium', 'large'] = 'medium'
+    caption_words: int = Field(default=4, ge=2, le=6)  # at most this many words on screen at once
+    sting: Sting | None = None  # a short intro sound around the narration
+    quality: Literal['sd', 'hd', 'fhd'] = 'fhd'  # the finished video's resolution: 480, 720 or 1080 wide
+    camera_waits: bool = True  # the camera holds still while each scene's text arrives (Reel Studio reels move at once)
+    text_drift: bool = True    # every scene's text floats slowly once it is in, under its emphasis
+    animate_opening: bool = True  # the first scene's text arrives like the others' (Reel Studio opens on the finished card)
 
     @field_validator('recipe')
     @classmethod
@@ -195,12 +227,48 @@ class Composition(BaseModel):
 
     @property
     def duration(self):
-        return round(sum(s.to_scene().length() for s in self.scenes), 1)
+        return round(sum(self.scene_for(i).length() for i in range(len(self.scenes))), 1)
+
+    def voice_lead(self, index):
+        """How long into its scene the narration starts: after the intro sound, on the first scene."""
+        sting = self.sting
+        return VOICE_DELAY + (sting.seconds if sting and index == 0 and sting.at in ('start', 'both') else 0)
+
+    def voice_tail(self, index):
+        """What follows the narration in its scene: on the last scene, room for the intro sound before the reel fades."""
+        sting = self.sting
+        if sting and index == len(self.scenes) - 1 and sting.at in ('end', 'both'):
+            return STING_GAP + sting.seconds + END_FADE
+        return None
+
+    def scene_for(self, index, camera=None):
+        """Scene `index` as the renderer's Scene, timed around its narration and the intro sound."""
+        return self.scenes[index].to_scene(camera, self.voice_lead(index), self.voice_tail(index))
+
+    def sting_tracks(self):
+        """(asset id, start in seconds) of each time the intro sound plays."""
+        sting = self.sting
+        if not sting:
+            return []
+        out = [(sting.asset_id, 0.)] if sting.at in ('start', 'both') else []
+        if sting.at in ('end', 'both'):
+            last = len(self.scenes) - 1
+            start = sum(self.scene_for(i).length() for i in range(last))
+            voice = self.scenes[last].voice
+            out.append((sting.asset_id, round(start + (self.voice_lead(last) + voice.seconds + STING_GAP if voice else .3), 3)))
+        return out
+
+    def audio_tracks(self):
+        """(asset id, start, length or None for all of it) of every clip laid over the music: the narration, then the
+        intro sounds, which play only for their chosen length."""
+        cut = self.sting.seconds if self.sting else None
+        return [(a, t, None) for a, t in self.voice_tracks()] + [(a, t, cut) for a, t in self.sting_tracks()]
 
     @property
     def music_preset(self):
         if self.music == 'auto':
-            return LOOKS[self.look]['music']
+            recipe = RECIPE_BY_ID.get(self.recipe or '')
+            return (recipe.music if recipe and recipe.music else None) or LOOKS[self.look]['music']
         return None if self.music in ('off', 'custom') else self.music
 
     def image_ids(self):
@@ -213,10 +281,10 @@ class Composition(BaseModel):
     def voice_tracks(self):
         """(asset id, start in seconds) of each scene's narration on the reel's timeline."""
         out, start = [], 0.
-        for scene in self.scenes:
+        for index, scene in enumerate(self.scenes):
             if scene.voice:
-                out.append((scene.voice.asset_id, round(start + VOICE_DELAY, 3)))
-            start += scene.to_scene().length()
+                out.append((scene.voice.asset_id, round(start + self.voice_lead(index), 3)))
+            start += self.scene_for(index).length()
         return out
 
     def cameras(self):
@@ -227,16 +295,40 @@ class Composition(BaseModel):
     def plan_cameras(self):
         return {i: c for i, c in enumerate(self.cameras()) if c not in CAMERA_VALUE}
 
+    def reel_styles(self):
+        """Every scene's role styles: the recipe's fonts, colours and entrances, with the reel's own on top, field by field."""
+        recipe = RECIPE_BY_ID.get(self.recipe or '')
+        base = {role: dict(values) for role, values in (recipe.styles if recipe else {}).items()}
+        for role, animation in (recipe.animations if recipe else {}).items():
+            base.setdefault(role, {})['animation'] = animation
+        for role, own in self.styles.items():
+            base[role] = {**base.get(role, {}), **own.model_dump(exclude_none=True)}
+        return {role: PartStyle(**values) for role, values in base.items()}
+
+    def animation_for(self, scene, role):
+        """The role's entrance in this scene: its own, else the reel's or recipe's where that suits the scene's kind."""
+        from .components import part
+        own, base = scene.styles.get(role), self.reel_styles().get(role)
+        if own and own.animation:
+            return own.animation
+        animation = base.animation if base else None
+        return animation if animation and scene.kind in part('animation', animation).applies_to else None
+
+    def plan_emphases(self):
+        return {i: s.emphasis for i, s in enumerate(self.scenes) if s.emphasis}
+
+    def plan_exits(self):
+        return {i: s.exit for i, s in enumerate(self.scenes) if s.exit and s.exit != 'fade'}
+
     def plan_transitions(self):
         return {i: s.transition for i, s in enumerate(self.scenes) if s.transition and s.transition not in TRANSITION_VALUE}
 
     def plan_motions(self):
         """(scene, role) -> an entrance a Reel cannot store; a scene's own style wins over the reel's."""
-        motions = {}
+        motions, reel = {}, self.reel_styles()
         for index, scene in enumerate(self.scenes):
-            for role, style in {**self.styles, **scene.styles}.items():
-                own = scene.styles.get(role, style)
-                animation = own.animation or style.animation
+            for role in {**reel, **scene.styles}:
+                animation = self.animation_for(scene, role)
                 if animation and animation not in REEL_ANIMATIONS:
                     motions[(index, role)] = animation
         return motions
@@ -246,16 +338,18 @@ class Composition(BaseModel):
         cameras = self.cameras()
         scenes = []
         for index, scene in enumerate(self.scenes):
-            drawn = scene.to_scene(cameras[index])
+            drawn = self.scene_for(index, cameras[index])
             if layout is None or scene.layout == layout:
                 scenes.append(drawn)
             else:  # a stand-in of the same length, so the timelines line up; another plan draws this scene
                 scenes.append(Scene(seconds=drawn.length(), transition=drawn.transition))
         # The tag, accent and music follow the recipe whatever the layout; the plan's layout decides the drawing.
-        return Reel(look=self.look, tag=self.theme.tag, accent=self.theme.accent, live=self.theme.live, scenes=scenes,
+        recipe = RECIPE_BY_ID.get(self.recipe or '')
+        return Reel(look=self.look, tag=self.theme.tag or (recipe and recipe.tag), accent=self.theme.accent or (recipe and recipe.accent),
+                    live=self.theme.live, scenes=scenes,
                     brand=self.brand, logo_id=self.logo_id, source=self.source, dateline=self.dateline, ratio=self.ratio,
                     motion='auto', show_progress=self.show_progress, music=self.music, music_id=self.music_id,
-                    style={role: s.element_style() for role, s in self.styles.items()})
+                    style={role: s.element_style() for role, s in self.reel_styles().items()})
 
 
 def from_reel(reel: Reel) -> Composition:
@@ -280,7 +374,8 @@ def from_reel(reel: Reel) -> Composition:
                              locked=s.locked))
     return Composition(recipe=reel.look, ratio=reel.ratio, theme=Theme(accent=reel.accent, tag=reel.tag, live=reel.live), scenes=scenes,
                        styles=styles(reel.style), brand=reel.brand, logo_id=reel.logo_id, source=reel.source, dateline=reel.dateline,
-                       show_progress=reel.show_progress, music=reel.music, music_id=reel.music_id)
+                       show_progress=reel.show_progress, music=reel.music, music_id=reel.music_id, camera_waits=False,
+                       text_drift=False, animate_opening=False)
 
 
 class CompositionPlan:
@@ -290,7 +385,9 @@ class CompositionPlan:
         from .renderer import Plan
         self.composition = composition
         extra = dict(cameras=composition.plan_cameras(), motions=composition.plan_motions(), transitions=composition.plan_transitions(),
-                     pace=PACE[composition.pacing])
+                     pace=PACE[composition.pacing], emphases=composition.plan_emphases(), exits=composition.plan_exits(),
+                     camera_waits=composition.camera_waits, text_drift=composition.text_drift,
+                     animate_opening=composition.animate_opening)
         layouts = list(dict.fromkeys(s.layout for s in composition.scenes))
         if len(layouts) == 1:
             plans = {layouts[0]: Plan(composition.reel_for(), width, images, logo, fps, layout=layout_look(layouts[0]), **extra)}
@@ -321,7 +418,7 @@ class CompositionPlan:
         index = self.locate(t)[0]
         image = self.scene_plans[index]._timeline_frame(t)
         if self.composition.captions == 'voice' and not opening:
-            self._caption(image, index, t - self.starts[index] - VOICE_DELAY)
+            self._caption(image, index, t - self.starts[index] - self.composition.voice_lead(index))
         return image
 
     # ---- captions ------------------------------------------------------------
@@ -329,7 +426,7 @@ class CompositionPlan:
         if index not in self._chunk_cache:
             from .voice_timing import caption_chunks
             voice = self.composition.scenes[index].voice
-            self._chunk_cache[index] = caption_chunks([tuple(w) for w in voice.words]) if voice else []
+            self._chunk_cache[index] = caption_chunks([tuple(w) for w in voice.words], self.composition.caption_words) if voice else []
         return self._chunk_cache[index]
 
     def _band(self, index):
@@ -361,7 +458,7 @@ class CompositionPlan:
             plan = self.scene_plans[index]
             text = ' '.join(words)
             start = len(' '.join(words[:spoken])) + (1 if spoken else 0)
-            size = plan.px(64)
+            size = plan.px(CAPTION_SIZES[self.composition.caption_size])
             tile, _ = plan._text(text, size, (255, 255, 255, 255), 'bold', mark=(start, start + len(words[spoken])), stroke=plan.px(5))
             if tile.width > plan.W - plan.px(80):  # long words: shrink to the safe width
                 tile = tile.resize((plan.W - plan.px(80), round(tile.height * (plan.W - plan.px(80)) / tile.width)))

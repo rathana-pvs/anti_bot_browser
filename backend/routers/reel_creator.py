@@ -215,6 +215,42 @@ def layout(value: AnyDocument, scene: int = Query(default=0, ge=0, le=7)):
     return checked(get_service().scene_layout, value, scene)
 
 
+class MusicAdd(BaseModel):
+    asset_id: str = Field(pattern=r'^[a-f0-9]{32}$')
+    source_url: str = Field(default='', max_length=300)
+
+
+class MusicChange(BaseModel):
+    source_url: str | None = Field(default=None, max_length=300)
+    role: str | None = Field(default=None, pattern=r'^(bed|intro)$')
+
+
+@router.get('/music/library')
+def music_library():
+    return get_service().music_library()
+
+
+@router.post('/music/library')
+async def add_music(value: MusicAdd):
+    return await asyncio.to_thread(checked, get_service().add_music, value.asset_id, value.source_url)
+
+
+@router.put('/music/library/{asset_id}')
+def update_music(asset_id: Id, value: MusicChange):
+    return checked(get_service().update_music, asset_id, value.source_url, value.role)
+
+
+@router.delete('/music/library/{asset_id}')
+def remove_music(asset_id: Id):
+    get_service().remove_music(asset_id)
+    return {'ok': True}
+
+
+@router.get('/music/library/{asset_id}/preview')
+def preview_library_music(asset_id: Id):
+    return FileResponse(checked(get_service().asset_path, asset_id, 'audio'), media_type='audio/wav')
+
+
 @router.get('/music/{track}/preview')
 def preview_music(track: str):
     return FileResponse(checked(preset_path, track), media_type='audio/wav')
@@ -295,3 +331,18 @@ def download(job_id: Id):
         raise HTTPException(409, 'Render a full-quality video before exporting.')
     path = checked(get_service().output_path, job)
     return FileResponse(path, media_type='video/mp4', filename=path.name)
+
+
+class RecipeChange(BaseModel):
+    composition: Composition
+    recipe: str = Field(max_length=24)
+
+
+@router.post('/compositions/recipe')
+def change_recipe(value: RecipeChange):
+    """The composition in another recipe, with the quality rules run over the result."""
+    from backend.services.reel_creator.composer import apply_recipe
+    from backend.services.reel_creator.components import RECIPE_BY_ID
+    if value.recipe not in RECIPE_BY_ID:
+        raise HTTPException(400, 'Choose one of the available recipes.')
+    return review_composition(apply_recipe(value.composition, value.recipe))

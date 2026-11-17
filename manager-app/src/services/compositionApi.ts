@@ -4,6 +4,9 @@ import { json, request } from './reelCreator';
 import type { ComposeResult, Composition, PartsCatalog, QualityNote } from '../types/composition';
 import type { DirectorResult, DirectorTurn, ReelDraft, ReelGoal, ReelJob } from '../types/reelCreator';
 
+/** A track the operator added: level-matched to the built-in ones; an intro plays once, a bed under the whole reel. */
+export interface MyTrack { id: string; name: string; seconds: number; role: 'bed' | 'intro'; source_url: string; added_at: number }
+
 export interface ComposeRequest extends AIRequestConfig {
   text: string; source_url: string; source_title: string; publisher: string;
   goal: ReelGoal; photos: string[]; scenario: string; recipe: string | null;
@@ -17,6 +20,8 @@ export const compositionApi = {
   compose: async (value: ComposeRequest): Promise<ComposeResult> => (await request('/compositions/compose', json('POST', value))).json(),
   direct: async (value: AIRequestConfig & { reel: Composition; instruction: string; source_text: string; goal: ReelGoal; history: DirectorTurn[] }): Promise<CompositionDirectorResult> =>
     (await request('/compositions/direct', json('POST', value))).json(),
+  recipe: async (composition: Composition, recipe: string): Promise<{ composition: Composition; fixes: QualityNote[]; problems: QualityNote[] }> =>
+    (await request('/compositions/recipe', json('POST', { composition, recipe }))).json(),
   review: async (composition: Composition): Promise<{ composition: Composition; fixes: QualityNote[]; problems: QualityNote[] }> =>
     (await request('/compositions/review', json('POST', composition))).json(),
   poster: async (composition: Composition, scene: number, signal?: AbortSignal): Promise<Blob> =>
@@ -27,6 +32,12 @@ export const compositionApi = {
     (await request('/compositions/vision-check', json('POST', value))).json(),
   voiceover: async (value: AIRequestConfig & { composition: Composition; voice: string }): Promise<{ composition: Composition; characters: number }> =>
     (await request('/compositions/voiceover', json('POST', value))).json(),
+  musicLibrary: async (): Promise<MyTrack[]> => (await request('/music/library')).json(),
+  addMusic: async (asset_id: string, source_url = ''): Promise<MyTrack> => (await request('/music/library', json('POST', { asset_id, source_url }))).json(),
+  updateMusic: async (id: string, change: { source_url?: string; role?: MyTrack['role'] }): Promise<MyTrack> =>
+    (await request(`/music/library/${id}`, json('PUT', change))).json(),
+  removeMusic: async (id: string): Promise<void> => { await request(`/music/library/${id}`, { method: 'DELETE' }); },
+  myTrackPreview: async (id: string): Promise<Blob> => (await request(`/music/library/${id}/preview`)).blob(),
   cover: async (composition: Composition): Promise<{ filename: string }> => (await request('/cover', json('POST', composition))).json(),
   drafts: async (): Promise<CompositionDraft[]> => ((await (await request('/drafts')).json()) as CompositionDraft[]).filter(d => d.reel?.version === 5),
   saveDraft: async (id: string, revision: number, draft: Omit<CompositionDraft, 'id' | 'revision' | 'updated_at'>): Promise<CompositionDraft> =>

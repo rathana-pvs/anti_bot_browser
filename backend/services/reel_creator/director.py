@@ -310,6 +310,12 @@ def default_provider(request, *, system, context, prefix, usage):
     return generate_json(request, system=system, schema=EditPlan, context=context, prefix=prefix, action='direct', effort='low', usage=usage)
 
 
+def unexpected(exc):
+    """A plan that did not validate, said so the AI can correct it: which field, and what was wrong."""
+    details = ['.'.join(str(p) for p in e['loc']) + ': ' + e['msg'] for e in exc.errors()[:4]]
+    return 'The plan was not in the expected form' + (' (' + '; '.join(details) + ')' if details else '') + '.'
+
+
 def direct(request, provider=None, attempts=2, *, schema=EditPlan, apply=None, system=None, ctx=None):
     """Ask the AI for a plan, apply what passes; a plan with refused operations is asked for once more.
 
@@ -328,7 +334,7 @@ def direct(request, provider=None, attempts=2, *, schema=EditPlan, apply=None, s
             plan = schema.model_validate(raw)
             reel, changes, refused = apply(request, plan)
         except (ValidationError, Rejected) as exc:
-            refused, plan, reel, changes = [str(exc) if isinstance(exc, Rejected) else 'The plan was not in the expected form.'], None, None, []
+            refused, plan, reel, changes = [str(exc) if isinstance(exc, Rejected) else unexpected(exc)], None, None, []
         if reel is not None and (best is None or not refused):
             best = (plan, reel, changes, refused)
         if not refused:

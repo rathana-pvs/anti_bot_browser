@@ -14,11 +14,16 @@ OPENING_COVER_HOLD = .6  # 18 readable opening frames at 30 fps, inside the firs
 OPENING_COVER_SECONDS = 3.
 CROSSFADE = .35      # seconds of background blend between scenes
 SCENE_FADE = .25     # seconds text fades out before a scene ends
+EXIT = .4            # seconds a composition's text takes to leave with an exit other than fade
+HOLD = {'highlight_sweep': .45, 'underline': .5, 'word_pop': .5, 'pulse': 1.0}  # on-screen text motions; drift lasts the scene
+CAMERA_WAIT = 1.2    # at most this long the camera holds while a composition's text arrives
+DRIFT_ROLES = ('headline', 'detail', 'lead')
+DRIFT = 34           # design pixels the text floats over a scene
 OVERSCAN = 1.18      # background is rendered larger than the canvas so it can zoom
 INK, MUTED = (17, 24, 39), (75, 85, 99)
 PAGE, PANEL = (244, 246, 250), (12, 14, 20)  # clean page, politics text panel
 PAPER = (250, 246, 238)                        # editorial page
-LIGHT_PAGE = ('clean', 'editorial')            # looks that sit on a light page: dark type, light progress track
+LIGHT_PAGE = ('clean', 'editorial', 'paper')            # looks that sit on a light page: dark type, light progress track
 WHITE = (255, 255, 255, 255)
 LEFT = 64            # text starts here on every look
 RIGHT_REELS = 150    # Reels lays its like, comment and share buttons over the right edge of 9:16 video
@@ -26,7 +31,7 @@ STAT_SIZES = (330, 280, 236, 196, 160, 130)  # design px tried for a stat figure
 MARK_SIZES = (210, 176, 148, 124)            # the quote mark and the end card's ? or →
 LEAD_GAP = 14
 BOX_PAD = 14         # extra room around a line drawn on a box
-MOVABLE = ('breaking', 'wire', 'hot')  # looks whose text block floats over a full-bleed photo, so it can move up or down
+MOVABLE = ('breaking', 'wire', 'hot', 'open_photo', 'ruled_photo')  # looks whose text block floats over a full-bleed photo, so it can move up or down
 NO_SUBJECT = (.5, .4)  # the focus a photo gets when no face was found in it
 
 # Type per look, in design px at 1080 wide: (face, preferred size, smallest size). Headline and detail
@@ -43,6 +48,9 @@ TYPE = {
     'big_number': dict(head=('bold', 66, 44), detail=('regular', 42, 34), label='condensed-semi', head_pitch=1.15),
     'quote_card': dict(head=('serif-italic', 78, 48), detail=('regular', 40, 32), label='condensed-semi', head_pitch=1.18),
     'centered_card': dict(head=('bold', 80, 50), detail=('regular', 42, 34), label='bold', head_pitch=1.15),
+    'paper': dict(head=('serif', 80, 48), detail=('regular', 40, 32), label='condensed-semi', head_pitch=1.14),
+    'ruled_photo': dict(head=('bold', 82, 50), detail=('regular', 42, 34), label='condensed-semi', head_pitch=1.14),
+    'open_photo': dict(head=('bold', 84, 50), detail=('regular', 42, 34), label='condensed-semi', head_pitch=1.16),
     'split': dict(head=('display', 94, 56), detail=('regular', 42, 34), label='condensed', head_pitch=1.08),
 }
 # Per-word and per-letter reveal speeds, in seconds.
@@ -94,19 +102,36 @@ class Element:
     source: tuple = ()           # (text, size, face, left inset) of a text line, for word and letter reveals
     cuts: tuple = ()             # words / typewriter: x positions where each word or letter ends
     frames: tuple = ()           # count_up: the figure's tiles on the way to its final value
+    hold: str = ''               # what the text does once it is in: highlight_sweep | underline | word_pop | pulse | drift
+    hold_at: float = 0           # when that starts, in scene time
+    exit: str = ''               # how it leaves: fade_up | slide_out | wipe_out ('' fades, as always)
+    base: int = 0                # baseline offset in the tile, for the underline
+    mark: tuple = ()             # (left, right) of the highlighted words in the tile
+    alt: object = None           # highlight_sweep: the line before its highlight is swept in
+    drift: tuple = (0, 0)        # how far the text floats over the scene, in pixels, from drift_at
+    drift_at: float = 0
+    rule: bool = False           # a bar beside the text block, which floats with it
 
 
 class Plan:
     """Layout for one reel at one output width. Built once, then sampled by time."""
 
     def __init__(self, reel: Reel, width: int, images: dict, logo=None, fps=30, layout=None, cameras=None, motions=None,
-                 transitions=None, pace=1.0):
+                 transitions=None, pace=1.0, emphases=None, exits=None, camera_waits=False, text_drift=False,
+                 animate_opening=False):
         """`layout` draws every scene with that layout instead of the look's own (the composition renderer uses it).
         Beyond what a Reel stores: `cameras` {scene: camera}, `motions` {(scene, role): animation}, `transitions`
-        {scene: how it replaces the one before} and `pace`, which scales every entrance (under 1 is faster)."""
+        {scene: how it replaces the one before} and `pace`, which scales every entrance (under 1 is faster);
+        `emphases` {scene: what the text does once it is in}, `exits` {scene: how it leaves}, and `camera_waits`, which holds
+        the camera still until the text has arrived, and `text_drift`, which floats every scene's text slowly once it is in;
+        `animate_opening` lets the first scene's text arrive like the others' instead of opening finished (the video's
+        first frame is still the finished card)."""
         self.reel, self.fps = reel, fps
         self.look = layout or reel.look
         self.cameras, self.motions, self.transitions, self.pace = cameras or {}, motions or {}, transitions or {}, pace
+        self.emphases, self.exits, self.camera_waits, self.text_drift = emphases or {}, exits or {}, camera_waits, text_drift
+        self.animate_opening = animate_opening
+        self.text_ends, self.hold_ends = [], []  # per scene: when its text has arrived, and when its emphasis is done
         self._index = None
         # The next scene's opening background, for transitions; a composition draws that scene with another plan.
         self.background_of = self.background
@@ -148,6 +173,7 @@ class Plan:
             self.photo_sizes.append(None if self._photo_size is None else round(clamp(self._photo_size), 3))
             self.text_low.append(bool(elements) and min(e.y for e in elements) + max(e.y + e.tile.height for e in elements) > self.H)
             elements += self._restyle(self._credit(scene, elements))
+            self._time_holds(index, elements)
             self.scene_elements.append(elements)
             self.rects.append(self._scene_rect)
         self._scene, self.type, self._index = None, self.look_type, None   # the identity row follows the reel's styles only
@@ -259,6 +285,43 @@ class Plan:
             frames.append(canvas)
         return tuple(frames) + (final,)
 
+    def _time_holds(self, index, elements):
+        """Time the scene's emphasis and exit: the emphasis starts once all the text is in, one line after another."""
+        texts = [e for e in elements if e.role and e.anim not in ('marquee', 'blink')]
+        end = max((e.start + e.dur for e in texts), default=0)
+        self.text_ends.append(end)
+        rules = [e for e in elements if e.rule]
+        emphasis, leave = self.emphases.get(index), self.exits.get(index) or ''
+        if emphasis in ('highlight_sweep', 'word_pop') and not any(e.mark for e in texts if e.role == 'headline'):
+            emphasis = 'underline'  # nothing highlighted to sweep or pop: underline the headline instead
+        if emphasis == 'pulse' and not any(e.role == 'lead' for e in texts):
+            emphasis = 'word_pop' if any(e.mark for e in texts if e.role == 'headline') else 'underline'
+        at, done = end + .2, end
+        heads = [e for e in texts if e.role == 'headline' and len(e.source) == 4]
+        last_line = max(heads, key=lambda e: e.y) if heads else None  # an underline goes under the last line only
+        camera = self.cameras.get(index) or self.reel.scenes[index].motion
+        dx, dy = (-1, 0) if camera == 'pan_right' else (0, -1)  # against the camera's travel; never toward the Reels buttons
+        for e in texts:
+            e.exit = leave if e.fades_out else ''
+            if (emphasis == 'drift' or self.text_drift) and e.role in DRIFT_ROLES:  # with text_drift, under any other emphasis too
+                e.drift, e.drift_at = (dx * self.px(DRIFT), dy * self.px(DRIFT)), end
+                for bar in rules:
+                    bar.drift, bar.drift_at = e.drift, end
+            if emphasis == 'drift':
+                continue
+            if emphasis == 'pulse' and e.role == 'lead':
+                e.hold, e.hold_at = 'pulse', at
+            elif emphasis in ('highlight_sweep', 'word_pop') and e.role == 'headline' and e.mark:
+                e.hold, e.hold_at = emphasis, at
+                at += .15
+            elif emphasis == 'underline' and e is last_line:
+                e.hold, e.hold_at = 'underline', at
+            if e.hold in HOLD:
+                done = max(done, e.hold_at + HOLD[e.hold])
+            if e.alt is not None and e.hold != 'highlight_sweep':
+                e.tile, e.alt = e.alt, None  # the swept highlight was not used: keep the plain line
+        self.hold_ends.append(done)
+
     def _place(self, elements, position):
         """Move the scene's text block to `position` (0 top to 1 bottom of the room it has), inside the safe area.
 
@@ -349,7 +412,9 @@ class Plan:
 
     def settled(self, index):
         """A time when this scene's text has finished animating in."""
-        return self.starts[index] + min(1.9, self.lengths[index] - SCENE_FADE - .05)
+        hold = self.hold_ends[index] + .1 if self.hold_ends and self.hold_ends[index] > 1.8 else 1.9
+        leaving = EXIT if self.exits.get(index) else SCENE_FADE
+        return self.starts[index] + min(hold, self.lengths[index] - leaving - .05)
 
     def frame(self, t):
         if 0 <= t < 1 / self.fps:
@@ -364,7 +429,8 @@ class Plan:
         index, local = self.locate(t)
         length = self.lengths[index]
         clock = t
-        if index == 0:
+        opening = index == 0 and not self.animate_opening
+        if opening:
             # Start with the complete first card, hold it briefly, then continue
             # smoothly. Keep the existing scene boundary and total video length.
             local = max(0., local - OPENING_COVER_HOLD) * length / (length - OPENING_COVER_HOLD)
@@ -389,9 +455,9 @@ class Plan:
             else:
                 image = Image.blend(image, following_image, blend)
         for element in self.scene_elements[index]:
-            self._draw(image, element, local, local, length, entrance_complete=index == 0)
+            self._draw(image, element, local, local, length, entrance_complete=opening)
         for element in self.global_elements:
-            self._draw(image, element, clock, clock, None, entrance_complete=index == 0)
+            self._draw(image, element, clock, clock, None, entrance_complete=opening)
         if self.reel.show_progress:
             self._progress(image, clock, index, local)
         return image
@@ -406,6 +472,8 @@ class Plan:
             rect, page = (0, 0, DESIGN_W, round(self.DH * .52), 0), PANEL
         elif look == 'clean':  # photo card under a masthead rule, on a light page
             rect, page = (48, self.inset + 140, 984, round(self.DH * .41), 12), PAGE
+        elif look == 'paper':  # a paper page: the masthead row, the photo across it, the story printed below
+            rect, page = (0, self.inset + 120, DESIGN_W, round(self.DH * .37), 0), PAPER
         elif look == 'split':  # photo on top, the text on an accent panel below
             rect, page = (0, 0, DESIGN_W, round(self.DH * .5), 0), self.accent
         elif look == 'editorial':  # headline on top, photo across the bottom
@@ -431,6 +499,8 @@ class Plan:
         base = self._base(index)
         x0, y0, rw, rh, _ = rect
         progress = clamp(local / self.lengths[index])
+        if self.camera_waits and self.text_ends:
+            progress = self._after_text(index, local)
         camera = self.cameras.get(index)
         motion = scene.motion or self.reel.motion
         if camera in ('pan_left', 'pan_right', 'pan_up'):
@@ -566,7 +636,9 @@ class Plan:
                     'big_number': ((.0, .7, .62), (.4, .5), (6, 8, 14)),   # the figure sits mid-frame: darken it all
                     'quote_card': ((.0, .6, .78), (.4, .6), (6, 8, 14)),
                     'centered_card': ((.3, .9, .5), (.25, .4), (6, 8, 14)),
-                    'split': ((.8, 1.0, .9), (.2, .3), self.accent)}.get(self.look)
+                    'split': ((.8, 1.0, .9), (.2, .3), self.accent),
+                    'open_photo': ((.38, .92, .88), (.2, .45), (6, 8, 14)),
+                    'ruled_photo': ((.4, .92, .9), (.2, .45), (6, 8, 14))}.get(self.look)
         if not spec or not shade:
             return base
         (start, end, strength), (reach, top_strength), color = spec
@@ -580,11 +652,21 @@ class Plan:
         return Image.composite(Image.new('RGB', base.size, color), base, mask)
 
     # ---- element drawing ------------------------------------------------
+    def _after_text(self, index, local):
+        """The camera's progress when it holds while the text arrives, then sets off gently and keeps a steady pace."""
+        length = self.lengths[index]
+        wait = min(self.text_ends[index], CAMERA_WAIT, length * .35)
+        p = clamp((local - wait) / (length - wait))
+        ramp = .25  # speeds up over the first quarter, so the move never starts with a jolt
+        return (p * p / (2 * ramp) if p < ramp else p - ramp / 2) / (1 - ramp / 2)
+
     def _draw(self, image, element, local, clock, scene_length, entrance_complete=False):
         if not entrance_complete and local < element.start:
             return
         p = 1 if entrance_complete or not element.dur else (local - element.start) / element.dur
         tile, x, y, alpha = element.tile, element.x, element.y, 1.
+        if element.alt is not None:
+            tile = self._swept(element, local)
         match element.anim:
             case 'fade':
                 alpha = ease_out(p)
@@ -617,10 +699,36 @@ class Plan:
                 x -= round((clock * self.px(110)) % element.period)
             case 'blink':
                 alpha = .3 + .7 * (.5 + .5 * math.sin(2 * math.pi * 1.3 * clock))
+        underline = None
+        if element.drift != (0, 0) and p >= 1 and local > element.drift_at:
+            span = max(.1, (scene_length or local + 1) - element.drift_at)
+            q = clamp((local - element.drift_at) / span)
+            q = q * q * (3 - 2 * q)  # sets off and settles gently
+            x, y = x + round(element.drift[0] * q), y + round(element.drift[1] * q)
+        if element.hold and p >= 1 and local >= element.hold_at:
+            tile, x, y, underline = self._held(element, tile, x, y, local, scene_length)
         if scene_length is not None and element.fades_out:
-            alpha *= clamp((scene_length - local) / SCENE_FADE)
+            if element.exit:
+                r = clamp((scene_length - local) / EXIT)
+                if r < 1:
+                    q = 1 - r
+                    if element.exit == 'fade_up':
+                        alpha, y = alpha * ease_out(r), y - round(ease_out(q) * self.px(48))
+                    elif element.exit == 'slide_out':
+                        x -= round(q * q * (x + tile.width))
+                    elif element.exit == 'wipe_out':  # the line is cleared from the left
+                        cut = round(tile.width * ease_out(q))
+                        if cut >= tile.width:
+                            return
+                        tile, x = tile.crop((cut, 0, tile.width, tile.height)), x + cut
+                        underline = None
+            else:
+                alpha *= clamp((scene_length - local) / SCENE_FADE)
         if alpha <= 0:
             return
+        if underline:  # (left, top, width, thickness) from the tile's corner, so it travels with the text
+            left, top, width, thick = underline
+            self._underline(image, (x + left, y + top, x + left + width, y + top + thick), alpha)
         if element.shine and (phase := (clock % 5) / .8) < 1:
             tile = self._shine(tile, phase)
         if alpha < 1:
@@ -642,6 +750,55 @@ class Plan:
             piece.putalpha(piece.getchannel('A').point([round(i * (q - done)) for i in range(256)]))
             shown.alpha_composite(piece, (left, 0))
         return shown if done or fade_newest else None
+
+    def _swept(self, element, local):
+        """highlight_sweep: the plain line, with the highlight's marker swept in left to right once the text is in."""
+        q = clamp((local - element.hold_at) / HOLD['highlight_sweep']) if element.hold_at else 0
+        if q <= 0:
+            return element.alt
+        if q >= 1:
+            return element.tile
+        pad = self.px(12)
+        left, right = element.mark[0] - pad, element.mark[1] + pad
+        cut = max(0, round(left + (right - left) * ease_out(q)))
+        tile = element.alt.copy()
+        tile.paste(element.tile.crop((0, 0, cut, tile.height)), (0, 0))
+        return tile
+
+    def _held(self, element, tile, x, y, local, scene_length):
+        """What the text does once it is in. Returns the tile, where it goes, and an underline to draw (or None)."""
+        hold = element.hold
+        q = clamp((local - element.hold_at) / HOLD[hold])
+        if hold == 'underline':
+            text, size, face, inset = element.source
+            width = round(text_width(text, size, face) * ease_out(q))
+            return tile, x, y, (inset, element.base + self.px(14), width, max(2, self.px(8))) if width > 0 else None
+        if hold == 'pulse':  # two gentle beats
+            k = 1 + .08 * abs(math.sin(2 * math.pi * q)) if q < 1 else 1
+            return (*self._scaled(tile, x, y, k), None)
+        if hold == 'word_pop' and 0 < q < 1:
+            k = 1 + .12 * math.sin(math.pi * q)
+            pad = self.px(11) if element.alt is not None or self._marker() else self.px(3)  # a marker box reaches past the letters
+            left, right = max(0, element.mark[0] - pad), min(tile.width, element.mark[1] + pad)
+            word = tile.crop((left, 0, right, tile.height))
+            big, bx, by = self._scaled(word, left, 0, k)
+            out = Image.new('RGBA', (tile.width + 2 * pad * 2, tile.height + 2 * pad * 2))
+            out.alpha_composite(tile, (2 * pad, 2 * pad))
+            clear = Image.new('RGBA', word.size)
+            out.paste(clear, (left + 2 * pad, 2 * pad))  # the word itself is drawn larger on top
+            out.alpha_composite(big, (bx + 2 * pad, by + 2 * pad))
+            return out, x - 2 * pad, y - 2 * pad, None
+        return tile, x, y, None
+
+    @staticmethod
+    def _scaled(tile, x, y, k):
+        size = (max(1, round(tile.width * k)), max(1, round(tile.height * k)))
+        return tile.resize(size, Image.Resampling.BILINEAR), x + (tile.width - size[0]) // 2, y + (tile.height - size[1]) // 2
+
+    def _underline(self, image, box, alpha):
+        draw = ImageDraw.Draw(image, 'RGBA')
+        color = self._ink_on(self.accent)[:3] if self.look == 'split' else self.accent  # on the accent panel, the panel's ink
+        draw.rounded_rectangle(box, max(1, self.px(4)), fill=color + (round(255 * alpha),))
 
     @staticmethod
     def _shine(tile, phase):
@@ -673,14 +830,14 @@ class Plan:
             draw.rectangle((0, 0, round(self.W * clamp(t / self.duration)), height), fill=accent)
 
     # ---- tiles ----------------------------------------------------------
-    def _text(self, text, size, color, face=True, stroke=0, shadow=True, spacing=0, mark=None, box=None):
+    def _text(self, text, size, color, face=True, stroke=0, shadow=True, spacing=0, mark=None, box=None, marker=None):
         """One line of text as a transparent tile; returns (tile, baseline offset).
 
         mark is a (start, end) span drawn in the accent color, or on an accent marker where color alone would not read.
         box is drawn behind the letters (advanced mode); callers shift the tile left by BOX_PAD so the text stays put.
         """
         if box:
-            tile, base = self._text(text, size, color, face, stroke, False, spacing, mark)
+            tile, base = self._text(text, size, color, face, stroke, False, spacing, mark, marker=marker)
             inset, cap = self.px(BOX_PAD), -font_at(max(1, round(size)), resolve(text, face)).getbbox('H', anchor='ls')[1]
             boxed = Image.new('RGBA', (tile.width + 2 * inset, tile.height))
             # Cap height to just under the baseline, so stacked lines do not cover each other's letters.
@@ -709,7 +866,9 @@ class Plan:
             draw_line(draw, (pad, base), text, size, color, face, stroke_width=stroke, stroke_fill=(0, 0, 0, 255))
             return tile, base
         accent = self.accent + (255,)
-        marker = self._marker()
+        marker = self._marker() if marker is None else marker
+        on_accent = self.look == 'split'  # the panel is the accent colour: the highlight is a white marker with accent letters
+        marker = marker or on_accent
         start, end = mark
         for left, right, marked in ((0, start, False), (start, end, True), (end, len(text), False)):
             piece = text[left:right]
@@ -720,8 +879,8 @@ class Plan:
                 cap = -font_at(size, face).getbbox('H', anchor='ls')[1]
                 pad_x = self.px(10)
                 draw.rounded_rectangle((x - pad_x, base - cap - self.px(10), x + text_width(piece, size, face) + pad_x,
-                                        base + self.px(12)), self.px(6), fill=accent)
-            fill = (self._ink_on(self.accent) if marker else accent) if marked else color
+                                        base + self.px(12)), self.px(6), fill=WHITE if on_accent else accent)
+            fill = ((accent if on_accent else self._ink_on(self.accent)) if marker else accent) if marked else color
             draw_line(draw, (x, base), piece, size, fill, face, stroke_width=stroke, stroke_fill=(0, 0, 0, 255))
         return tile, base
 
@@ -744,13 +903,18 @@ class Plan:
         color, box = (self._ink(role, color), self._fill(role)) if role else (color, None)
         if box:
             style = {**style, 'box': box}
+        sweep = self._index is not None and self.emphases.get(self._index) == 'highlight_sweep'
         for k, line in enumerate(lines):
-            tile, base = self._text(line, size, color, face, mark=marks[k] if marks else None, **style)
+            mark = marks[k] if marks else None
+            tile, base = self._text(line, size, color, face, mark=mark, **({**style, 'marker': True} if sweep and mark else style))
             baseline = top + k * step_px + round(size * 1.0)
             left = x - self.px(8) - style.get('stroke', 0) - (self.px(BOX_PAD) if box else 0)
             inset = self.px(8) + style.get('stroke', 0) + (self.px(BOX_PAD) if box else 0)
+            sized, resolved = max(1, round(size)), resolve(line, face)
+            span = (inset + round(text_width(line[:mark[0]], sized, resolved)), inset + round(text_width(line[:mark[1]], sized, resolved))) if mark else ()
+            alt = self._text(line, size, color, face, **style)[0] if sweep and mark else None
             elements.append(Element(tile, left, baseline - base, start + k * step, .45, anim, role=role,
-                                    source=(line, max(1, round(size)), resolve(line, face), inset)))
+                                    source=(line, sized, resolved, inset), base=base, mark=span, alt=alt))
         return elements, top + len(lines) * step_px
 
     def _lead(self, x, y, start, centered=False, **style):
@@ -1150,6 +1314,50 @@ class Plan:
         lines, bottom = self._block_text(fitted, top, WHITE, (225, 229, 236, 255), shadow=False)
         card = self._box((px(self.text_w + 64), bottom - top + px(72)), self._fill('detail', (10, 12, 18, 214)), px(32))
         return [Element(card, px(LEFT - 32), top - px(36), .05, .5, 'fade')] + lines
+
+    def _open_photo(self, scene):
+        """The photo fills the frame; the text block sits low on it, with no card. A recipe's line boxes, fonts and
+        colours give it its character."""
+        px = self.px
+        if self._bare(scene):
+            fitted, top = self._centred_block(scene)
+            return self._block_text(fitted, top, WHITE, (228, 232, 240, 255))[0] if fitted[-1] else []
+        fitted = self._fit(scene.headline, scene.detail_text, self.text_w, self.limit - (self.inset + 150) - 40, gap=18)
+        if not fitted[-1]:
+            return []
+        top = px(self.limit - 30) - fitted[-1]  # the block ends just above the safe line; _place moves it off a face
+        return self._block_text(fitted, top, WHITE, (228, 232, 240, 255))[0]
+
+    def _paper(self, scene):
+        """Print on a paper page: the photo across the top, a thin rule and a small accent tag, then a serif headline."""
+        px, accent = self.px, self.accent + (255,)
+        tag = self.reel.tag_text
+        if self._bare(scene):
+            self._scene_rect = (0, 0, 0, 0, 0)
+            top_room = self.inset + 150
+        else:
+            top_room = round(self.inset + 120 + self.DH * .37) + 50  # below the photo
+        head_room = 74 if tag else 30
+        fitted = self._fit(scene.headline, scene.detail_text, self.text_w, self.limit - top_room - head_room - 20, gap=16)
+        if not fitted[-1]:
+            return []
+        top = px(top_room)
+        out = [Element(self._box((px(self.text_w), max(2, px(3))), INK + (255,)), px(LEFT), top, .05, .5, 'wipe')]
+        if tag:
+            chip = self._tag(tag, px(30), self._ink_on(self.accent), accent, 4, 52, 16)
+            out.append(Element(chip, px(LEFT), top + px(18), .1, .45, 'fade', role='label'))
+        lines, _ = self._block_text(fitted, top + px(head_room), INK + (255,), MUTED + (255,), shadow=False)
+        return out + lines
+
+    def _ruled_photo(self, scene):
+        """The photo fills the frame; the text sits low with a bright accent bar beside it, like a wire lower third."""
+        out = self._open_photo(scene)
+        if not out or self._bare(scene):
+            return out
+        top = min(e.y for e in out)
+        bottom = max(e.y + e.tile.height for e in out)
+        bar = self._box((self.px(10), bottom - top - self.px(16)), self.accent + (255,), self.px(5))
+        return [Element(bar, self.px(LEFT - 30), top + self.px(8), .1, .6, 'wipe', rule=True)] + out
 
     def _split(self, scene):
         """Photo on the top half, a bold headline on an accent panel below it."""

@@ -98,10 +98,26 @@ def test_narration_reads_the_scene_words():
     assert narration(CScene(headline='Line 4 approved', detail='Work starts in March')) == 'Line 4 approved. Work starts in March.'
 
 
+def test_a_scene_can_say_more_than_its_screen_text():
+    scene = CScene(headline='Line 4 approved', say='  The council approved Line 4 tonight, and work starts in March ')
+    assert narration(scene) == 'The council approved Line 4 tonight, and work starts in March.'
+    with pytest.raises(ValueError):
+        CScene(say='x' * 281)
+
+
+def test_a_hidden_detail_is_spoken_but_not_shown():
+    scene = CScene(headline='Line 4 approved', detail='Work starts in March', hide_detail=True)
+    assert scene.to_scene().detail == '' and narration(scene) == 'Line 4 approved. Work starts in March.'
+    shown, hidden = (CompositionPlan(Composition(scenes=[scene.model_copy(update={'hide_detail': h})]), 360, {}) for h in (None, True))
+    assert 'detail' in {b['role'] for b in shown.layout(0)['boxes']} and 'detail' not in {b['role'] for b in hidden.layout(0)['boxes']}
+
+
 def test_voice_mix_ducks_music_under_the_voice():
     with_music = voice_mix(True, [0.25, 4.5], 'afade=t=in:d=0.5')
     assert 'adelay=250' in with_music and 'adelay=4500' in with_music and 'sidechaincompress' in with_music and with_music.endswith('[mix]')
     assert 'sidechaincompress' not in voice_mix(False, [0.25], 'afade=t=in:d=0.5')
+    cut = voice_mix(False, [0., 1.], 'afade=t=in:d=0.5', cuts=[3.0, None])
+    assert 'atrim=0:3.000,afade=t=out:st=2.400' in cut and cut.count('atrim') == 1  # an intro sound plays only its chosen length
 
 
 @pytest.fixture
@@ -153,3 +169,53 @@ def test_rendered_video_carries_the_voiceover(creator):
     probe = json.loads(subprocess.run([tool('ffprobe'), '-v', 'error', '-show_streams', '-of', 'json', str(creator.output_path(done))],
                                       capture_output=True, text=True, check=True).stdout)
     assert any(s['codec_type'] == 'audio' for s in probe['streams'])
+
+
+def test_captions_can_be_bigger_and_hold_more_words():
+    words = [(w, n * .3, n * .3 + .3) for n, w in enumerate('one two three four five six seven eight'.split())]
+    assert [len(c[0]) for c in caption_chunks(words, 6)] == [4, 4] and [len(c[0]) for c in caption_chunks(words, 2)] == [2] * 4
+    from backend.services.reel_creator.composition import VoiceClip
+    voice = VoiceClip(asset_id='a' * 32, text='one two three four', seconds=1.2, words=words[:4])
+    base = Composition(captions='voice', scenes=[CScene(headline='Line 4 approved', voice=voice)])
+    def caption(size):
+        plan = CompositionPlan(base.model_copy(update={'caption_size': size}), 360, {})
+        plan._caption(__import__('PIL.Image', fromlist=['Image']).new('RGBA', (plan.W, plan.H)), 0, .5)
+        return next(iter(plan._caption_tiles.values())).height
+    assert caption('small') < caption('medium') < caption('large')
+    with pytest.raises(ValueError):
+        Composition(caption_words=7)
+
+
+def test_an_intro_sound_plays_before_and_after_the_voice():
+    from backend.services.reel_creator.composition import END_FADE, STING_GAP, VOICE_DELAY, Sting, VoiceClip
+    voice = VoiceClip(asset_id='a' * 32, text='Line 4 approved.', seconds=2.0, words=[])
+    scenes = [CScene(headline='Line 4 approved', voice=voice), CScene(headline='Work starts in March', voice=voice)]
+    plain = Composition(scenes=scenes)
+    both = plain.model_copy(update={'sting': Sting(asset_id='b' * 32, seconds=1.5)})
+    assert both.voice_tracks()[0][1] == VOICE_DELAY + 1.5                       # the voice waits for the sound
+    first, second = both.scene_for(0).length(), both.scene_for(1).length()
+    start, end = both.sting_tracks()
+    assert start == ('b' * 32, 0.) and end[1] == round(first + VOICE_DELAY + 2.0 + STING_GAP, 3)
+    assert end[1] + 1.5 <= first + second - END_FADE + .01                     # and it ends before the reel fades
+    assert both.duration > plain.duration and len(both.audio_tracks()) == 4
+    only_start = plain.model_copy(update={'sting': Sting(asset_id='b' * 32, seconds=1.5, at='start')})
+    assert [t for _, t in only_start.sting_tracks()] == [0.] and only_start.scene_for(1).length() == plain.scene_for(1).length()
+    plan = CompositionPlan(both, 360, {})
+    assert abs(plan.duration - both.duration) < .1
+
+
+@pytest.mark.skipif(not tool('ffmpeg'), reason='FFmpeg is not installed')
+def test_a_video_renders_at_the_chosen_quality_with_its_intro_sound(creator):
+    from backend.services.reel_creator.composition import DocumentRenderInput, Sting
+    sound = creator.import_asset(tone(3.0), 'sting.wav', 'audio')  # longer than it plays: cut to one second
+    voiced = Composition(**creator.add_voiceover(GEMINI, composition().model_copy(update={'music': 'off'}),
+                                                 synthesize=lambda c, t, voice, model: tone(1.2))['composition'])
+    reel = voiced.model_copy(update={'quality': 'sd', 'sting': Sting(asset_id=sound['id'], seconds=1.0)})
+    creator.start()
+    job = creator.enqueue(DocumentRenderInput(request_id='8' * 32, reel=reel, kind='final'))
+    end = time.time() + 120
+    while creator.store.job(job['id'])['state'] not in ('completed', 'failed') and time.time() < end:
+        time.sleep(.2)
+    done = creator.store.job(job['id'])
+    assert done['state'] == 'completed', done['error']
+    assert (done['output']['width'], done['output']['height']) == (480, 854)

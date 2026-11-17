@@ -156,7 +156,7 @@ export interface ReelJob {
   error: string | null;
   created_at: number;
   attempt: number;
-  output: { filename: string; size_bytes: number; thumbnail?: string | null } | null;
+  output: { filename: string; size_bytes: number; thumbnail?: string | null; width?: number; height?: number; seconds?: number } | null;
   post_caption?: string;
 }
 

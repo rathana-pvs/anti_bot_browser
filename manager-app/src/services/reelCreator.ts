@@ -101,11 +101,14 @@ export const reelApi = {
       input.oncancel = () => resolve([]);
       input.click();
     });
-    if (!files.length) return null;
+    return files.length ? reelApi.uploadImages(files) : null;
+  },
+  /** Image files pasted from the clipboard (screenshots, copied pictures), uploaded in order. */
+  uploadImages: async (files: File[]): Promise<PhotoImport> => {
     const result: PhotoImport = { assets: [], errors: [] };
     for (const file of files) {
       try { result.assets.push(await reelApi.upload('image', file)); }
-      catch (err) { result.errors.push(`${file.name}: ${err instanceof Error ? err.message : 'Could not import.'}`); }
+      catch (err) { result.errors.push(`${file.name || 'Pasted image'}: ${err instanceof Error ? err.message : 'Could not import.'}`); }
     }
     return result;
   },

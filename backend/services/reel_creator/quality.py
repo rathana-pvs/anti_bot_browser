@@ -9,10 +9,10 @@ from .components import RECIPE_BY_ID, part
 from .composition import Composition, CompositionPlan
 
 ROLES = ('headline', 'detail', 'lead')
-CALMER = {'pop': 'rise', 'punch_in': 'rise', 'push_face': 'zoom_in', 'zoom_through': 'crossfade'}
+CALMER = {'pop': 'rise', 'punch_in': 'rise', 'push_face': 'zoom_in', 'zoom_through': 'crossfade', 'word_pop': 'highlight_sweep'}
 VARIETY = ('rise', 'fade', 'left', 'wipe')
-OVER_PHOTO = {'news_strap', 'big_headline', 'wire_report', 'big_number', 'quote_card', 'centered_card'}
-MOVABLE = {'news_strap', 'wire_report', 'big_headline'}  # layouts whose text block can move up or down
+OVER_PHOTO = {'news_strap', 'big_headline', 'wire_report', 'big_number', 'quote_card', 'centered_card', 'open_photo', 'ruled_photo'}
+MOVABLE = {'news_strap', 'wire_report', 'big_headline', 'open_photo', 'ruled_photo'}  # layouts whose text block can move up or down
 LONG_TYPEWRITER = 90  # characters; letter by letter takes too long beyond this
 MIN_CONTRAST = 4.5
 FACE_SHARE = .26      # a face box is about this share of the photo's width
@@ -26,8 +26,7 @@ class Issue:
 
 
 def _animation(scene, composition, role):
-    style = scene.styles.get(role) or composition.styles.get(role)
-    return style.animation if style else None
+    return composition.animation_for(scene, role)
 
 
 def _set_animation(scene, role, animation):
@@ -62,27 +61,34 @@ def compatibility(composition, fixes):
             if reason:
                 _set_animation(scene, role, 'pop' if animation == 'count_up' else 'fade')
                 fixes.append(Issue(number, 'compatibility', reason + '; changed it.'))
+        if scene.emphasis and scene.kind not in part('emphasis', scene.emphasis).applies_to:
+            fixes.append(Issue(number, 'compatibility', f'{part("emphasis", scene.emphasis).label} does not suit this scene; used an underline.'))
+            scene.emphasis = 'underline'
         if scene.camera == 'push_face' and not scene.image_id:
             scene.camera = 'zoom_in'
             fixes.append(Issue(number, 'compatibility', 'Push to face needs a photo; used Push in.'))
 
 
 def busyness(composition, fixes):
-    """At most one attention-grabbing part per scene; the others are calmed."""
+    """At most one attention-grabbing part at a time in each scene; the others are calmed.
+
+    When the camera waits for the text, the scene has two moments: the text arriving (transition and entrances), then the
+    photo moving (camera and emphasis). Each may have one loud part. A loud layout is loud throughout.
+    """
     for number, scene in enumerate(composition.scenes, 1):
-        loud = []
-        if part('layout', scene.layout).loud:
-            loud.append(('layout', None))
-        if scene.camera and part('camera', scene.camera).loud:
-            loud.append(('camera', None))
-        if scene.transition and part('transition', scene.transition).loud:
-            loud.append(('transition', None))
+        camera = [('camera', None)] if scene.camera and part('camera', scene.camera).loud else []
+        arriving = [('transition', None)] if scene.transition and part('transition', scene.transition).loud else []
         for role in ROLES:
             animation = _animation(scene, composition, role)
             if animation and part('animation', animation).loud:
-                loud.append(('animation', role))
-        for kind, role in loud[1:]:  # the first loud part stays
-            if kind == 'camera':
+                arriving.append(('animation', role))
+        moving = camera + ([('emphasis', None)] if scene.emphasis and part('emphasis', scene.emphasis).loud else [])
+        moments = (arriving, moving) if composition.camera_waits else ((camera + arriving + moving[len(camera):]),)
+        keep = 0 if part('layout', scene.layout).loud else 1  # the first loud part of each moment stays
+        for kind, role in (item for moment in moments for item in moment[keep:]):
+            if kind == 'emphasis':
+                scene.emphasis = CALMER[scene.emphasis]
+            elif kind == 'camera':
                 scene.camera = CALMER[scene.camera]
             elif kind == 'transition':
                 scene.transition = CALMER[scene.transition]

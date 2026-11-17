@@ -9,16 +9,16 @@ Chat edits to a composition reuse the director's checked operations, with compos
 import re
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from backend.services.ai import AIConfig, generate_json
 
 from . import components
-from .components import AnimationId, CameraId, LayoutId, Pacing, RECIPE_BY_ID, TransitionId
+from .components import AnimationId, CameraId, EmphasisId, ExitId, LayoutId, Pacing, RECIPE_BY_ID, TransitionId
 from .composition import Background, Composition, CScene, PartStyle
 from .director import Editor, Rejected, Turn, article_prefix, direct, plain_schema
 from .quality import review
-from .reel import MAX_SCENES
+from .reel import MAX_SCENES, highlight_span
 from .writer import GROUNDING, WriteRequest, write_reel
 
 ROLES = ('headline', 'detail', 'lead')
@@ -34,13 +34,14 @@ def describe_parts(kinds=None):
             continue
         if p.kind != current:
             current = p.kind
-            lines.append(f'{current}s:')
+            lines.append({'emphasis': 'emphasis (what the text does once it is in):', 'exit': 'exits (how the text leaves):'}.get(current, f'{current}s:'))
         suits = '' if p.applies_to == components.KINDS else f' [only for {", ".join(sorted(p.applies_to))} scenes]'
         extra = (' Avoid: ' + p.avoid_when if p.avoid_when else '') + (' (loud)' if p.loud else '') + (' (needs a photo)' if p.needs_photo else '')
         lines.append(f'- {p.id} ({p.label}): {p.use_when}{suits}{extra}')
     lines.append('recipes:')
-    for r in components.RECIPES:
+    for r in components.AI_RECIPES:
         lines.append(f'- {r.id} ({r.label}): {r.use_when}')
+    lines.append('Reel Studio looks, only when the operator names one: ' + ', '.join(r.id for r in components.RECIPES if r.studio == 'reel'))
     return '\n'.join(lines)
 
 
@@ -50,11 +51,18 @@ checked; you choose how each scene looks and moves, using only the parts listed 
 You get the scenario the operator typed (may be empty), the story's opening, and each scene: its kind, its words,
 whether it has a photo and whether that photo shows a face. Return:
 - mood: calm, serious, urgent, energetic or explainer; pacing: calm, normal or fast.
-- recipe: the closest recipe. breaking, hot and pop_art only when the operator's scenario asks for them.
+- recipe: the closest of the recipes listed. pulse only when the scenario asks for breaking, urgent or live coverage;
+  a Reel Studio look only when the scenario names it.
 - scenes: one entry per scene, in order, with layout, camera, transition (how it replaces the scene before; scene 1's
-  is ignored), and entrances for headline, detail and lead (the big figure or quote mark). Leave a field out to keep
-  the recipe's choice.
-Rules: a part marked "only for" suits only those scene kinds. At most one loud part per scene. Do not use the same
+  is ignored), entrances for headline, detail and lead (the big figure or quote mark), an emphasis (what the text does
+  once it is in, while the camera moves the photo) and an exit (how the text leaves before the next scene). Leave a
+  field out to keep the recipe's choice.
+Rules: a part marked "only for" suits only those scene kinds. The camera waits until the text is in, so each scene has
+two moments: at most one loud part while the text arrives (transition, entrances) and one while the photo moves
+(camera, emphasis). Give most scenes an emphasis and vary them: highlight_sweep or word_pop when the headline has a
+highlight, pulse on a stat's figure, underline otherwise; the text also drifts slowly on its own, so drift alone is
+the quietest choice. Use one or two exits across the reel, not a new one
+every scene. Do not use the same
 headline entrance on more than two scenes in a row. Stat scenes suit big_number with count_up on the lead; quote
 scenes suit quote_card with typewriter or wipe on the headline. Faces: prefer push_face or zoom_in, and layouts that
 keep text off the face. Sad, tragic or violent stories: calm parts only (fade, rise, wipe, crossfade, zoom_out, still).
@@ -72,6 +80,18 @@ class ScenePick(BaseModel):
     headline: AnimationId | None = None
     detail: AnimationId | None = None
     lead: AnimationId | None = None
+    emphasis: EmphasisId | None = None
+    exit: ExitId | None = None
+
+    @model_validator(mode='before')
+    @classmethod
+    def known_parts(cls, value):
+        """An id the AI made up leaves that part to the recipe instead of losing every pick."""
+        if not isinstance(value, dict):
+            return value
+        kinds = dict(layout='layout', camera='camera', transition='transition', headline='animation', detail='animation',
+                     lead='animation', emphasis='emphasis', exit='exit')
+        return {k: (v if k not in kinds or v is None or (kinds[k], v) in components.BY_ID else None) for k, v in value.items()}
 
 
 class Picks(BaseModel):
@@ -83,7 +103,7 @@ class Picks(BaseModel):
 
     @classmethod
     def model_json_schema(cls, *args, **kwargs):
-        return plain_schema(super().model_json_schema(*args, **kwargs))
+        return light_schema(plain_schema(super().model_json_schema(*args, **kwargs)))
 
 
 class ComposeRequest(WriteRequest):
@@ -98,13 +118,40 @@ def names(text, recipe):
     return any(re.search(rf'\b{re.escape(n)}\b', text.replace('_', ' '), re.I) for n in (recipe.replace('_', ' '), r.label))
 
 
+URGENT = re.compile(r'\b(breaking|urgent|live|developing|just in)\b', re.I)
+
+
+def allowed(recipe, text):
+    """An AI Studio recipe the AI may choose; urgent ones and Reel Studio's looks only when the operator's words ask."""
+    r = RECIPE_BY_ID[recipe]
+    if r.studio == 'reel':
+        return names(text, recipe)
+    return not r.urgent or names(text, recipe) or bool(URGENT.search(text))
+
+
 def checked_recipe(asked, operator_recipe, scenario):
-    """The operator's recipe, else the AI's when it exists and is allowed, else a calm default."""
+    """The operator's recipe, else the AI's when it exists and is allowed, else AI Studio's calm default."""
     if operator_recipe in RECIPE_BY_ID:
         return operator_recipe
-    if asked in RECIPE_BY_ID and (not RECIPE_BY_ID[asked].urgent or names(scenario, asked)):
+    if asked in RECIPE_BY_ID and allowed(asked, scenario):
         return asked
-    return 'clean'
+    return components.DEFAULT_RECIPE
+
+
+def apply_recipe(composition, recipe_id):
+    """The recipe's own parts on every unlocked scene: layouts, transitions, cameras in turn, emphasis and exits. Its
+    fonts, colours, tag and music apply when the reel is drawn, under anything set by hand."""
+    recipe = RECIPE_BY_ID[recipe_id]
+    composition.recipe, composition.pacing = recipe_id, recipe.pacing
+    for index, scene in enumerate(composition.scenes):
+        if scene.locked:
+            continue
+        scene.layout, scene.camera = recipe.layout_for(scene.kind), None
+        scene.transition = recipe.transition if index else None
+        if recipe.studio == 'ai':
+            scene.emphasis = None if scene.kind == 'end' else recipe.emphasis.get(scene.kind)
+            scene.exit = recipe.exit
+    return composition
 
 
 def scenes_from(written, photos, assets):
@@ -124,21 +171,26 @@ def scenes_from(written, photos, assets):
 
 def apply_picks(composition, picks, recipe):
     """The recipe's starting parts, then each scene's picks where they suit the scene."""
-    chosen = RECIPE_BY_ID[recipe]
-    composition.recipe, composition.pacing = recipe, picks.pacing
+    apply_recipe(composition, recipe)
+    composition.pacing = picks.pacing if 'pacing' in picks.model_fields_set else composition.pacing
     for index, scene in enumerate(composition.scenes):
         pick = picks.scenes[index] if index < len(picks.scenes) else ScenePick()
-        scene.layout = chosen.layout_for(scene.kind)
         if pick.layout and scene.kind in components.part('layout', pick.layout).applies_to:
             scene.layout = pick.layout
         scene.camera = pick.camera or None
-        scene.transition = (pick.transition or chosen.transition) if index else None
+        if index and pick.transition:
+            scene.transition = pick.transition
         styles = dict(scene.styles)
         for role in ROLES:
             animation = getattr(pick, role)
             if animation and scene.kind in components.part('animation', animation).applies_to:
                 styles[role] = (styles.get(role) or PartStyle()).model_copy(update={'animation': animation})
         scene.styles = styles
+        if pick.emphasis and scene.kind in components.part('emphasis', pick.emphasis).applies_to:
+            scene.emphasis = pick.emphasis
+        elif scene.kind != 'end' and not scene.emphasis:  # the text keeps moving while the photo does, whatever the AI left out
+            scene.emphasis = 'highlight_sweep' if highlight_span(scene.headline, scene.highlight) else 'underline'
+        scene.exit = pick.exit or scene.exit
     return composition
 
 
@@ -190,13 +242,17 @@ Scenes are numbered from 1. Scene 1 is the hook and stays a story scene. An end 
 change, move or remove a scene marked locked. Change only what the instruction asks for. Prefer few operations.
 Operations (fields not listed for an operation must be left out):
 - edit_text: scene, and any of headline, detail, kind, stat, attribution, highlight (as the writer's rules: the
-  article's facts and figures only; highlight is 1-3 words copied from that scene's headline).
+  article's facts and figures only; highlight is 1-3 words copied from that scene's headline). At most 120
+  characters for a headline, 160 for a detail, 24 for a stat, 60 for an attribution.
 - set_layout: scene, layout. set_camera: scene, camera. set_transition: scene, transition.
 - set_animation: scene, role (headline, detail or lead), animation.
-- set_recipe: recipe (breaking, hot and pop_art only when the operator names them). set_pacing: pacing.
+- set_emphasis: scene, emphasis (what the text does once it is in). set_exit: scene, exit (how the text leaves).
+- set_recipe: recipe (pulse only for breaking, urgent or live news the operator asks for; a Reel Studio look only when
+  named). set_pacing: pacing.
 - add_scene: after (0 = before scene 1), kind (story, stat or quote), headline, detail, highlight.
+Use part ids exactly as listed below. At most 12 operations.
 - remove_scene: scene. move_scene: scene, to.
-At most one loud part per scene; vary entrances. message is one or two plain sentences about what you changed.
+At most one loud part while the text arrives and one while the photo moves; vary entrances and emphases. message is one or two plain sentences about what you changed.
 
 Parts:
 '''
@@ -204,7 +260,7 @@ Parts:
 
 class CompOp(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    op: Literal['edit_text', 'set_layout', 'set_camera', 'set_transition', 'set_animation', 'set_recipe', 'set_pacing',
+    op: Literal['edit_text', 'set_layout', 'set_camera', 'set_transition', 'set_animation', 'set_emphasis', 'set_exit', 'set_recipe', 'set_pacing',
                 'add_scene', 'remove_scene', 'move_scene']
     scene: int | None = Field(default=None, ge=1, le=MAX_SCENES)
     to: int | None = Field(default=None, ge=1, le=MAX_SCENES)
@@ -220,6 +276,8 @@ class CompOp(BaseModel):
     transition: TransitionId | None = None
     role: Literal['headline', 'detail', 'lead'] | None = None
     animation: AnimationId | None = None
+    emphasis: EmphasisId | None = None
+    exit: ExitId | None = None
     recipe: str | None = Field(default=None, max_length=24)
     pacing: Pacing | None = None
 
@@ -231,7 +289,29 @@ class CompPlan(BaseModel):
 
     @classmethod
     def model_json_schema(cls, *args, **kwargs):
-        return plain_schema(super().model_json_schema(*args, **kwargs))
+        return light_schema(plain_schema(super().model_json_schema(*args, **kwargs)))
+
+
+PART_FIELDS = ('layout', 'camera', 'transition', 'animation', 'emphasis', 'exit', 'headline', 'detail', 'lead')
+
+
+def light_schema(schema):
+    """The plan's form as sent to the AI: no length limits, and part ids as plain text (the prompt lists them).
+
+    Gemini compiles every limit and choice into states, and too many is refused ("too many states for serving").
+    The answer is still checked against the full CompPlan, and a wrong id or over-long text is asked for again.
+    """
+    def walk(node, name=None):
+        if isinstance(node, list):
+            return [walk(item) for item in node]
+        if not isinstance(node, dict):
+            return node
+        out = {k: v for k, v in node.items() if k not in ('maxLength', 'maxItems', 'minLength', 'minItems')}
+        if name in PART_FIELDS:
+            out.pop('enum', None)
+            out['type'] = 'string'
+        return {k: ({p: walk(v, p) for p, v in val.items()} if k == 'properties' else walk(val)) for k, val in out.items()}
+    return walk(schema)
 
 
 class ComposeDirectRequest(AIConfig):
@@ -282,20 +362,29 @@ class CompositionEditor(Editor):
             self.note(op.scene, f'{role} entrance', current.animation, op.animation)
             scene.styles = {**scene.styles, role: current.model_copy(update={'animation': op.animation})}
 
+    def set_emphasis(self, op):
+        scene = self.scene(op.scene)
+        if op.emphasis:
+            self.suits('emphasis', op.emphasis, scene)
+            self.note(op.scene, 'emphasis', scene.emphasis, op.emphasis)
+            scene.emphasis = op.emphasis
+
+    def set_exit(self, op):
+        scene = self.scene(op.scene)
+        if op.exit:
+            self.note(op.scene, 'exit', scene.exit, op.exit)
+            scene.exit = op.exit
+
     def set_recipe(self, op):
         if not op.recipe or op.recipe == self.reel.recipe:
             return
         if op.recipe not in RECIPE_BY_ID:
             raise Rejected('There is no such recipe.')
         recipe = RECIPE_BY_ID[op.recipe]
-        if recipe.urgent and not names(self.request.instruction, op.recipe):
+        if not allowed(op.recipe, self.request.instruction):
             raise Rejected(f'The {recipe.label} recipe is only used when you ask for it.')
         self.note(None, 'recipe', self.reel.recipe, op.recipe)
-        self.reel.recipe = op.recipe
-        for number, scene in enumerate(self.reel.scenes, 1):
-            if not scene.locked:
-                scene.layout = recipe.layout_for(scene.kind)
-                scene.transition = recipe.transition if number > 1 else None
+        apply_recipe(self.reel, op.recipe)
 
     def set_pacing(self, op):
         if op.pacing and op.pacing != self.reel.pacing:
@@ -328,7 +417,7 @@ class CompositionEditor(Editor):
 def composition_context(request):
     return dict(reel=dict(recipe=request.reel.recipe, pacing=request.reel.pacing, seconds=request.reel.duration,
                           scenes=[dict(scene=i + 1, kind=s.kind, headline=s.headline, detail=s.detail, layout=s.layout, camera=s.camera,
-                                       transition=s.transition, has_photo=bool(s.image_id), locked=bool(s.locked),
+                                       transition=s.transition, emphasis=s.emphasis, exit=s.exit, has_photo=bool(s.image_id), locked=bool(s.locked),
                                        entrances={r: st.animation for r, st in s.styles.items() if st.animation} or None)
                                   for i, s in enumerate(request.reel.scenes)]),
                 goal=request.goal, history=[t.model_dump() for t in request.history], instruction=request.instruction)

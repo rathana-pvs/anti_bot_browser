@@ -4,6 +4,7 @@ import io
 import json
 import logging
 import os
+import re
 from pathlib import Path
 import shutil
 import signal
@@ -33,7 +34,16 @@ ACTIVE = {'rendering', 'verifying'}
 FPS = 30
 THUMBNAIL_SECONDS = 0  # use the complete opening card as the cover
 PREVIEW_WIDTH, FINAL_WIDTH = 540, 1080
+
+
+def render_width(reel, kind):
+    """How wide a render of this reel is: previews are quick; a finished video is at the reel's chosen quality."""
+    from .composition import QUALITY_WIDTH
+    return PREVIEW_WIDTH if kind == 'preview' else QUALITY_WIDTH.get(getattr(reel, 'quality', 'fhd'), FINAL_WIDTH)
 MUSIC_VOLUME = .2
+MUSIC_LEVEL = -23      # LUFS every added track is brought to: the built-in tracks' own level
+BED_SECONDS = 25       # an added track at least this long plays under the whole reel; a shorter one is an intro, played once
+MUSIC_LIBRARY_LIMIT = 40
 MAX_REQUEUES = 10  # pressure that keeps returning mid-render stops the job instead of restarting it forever
 
 
@@ -196,6 +206,63 @@ class ReelCreator:
             path.unlink(missing_ok=True)
             raise
 
+    # ---- the operator's own music ----------------------------------------------
+    def music_library(self):
+        out = []
+        for asset_id in self.store.music_library():
+            try:
+                out.append(music_entry(self.store.asset(asset_id, 'audio')))
+            except ValueError:
+                continue  # removed from the asset store: drop it from the list quietly
+        return out
+
+    def add_music(self, asset_id, source_url=''):
+        """An imported audio file as a library track: silence trimmed from the start, brought to the built-in tracks'
+        loudness, and marked as music for the whole reel or an intro played once. The original file is kept as it is."""
+        original = self.store.asset(asset_id, 'audio')
+        ids = self.store.music_library()
+        if len(ids) >= MUSIC_LIBRARY_LIMIT:
+            raise ValueError(f'My music holds up to {MUSIC_LIBRARY_LIMIT} tracks. Remove one first.')
+        ffmpeg = tool('ffmpeg')
+        if not ffmpeg:
+            raise ValueError('Adding music requires FFmpeg. Run Setup and repair.')
+        new_id = uuid.uuid4().hex
+        path = self.root / 'assets' / f'{new_id}.audio'
+        try:
+            subprocess.run([ffmpeg, '-v', 'error', '-nostdin', '-y', '-i', str(self.asset_path(asset_id, 'audio')),
+                            '-af', f'silenceremove=start_periods=1:start_threshold=-50dB,loudnorm=I={MUSIC_LEVEL}:TP=-2:LRA=11',
+                            '-ar', '48000', '-ac', '2', '-f', 'wav', str(path)], capture_output=True, timeout=120, check=True)
+            seconds = self._inspect_audio(path.read_bytes(), path)
+        except (subprocess.SubprocessError, OSError, json.JSONDecodeError) as exc:
+            path.unlink(missing_ok=True)
+            raise ValueError('This audio could not be prepared as music. Try another file.') from exc
+        value = dict(id=new_id, kind='audio', name=original['name'], created_at=time.time(), duration=seconds, filename=path.name,
+                     size_bytes=path.stat().st_size, music_role='bed' if seconds >= BED_SECONDS else 'intro',
+                     source_url=checked_source(source_url), original_id=asset_id)
+        self.store.put_asset(value)
+        self.store.save_music_library([new_id, *ids])
+        return music_entry(value)
+
+    def update_music(self, asset_id, source_url=None, role=None):
+        if asset_id not in self.store.music_library():
+            raise ValueError('This track is not in My music.')
+        value = self.store.asset(asset_id, 'audio')
+        if source_url is not None:
+            value['source_url'] = checked_source(source_url)
+        if role is not None:
+            if role not in ('bed', 'intro'):
+                raise ValueError('A track plays under the whole reel (bed) or once at the start (intro).')
+            value['music_role'] = role
+        return music_entry(self.store.update_asset(value))
+
+    def remove_music(self, asset_id):
+        """Off the list; the file stays, so reels that already use it still render."""
+        self.store.save_music_library([i for i in self.store.music_library() if i != asset_id])
+
+    def music_loops(self, reel):
+        """False when the reel's music is an intro: it plays once, then the reel goes on without music."""
+        return not (reel.music == 'custom' and self.store.asset(reel.music_id, 'audio').get('music_role') == 'intro')
+
     @staticmethod
     def _inspect_audio(data, path):
         """Write the file and confirm it is one audio clip of a sensible length; returns seconds."""
@@ -224,7 +291,7 @@ class ReelCreator:
             raise ValueError('Add a headline to at least one scene.')
         plan_for(reel, 360, images, logo)  # lays out all text; raises a readable error if it cannot fit
         if isinstance(reel, Composition):
-            for asset_id, _ in reel.voice_tracks():  # every narration file is still here
+            for asset_id, _, _ in reel.audio_tracks():  # every narration and intro sound file is still here
                 self.asset_path(asset_id, 'audio')
         if reel.music == 'custom':
             music = self.asset_path(reel.music_id, 'audio')
@@ -268,7 +335,7 @@ class ReelCreator:
                 cache[key] = asset
                 cache_file.write_text(json.dumps(cache))
             if asset['seconds'] > 19:
-                raise ValueError(f'Scene {number}: the narration is too long for one scene. Shorten its text.')
+                raise ValueError(f'Scene {number}: the narration runs over 19 seconds. Shorten what it says.')
             scenes.append(scene.model_copy(update={'voice': VoiceClip(asset_id=asset['id'], text=text, seconds=asset['seconds'], words=asset['words'])}))
         result = composition.model_copy(update={'scenes': scenes, 'captions': 'voice'})
         return dict(composition=type(composition).model_validate(result.model_dump()).model_dump(), characters=sent)
@@ -463,7 +530,7 @@ class ReelCreator:
                 try:
                     self._verify(job, final, recovery=True)
                     self.store.update(job['id'], state='completed', progress=1, process=None,
-                                      output=dict(filename=final.name, size_bytes=final.stat().st_size))
+                                      output=dict(filename=final.name, size_bytes=final.stat().st_size, **video_facts(job)))
                     if marker:
                         shutil.rmtree(marker, ignore_errors=True)
                     continue
@@ -578,9 +645,9 @@ class ReelCreator:
         has_audio = any(s.get('codec_type') == 'audio' and s.get('codec_name') == 'aac' for s in meta.get('streams', []))
         if reel.music != 'off' and not has_audio:
             raise RuntimeError('Output verification failed: music is missing.')
-        if isinstance(reel, Composition) and reel.voice_tracks() and not has_audio:
+        if isinstance(reel, Composition) and reel.audio_tracks() and not has_audio:
             raise RuntimeError('Output verification failed: the voiceover is missing.')
-        expected = reel.size(PREVIEW_WIDTH if job['kind'] == 'preview' else FINAL_WIDTH)
+        expected = reel.size(render_width(reel, job['kind']))
         duration = float(meta.get('format', {}).get('duration', 0))
         if not video or (video['width'], video['height']) != expected or video['codec_name'] != 'h264' or video.get('pix_fmt') != 'yuv420p':
             raise RuntimeError('Output verification failed: unexpected video format.')
@@ -606,23 +673,24 @@ class ReelCreator:
     def _encode_attempt(self, job, reel, images, logo, music, output, use_nvenc):
         """Draw frames in this process and pipe them to FFmpeg, which stays supervised."""
         directory = Path(job['workdir'])
-        plan = plan_for(reel, PREVIEW_WIDTH if job['kind'] == 'preview' else FINAL_WIDTH, images, logo, FPS)
+        plan = plan_for(reel, render_width(reel, job['kind']), images, logo, FPS)
         frames = round(plan.duration * FPS)
         seconds = frames / FPS
         command = [tool('ffmpeg'), '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-threads', '2',
                    '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', f'{plan.W}x{plan.H}', '-r', str(FPS), '-i', 'pipe:0']
+        loops = self.music_loops(reel) if music else True
         if music:
-            command += ['-stream_loop', '-1', '-protocol_whitelist', 'file,pipe', '-i', str(music)]
-        voices = [(self.asset_path(asset_id, 'audio'), start) for asset_id, start in reel.voice_tracks()] if isinstance(reel, Composition) else []
-        for path, _ in voices:
+            command += [*(['-stream_loop', '-1'] if loops else []), '-protocol_whitelist', 'file,pipe', '-i', str(music)]
+        voices = [(self.asset_path(asset_id, 'audio'), start, cut) for asset_id, start, cut in reel.audio_tracks()] if isinstance(reel, Composition) else []
+        for path, _, _ in voices:
             command += ['-i', str(path)]
         command += ['-map', '0:v']
         fades = f'afade=t=in:d=0.5,afade=t=out:st={max(0, seconds - 1):.2f}:d=1'
         if voices:
-            command += ['-filter_complex', voice_mix(bool(music), [start for _, start in voices], fades), '-map', '[mix]',
+            command += ['-filter_complex', voice_mix(bool(music), [start for _, start, _ in voices], fades, loops, [cut for _, _, cut in voices]), '-map', '[mix]',
                         '-c:a', 'aac', '-b:a', '160k']
         elif music:
-            command += ['-map', '1:a', '-af', f'volume={MUSIC_VOLUME},{fades}', '-c:a', 'aac', '-b:a', '128k']
+            command += ['-map', '1:a', '-af', f'{"" if loops else "apad,"}volume={MUSIC_VOLUME},{fades}', '-c:a', 'aac', '-b:a', '128k']
         else:
             command += ['-an']
         quality = '24' if job['kind'] == 'preview' else '20'
@@ -737,7 +805,7 @@ class ReelCreator:
                             os.close(fd)
                     current.update(state='completed', progress=1, error=None, process=None,
                                    updated_at=time.time(), output=dict(filename=destination.name,
-                                   size_bytes=destination.stat().st_size,
+                                   size_bytes=destination.stat().st_size, **video_facts(job),
                                    thumbnail=thumbnail.name if thumbnail.is_file() else None))
                     db.execute('UPDATE jobs SET payload=? WHERE id=?', (json.dumps(current), job['id']))
             finally:
@@ -769,26 +837,56 @@ _service = None
 
 
 def narration(scene):
-    """What a scene says aloud: its own checked words, as a sentence or two."""
+    """What a scene says aloud: the operator's own script for it, or its checked screen words as a sentence or two."""
     def sentence(text):
         text = ' '.join(text.split()).strip()
         return text if not text or text[-1] in '.!?' else text + '.'
+    if getattr(scene, 'say', '').strip():
+        return sentence(scene.say)
     if scene.kind == 'quote' and scene.headline:
         return f'{scene.attribution} said: “{sentence(scene.headline)}”' if scene.attribution else sentence(scene.headline)
     lead = sentence(scene.stat) + ' ' if scene.kind == 'stat' and scene.stat else ''
     return ' '.join(filter(None, [lead + sentence(scene.headline), sentence(scene.detail)])).strip()
 
 
-def voice_mix(music, starts, fades):
-    """FFmpeg filters: each narration clip at its start, together; the music under them, ducked while the voice speaks."""
+def video_facts(job):
+    """The finished video's width, height and length, as verified against its document."""
+    reel = parse_document(job['reel'])
+    width, height = reel.size(render_width(reel, job['kind']))
+    return dict(width=width, height=height, seconds=round(reel.duration, 1))
+
+
+def music_entry(value):
+    return dict(id=value['id'], name=value['name'], seconds=round(value.get('duration', 0), 1), role=value.get('music_role', 'bed'),
+                source_url=value.get('source_url', ''), added_at=value.get('created_at', 0))
+
+
+def checked_source(url):
+    """Where a track came from, kept for disputing a copyright claim: an https link, or nothing."""
+    url = (url or '').strip()
+    if url and (len(url) > 300 or not re.match(r'^https://[^\s/]+\.[^\s]+$', url)):
+        raise ValueError('Add the link as it appears in the browser, starting with https://.')
+    return url
+
+
+STING_FADE = .6  # an intro sound cut short fades out over this long
+
+
+def voice_mix(music, starts, fades, loops=True, cuts=None):
+    """FFmpeg filters: each narration clip at its start, together; the music under them, ducked while the voice speaks.
+    Music that does not loop (an intro) is padded with silence, so the voice runs on after it ends."""
     first = 2 if music else 1
-    parts = [f'[{first + k}:a]aresample=48000,adelay={round(start * 1000)}:all=1[v{k}]' for k, start in enumerate(starts)]
+    cuts = cuts or [None] * len(starts)
+
+    def cut(seconds):  # the first `seconds` of the clip, faded out at the end
+        return f'atrim=0:{seconds:.3f},afade=t=out:st={max(0, seconds - STING_FADE):.3f}:d={min(STING_FADE, seconds):.3f},' if seconds else ''
+    parts = [f'[{first + k}:a]aresample=48000,{cut(cuts[k])}adelay={round(start * 1000)}:all=1[v{k}]' for k, start in enumerate(starts)]
     voices = ''.join(f'[v{k}]' for k in range(len(starts)))
     parts.append(f'{voices}amix=inputs={len(starts)}:normalize=0:dropout_transition=0,volume=1.6[voice]')
     if not music:
         parts.append(f'[voice]{fades}[mix]')
         return ';'.join(parts)
-    parts += [f'[1:a]aresample=48000,volume={MUSIC_VOLUME}[music]', '[voice]asplit=2[say][key]',
+    parts += [f'[1:a]aresample=48000,{"" if loops else "apad,"}volume={MUSIC_VOLUME}[music]', '[voice]asplit=2[say][key]',
               '[music][key]sidechaincompress=threshold=0.02:ratio=10:attack=15:release=350[ducked]',
               f'[ducked][say]amix=inputs=2:normalize=0:duration=first,{fades}[mix]']
     return ';'.join(parts)

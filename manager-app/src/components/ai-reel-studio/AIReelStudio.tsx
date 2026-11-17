@@ -1,19 +1,22 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CircleAlert, Eye, Film, ImagePlus, Lock, LockOpen, Mic, Plus, Send, ShieldCheck, Sparkles, Wand2, X } from 'lucide-react';
+import { CircleAlert, Eye, Film, ImagePlus, Lock, LockOpen, Mic, Play, Plus, RefreshCw, Send, ShieldCheck, Sparkles, Trash2, Wand2, X } from 'lucide-react';
 import { useAIReelStudio } from '../../hooks/useAIReelStudio';
+import { usePastedImages } from '../../hooks/usePastedImages';
 import { compositionApi } from '../../services/compositionApi';
 import { loadAISettings, modelLabel } from '../../services/aiSettings';
 import { reelApi } from '../../services/reelCreator';
 import type { Composition, CompositionScene, Part, PartKind, PartsCatalog } from '../../types/composition';
-import type { CreatedReelMedia, ReelAsset, ReelGoal, StyleRole } from '../../types/reelCreator';
+import type { CreatedReelMedia, ReelAsset, ReelGoal, ReelJob, StyleRole } from '../../types/reelCreator';
 import { Alert } from '../ui/Alert';
 import { Button } from '../ui/Button';
+import { Checkbox } from '../ui/Checkbox';
 import { IconButton } from '../ui/IconButton';
 import { Input } from '../ui/Input';
 import { Select } from '../ui/Select';
 import { Spinner } from '../ui/Spinner';
 import { Textarea } from '../ui/Textarea';
 import { DirectorPanel } from '../reel-creator/DirectorPanel';
+import { MusicPanel } from './MusicPanel';
 import { Thumb } from '../reel-creator/Thumb';
 
 interface Props { active: boolean; onUseReel: (media: CreatedReelMedia) => void }
@@ -28,12 +31,12 @@ const DEFAULT = '__default';
 /** The parts of one kind a scene can use, as Select options, with the recipe's own choice first. */
 function options(catalog: PartsCatalog, kind: PartKind, scene: CompositionScene, keep?: string) {
   const fits = (p: Part) => p.kind === kind && p.applies_to.includes(scene.kind) && (!p.needs_photo || !!scene.background.image_id);
-  const list = catalog.parts.filter(fits).map(p => ({ value: p.id, label: p.label }));
+  const list = catalog.parts.filter(p => fits(p) && p.label !== keep).map(p => ({ value: p.id, label: p.label }));
   return keep ? [{ value: DEFAULT, label: keep }, ...list] : list;
 }
 const hint = (catalog: PartsCatalog, kind: PartKind, id: string | null | undefined) => catalog.parts.find(p => p.kind === kind && p.id === id)?.use_when ?? '';
 
-function Start({ busy, recipes, onCompose }: { busy: boolean; recipes: { value: string; label: string }[];
+function Start({ active, busy, recipes, onCompose }: { active: boolean; busy: boolean; recipes: { value: string; label: string }[];
   onCompose: (source: string, photos: ReelAsset[], scenario: string, recipe: string | null, goal: ReelGoal) => void }) {
   const [source, setSource] = useState('');
   const [photos, setPhotos] = useState<ReelAsset[]>([]);
@@ -48,6 +51,12 @@ function Start({ busy, recipes, onCompose }: { busy: boolean; recipes: { value: 
       if (picked) { setPhotos(old => [...old, ...picked.assets].slice(0, 7)); setProblem(picked.errors.join(' ')); }
     } catch (err) { setProblem(err instanceof Error ? err.message : 'Could not add the photos.'); }
   };
+  const room = 7 - photos.length;
+  const pasting = usePastedImages(async files => {
+    if (room <= 0) { setProblem('7 photos at most.'); return; }
+    const picked = await reelApi.uploadImages(files.slice(0, room));
+    setPhotos(old => [...old, ...picked.assets].slice(0, 7)); setProblem(picked.errors.join(' '));
+  }, active && !busy, setProblem);
   const go = () => { if (!source.trim()) { setMissing(true); return; } onCompose(source, photos, scenario, recipe || null, goal); };
   return <section aria-label="Compose a reel" className="mx-auto max-w-2xl space-y-5 rounded-2xl border border-zinc-800 bg-zinc-950/60 p-6">
     <div className="flex items-center gap-2"><Wand2 className="h-4 w-4 text-sky-400" aria-hidden="true" /><h2 className="text-sm font-semibold text-zinc-100">Compose a reel with AI</h2></div>
@@ -58,14 +67,14 @@ function Start({ busy, recipes, onCompose }: { busy: boolean; recipes: { value: 
     </label>
     {missing && <p className="text-[11px] text-red-400">Paste the article or its link first.</p>}
     <div className="space-y-2">
-      <p className="text-xs font-medium text-zinc-300">Photos <span className="font-normal text-zinc-500">(one per scene, in order)</span></p>
+      <p className="text-xs font-medium text-zinc-300">Photos <span className="font-normal text-zinc-500">(one per scene, in order · click + or paste with Ctrl+V)</span></p>
       <div className="flex flex-wrap gap-2">
         {photos.map((photo, i) => <div key={photo.id} className="group relative h-16 w-16 overflow-hidden rounded-lg border border-zinc-800">
           <Thumb id={photo.id} className="h-full w-full" />
           <button type="button" aria-label={`Remove photo ${i + 1}`} onClick={() => setPhotos(old => old.filter(p => p.id !== photo.id))}
             className="absolute right-0.5 top-0.5 rounded bg-black/70 p-0.5 text-zinc-200 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"><X className="h-3 w-3" /></button>
         </div>)}
-        {photos.length < 7 && <button type="button" onClick={() => { void pick(); }} className="flex h-16 w-16 items-center justify-center rounded-lg border border-dashed border-zinc-700 text-zinc-500 hover:border-zinc-500 hover:text-zinc-300" aria-label="Add photos"><ImagePlus className="h-4 w-4" /></button>}
+        {photos.length < 7 && <button type="button" onClick={() => { void pick(); }} className="flex h-16 w-16 items-center justify-center rounded-lg border border-dashed border-zinc-700 text-zinc-500 hover:border-zinc-500 hover:text-zinc-300" aria-label="Add photos">{pasting ? <Spinner /> : <ImagePlus className="h-4 w-4" />}</button>}
       </div>
       {problem && <p className="text-[11px] text-amber-300">{problem}</p>}
     </div>
@@ -118,9 +127,9 @@ function Preview({ composition, scene, onScene, video }: { composition: Composit
   </div>;
 }
 
-function SceneCard({ scene, index, count, catalog, selected, busy, onSelect, onEdit }: {
-  scene: CompositionScene; index: number; count: number; catalog: PartsCatalog; selected: boolean; busy: boolean;
-  onSelect: () => void; onEdit: (patch: Partial<CompositionScene>) => void;
+function SceneCard({ scene, index, count, catalog, selected, busy, regenerating, onSelect, onEdit, onRemove, onRegenerate }: {
+  scene: CompositionScene; index: number; count: number; catalog: PartsCatalog; selected: boolean; busy: boolean; regenerating: boolean;
+  onSelect: () => void; onEdit: (patch: Partial<CompositionScene>) => void; onRemove: () => void; onRegenerate: () => void;
 }) {
   const role = (r: StyleRole) => scene.styles[r]?.animation ?? '';
   const setRole = (r: StyleRole, animation: string) =>
@@ -139,12 +148,26 @@ function SceneCard({ scene, index, count, catalog, selected, busy, onSelect, onE
         <div className="flex items-center gap-2 text-[11px] text-zinc-500">Scene {index + 1} · {KIND_LABEL[scene.kind]}
           {scene.kind === 'stat' && scene.stat && <span className="rounded bg-zinc-800 px-1.5 text-zinc-300">{scene.stat}</span>}</div>
         <Input value={scene.headline} maxLength={120} aria-label={`Scene ${index + 1} headline`} onChange={event => onEdit({ headline: event.target.value })} className="font-medium" />
-        <Input value={scene.detail} maxLength={160} aria-label={`Scene ${index + 1} detail`} placeholder="Detail" onChange={event => onEdit({ detail: event.target.value })} />
+        <div className="flex items-center gap-2">
+          <Input value={scene.detail} maxLength={160} aria-label={`Scene ${index + 1} detail`} placeholder="Detail" onChange={event => onEdit({ detail: event.target.value })}
+            className={scene.hide_detail ? 'opacity-50' : undefined} />
+          {scene.detail && <label className="flex shrink-0 items-center gap-1.5 text-[11px] text-zinc-400" title="Keep the detail off the screen; the voice still reads it">
+            <Checkbox checked={!!scene.hide_detail} ariaLabel={`Hide scene ${index + 1} detail`} onCheckedChange={on => onEdit({ hide_detail: on ? true : null })} />Hide</label>}
+        </div>
+        <Textarea value={scene.say ?? ''} maxLength={SAY_LIMIT} rows={2} aria-label={`Scene ${index + 1} voice says`}
+          placeholder={`Voice says (optional): ${screenWords(scene) || 'the screen text'}`} onChange={event => onEdit({ say: event.target.value })}
+          title="Narration for this scene. Leave empty to read the headline and detail. Up to about 18 seconds." className="text-xs" />
       </div>
       <IconButton aria-label={scene.locked ? `Unlock scene ${index + 1}` : `Lock scene ${index + 1}`} aria-pressed={!!scene.locked} disabled={busy}
         title={scene.locked ? 'Locked: the AI leaves this scene alone' : 'Lock so the AI leaves this scene alone'} className={scene.locked ? 'text-amber-300' : undefined}
         onClick={event => { event.stopPropagation(); onEdit({ locked: scene.locked ? null : true }); }}>
         {scene.locked ? <Lock className="h-3.5 w-3.5" /> : <LockOpen className="h-3.5 w-3.5" />}</IconButton>
+      <IconButton aria-label={`Regenerate scene ${index + 1}`} disabled={busy || !!scene.locked}
+        title={scene.locked ? 'Unlock the scene to regenerate it' : 'Write this scene again from the article, with new parts. Undo is in the Director panel.'}
+        onClick={event => { event.stopPropagation(); onRegenerate(); }}>
+        {regenerating ? <Spinner className="h-3.5 w-3.5" /> : <RefreshCw className="h-3.5 w-3.5" />}</IconButton>
+      <IconButton aria-label={`Delete scene ${index + 1}`} disabled={busy || count <= 1} title={count <= 1 ? 'A reel needs at least one scene' : 'Delete this scene'}
+        className="hover:text-red-400" onClick={event => { event.stopPropagation(); onRemove(); }}><Trash2 className="h-3.5 w-3.5" /></IconButton>
     </div>
     <div className="grid grid-cols-2 gap-2 lg:grid-cols-3">
       {chip('Layout', 'layout', scene.layout, layout => onEdit({ layout: layout as CompositionScene['layout'] }))}
@@ -152,6 +175,8 @@ function SceneCard({ scene, index, count, catalog, selected, busy, onSelect, onE
       {index > 0 && chip('Transition in', 'transition', scene.transition ?? '', t => onEdit({ transition: (t || null) as CompositionScene['transition'] }), 'Crossfade')}
       {chip('Headline', 'animation', role('headline'), a => setRole('headline', a), 'Layout default')}
       {scene.detail && chip('Detail', 'animation', role('detail'), a => setRole('detail', a), 'Layout default')}
+      {chip('Then', 'emphasis', scene.emphasis ?? '', e => onEdit({ emphasis: (e || null) as CompositionScene['emphasis'] }), 'Stays still')}
+      {chip('Exit', 'exit', scene.exit ?? '', e => onEdit({ exit: (e || null) as CompositionScene['exit'] }), 'Fade')}
       {(scene.kind === 'stat' || scene.kind === 'quote') && chip(scene.kind === 'stat' ? 'Figure' : 'Quote mark', 'animation', role('lead'), a => setRole('lead', a), 'Layout default')}
     </div>
     {index === count - 1 && scene.kind !== 'end' && <p className="text-[11px] text-zinc-500">Tip: an end card asks viewers to comment or read on.</p>}
@@ -160,15 +185,30 @@ function SceneCard({ scene, index, count, catalog, selected, busy, onSelect, onE
 
 const VOICES = ['Kore', 'Puck', 'Charon', 'Aoede', 'Fenrir', 'Leda', 'Orus', 'Zephyr', 'Schedar', 'Sulafat'].map(v => ({ value: v, label: v }));
 
-/** What each scene will say aloud: its own words (the backend writes the same). */
-const narrationLength = (c: Composition) => c.scenes.reduce((n, s) => n + [s.kind === 'stat' ? s.stat : '', s.headline, s.detail, s.kind === 'quote' ? s.attribution : '']
-  .filter(Boolean).join(' ').length, 0);
+const SAY_LIMIT = 280;
+/** The director's instruction to write one scene again: new words from the article and new parts, nothing else changed. */
+const regenerate = (s: CompositionScene, i: number) => `Regenerate scene ${i + 1} only. Write it again from the article: a different headline, detail and highlight `
+  + `than "${s.headline}"${s.kind === 'end' ? ', still an end card' : ''}, with facts not already used in the other scenes where possible. Then choose a layout, camera, `
+  + `entrance and emphasis that suit the new words and differ from now. Change no other scene.`;
+const QUALITY = [{ value: 'fhd', label: 'Full HD · 1080p' }, { value: 'hd', label: 'HD · 720p' }, { value: 'sd', label: 'SD · 480p, smallest file' }];
+const fileSize = (bytes: number) => bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GB` : bytes >= 1024 ** 2 ? `${(bytes / 1024 ** 2).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.round(seconds % 60)).padStart(2, '0')}`;
+/** "1080 × 1920 · 0:42 · 12.4 MB": what the finished file is. */
+const videoFacts = (o: NonNullable<ReelJob['output']>) =>
+  [o.width && o.height ? `${o.width} × ${o.height}` : '', o.seconds ? clock(o.seconds) : '', fileSize(o.size_bytes)].filter(Boolean).join(' · ');
+/** What a scene's screen text reads as aloud (the backend writes the same). */
+const screenWords = (s: CompositionScene) => [s.kind === 'stat' ? s.stat : '', s.headline, s.detail, s.kind === 'quote' ? s.attribution : ''].filter(Boolean).join(' ');
+/** What each scene will say aloud: its own script, or its screen text. */
+const narrationLength = (c: Composition) => c.scenes.reduce((n, s) => n + (s.say?.trim() || screenWords(s)).length, 0);
+const CAPTION_SIZES = [{ value: 'small', label: 'Small' }, { value: 'medium', label: 'Medium' }, { value: 'large', label: 'Large' }];
+const CAPTION_WORDS = [2, 3, 4, 5, 6].map(n => ({ value: String(n), label: `Up to ${n} words` }));
 
-function VoicePanel({ composition, busy, voicing, note, onAdd, onRemove, onCaptions }: { composition: Composition; busy: boolean; voicing: boolean; note: string;
-  onAdd: (voice: string) => void; onRemove: () => void; onCaptions: (on: boolean) => void }) {
+function VoicePanel({ composition, busy, voicing, note, onAdd, onRemove, onCaptions, onChange }: { composition: Composition; busy: boolean; voicing: boolean; note: string;
+  onAdd: (voice: string) => void; onRemove: () => void; onCaptions: (on: boolean) => void; onChange: (patch: Partial<Composition>) => void }) {
   const [voice, setVoice] = useState('Kore');
   const voiced = composition.scenes.some(s => s.voice);
-  const stale = composition.scenes.some(s => s.voice && !s.voice.text.includes(s.headline.trim()));
+  const stale = composition.scenes.some(s => s.voice && !s.voice.text.includes((s.say?.trim() || s.headline.trim()).replace(/[.!?]$/, '')));
+  const captioned = voiced && composition.captions === 'voice';
   return <section aria-label="Voice and captions" className="space-y-2 rounded-xl border border-zinc-800 bg-zinc-950/60 p-3">
     <div className="flex items-center gap-2"><Mic className="h-3.5 w-3.5 text-sky-400" aria-hidden="true" /><h3 className="text-xs font-semibold text-zinc-100">Voice and captions</h3>
       <span className="ml-auto text-[10px] text-zinc-500">Gemini voice · English</span></div>
@@ -176,15 +216,24 @@ function VoicePanel({ composition, busy, voicing, note, onAdd, onRemove, onCapti
       <div className="w-32 space-y-1"><p className="text-[10px] uppercase tracking-wide text-zinc-500">Voice</p>
         <Select ariaLabel="Voice" value={voice} options={VOICES} onValueChange={setVoice} /></div>
       <Button size="sm" loading={voicing} disabled={busy} onClick={() => onAdd(voice)}
-        title="Each scene reads its own headline and detail. Text that has not changed is not voiced again.">
+        title="Each scene reads its own script, or its headline and detail. Text that has not changed is not voiced again.">
         {voiced ? 'Update voiceover' : 'Add voiceover'} <span className="text-[10px] opacity-70">~{narrationLength(composition).toLocaleString()} characters</span></Button>
       {voiced && <>
         <div className="w-40 space-y-1"><p className="text-[10px] uppercase tracking-wide text-zinc-500">Captions</p>
           <Select ariaLabel="Captions" value={composition.captions === 'voice' ? 'voice' : 'off'} options={[{ value: 'voice', label: 'Follow the voice' }, { value: 'off', label: 'Off' }]}
             onValueChange={value => onCaptions(value === 'voice')} /></div>
+        {captioned && <>
+          <div className="w-28 space-y-1"><p className="text-[10px] uppercase tracking-wide text-zinc-500">Caption size</p>
+            <Select ariaLabel="Caption size" value={composition.caption_size ?? 'medium'} options={CAPTION_SIZES}
+              onValueChange={value => onChange({ caption_size: value as Composition['caption_size'] })} /></div>
+          <div className="w-36 space-y-1"><p className="text-[10px] uppercase tracking-wide text-zinc-500">On screen</p>
+            <Select ariaLabel="Caption words at once" value={String(composition.caption_words ?? 4)} options={CAPTION_WORDS}
+              onValueChange={value => onChange({ caption_words: Number(value) })} /></div>
+        </>}
         <Button variant="ghost" size="sm" disabled={busy} onClick={onRemove}>Remove voice</Button>
       </>}
     </div>
+    <p className="text-[11px] text-zinc-500">To say more than the screen shows, write it in a scene's "Voice says" box.</p>
     {stale && <p className="text-[11px] text-amber-300">Some scenes changed after they were voiced. Update the voiceover so it matches.</p>}
     {note && <p className="text-[11px] text-zinc-400" aria-live="polite">{note}</p>}
   </section>;
@@ -195,6 +244,7 @@ export function AIReelStudio({ active, onUseReel }: Props) {
   const studio = useAIReelStudio(active, onUseReel);
   const { doc, catalog, busy, job, fresh } = studio;
   const [scene, setScene] = useState(0);
+  const [regenerating, setRegenerating] = useState<number | null>(null);
   const [video, setVideo] = useState('');
   useEffect(() => { setScene(0); }, [studio.draftId]);
   useEffect(() => { if (doc) setScene(i => Math.min(i, doc.composition.scenes.length - 1)); }, [doc]);
@@ -205,7 +255,10 @@ export function AIReelStudio({ active, onUseReel }: Props) {
     reelApi.video(done.id).then(blob => { if (!cancelled) { url = URL.createObjectURL(blob); setVideo(url); } }).catch(() => undefined);
     return () => { cancelled = true; if (url) URL.revokeObjectURL(url); };
   }, [done?.id]); // eslint-disable-line react-hooks/exhaustive-deps
-  const recipes = useMemo(() => (catalog?.recipes ?? []).map(r => ({ value: r.id, label: r.label })), [catalog]);
+  // AI Studio's own recipes first; Reel Studio's looks stay available, named as such.
+  const recipes = useMemo(() => [...(catalog?.recipes ?? [])].sort((a, b) => Number(a.studio === 'reel') - Number(b.studio === 'reel'))
+    .map(r => ({ value: r.id, label: r.studio === 'reel' ? `Reel Studio · ${r.label}` : r.label })), [catalog]);
+  usePastedImages(files => studio.pastePhotos(files), !!(active && doc && !busy), studio.setError);
   const changed = useMemo(() => new Set((studio.directed?.changes ?? []).flatMap(c => c.scene ? [c.scene - 1] : [])), [studio.directed]);
 
   if (!studio.loaded || !catalog) return <div className="flex h-full items-center justify-center p-10">
@@ -224,34 +277,44 @@ export function AIReelStudio({ active, onUseReel }: Props) {
     </header>
     {studio.error && <Alert variant="danger" role="alert">{studio.error}</Alert>}
 
-    {!doc ? <Start busy={busy === 'compose'} recipes={recipes} onCompose={(...args) => { void studio.compose(...args); }} />
+    {!doc ? <Start active={active} busy={busy === 'compose'} recipes={recipes} onCompose={(...args) => { void studio.compose(...args); }} />
       : <div className="grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
         <div className="space-y-4 lg:sticky lg:top-4 lg:self-start">
           <Preview composition={doc.composition} scene={scene} onScene={setScene} video={video} />
           <DirectorPanel model={modelLabel(loadAISettings(), 'direct')} busy={!!busy} directing={busy === 'direct'} result={studio.directed}
             onDirect={instruction => { void studio.direct(instruction); }} onUndo={studio.undoDirected} onScene={setScene} />
           <div className="mx-auto flex w-full max-w-[300px] flex-col gap-2">
-            {rendering && job && <div className="flex items-center justify-between text-xs text-zinc-400"><span>Rendering… {Math.round((job.progress ?? 0) * 100)}%</span>
+            {rendering && job && <div className="flex items-center justify-between text-xs text-zinc-400"><span>{job.kind === 'preview' ? 'Making preview' : 'Rendering'}… {Math.round((job.progress ?? 0) * 100)}%</span>
               <button type="button" className="text-zinc-500 hover:text-zinc-200" onClick={() => { void studio.cancelJob(); }}>Cancel</button></div>}
             {job?.state === 'failed' && fresh && <p className="text-[11px] text-red-400">{job.error || 'The render failed.'}</p>}
-            <Button loading={rendering} disabled={!!busy && !rendering} onClick={() => { void studio.startRender('final'); }}><Film className="h-3.5 w-3.5" />{done ? 'Render again' : 'Make video'}</Button>
-            <Button variant="outline" disabled={!done || !!busy} loading={busy === 'send'} onClick={() => { void studio.send(); }}><Send className="h-3.5 w-3.5" />Use in Posts</Button>
+            {done?.output && <p className="text-center text-[11px] text-zinc-400" aria-label="Video size">{videoFacts(done.output)}</p>}
+            {done?.kind === 'preview' && <p className="text-center text-[11px] text-zinc-500">Quick preview at lower quality. Make video for the full-quality file to post.</p>}
+            <Button variant="outline" loading={rendering && job?.kind === 'preview'} disabled={!!busy || rendering}
+              title="A quick lower-quality video with all the motion, voice and music, to check before making the full video"
+              onClick={() => { void studio.startRender('preview'); }}><Play className="h-3.5 w-3.5" />{done?.kind === 'preview' ? 'Preview again' : 'Play preview'}</Button>
+            <Select ariaLabel="Video quality" value={doc.composition.quality ?? 'fhd'} options={QUALITY} disabled={!!busy || rendering}
+              onValueChange={quality => studio.setComposition(c => ({ ...c, quality: quality as Composition['quality'] }))} />
+            <Button loading={rendering && job?.kind === 'final'} disabled={!!busy || rendering} onClick={() => { void studio.startRender('final'); }}><Film className="h-3.5 w-3.5" />{done?.kind === 'final' ? 'Render again' : 'Make video'}</Button>
+            <Button variant="outline" disabled={done?.kind !== 'final' || !!busy} loading={busy === 'send'} onClick={() => { void studio.send(); }}><Send className="h-3.5 w-3.5" />Use in Posts</Button>
           </div>
         </div>
 
         <div className="min-w-0 space-y-4">
           <div className="flex flex-wrap items-end gap-3">
             <div className="w-48 space-y-1"><p className="text-[10px] uppercase tracking-wide text-zinc-500">Recipe</p>
-              <Select ariaLabel="Recipe" value={doc.composition.recipe ?? 'clean'} options={recipes}
-                onValueChange={recipe => studio.setComposition(c => ({ ...c, recipe }))} /></div>
+              <Select ariaLabel="Recipe" value={doc.composition.recipe ?? 'clean'} options={recipes} disabled={!!busy}
+                onValueChange={recipe => { void studio.changeRecipe(recipe); }} /></div>
             <div className="w-40 space-y-1"><p className="text-[10px] uppercase tracking-wide text-zinc-500">Pacing</p>
               <Select ariaLabel="Pacing" value={doc.composition.pacing} options={PACING}
                 onValueChange={pacing => studio.setComposition(c => ({ ...c, pacing: pacing as Composition['pacing'] }))} /></div>
+            <label className="flex h-9 items-center gap-2 text-xs text-zinc-300" title="Text floats slowly for the whole scene once it is in, alongside each scene's own motion">
+              <Checkbox checked={doc.composition.text_drift !== false} ariaLabel="Text drifts"
+                onCheckedChange={on => studio.setComposition(c => ({ ...c, text_drift: on }))} />Text drifts</label>
             <Button variant="outline" size="sm" loading={busy === 'review'} disabled={!!busy} onClick={studio.reviewNow}
               title="Fix anything unreadable: text over faces, bright photos, too much motion"><ShieldCheck className="h-3.5 w-3.5" />Check quality</Button>
             <Button variant="outline" size="sm" loading={busy === 'vision'} disabled={!!busy} onClick={studio.visionCheck}
               title="Sends one picture of every scene to the director's AI, which fixes crops and layouts. Costs about 2-3k tokens."><Eye className="h-3.5 w-3.5" />Check with AI</Button>
-            <Button variant="outline" size="sm" loading={busy === 'photos'} disabled={!!busy} onClick={() => { void studio.addPhotos(); }}><ImagePlus className="h-3.5 w-3.5" />Photos</Button>
+            <Button variant="outline" size="sm" loading={busy === 'photos'} disabled={!!busy} onClick={() => { void studio.addPhotos(); }} title="Add photos to scenes that have none. You can also paste a picture with Ctrl+V."><ImagePlus className="h-3.5 w-3.5" />Photos</Button>
           </div>
           {studio.notes.length > 0 && <div className="space-y-1 rounded-xl border border-zinc-800 bg-zinc-950/60 p-3 text-[11px]" aria-live="polite">
             <div className="flex items-center justify-between"><p className="font-medium text-zinc-300">Checks</p>
@@ -259,12 +322,18 @@ export function AIReelStudio({ active, onUseReel }: Props) {
             {studio.notes.map((note, i) => <p key={i} className={`flex gap-1.5 ${note.rule === 'fit' ? 'text-red-400' : 'text-zinc-400'}`}>
               <CircleAlert className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />{note.scene ? `Scene ${note.scene}: ` : ''}{note.message}</p>)}
           </div>}
+          <MusicPanel composition={doc.composition} busy={!!busy}
+            onMusic={(music, music_id) => studio.setComposition(c => ({ ...c, music, music_id }))}
+            onSting={sting => studio.setComposition(c => ({ ...c, sting }))} />
           <VoicePanel composition={doc.composition} busy={!!busy} voicing={busy === 'voice'} note={studio.voiceNote}
             onAdd={voice => { void studio.addVoiceover(voice); }} onRemove={studio.removeVoiceover}
-            onCaptions={on => studio.setComposition(c => ({ ...c, captions: on ? 'voice' : 'off' }))} />
+            onCaptions={on => studio.setComposition(c => ({ ...c, captions: on ? 'voice' : 'off' }))}
+            onChange={patch => studio.setComposition(c => ({ ...c, ...patch }))} />
           <ol className="space-y-2" aria-label="Scenes">
             {doc.composition.scenes.map((s, i) => <SceneCard key={i} scene={s} index={i} count={doc.composition.scenes.length} catalog={catalog}
-              selected={i === scene || changed.has(i)} busy={!!busy} onSelect={() => setScene(i)} onEdit={patch => studio.editScene(i, patch)} />)}
+              selected={i === scene || changed.has(i)} busy={!!busy} onSelect={() => setScene(i)} onEdit={patch => studio.editScene(i, patch)}
+              regenerating={regenerating === i} onRegenerate={() => { setRegenerating(i); void studio.direct(regenerate(s, i)).finally(() => setRegenerating(null)); }}
+              onRemove={() => { studio.removeScene(i); setScene(current => Math.max(0, Math.min(current > i ? current - 1 : current, doc.composition.scenes.length - 2))); }} />)}
           </ol>
           <label className="block text-xs font-medium text-zinc-300">Caption
             <Textarea value={doc.caption} rows={5} className="mt-2" onChange={event => studio.setDoc(d => ({ ...d, caption: event.target.value }))} />

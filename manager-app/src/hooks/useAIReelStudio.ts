@@ -2,9 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { configuredAI, loadAISettings, providerConfig } from '../services/aiSettings';
 import { compositionApi, type CompositionDirectorResult, type CompositionDraft } from '../services/compositionApi';
 import { reelApi } from '../services/reelCreator';
+import { withTextMotion } from '../services/compositionDocument';
 import { sourceKind } from '../services/reelDocument';
 import type { Composition, CompositionDoc, CompositionScene, PartsCatalog, QualityNote } from '../types/composition';
-import type { CreatedReelMedia, DirectorTurn, ReelAsset, ReelGoal, ReelJob } from '../types/reelCreator';
+import type { CreatedReelMedia, DirectorTurn, PhotoImport, ReelAsset, ReelGoal, ReelJob } from '../types/reelCreator';
 
 type Busy = null | 'compose' | 'direct' | 'review' | 'photos' | 'render' | 'send' | 'voice' | 'vision';
 const ACTIVE = ['queued', 'rendering', 'verifying'];
@@ -48,6 +49,10 @@ export function useAIReelStudio(active: boolean, onUseReel: (media: CreatedReelM
     setDocState(old => { if (!old) return old; const next = change(old); docRef.current = next; return next; });
   }, []);
   const setComposition = useCallback((change: (c: Composition) => Composition) => setDoc(d => ({ ...d, composition: change(d.composition) })), [setDoc]);
+  // A reel from before text motion, however it got here (opened, restored, or kept open across an app update), gets it once.
+  useEffect(() => {
+    if (doc && withTextMotion(doc.composition) !== doc.composition) setComposition(withTextMotion);
+  }, [doc, setComposition]);
 
   const persist = useCallback(() => {
     const run = saveChain.current.then(async () => {
@@ -68,9 +73,10 @@ export function useAIReelStudio(active: boolean, onUseReel: (media: CreatedReelM
 
   const open = useCallback((draft: CompositionDraft | null) => {
     const id = draft?.id ?? newId();
-    const next = draft ? docOf(draft) : null;
+    const stored = draft ? docOf(draft) : null;
+    const next = stored && { ...stored, composition: withTextMotion(stored.composition) };
     draftRef.current = { id, revision: draft?.revision ?? 0 };
-    savedHash.current = next ? JSON.stringify(snapshot(next)) : '';
+    savedHash.current = stored ? JSON.stringify(snapshot(stored)) : '';  // an upgraded reel is saved once
     docRef.current = next;
     setDocState(next); setDraftId(id); setError(''); setNotes([]); setDirected(null); setTurns([]); setSaveState(draft ? 'Saved' : '');
     try { const saved = JSON.parse(localStorage.getItem(`ai_reel_render:${id}`) || 'null'); setRender(saved?.jobId ? saved : null); } catch { setRender(null); }
@@ -161,6 +167,15 @@ export function useAIReelStudio(active: boolean, onUseReel: (media: CreatedReelM
   };
 
   /** Run the quality rules over hand edits; what they change is listed for the operator. */
+  /** Another recipe: its layouts, motion, type and colours on every unlocked scene, checked by the quality rules. */
+  const changeRecipe = (recipe: string) => attempt('review', async () => {
+    const base = docRef.current;
+    if (!base) return;
+    const result = await compositionApi.recipe(base.composition, recipe);
+    setComposition(() => result.composition);
+    setNotes([...result.fixes, ...result.problems]);
+  });
+
   const reviewNow = () => attempt('review', async () => {
     const base = docRef.current;
     if (!base) return;
@@ -185,9 +200,7 @@ export function useAIReelStudio(active: boolean, onUseReel: (media: CreatedReelM
     setComposition(c => ({ ...c, scenes: c.scenes.map((s, i) => i === index ? { ...s, ...patch } : s) }));
 
   /** Photos fill scenes that have none, in order. */
-  const addPhotos = () => attempt('photos', async () => {
-    const picked = await reelApi.pickImages(8);
-    if (!picked) return;
+  const fillScenes = (picked: PhotoImport) => {
     if (picked.errors.length) setError(picked.errors.join(' '));
     const queue = [...picked.assets];
     setComposition(c => ({ ...c, scenes: c.scenes.map(s => {
@@ -195,7 +208,16 @@ export function useAIReelStudio(active: boolean, onUseReel: (media: CreatedReelM
       const asset = queue.shift()!;
       return { ...s, background: { ...s.background, image_id: asset.id, focal_x: asset.focus?.x ?? .5, focal_y: asset.focus?.y ?? .4 } };
     }) }));
+  };
+  const addPhotos = () => attempt('photos', async () => {
+    const picked = await reelApi.pickImages(8);
+    if (picked) fillScenes(picked);
   });
+  /** Pasted images fill scenes that have no photo, like picked ones. */
+  const pastePhotos = (files: File[]) => attempt('photos', async () => fillScenes(await reelApi.uploadImages(files)));
+  /** A reel keeps at least one scene. */
+  const removeScene = (index: number) =>
+    setComposition(c => c.scenes.length > 1 ? { ...c, scenes: c.scenes.filter((_, i) => i !== index) } : c);
 
   /** Narrate every scene with Gemini and turn on captions that follow the voice. Unchanged narration is reused, not paid for again. */
   const addVoiceover = (voice: string) => attempt('voice', async () => {
@@ -240,7 +262,7 @@ export function useAIReelStudio(active: boolean, onUseReel: (media: CreatedReelM
   return {
     catalog, drafts, doc, draftId, loaded, busy, error, setError, notes, setNotes, saveState, job, fresh, working,
     voiceNote, addVoiceover, removeVoiceover, visionCheck,
-    open, discard, compose, direct, directed, undoDirected, reviewNow, editScene, setDoc, setComposition, addPhotos, startRender, send,
+    open, discard, compose, direct, directed, undoDirected, reviewNow, changeRecipe, editScene, removeScene, setDoc, setComposition, addPhotos, pastePhotos, startRender, send,
     cancelJob: () => job && attempt('render', async () => { const r = await reelApi.cancel(job.id); setJobs(old => old.map(j => j.id === r.id ? r : j)); }),
   };
 }

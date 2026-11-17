@@ -34,12 +34,26 @@ def test_parts_that_do_not_suit_a_scene_are_replaced():
 
 
 def test_one_loud_part_per_scene():
-    composition = Composition(scenes=[CScene(headline='A punchy hook for the reel', camera='push_face', transition='zoom_through',
+    composition = Composition(camera_waits=False, scenes=[CScene(headline='A punchy hook for the reel', camera='push_face', transition='zoom_through',
                                              background=Background(image_id='a' * 32), styles={'headline': PartStyle(animation='punch_in')})])
     fixed, fixes, _ = review(composition)
     scene = fixed.scenes[0]
     loud = [scene.camera == 'push_face', scene.transition == 'zoom_through', scene.styles['headline'].animation == 'punch_in']
     assert sum(loud) == 1 and ('busy' in {f.rule for f in fixes})
+
+
+def test_one_loud_part_while_text_arrives_and_one_while_the_photo_moves():
+    """With the camera waiting for the text, a loud entrance and a loud camera no longer happen at once."""
+    scene = CScene(headline='A punchy hook for the reel', highlight='punchy hook', camera='push_face', transition='zoom_through',
+                   emphasis='word_pop', background=Background(image_id='a' * 32), styles={'headline': PartStyle(animation='punch_in')})
+    fixed = review(Composition(scenes=[scene]))[0].scenes[0]
+    assert fixed.camera == 'push_face' and fixed.emphasis == 'highlight_sweep'  # the photo's moment: the camera stays
+    assert [fixed.transition, fixed.styles['headline'].animation].count('zoom_through') + [fixed.styles['headline'].animation].count('punch_in') == 1
+
+
+def test_emphasis_suits_its_scene():
+    fixed, fixes, _ = review(Composition(scenes=[CScene(headline='No figure here', emphasis='pulse')]))
+    assert fixed.scenes[0].emphasis == 'underline' and (1, 'compatibility') in rules(fixes)
 
 
 def test_no_entrance_three_times_in_a_row():
