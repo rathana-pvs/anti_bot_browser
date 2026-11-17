@@ -1337,6 +1337,7 @@ fn spawn_backend(app: &AppHandle) -> Option<Child> {
                 command
                     .args(["backend.main:app", "--host", "127.0.0.1", "--port", &port])
                     .current_dir(&code_root)
+                    .env("PORT", &port)
                     .env("PYTHONPATH", &code_root)
                     .env("AUTOMAT_FB_ROOT", &root);
                 if let Ok(token) = std::env::var("MANAGER_API_TOKEN") {

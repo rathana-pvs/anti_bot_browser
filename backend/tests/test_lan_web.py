@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from scripts import lan_web
+from backend.services import web_gateway as lan_web
 
 HOST = '192.168.1.20'
 BASE = f'http://{HOST}:5173'
@@ -198,6 +198,7 @@ def test_session_cookie_authenticates_websocket_and_relays_text_and_binary(gatew
         assert url == target
         assert kwargs['origin'] == 'http://127.0.0.1:5173'
         assert kwargs['proxy'] is None
+        assert kwargs['compression'] is None
         assert kwargs['subprotocols'] == [protocol]
         yield Remote()
 
@@ -239,3 +240,137 @@ def test_vnc_uses_only_running_pc_account_saved_port(status, container, runtime,
             assert await lan_web.vnc_target(client, 'profile_001', 'http://127.0.0.1:5173') == expected
             assert await lan_web.vnc_target(client, '../profile_001', 'http://127.0.0.1:5173') is None
     asyncio.run(check())
+
+
+TS_ORIGIN = 'https://manager.example.ts.net:8443'
+
+
+@pytest.fixture
+def desktop_gateway(monkeypatch, tmp_path):
+    (tmp_path / 'index.html').write_text('<html>app</html>')
+    (tmp_path / 'assets').mkdir()
+    (tmp_path / 'assets' / 'main.js').write_text('console.log(1)')
+    (tmp_path.parent / 'secret.txt').write_text('outside')
+    calls = []
+    real_client = httpx.AsyncClient
+
+    def respond(request):
+        calls.append(request)
+        return httpx.Response(200, stream=httpx.ByteStream(b'api response'))
+
+    monkeypatch.setattr(lan_web.httpx, 'AsyncClient',
+                        lambda **kwargs: real_client(**kwargs, transport=httpx.MockTransport(respond)))
+    app = lan_web.create_app('127.0.0.1', 5176, PASSWORD, upstream_port=43941, public_origin=TS_ORIGIN,
+                             static_dir=tmp_path, backend_token='desktop-token')
+    with TestClient(app, base_url=TS_ORIGIN) as client:
+        yield client, calls
+
+
+def test_desktop_gateway_serves_built_app_after_login(desktop_gateway):
+    client, calls = desktop_gateway
+    assert client.get('/').status_code == 401
+    assert client.get('/', auth=('manager', PASSWORD)).text == '<html>app</html>'
+    assert client.get('/assets/main.js').text == 'console.log(1)'
+    # Client-side routes and paths outside the build fall back to the app, never other files.
+    assert client.get('/accounts/profile_001').text == '<html>app</html>'
+    assert client.get('/..%2Fsecret.txt').text == '<html>app</html>'
+    assert client.post('/', headers={'Origin': TS_ORIGIN}).status_code == 404
+    assert not calls
+
+
+def test_desktop_gateway_adds_backend_token_only_server_side(desktop_gateway):
+    client, calls = desktop_gateway
+    client.get('/', auth=('manager', PASSWORD))
+    response = client.post('/api/example?x=1', content=b'body', headers={
+        'Origin': TS_ORIGIN, 'X-Manager-Token': 'client-guess', 'X-Manager-Web-Gateway': '0'})
+    assert response.status_code == 200
+    request = calls[-1]
+    assert str(request.url) == 'http://127.0.0.1:43941/api/example?x=1'
+    assert request.headers['x-manager-token'] == 'desktop-token'
+    assert request.headers['x-manager-web-gateway'] == '1'
+    assert 'desktop-token' not in response.text and 'desktop-token' not in str(response.headers)
+    client.get('/shared_media/clip.mp4')
+    assert calls[-1].url.path == '/shared_media/clip.mp4'
+
+
+def test_desktop_gateway_accepts_only_its_tailscale_port_origin(desktop_gateway):
+    client, calls = desktop_gateway
+    client.get('/', auth=('manager', PASSWORD))
+    assert client.post('/api/x', headers={'Origin': 'https://manager.example.ts.net'}).status_code == 403
+    assert client.get('/', headers={'Host': 'manager.example.ts.net:8443'}).status_code == 200
+
+
+def test_desktop_gateway_websocket_carries_backend_token(desktop_gateway, monkeypatch):
+    client, calls = desktop_gateway
+    client.get('/', auth=('manager', PASSWORD))
+
+    class Remote:
+        subprotocol = None
+
+        def __init__(self):
+            self.frames = asyncio.Queue()
+
+        async def send(self, frame):
+            await self.frames.put(frame)
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            return await self.frames.get()
+
+    @asynccontextmanager
+    async def connect(url, **kwargs):
+        assert url == 'ws://127.0.0.1:43941/api/devices/phone/live'
+        assert kwargs['additional_headers']['X-Manager-Token'] == 'desktop-token'
+        yield Remote()
+
+    monkeypatch.setattr(lan_web, 'connect', connect)
+    with client.websocket_connect('wss://manager.example.ts.net:8443/api/devices/phone/live',
+                                  headers={'Origin': TS_ORIGIN}) as socket:
+        socket.send_text('ping')
+        assert socket.receive_text() == 'ping'
+
+
+def test_desktop_gateway_requires_built_app(tmp_path):
+    with pytest.raises(ValueError, match='built web app'):
+        lan_web.create_app('127.0.0.1', 5176, PASSWORD, public_origin=TS_ORIGIN, static_dir=tmp_path, backend_token='t')
+
+
+def test_desktop_gateway_compresses_and_caches_built_files(desktop_gateway, tmp_path):
+    client, calls = desktop_gateway
+    client.get('/', auth=('manager', PASSWORD))
+    big = 'console.log("speed");\n' * 500
+    (tmp_path / 'assets' / 'app-abc123.js').write_text(big)
+    response = client.get('/assets/app-abc123.js', headers={'Accept-Encoding': 'gzip'})
+    assert response.headers['content-encoding'] == 'gzip'
+    assert response.text == big
+    assert response.headers['cache-control'] == 'private, max-age=31536000, immutable'
+    assert 'x-gateway-cacheable' not in response.headers
+    page = client.get('/')
+    assert page.headers['cache-control'] == 'private, no-cache'
+    plain = client.get('/assets/app-abc123.js', headers={'Accept-Encoding': 'identity'})
+    assert 'content-encoding' not in plain.headers and plain.text == big
+
+
+def test_gateway_compresses_api_json_but_not_media(monkeypatch, tmp_path):
+    (tmp_path / 'index.html').write_text('<html>app</html>')
+    payload = b'[' + b'{"id":"profile_001","status":"running"},' * 200 + b'{}]'
+    real_client = httpx.AsyncClient
+
+    def respond(request):
+        if request.url.path == '/api/profiles':
+            return httpx.Response(200, stream=httpx.ByteStream(payload), headers={'Content-Type': 'application/json'})
+        return httpx.Response(200, stream=httpx.ByteStream(b'\x00' * 4096), headers={'Content-Type': 'video/mp4'})
+
+    monkeypatch.setattr(lan_web.httpx, 'AsyncClient',
+                        lambda **kwargs: real_client(**kwargs, transport=httpx.MockTransport(respond)))
+    app = lan_web.create_app('127.0.0.1', 5176, PASSWORD, upstream_port=43941, public_origin=TS_ORIGIN,
+                             static_dir=tmp_path, backend_token='t')
+    with TestClient(app, base_url=TS_ORIGIN) as client:
+        client.get('/', auth=('manager', PASSWORD))
+        api = client.get('/api/profiles', headers={'Accept-Encoding': 'gzip'})
+        assert api.headers['content-encoding'] == 'gzip' and api.content == payload
+        assert api.headers['cache-control'] == 'no-store'
+        media = client.get('/shared_media/clip.mp4', headers={'Accept-Encoding': 'gzip'})
+        assert 'content-encoding' not in media.headers and len(media.content) == 4096

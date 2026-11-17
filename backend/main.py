@@ -42,6 +42,7 @@ from backend.routers import (
     reel_creator,
     storage,
     websites,
+    web_access as web_access_router,
 )
 
 configure_structured_logging()
@@ -81,11 +82,15 @@ async def lifespan(app: FastAPI):
             await worker_service.start()
             reel_creator.get_service().start()
             session_path = publish_session()
+            from backend.services.web_access import backend_port_from_launch, web_access
+            web_access.resume(backend_port_from_launch())
             yield
         finally:
             if debug_watchdog is not None:
                 debug_watchdog.cancel()
                 faulthandler.cancel_dump_traceback_later()
+            from backend.services.web_access import web_access
+            await web_access.shutdown()
             await asyncio.to_thread(reel_creator.get_service().stop)
             await worker_service.stop()
             # Shutdown
@@ -140,6 +145,7 @@ app.include_router(live.router)
 app.include_router(reel_creator.router)
 app.include_router(storage.router)
 app.include_router(websites.router)
+app.include_router(web_access_router.router)
 
 # Mount /shared_media static directory
 if not SHARED_MEDIA_DIR.exists():

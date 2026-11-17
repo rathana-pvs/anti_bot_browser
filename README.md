@@ -324,6 +324,18 @@ server process and is not included in browser JavaScript. This is a local
 development workflow. Browser mode uses normal file pickers/downloads; native
 setup, update and desktop integration actions require the desktop app.
 
+**Web access from Settings.** In the desktop app, open **Settings > Web access**
+and press **Turn on web access**. The app starts its password-protected gateway
+on loopback (port 5176) and shares it privately with Tailscale Serve at
+`https://<this-pc>.<tailnet>.ts.net:8443`, reachable only from devices signed in
+to the same Tailscale network. Settings shows the address, username and
+password. It stays on across app and PC restarts (retrying until Tailscale is
+ready) until you turn it off. The username and password stay the same, even
+when you turn it off and on, until you press **Make a new password**. It never enables Funnel and leaves other Serve/Funnel
+rules alone. Tailscale must be signed in on this
+PC, and the first time it needs `sudo tailscale set --operator=$USER`. Web
+visitors cannot turn it on or off or see the password.
+
 To open the running web app from another device on the same trusted Wi-Fi,
 leave `npm run dev:web` running and start the password-protected LAN gateway
 from the repository root:

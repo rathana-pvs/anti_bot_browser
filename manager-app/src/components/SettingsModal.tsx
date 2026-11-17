@@ -6,10 +6,11 @@ import { AutoWarmingControl } from './AutoWarmingControl';
 import { PostingPlanControl } from './PostingPlanControl';
 import { StorageControl } from './StorageControl';
 import { WebsiteConnectionsSettings } from './WebsiteConnectionsSettings';
+import { WebAccessSettings } from './WebAccessSettings';
 import { MANAGE_WEBSITE_CONNECTIONS } from '../services/websites';
 import { CLAUDE_MODELS, GEMINI_MODELS, PROVIDERS, loadAISettings, providerConfig, saveAISettings, type AIProvider, type AISettings } from '../services/aiSettings';
 import { reelApi } from '../services/reelCreator';
-import { Check, CircleAlert, Cpu, Eye, EyeOff, Globe, HardDrive, KeyRound, Loader2, Settings, X } from 'lucide-react';
+import { Check, CircleAlert, Cpu, Eye, EyeOff, Globe, HardDrive, KeyRound, Loader2, MonitorSmartphone, Settings, X } from 'lucide-react';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -18,7 +19,7 @@ interface SettingsModalProps {
   onRequestOpen?: () => void;
 }
 
-type Section = 'api-keys' | 'updates' | 'resources' | 'storage' | 'websites';
+type Section = 'api-keys' | 'updates' | 'resources' | 'storage' | 'websites' | 'web-access';
 
 const SECTION_COPY: Record<Section, { title: string; description: string }> = {
   'api-keys': { title: 'AI models', description: 'Connect Gemini, Claude or another AI, and choose which one writes and directs reels.' },
@@ -26,6 +27,7 @@ const SECTION_COPY: Record<Section, { title: string; description: string }> = {
   resources: { title: 'Resources', description: 'Control how much automation runs at once and which OCR engine it uses.' },
   websites: { title: 'Websites', description: 'Connect websites once, then select them when posting.' },
   storage: { title: 'Storage', description: 'What uses disk space, and housekeeping that keeps it from growing.' },
+  'web-access': { title: 'Web access', description: 'Use this app from your phone or another computer through Tailscale.' },
 };
 
 type KeyId = 'gemini' | 'claude' | 'openai';
@@ -162,6 +164,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
             <button type="button" onClick={() => setSection('storage')} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition-colors ${section === 'storage' ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'}`}>
               <HardDrive className="h-4 w-4" /> Storage
             </button>
+            <button type="button" onClick={() => setSection('web-access')} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition-colors ${section === 'web-access' ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'}`}>
+              <MonitorSmartphone className="h-4 w-4" /> Web access
+            </button>
             {onOpenSetup && <button type="button" onClick={onOpenSetup} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200">
               <Settings className="h-4 w-4" /> Setup and repair
             </button>}
@@ -246,7 +251,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
               </div>
             ) : section === 'storage' ? (
               <div className="max-w-xl"><StorageControl /></div>
-            ) : <AppUpdates />}
+            ) : section === 'web-access' ? <WebAccessSettings /> : <AppUpdates />}
           </div>
         </section>
       </div>

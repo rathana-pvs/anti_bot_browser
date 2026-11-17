@@ -5,7 +5,7 @@
   "identifier": "com.isolatedbrowser.manager",
   "build": {
     "beforeDevCommand": "npm run dev:desktop",
-    "beforeBuildCommand": "node ../scripts/prepare_desktop_build.mjs && npm run build",
+    "beforeBuildCommand": "node ../scripts/prepare_desktop_build.mjs && npm run build && node ../scripts/stage_web_payload.mjs",
     "devUrl": "http://127.0.0.1:1420",
     "frontendDist": "../dist"
   },
