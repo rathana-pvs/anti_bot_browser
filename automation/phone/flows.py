@@ -85,6 +85,13 @@ COMMENT_BOX = ["Write a comment", "Add a comment", "Comment as"]
 PROFILE_TAB_SCROLLS = 6
 NEW_POST_MAX_MINUTES = 10  # a post whose time label is at most this old counts as this job's
 PROFILE_BACK_UP_SCROLLS = 2  # swipes back up before an older post ends a look: the profile may open past our post
+# Swipes up to the top of the profile (its "followers" line) before a look scans down the posts.
+PROFILE_TOP_SCROLLS = 6
+# A slow drag down the posts list. A quick 0.35 s swipe flings the list on well past the drag, which
+# can carry this job's post header (its time label) under the profile's sticky tab bar unread.
+PROFILE_SCAN_SWIPE_S = 1.2
+# A back-up drag that moves the older post's time label less than this (1080-wide px) did not scroll.
+PROFILE_MOVED_MIN = 40
 # Seconds spent reading between scrolls of a warming session.
 READING_PAUSES = {"quick": (1.0, 3.0), "balanced": (2.5, 5.5), "relaxed": (5.0, 10.0)}
 
@@ -796,6 +803,9 @@ class Flows:
                 await self.open_profile()
             else:
                 await self.refresh_profile()
+            # The tab tap can leave the list with this job's post header under the sticky tab bar, so
+            # each look scans down from the top of the profile, where that header passes in view.
+            await self.profile_to_top()
             if await self.scan_profile(item, allowed, attempt):
                 await self.write_comment(item)
                 return attempt
@@ -803,13 +813,20 @@ class Flows:
                      next_wait=waits[attempt] if attempt < len(waits) else None)
         raise StepFailed(f"comment skipped: the post did not show on the profile after {len(waits)} looks")
 
+    async def profile_to_top(self) -> bool:
+        """Swipes up until the profile's "followers" line shows. False when it never did."""
+        dev = self.device
+        for _ in range(PROFILE_TOP_SCROLLS):
+            if match(await dev.read(), "followers"):
+                return True
+            await self.scroll(dev.pt(540, 800), dev.pt(540, 2000))
+        self.log(event="profile_top", found=False)
+        return False
+
     async def refresh_profile(self) -> None:
         """Back to the top of the profile, pull to refresh, then the Posts tab again."""
         dev = self.device
-        for _ in range(6):
-            if match(await dev.read(), "followers"):
-                break
-            await self.scroll(dev.pt(540, 800), dev.pt(540, 2000))
+        await self.profile_to_top()
         await self.scroll(dev.pt(540, 900), dev.pt(540, 2000))
         await dev.sleep(3)
         tab = match(await dev.read(), "Posts", exact=True)
@@ -818,15 +835,23 @@ class Flows:
 
     async def scan_profile(self, item: PostItem, allowed_minutes: float, attempt: int) -> bool:
         """Scrolls the Posts list for the newest post by its time label. Pinned posts are skipped; a post
-        older than this job ends the look, since this job's post would be above it. The profile can open,
-        or come back from a refresh, already scrolled past the top of this job's post (only its media in
-        view, the older post under it), so the list is first scrolled back up a little before an older
-        post ends the look. True once the comment sheet is open."""
+        older than this job ends the look, since this job's post would be above it. The list can still
+        sit with only this job's media in view, its header under the sticky tab bar and the older post
+        below, so before an older post ends the look the list is dragged back down by that older post's
+        time label (a drag that starts on autoplaying video may not scroll). Each back-up logs how far
+        the label moved. Scans down with slow drags that do not fling past a header. True once the
+        comment sheet is open."""
         dev = self.device
         backed_up = 0
+        dragged: Line | None = None  # the older post's label a back-up dragged, to measure the move
         for scroll in range(12):
             await dev.settle(timeout=2.0)  # autoplaying video keeps the profile from ever being still
             lines = await dev.read()
+            if dragged is not None:
+                moved = self._label_moved(dragged, lines)
+                self.log(event="back_up_moved", step="find post", attempt=attempt, back_up=backed_up,
+                         moved=moved, scrolled=moved == "gone" or moved >= PROFILE_MOVED_MIN)
+                dragged = None
             pinned = [line.point[1] for line in lines if line.text.strip().casefold().startswith("pinned")]
 
             def near_pin(y: float) -> bool:
@@ -856,18 +881,42 @@ class Flows:
                         if backed_up < PROFILE_BACK_UP_SCROLLS:
                             backed_up += 1
                             self.log(event="back_up", step="find post", attempt=attempt, reason=f"a post {age} min old")
-                            await self.scroll(dev.pt(540, 1000), dev.pt(540, 1600))
+                            if backed_up == 1:
+                                dev.snapshot(f"comment_look_{attempt}_before_back_up")
+                            await self._drag_down_from(line)
+                            dragged = line
                             break
                         self.log(event="stop", step="find post", attempt=attempt,
                                  reason=f"reached a post {age} min old")
                         dev.snapshot(f"comment_look_{attempt}_post_not_there")
                         return False
                 else:
-                    await self.scroll(dev.pt(540, 1700), dev.pt(540, 1150))
+                    await self._scan_down()
                 continue
-            await self.scroll(dev.pt(540, 1700), dev.pt(540, 1150))
+            await self._scan_down()
         dev.snapshot(f"comment_look_{attempt}_post_not_there")
         return False
+
+    async def _scan_down(self) -> None:
+        dev = self.device
+        await self.scroll(dev.pt(540, 1600), dev.pt(540, 1150), duration=PROFILE_SCAN_SWIPE_S)
+
+    async def _drag_down_from(self, label: Line) -> None:
+        """Drags the list down about 600 px, starting on an older post's time label: text, not video.
+        A label low on the screen leaves no room for the drag, so it then starts higher up instead."""
+        dev = self.device
+        x = dev.pt(540, 0)[0]
+        y = min(label.point[1], dev.pt(0, 1400)[1])
+        await self.scroll((x, y), (x, y + dev.pt(0, 600)[1]), duration=PROFILE_SCAN_SWIPE_S)
+
+    def _label_moved(self, label: Line, lines: list[Line]) -> int | str:
+        """How far (1080-wide px) a dragged time label moved down; "gone" when it left the screen.
+        Below PROFILE_MOVED_MIN the drag did not scroll the list."""
+        same = [line.point[1] for line in lines if line.text.strip() == label.text.strip()]
+        if not same:
+            return "gone"
+        moved = min(same, key=lambda y: abs(y - label.point[1])) - label.point[1]
+        return round(moved * 1080 / self.device.pt(1080, 0)[0])
 
     async def write_comment(self, item: PostItem) -> None:
         dev = self.device

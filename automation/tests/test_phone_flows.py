@@ -863,15 +863,78 @@ class FindPostTests(unittest.TestCase):
         swipes = [a for a in device.actions if a[0] == "swipe"]
         self.assertEqual(len(swipes), 1)
         self.assertLess(swipes[0][1][1], swipes[0][2][1])  # finger moves down: the list scrolls back up
-        self.assertEqual([e["event"] for e in events if e.get("step") == "find post"], ["back_up"])
+        self.assertEqual([e["event"] for e in events if e.get("step") == "find post"], ["back_up", "back_up_moved"])
 
     def test_an_older_post_still_ends_the_look_after_two_back_ups(self):
         device = FakeDevice([lines(("Old caption", 700), ("2h", 760))])
         events = []
         flows = Flows(device, lambda **e: events.append(e))
         self.assertFalse(run(flows.scan_profile(PostItem("photo", "Morning coffee test"), 3, 1)))
-        self.assertEqual([e["event"] for e in events if e.get("step") == "find post"], ["back_up", "back_up", "stop"])
+        self.assertEqual([e["event"] for e in events if e.get("step") == "find post"],
+                         ["back_up", "back_up_moved", "back_up", "back_up_moved", "stop"])
         self.assertEqual(len([a for a in device.actions if a[0] == "swipe"]), 2)
+
+    def test_back_up_drags_from_the_older_posts_label_not_the_video(self):
+        # Support report 2026-11-17: our reel's header under the tab bar, its video above "56m".
+        covered = lines(("All", 50), ("Imperial USA Hub", 410), ("56m", 420), ("Anti-Trump MSN Host", 440))
+        ours = lines(("Imperial USA Hub", 150), ("Just now", 170), ("Imperial USA Hub", 730), ("56m", 740))
+        device = FakeDevice([covered, ours, lines(("Write a comment...", 1100))])
+        device.icons["comment"] = (60.0, 600.0)
+        events = []
+        flows = Flows(device, lambda **e: events.append(e))
+        self.assertTrue(run(flows.scan_profile(PostItem("reel", "Quick tip for today"), 10, 1)))
+        swipe = next(a for a in device.actions if a[0] == "swipe")
+        self.assertEqual(swipe[1][1], 420.0)  # starts on the "56m" label
+        self.assertGreater(swipe[2][1], swipe[1][1])
+        moved = next(e for e in events if e["event"] == "back_up_moved")
+        self.assertEqual((moved["moved"], moved["scrolled"]), (600, True))
+        self.assertIn(("snapshot", "comment_look_1_before_back_up"), device.actions)
+
+    def test_a_back_up_that_does_not_move_the_list_is_logged(self):
+        device = FakeDevice([lines(("Old caption", 400), ("56m", 420))])
+        events = []
+        flows = Flows(device, lambda **e: events.append(e))
+        self.assertFalse(run(flows.scan_profile(PostItem("reel", "x"), 10, 1)))
+        moved = [(e["moved"], e["scrolled"]) for e in events if e["event"] == "back_up_moved"]
+        self.assertEqual(moved, [(0, False), (0, False)])
+
+    def test_a_label_low_on_the_screen_still_drags_the_list_down(self):
+        device = FakeDevice([lines(("Old caption", 1000), ("56m", 1020))])
+        run(Flows(device, lambda **e: None).scan_profile(PostItem("reel", "x"), 10, 1))
+        for _, start, end in [a for a in device.actions if a[0] == "swipe"]:
+            self.assertGreater(end[1], start[1])
+
+    def test_scanning_down_is_a_slow_drag(self):
+        device = FakeDevice([lines(("Some page intro", 400))])
+        durations = []
+        original = device.swipe
+
+        async def swipe(start, end, duration=0.35):
+            durations.append(duration)
+            await original(start, end, duration)
+        device.swipe = swipe
+        run(Flows(device, lambda **e: None).scan_profile(PostItem("reel", "x"), 10, 1))
+        self.assertTrue(durations)
+        self.assertTrue(all(d >= 1.0 for d in durations))
+
+    def test_each_look_starts_from_the_top_of_the_profile(self):
+        device = FakeDevice([lines(("All", 50), ("Some post", 400)), lines(("1.2K followers", 300))])
+        self.assertTrue(run(Flows(device, lambda **e: None).profile_to_top()))
+        swipe = next(a for a in device.actions if a[0] == "swipe")
+        self.assertGreater(swipe[2][1], swipe[1][1])  # finger moves down: the list scrolls up
+        order = []
+        flows = Flows(FakeDevice(), lambda **e: None)
+
+        def step(name, result=None):
+            async def record(*args, **kwargs):
+                order.append(name)
+                return result
+            return record
+        with patch.object(flows, "open_feed", step("feed")), patch.object(flows, "open_profile", step("profile")), \
+                patch.object(flows, "profile_to_top", step("top")), patch.object(flows, "scan_profile", step("scan", True)), \
+                patch.object(flows, "write_comment", step("write")):
+            run(flows.find_and_comment(PostItem("reel", "Clip", "hi"), published_at=0.0))
+        self.assertEqual(order, ["feed", "profile", "top", "scan", "write"])
 
     def test_a_post_up_to_10_minutes_old_is_new_on_every_look(self):
         device = FakeDevice()
@@ -885,7 +948,8 @@ class FindPostTests(unittest.TestCase):
         async def noop():
             return None
         with patch.object(flows, "scan_profile", nothing), patch.object(flows, "open_feed", noop), \
-                patch.object(flows, "open_profile", noop), patch.object(flows, "refresh_profile", noop):
+                patch.object(flows, "open_profile", noop), patch.object(flows, "refresh_profile", noop), \
+                patch.object(flows, "profile_to_top", noop):
             with self.assertRaises(StepFailed):
                 run(flows.find_and_comment(PostItem("reel", "Clip", "hi"), published_at=-600.0))
         self.assertEqual(limits, [10, 10, 10, 10])
@@ -909,7 +973,8 @@ class FindPostTests(unittest.TestCase):
         async def noop():
             return None
         with patch.object(flows, "scan_profile", nothing), patch.object(flows, "open_feed", noop), \
-                patch.object(flows, "open_profile", noop), patch.object(flows, "refresh_profile", noop):
+                patch.object(flows, "open_profile", noop), patch.object(flows, "refresh_profile", noop), \
+                patch.object(flows, "profile_to_top", noop):
             with self.assertRaises(StepFailed):
                 run(flows.find_and_comment(PostItem(kind, "Clip", "hi"), **kwargs))
         return [round(t) for _, t in looks]
