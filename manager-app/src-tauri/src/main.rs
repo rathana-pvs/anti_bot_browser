@@ -1391,6 +1391,7 @@ fn main() {
             reel_export::export_reel_video,
             reel_export::export_reel_photo,
             reel_import::pick_reel_audio,
+            reel_import::pick_reel_audios,
             reel_import::pick_reel_images,
             get_setup_status,
             get_setup_log,

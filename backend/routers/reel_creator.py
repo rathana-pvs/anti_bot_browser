@@ -8,7 +8,14 @@ from pydantic import BaseModel, Field
 from backend.services.website_service import Article
 from backend.services.reel_creator.articles import extract_article
 from backend.services.reel_creator.audio_presets import preset_path
-from backend.services.reel_creator.reel import MAX_HOUSE_STYLES, DraftInput, HouseStyle, Reel, RenderInput
+from backend.services.ai import AIConfig
+from backend.services.reel_creator.composition import AnyDocument, Composition, DocumentDraftInput, DocumentRenderInput
+from backend.services.reel_creator.quality import review
+from backend.services.reel_creator.coach import CoachRequest
+from backend.services.reel_creator.composer import ComposeDirectRequest, ComposeRequest, ScriptRequest, compose, direct_composition, write_script
+from backend.services.reel_creator.vision_check import VisionRequest, check_with_ai
+from backend.services.reel_creator.director import DirectRequest, check_model, direct
+from backend.services.reel_creator.reel import MAX_HOUSE_STYLES, DraftInput, HouseStyle, Reel
 from backend.services.reel_creator.service import MAX_UPLOAD, get_service
 from backend.services.reel_creator.store import Conflict
 from backend.services.reel_creator.writer import WriteRequest, write_reel
@@ -43,7 +50,7 @@ def drafts():
 
 
 @router.put('/drafts/{draft_id}')
-def save_draft(draft_id: Id, value: DraftInput):
+def save_draft(draft_id: Id, value: DocumentDraftInput):
     return checked(get_service().store.save_draft, draft_id, value.revision,
                    dict(reel=value.reel.model_dump(), caption=value.caption, hooks=value.hooks, goal=value.goal, comment=value.comment,
                         source_text=value.source_text, source_url=value.source_url,
@@ -89,6 +96,103 @@ def write(value: WriteRequest):
     return checked(write_reel, value)
 
 
+@router.post('/direct')
+def direct_reel(value: DirectRequest):
+    return checked(direct, value)
+
+
+def _photo_facts(ids):
+    """Each photo's record (size, faces) and file, for the composer and the quality rules."""
+    service = get_service()
+    ids = list(dict.fromkeys(i for i in ids if i))
+    return {i: service.store.asset(i, 'image') for i in ids}, {i: service.asset_path(i, 'image') for i in ids}
+
+
+@router.post('/compositions/compose')
+def compose_reel(value: ComposeRequest):
+    def run():
+        assets, images = _photo_facts(value.photos)
+        return compose(value, assets, images)
+    return checked(run)
+
+
+@router.post('/compositions/direct')
+def direct_composition_reel(value: ComposeDirectRequest):
+    def run():
+        assets, images = _photo_facts(value.reel.image_ids())
+        return direct_composition(value, assets=assets, images=images)
+    return checked(run)
+
+
+class FactsInput(BaseModel):
+    composition: Composition
+    source_text: str = Field(default='', max_length=120000)
+
+
+@router.post('/compositions/facts')
+def composition_facts(value: FactsInput):
+    """Every number, name and quote in the reel next to the article sentence it comes from. Local and free."""
+    from backend.services.reel_creator.coach import fact_panel
+    return fact_panel(value.composition, value.source_text)
+
+
+@router.post('/compositions/hooks')
+def composition_hooks(value: CoachRequest):
+    """Three checked hook options for scene 1, best first."""
+    from backend.services.reel_creator.coach import coach_hooks
+    return checked(coach_hooks, value)
+
+
+@router.post('/compositions/story-check')
+def composition_story(value: CoachRequest):
+    """The AI's read of the running order, with suggestions this reel can take."""
+    from backend.services.reel_creator.coach import story_check
+    return checked(story_check, value)
+
+
+@router.post('/compositions/script')
+def voice_script(value: ScriptRequest):
+    """Write what each unlocked scene says aloud, from the article; the lines are checked and nothing is voiced yet."""
+    return checked(write_script, value)
+
+
+class VoiceoverInput(AIConfig):
+    composition: Composition
+    voice: str = Field(default='Kore', max_length=40)
+
+
+@router.post('/compositions/voiceover')
+def voiceover(value: VoiceoverInput):
+    """Narrate each scene (Gemini text-to-speech) and turn on captions that follow the voice."""
+    config = AIConfig(provider=value.provider, api_key=value.api_key, model=value.model, base_url=value.base_url)
+    return checked(get_service().add_voiceover, config, value.composition, value.voice)
+
+
+@router.post('/compositions/vision-check')
+def vision_check(value: VisionRequest):
+    """One picture of every scene to a vision model; its visual fixes are applied only where they pass every rule."""
+    def run():
+        assets, images = _photo_facts(value.composition.image_ids())
+        return check_with_ai(value, assets, images)
+    return checked(run)
+
+
+@router.post('/compositions/review')
+def review_composition(value: Composition):
+    """The composition with what the quality rules could fix fixed, what was changed, and what still needs the operator."""
+    def run():
+        service = get_service()
+        ids = value.image_ids()
+        fixed, fixes, problems = review(value, {i: service.store.asset(i) for i in ids}, {i: service.asset_path(i, 'image') for i in ids})
+        return dict(composition=fixed.model_dump(), fixes=[vars(f) for f in fixes], problems=[vars(p) for p in problems])
+    return checked(run)
+
+
+@router.post('/ai-check')
+def ai_check(value: AIConfig):
+    return checked(check_model, value)
+
+
 @router.post('/assets/{kind}')
 async def import_asset(kind: str, file: UploadFile = File(...)):
     if kind not in ('image', 'logo', 'audio'):
@@ -116,18 +220,18 @@ def thumbnail(asset_id: Id):
 
 
 @router.post('/poster')
-def poster(value: Reel, scene: int = Query(default=0, ge=0, le=7)):
+def poster(value: AnyDocument, scene: int = Query(default=0, ge=0, le=7)):
     image = checked(get_service().render_poster, value, scene)
     return Response(image, media_type='image/jpeg', headers={'Cache-Control': 'no-store'})
 
 
 @router.post('/photo')
-def photo(value: Reel, scene: int = Query(default=0, ge=0, le=7), ratio: str = Query(default='4:5')):
+def photo(value: AnyDocument, scene: int = Query(default=0, ge=0, le=7), ratio: str = Query(default='4:5')):
     return checked(get_service().create_photo, value, scene, ratio)
 
 
 @router.post('/cover')
-def cover(value: Reel):
+def cover(value: AnyDocument):
     return checked(get_service().create_cover, value)
 
 
@@ -140,8 +244,44 @@ def download_photo(photo_id: Id):
 
 
 @router.post('/layout')
-def layout(value: Reel, scene: int = Query(default=0, ge=0, le=7)):
+def layout(value: AnyDocument, scene: int = Query(default=0, ge=0, le=7)):
     return checked(get_service().scene_layout, value, scene)
+
+
+class MusicAdd(BaseModel):
+    asset_id: str = Field(pattern=r'^[a-f0-9]{32}$')
+    source_url: str = Field(default='', max_length=300)
+
+
+class MusicChange(BaseModel):
+    source_url: str | None = Field(default=None, max_length=300)
+    role: str | None = Field(default=None, pattern=r'^(bed|intro)$')
+
+
+@router.get('/music/library')
+def music_library():
+    return get_service().music_library()
+
+
+@router.post('/music/library')
+async def add_music(value: MusicAdd):
+    return await asyncio.to_thread(checked, get_service().add_music, value.asset_id, value.source_url)
+
+
+@router.put('/music/library/{asset_id}')
+def update_music(asset_id: Id, value: MusicChange):
+    return checked(get_service().update_music, asset_id, value.source_url, value.role)
+
+
+@router.delete('/music/library/{asset_id}')
+def remove_music(asset_id: Id):
+    get_service().remove_music(asset_id)
+    return {'ok': True}
+
+
+@router.get('/music/library/{asset_id}/preview')
+def preview_library_music(asset_id: Id):
+    return FileResponse(checked(get_service().asset_path, asset_id, 'audio'), media_type='audio/wav')
 
 
 @router.get('/music/{track}/preview')
@@ -184,7 +324,7 @@ def jobs():
 
 
 @router.post('/jobs')
-def render(value: RenderInput):
+def render(value: DocumentRenderInput):
     return public(checked(get_service().enqueue, value))
 
 
@@ -224,3 +364,18 @@ def download(job_id: Id):
         raise HTTPException(409, 'Render a full-quality video before exporting.')
     path = checked(get_service().output_path, job)
     return FileResponse(path, media_type='video/mp4', filename=path.name)
+
+
+class RecipeChange(BaseModel):
+    composition: Composition
+    recipe: str = Field(max_length=24)
+
+
+@router.post('/compositions/recipe')
+def change_recipe(value: RecipeChange):
+    """The composition in another recipe, with the quality rules run over the result."""
+    from backend.services.reel_creator.composer import apply_recipe
+    from backend.services.reel_creator.components import RECIPE_BY_ID
+    if value.recipe not in RECIPE_BY_ID:
+        raise HTTPException(400, 'Choose one of the available recipes.')
+    return review_composition(apply_recipe(value.composition, value.recipe))

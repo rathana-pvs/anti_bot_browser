@@ -55,6 +55,8 @@ export interface ReelScene {
   text_position?: number | null;
   /** The photo's share against the text on split looks, 0 the look's smallest to 1 its largest; absent = sized to the text. */
   photo_size?: number | null;
+  /** The operator locked this scene: the AI director leaves it as it is. Never drawn. */
+  locked?: boolean | null;
 }
 
 /** Where a scene preview draws each styled element, as fractions of the frame; smaller boxes come last. */
@@ -138,7 +140,11 @@ export interface ReelCapabilities {
   music: MusicTrack[];
   max_scenes: number;
   max_seconds: number;
+  /** What the renderer can do, with when to use it; the AI director chooses from the same list. Absent from older backends. */
+  catalog?: CatalogPreset[];
 }
+
+export interface CatalogPreset { id: string; group: string; label: string; use_when: string; avoid_when: string; applies_to: SceneKind[]; looks: ReelLook[] | null; mood: string[] }
 
 export interface ReelJob {
   id: string;
@@ -150,7 +156,7 @@ export interface ReelJob {
   error: string | null;
   created_at: number;
   attempt: number;
-  output: { filename: string; size_bytes: number; thumbnail?: string | null } | null;
+  output: { filename: string; size_bytes: number; thumbnail?: string | null; width?: number; height?: number; seconds?: number } | null;
   post_caption?: string;
 }
 
@@ -164,6 +170,19 @@ export interface WrittenReel {
   comment: string;
   source_label: string;
   source_fingerprint: string;
+}
+
+/** One exchange with the AI director, sent back as context for the next instruction. */
+export interface DirectorTurn { instruction: string; message: string }
+export interface DirectorChange { scene: number | null; field: string; before: string; after: string }
+export interface DirectorResult {
+  reel: Reel;
+  message: string;
+  changes: DirectorChange[];
+  /** Operations the director asked for that broke a rule (a locked scene, a number not in the article…). */
+  refused: string[];
+  usage: { input: number; output: number };
+  model: string;
 }
 
 export interface ArticleText { url: string; title: string; text: string; publisher: string; published_date: string; characters: number }

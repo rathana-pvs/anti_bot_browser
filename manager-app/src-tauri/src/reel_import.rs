@@ -99,6 +99,39 @@ pub async fn pick_reel_audio(app: AppHandle, window: tauri::WebviewWindow, sessi
         .await.map_err(|_| "The media import stopped unexpectedly.".to_string())?
 }
 
+const MAX_AUDIO_FILES: usize = 10;
+
+fn import_audios(paths: Option<Vec<PathBuf>>, port: u16, token: &str) -> Result<Option<Value>, String> {
+    let Some(paths) = paths else { return Ok(None); };
+    if paths.is_empty() { return Ok(None); }
+    if paths.len() > MAX_AUDIO_FILES { return Err(format!("Choose up to {MAX_AUDIO_FILES} tracks at a time.")); }
+    let (mut assets, mut errors) = (Vec::new(), Vec::new());
+    for path in paths {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("Track").to_string();
+        match import_kind(Some(path), port, token, "audio") {
+            Ok(Some(asset)) => assets.push(asset),
+            Err(error) => errors.push(format!("{name}: {error}")),
+            _ => {}
+        }
+    }
+    Ok(Some(serde_json::json!({"assets": assets, "errors": errors})))
+}
+
+/// Several tracks at once, for My music; each is imported on its own, so one bad file does not stop the rest.
+#[tauri::command]
+pub async fn pick_reel_audios(app: AppHandle, window: tauri::WebviewWindow, session: State<'_, ApiSession>) -> Result<Option<Value>, String> {
+    let (send, receive) = tokio::sync::oneshot::channel();
+    app.dialog().file().set_parent(&window).set_title("Choose music and sounds")
+        .add_filter("Audio", &["mp3", "wav", "m4a", "mp4", "ogg", "flac"])
+        .pick_files(move |selection| { let _ = send.send(selection); });
+    let selection = receive.await.map_err(|_| "The audio picker closed unexpectedly.")?;
+    let paths = selection.map(|files| files.into_iter().map(|file| file.into_path().map_err(|_| "Choose local audio files.".to_string())).collect::<Result<Vec<_>, _>>()).transpose()?;
+    let port = session.port;
+    let token = session.token.clone();
+    tauri::async_runtime::spawn_blocking(move || import_audios(paths, port, &token))
+        .await.map_err(|_| "The media import stopped unexpectedly.".to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,6 +141,14 @@ mod tests {
     #[test]
     fn cancel_never_contacts_the_backend() {
         assert_eq!(import_selection(None, 0, "test-token").unwrap(), None);
+    }
+
+    #[test]
+    fn several_tracks_cancel_or_too_many_never_contact_the_backend() {
+        assert_eq!(import_audios(None, 0, "test-token").unwrap(), None);
+        assert_eq!(import_audios(Some(vec![]), 0, "test-token").unwrap(), None);
+        let many = (0..11).map(|n| PathBuf::from(format!("track-{n}.mp3"))).collect();
+        assert!(import_audios(Some(many), 0, "test-token").is_err());
     }
 
     #[test]

@@ -650,6 +650,8 @@ def test_finished_video_has_a_cover_from_the_complete_first_frame(creator, reel)
     assert job['state'] == 'completed', job['error']
     cover = Image.open(creator.job_thumbnail_path(job))
     assert cover.size == (1080, 1920) and job['output']['thumbnail'].endswith('.jpg')
+    out = job['output']
+    assert (out['width'], out['height']) == (1080, 1920) and abs(out['seconds'] - reel.duration) < .1 and out['size_bytes'] > 0
     plan = Plan(reel, 1080, *creator.validate_assets(reel)[:2], fps=30)
     expected = plan.frame(0).convert('RGB')
     diff = sum(abs(a - b) for a, b in zip(cover.convert('RGB').resize((54, 96)).tobytes(), expected.resize((54, 96)).tobytes()))

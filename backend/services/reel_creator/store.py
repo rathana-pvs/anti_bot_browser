@@ -173,6 +173,21 @@ class Store:
                     return job
         return None
 
+    def music_library(self):
+        """The ids of the operator's own music, newest first."""
+        with self.db() as db:
+            row = db.execute('SELECT payload FROM settings WHERE id=?', ('music_library',)).fetchone()
+        return json.loads(row['payload']) if row else []
+
+    def save_music_library(self, ids):
+        with self.db() as db:
+            db.execute('INSERT OR REPLACE INTO settings VALUES(?,?)', ('music_library', json.dumps(ids)))
+
+    def update_asset(self, value):
+        with self.db() as db:
+            db.execute('UPDATE assets SET payload=? WHERE id=?', (json.dumps(value), value['id']))
+        return value
+
     def house_styles(self):
         with self.db() as db:
             row = db.execute('SELECT payload FROM settings WHERE id=?', ('house_styles',)).fetchone()

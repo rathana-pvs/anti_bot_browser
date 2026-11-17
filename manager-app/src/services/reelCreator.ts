@@ -2,9 +2,10 @@ import type { ReelArticleLink } from './websites';
 import { invoke } from '@tauri-apps/api/core';
 import { API_BASE } from './api';
 import { isDesktopApp } from './desktopEnvironment';
-import type { ArticleText, PhotoImport, Reel, ReelAsset, ReelPhoto, ReelRatio, ReelGoal, ReelBrand, ReelCapabilities, HouseStyle, ReelDraft, ReelJob, SceneKind, SceneLayout, WrittenReel } from '../types/reelCreator';
+import type { AIRequestConfig } from './aiSettings';
+import type { ArticleText, DirectorResult, DirectorTurn, PhotoImport, Reel, ReelAsset, ReelPhoto, ReelRatio, ReelGoal, ReelBrand, ReelCapabilities, HouseStyle, ReelDraft, ReelJob, SceneKind, SceneLayout, WrittenReel } from '../types/reelCreator';
 
-async function request(path: string, init?: RequestInit): Promise<Response> {
+export async function request(path: string, init?: RequestInit): Promise<Response> {
   const response = await fetch(`${API_BASE}/reel-creator${path}`, init);
   if (!response.ok) {
     let message = `Request failed (${response.status})`;
@@ -18,11 +19,16 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
   return response;
 }
 
-function json(method: string, value: unknown): RequestInit {
+export function json(method: string, value: unknown): RequestInit {
   return { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) };
 }
 
+export interface DirectRequest extends AIRequestConfig {
+  reel: Reel; instruction: string; source_text: string; goal: ReelGoal; history: DirectorTurn[];
+}
+
 export interface WriteRequest {
+  provider?: AIRequestConfig['provider']; base_url?: string;
   api_key: string; model: string; text: string; source_url: string; source_title: string; publisher: string;
   look: 'auto' | Reel['look'];
   goal?: ReelGoal;
@@ -56,7 +62,8 @@ function download(blob: Blob, filename: string) {
 
 export const reelApi = {
   capabilities: async (refresh = false): Promise<ReelCapabilities> => (await request(`/capabilities?refresh=${refresh}`)).json(),
-  drafts: async (): Promise<ReelDraft[]> => (await request('/drafts')).json(),
+  /** Reel Studio's drafts; AI Reel Studio compositions (version 5) share the store and are left out. */
+  drafts: async (): Promise<ReelDraft[]> => ((await (await request('/drafts')).json()) as ReelDraft[]).filter(d => (d.reel as { version?: number }).version !== 5),
   saveDraft: async (id: string, revision: number, draft: Pick<ReelDraft, 'reel' | 'caption' | 'goal' | 'comment' | 'hooks' | 'source_text' | 'source_url' | 'source_title' | 'source_publisher'>): Promise<ReelDraft> =>
     (await request(`/drafts/${id}`, json('PUT', { revision, ...draft }))).json(),
   articleLink: async (id: string): Promise<ReelArticleLink | null> => (await request(`/drafts/${id}/article`)).json(),
@@ -64,6 +71,8 @@ export const reelApi = {
   deleteDraft: async (id: string): Promise<void> => { await request(`/drafts/${id}`, { method: 'DELETE' }); },
   article: async (url: string, signal?: AbortSignal): Promise<ArticleText> => (await request('/article', { ...json('POST', { url }), signal })).json(),
   write: async (value: WriteRequest, signal?: AbortSignal): Promise<WrittenReel> => (await request('/write', { ...json('POST', value), signal })).json(),
+  checkAI: async (value: AIRequestConfig): Promise<{ ok: boolean; model: string; seconds: number }> => (await request('/ai-check', json('POST', value))).json(),
+  direct: async (value: DirectRequest): Promise<DirectorResult> => (await request('/direct', json('POST', value))).json(),
   upload: async (kind: ReelAsset['kind'], file: File): Promise<ReelAsset> => {
     const data = new FormData();
     data.append('file', file);
@@ -83,6 +92,24 @@ export const reelApi = {
     });
     return file ? reelApi.upload('audio', file) : null;
   },
+  /** Several tracks at once (up to 10), each imported on its own: a file that fails is listed, the rest still arrive. */
+  pickAudios: async (): Promise<PhotoImport | null> => {
+    if (isDesktopApp()) return invoke<PhotoImport | null>('pick_reel_audios');
+    const files = await new Promise<File[]>(resolve => {
+      const input = document.createElement('input');
+      input.type = 'file'; input.accept = 'audio/*'; input.multiple = true;
+      input.onchange = () => resolve(Array.from(input.files ?? []).slice(0, 10));
+      input.oncancel = () => resolve([]);
+      input.click();
+    });
+    if (!files.length) return null;
+    const result: PhotoImport = { assets: [], errors: [] };
+    for (const file of files) {
+      try { result.assets.push(await reelApi.upload('audio', file)); }
+      catch (err) { result.errors.push(`${file.name}: ${err instanceof Error ? err.message : 'Could not import.'}`); }
+    }
+    return result;
+  },
   pickImages: async (maxFiles: number): Promise<PhotoImport | null> => {
     if (isDesktopApp()) return invoke<PhotoImport | null>('pick_reel_images', { maxFiles });
     const files = await new Promise<File[]>(resolve => {
@@ -92,11 +119,14 @@ export const reelApi = {
       input.oncancel = () => resolve([]);
       input.click();
     });
-    if (!files.length) return null;
+    return files.length ? reelApi.uploadImages(files) : null;
+  },
+  /** Image files pasted from the clipboard (screenshots, copied pictures), uploaded in order. */
+  uploadImages: async (files: File[]): Promise<PhotoImport> => {
     const result: PhotoImport = { assets: [], errors: [] };
     for (const file of files) {
       try { result.assets.push(await reelApi.upload('image', file)); }
-      catch (err) { result.errors.push(`${file.name}: ${err instanceof Error ? err.message : 'Could not import.'}`); }
+      catch (err) { result.errors.push(`${file.name || 'Pasted image'}: ${err instanceof Error ? err.message : 'Could not import.'}`); }
     }
     return result;
   },
