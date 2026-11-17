@@ -92,6 +92,24 @@ export const reelApi = {
     });
     return file ? reelApi.upload('audio', file) : null;
   },
+  /** Several tracks at once (up to 10), each imported on its own: a file that fails is listed, the rest still arrive. */
+  pickAudios: async (): Promise<PhotoImport | null> => {
+    if (isDesktopApp()) return invoke<PhotoImport | null>('pick_reel_audios');
+    const files = await new Promise<File[]>(resolve => {
+      const input = document.createElement('input');
+      input.type = 'file'; input.accept = 'audio/*'; input.multiple = true;
+      input.onchange = () => resolve(Array.from(input.files ?? []).slice(0, 10));
+      input.oncancel = () => resolve([]);
+      input.click();
+    });
+    if (!files.length) return null;
+    const result: PhotoImport = { assets: [], errors: [] };
+    for (const file of files) {
+      try { result.assets.push(await reelApi.upload('audio', file)); }
+      catch (err) { result.errors.push(`${file.name}: ${err instanceof Error ? err.message : 'Could not import.'}`); }
+    }
+    return result;
+  },
   pickImages: async (maxFiles: number): Promise<PhotoImport | null> => {
     if (isDesktopApp()) return invoke<PhotoImport | null>('pick_reel_images', { maxFiles });
     const files = await new Promise<File[]>(resolve => {

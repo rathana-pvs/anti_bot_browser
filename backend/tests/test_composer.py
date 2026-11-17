@@ -229,3 +229,24 @@ def test_the_ai_is_sent_a_light_form_and_its_answers_are_still_checked():
     assert ScenePick.model_validate(dict(layout='made_up', camera='zoom_in')).model_dump(exclude_none=True) == dict(camera='zoom_in')
     answer, dropped = usable(dict(operations=[dict(op='set_layout', scene=1, layout='made_up'), dict(op='set_camera', scene=1, camera='still')]))
     assert dropped == 1 and answer['operations'] == [dict(op='set_camera', scene=1, camera='still')]
+
+
+def test_the_voice_script_is_written_from_the_article_and_checked():
+    from backend.services.reel_creator.composer import ScriptRequest, write_script
+    article = 'The council approved Metro Line 4 on Tuesday by a vote of 7-2. Work starts in March and will take three years.'
+    composition = Composition(scenes=[CScene(headline='Line 4 gets the green light'), CScene(headline='Work starts in March'),
+                                      CScene(headline='Kept as it is', locked=True, say='Mine.')])
+    seen = {}
+
+    def provider(request, **kw):
+        seen.update(kw)
+        return dict(scenes=[dict(scene=1, say='  The council has approved Metro Line 4, in a vote of 7-2 on Tuesday. '),
+                            dict(scene=2, say='Building starts in March and will take 12 years.'),  # a number the article lacks
+                            dict(scene=3, say='Overwritten.')])
+    request = ScriptRequest(model='gemini-3.8-flash', api_key='k', composition=composition, source_text=article)
+    result = write_script(request, provider=provider)
+    scenes = result['composition']['scenes']
+    assert scenes[0]['say'] == 'The council has approved Metro Line 4, in a vote of 7-2 on Tuesday.'
+    assert scenes[1]['say'] == '' and result['skipped'][0]['scene'] == 2 and 'number' in result['skipped'][0]['reason']
+    assert scenes[2]['say'] == 'Mine.' and result['written'] == 1           # a locked scene is left alone
+    assert [s['scene'] for s in seen['context']['scenes']] == [1, 2] and 'ARTICLE' in seen['prefix']

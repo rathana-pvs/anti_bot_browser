@@ -7,7 +7,7 @@ import { sourceKind } from '../services/reelDocument';
 import type { Composition, CompositionDoc, CompositionScene, PartsCatalog, QualityNote } from '../types/composition';
 import type { CreatedReelMedia, DirectorTurn, PhotoImport, ReelAsset, ReelGoal, ReelJob } from '../types/reelCreator';
 
-type Busy = null | 'compose' | 'direct' | 'review' | 'photos' | 'render' | 'send' | 'voice' | 'vision';
+type Busy = null | 'compose' | 'direct' | 'review' | 'photos' | 'render' | 'send' | 'voice' | 'vision' | 'script';
 const ACTIVE = ['queued', 'rendering', 'verifying'];
 const DRAFT_KEY = 'ai_reel_studio_draft';
 const message = (err: unknown) => err instanceof Error ? err.message : 'Something went wrong.';
@@ -227,6 +227,16 @@ export function useAIReelStudio(active: boolean, onUseReel: (media: CreatedReelM
     setComposition(() => result.composition);
     setVoiceNote(result.characters ? `Voiced ${result.characters.toLocaleString()} characters.` : 'Voiceover is up to date; nothing new was voiced.');
   });
+  /** The AI writes what each unlocked scene says aloud, from the article; checked lines go in each scene's "Voice says". */
+  const writeScript = () => attempt('script', async () => {
+    const base = docRef.current;
+    if (!base) return;
+    const result = await compositionApi.script({ ...configuredAI('write'), composition: base.composition, source_text: base.sourceText, goal: base.goal });
+    if (docRef.current?.composition !== base.composition) throw new Error('The reel changed while the script was being written. Try again.');
+    setComposition(() => result.composition);
+    const skipped = result.skipped.map(s => `scene ${s.scene} (${s.reason})`).join(', ');
+    setVoiceNote(`Wrote the voice script for ${result.written} scene${result.written === 1 ? '' : 's'}.${skipped ? ` Kept as it was: ${skipped}.` : ''} Press Update voiceover to hear it.`);
+  });
   const removeVoiceover = () => setComposition(c => ({ ...c, captions: 'off', scenes: c.scenes.map(s => ({ ...s, voice: null })) }));
 
   const startRender = (kind: 'final' | 'preview') => attempt('render', async () => {
@@ -261,7 +271,7 @@ export function useAIReelStudio(active: boolean, onUseReel: (media: CreatedReelM
 
   return {
     catalog, drafts, doc, draftId, loaded, busy, error, setError, notes, setNotes, saveState, job, fresh, working,
-    voiceNote, addVoiceover, removeVoiceover, visionCheck,
+    voiceNote, addVoiceover, removeVoiceover, writeScript, visionCheck,
     open, discard, compose, direct, directed, undoDirected, reviewNow, changeRecipe, editScene, removeScene, setDoc, setComposition, addPhotos, pastePhotos, startRender, send,
     cancelJob: () => job && attempt('render', async () => { const r = await reelApi.cancel(job.id); setJobs(old => old.map(j => j.id === r.id ? r : j)); }),
   };

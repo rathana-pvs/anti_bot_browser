@@ -19,6 +19,7 @@ from .composition import Background, Composition, CScene, PartStyle
 from .director import Editor, Rejected, Turn, article_prefix, direct, plain_schema
 from .quality import review
 from .reel import MAX_SCENES, highlight_span
+from .news_ai import numbers
 from .writer import GROUNDING, WriteRequest, write_reel
 
 ROLES = ('headline', 'detail', 'lead')
@@ -450,4 +451,83 @@ def direct_composition(request: ComposeDirectRequest, provider=None, assets=None
     return direct(request, ask, schema=CompPlan, apply=apply, system=DIRECT_SYSTEM + describe_parts(), ctx=composition_context(request))
 
 
-__all__ = ['ComposeRequest', 'ComposeDirectRequest', 'compose', 'direct_composition', 'article_prefix']
+# ---- the spoken script ----------------------------------------------------------
+
+SPOKEN_CHARACTERS = 240  # about 15 seconds of speech: room in a scene of at most 20
+SCRIPT_SYSTEM = f'''You write the voiceover for a short Facebook news reel. Each scene already has short on-screen
+text; the voice tells the story more fully in plain spoken English, as a calm news presenter would.
+{GROUNDING}
+For each scene listed, write say: one or two spoken sentences of at most {SPOKEN_CHARACTERS} characters that add context
+the screen leaves out (who, where, why it matters), without repeating the screen text word for word. Scene 1 opens the
+story and makes people keep watching. A stat scene says its figure. A quote scene says who said it and quotes the words
+exactly. The end scene invites viewers to comment or read on. The scenes together are one story: do not repeat a fact.
+Write numbers as the article writes them. No links, hashtags, emoji or stage directions.'''
+
+
+class ScriptLine(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    scene: int = Field(ge=1, le=MAX_SCENES)
+    say: str = Field(max_length=600)  # longer answers are refused below with a reason, not a validation error
+
+
+class Script(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    scenes: list[ScriptLine] = Field(default_factory=list, max_length=MAX_SCENES * 2)
+
+    @classmethod
+    def model_json_schema(cls, *args, **kwargs):
+        return light_schema(plain_schema(super().model_json_schema(*args, **kwargs)))
+
+
+class ScriptRequest(AIConfig):
+    composition: Composition
+    source_text: str = Field(default='', max_length=120000)
+    goal: Literal['engage', 'readmore'] = 'engage'
+
+
+def checked_line(say, request):
+    """A spoken line the reel may use: short enough for its scene, the article's numbers only, no links."""
+    say = ' '.join(say.split()).strip()
+    if not say:
+        return None, 'no line was written'
+    if len(say) > SPOKEN_CHARACTERS + 40:
+        return None, 'the line was too long to speak in one scene'
+    known = numbers(request.source_text + '\n' + '\n'.join(f'{x.headline} {x.detail} {x.stat}' for x in request.composition.scenes))
+    if not numbers(say) <= known or re.search(r'https?://|www\.|#\w', say, re.I):
+        return None, 'the line used a number that is not in the article, or a link'
+    return say, None
+
+
+def write_script(request: ScriptRequest, provider=None):
+    """A spoken line for every unlocked scene, checked; a scene whose line fails keeps what it had."""
+    composition = request.composition
+    wanted = [i for i, x in enumerate(composition.scenes) if not x.locked]
+    if not wanted:
+        raise ValueError('Every scene is locked; unlock a scene to write its voice script.')
+    context = dict(goal=request.goal, scenes=[dict(scene=i + 1, kind=x.kind, headline=x.headline, detail=x.detail, stat=x.stat or None,
+                                                   attribution=x.attribution or None) for i, x in enumerate(composition.scenes) if i in wanted])
+    usage = {}
+    ask = provider or (lambda req, **kw: generate_json(req, schema=Script, action='script', effort='low', **kw))
+    try:
+        script = Script.model_validate(ask(request, system=SCRIPT_SYSTEM, context=context, prefix=article_prefix(request), usage=usage))
+    except ValidationError:
+        raise ValueError('The AI did not return a usable script. Try again, or use another model.') from None
+    lines = {line.scene - 1: line.say for line in script.scenes}
+    scenes, written, skipped = [], 0, []
+    for index, scene in enumerate(composition.scenes):
+        if index not in wanted:
+            scenes.append(scene)
+            continue
+        say, problem = checked_line(lines.get(index, ''), request)
+        if say:
+            scenes.append(scene.model_copy(update={'say': say[:280]}))
+            written += 1
+        else:
+            scenes.append(scene)
+            skipped.append(dict(scene=index + 1, reason=problem))
+    result = Composition.model_validate(composition.model_copy(update={'scenes': scenes}).model_dump())
+    return dict(composition=result.model_dump(), written=written, skipped=skipped,
+                usage=dict(input=usage.get('input', 0), output=usage.get('output', 0)), model=request.model)
+
+
+__all__ = ['ComposeRequest', 'ComposeDirectRequest', 'ScriptRequest', 'compose', 'direct_composition', 'write_script', 'article_prefix']

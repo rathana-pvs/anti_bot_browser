@@ -28,6 +28,7 @@ export function MusicPanel({ composition, busy, onMusic, onSting }: { compositio
   const [problem, setProblem] = useState('');
   const [playing, setPlaying] = useState(false);
   const [link, setLink] = useState('');
+  const [note, setNote] = useState('');
   const audio = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
@@ -55,14 +56,20 @@ export function MusicPanel({ composition, busy, onMusic, onSting }: { compositio
     } catch { stop(); }
   };
   const add = async () => {
-    setProblem('');
+    setProblem(''); setNote('');
     try {
-      const picked = await reelApi.pickAudio();
+      const picked = await reelApi.pickAudios();
       if (!picked) return;
       setAdding(true);
-      const track = await compositionApi.addMusic(picked.id);
-      setMine(old => [track, ...old]);
-      onMusic('custom', track.id);
+      const added: MyTrack[] = [], failed = [...picked.errors];
+      for (const asset of picked.assets) {  // each is trimmed and levelled; one that fails does not stop the rest
+        try { added.push(await compositionApi.addMusic(asset.id)); }
+        catch (err) { failed.push(`${asset.name}: ${message(err)}`); }
+      }
+      if (added.length) setMine(old => [...added.slice().reverse(), ...old.filter(t => !added.some(a => a.id === t.id))]);
+      if (added.length === 1 && !failed.length) onMusic('custom', added[0].id);  // one track: use it right away
+      setProblem(failed.length ? `Not added: ${failed.join('; ')}` : '');
+      if (added.length > 1) setNote(`Added ${added.length} tracks to My music. Choose one above.`);
     } catch (err) { setProblem(message(err)); } finally { setAdding(false); }
   };
   const change = async (update: { source_url?: string; role?: MyTrack['role'] }) => {
@@ -104,7 +111,7 @@ export function MusicPanel({ composition, busy, onMusic, onSting }: { compositio
       <IconButton aria-label={playing ? 'Stop music' : 'Play music'} disabled={value === 'off'} onClick={() => { void play(); }}>
         {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}</IconButton>
       <Button variant="outline" size="sm" loading={adding} disabled={busy || adding} onClick={() => { void add(); }}
-        title="Add an MP3, WAV, M4A, Ogg or FLAC you downloaded. It is brought to the same loudness as the built-in tracks."><Plus className="h-3.5 w-3.5" />Add a track</Button>
+        title="Add MP3, WAV, M4A, Ogg or FLAC files you downloaded; choose up to 10 at once. Each is brought to the same loudness as the built-in tracks."><Plus className="h-3.5 w-3.5" />Add tracks</Button>
     </div>
     {own && <div className="grid gap-2 sm:grid-cols-[200px_minmax(0,1fr)_auto]">
       <Select ariaLabel="How the track plays" value={own.role} options={ROLES} disabled={busy} onValueChange={role => { void change({ role: role as MyTrack['role'] }); }} />
@@ -122,9 +129,10 @@ export function MusicPanel({ composition, busy, onMusic, onSting }: { compositio
       {sting && <div className="w-56"><Select ariaLabel="When the intro sound plays" value={sting.at} options={STING_AT} disabled={busy}
         onValueChange={at => onSting({ ...sting, at: at as Sting['at'] })} /></div>}
     </div>
-    {!mine.length && <p className="text-[11px] text-zinc-500">My music is empty. Press Add a track and pick a news sting or opener; any length works, the start of it is used.</p>}
+    {!mine.length && <p className="text-[11px] text-zinc-500">My music is empty. Press Add tracks and pick a news sting or opener; any length works, the start of it is used.</p>}
     {sting && <p className="text-[11px] text-zinc-500">The start of the track plays and fades out. The voice starts after it, and the reel runs on until it ends.</p>}
     {own && <p className="text-[11px] text-zinc-500">Keep the link: if Facebook flags the music, it shows where you got it and its licence.</p>}
+    {note && !problem && <p className="text-[11px] text-emerald-400" aria-live="polite">{note}</p>}
     {problem && <p role="alert" className="text-[11px] text-amber-300">{problem}</p>}
   </section>;
 }

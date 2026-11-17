@@ -16,6 +16,7 @@ import { Select } from '../ui/Select';
 import { Spinner } from '../ui/Spinner';
 import { Textarea } from '../ui/Textarea';
 import { DirectorPanel } from '../reel-creator/DirectorPanel';
+import { CoachPanel } from './CoachPanel';
 import { MusicPanel } from './MusicPanel';
 import { Thumb } from '../reel-creator/Thumb';
 
@@ -203,8 +204,9 @@ const narrationLength = (c: Composition) => c.scenes.reduce((n, s) => n + (s.say
 const CAPTION_SIZES = [{ value: 'small', label: 'Small' }, { value: 'medium', label: 'Medium' }, { value: 'large', label: 'Large' }];
 const CAPTION_WORDS = [2, 3, 4, 5, 6].map(n => ({ value: String(n), label: `Up to ${n} words` }));
 
-function VoicePanel({ composition, busy, voicing, note, onAdd, onRemove, onCaptions, onChange }: { composition: Composition; busy: boolean; voicing: boolean; note: string;
-  onAdd: (voice: string) => void; onRemove: () => void; onCaptions: (on: boolean) => void; onChange: (patch: Partial<Composition>) => void }) {
+function VoicePanel({ composition, busy, voicing, scripting, note, onAdd, onRemove, onCaptions, onChange, onScript }: { composition: Composition; busy: boolean;
+  voicing: boolean; scripting: boolean; note: string; onAdd: (voice: string) => void; onRemove: () => void; onCaptions: (on: boolean) => void;
+  onChange: (patch: Partial<Composition>) => void; onScript: () => void }) {
   const [voice, setVoice] = useState('Kore');
   const voiced = composition.scenes.some(s => s.voice);
   const stale = composition.scenes.some(s => s.voice && !s.voice.text.includes((s.say?.trim() || s.headline.trim()).replace(/[.!?]$/, '')));
@@ -215,6 +217,8 @@ function VoicePanel({ composition, busy, voicing, note, onAdd, onRemove, onCapti
     <div className="flex flex-wrap items-end gap-2">
       <div className="w-32 space-y-1"><p className="text-[10px] uppercase tracking-wide text-zinc-500">Voice</p>
         <Select ariaLabel="Voice" value={voice} options={VOICES} onValueChange={setVoice} /></div>
+      <Button variant="outline" size="sm" loading={scripting} disabled={busy} onClick={onScript}
+        title="The AI writes what each unlocked scene says aloud, from the article: fuller than the screen text, checked against it. You can edit each line."><Sparkles className="h-3.5 w-3.5" />Write voice script</Button>
       <Button size="sm" loading={voicing} disabled={busy} onClick={() => onAdd(voice)}
         title="Each scene reads its own script, or its headline and detail. Text that has not changed is not voiced again.">
         {voiced ? 'Update voiceover' : 'Add voiceover'} <span className="text-[10px] opacity-70">~{narrationLength(composition).toLocaleString()} characters</span></Button>
@@ -233,7 +237,7 @@ function VoicePanel({ composition, busy, voicing, note, onAdd, onRemove, onCapti
         <Button variant="ghost" size="sm" disabled={busy} onClick={onRemove}>Remove voice</Button>
       </>}
     </div>
-    <p className="text-[11px] text-zinc-500">To say more than the screen shows, write it in a scene's "Voice says" box.</p>
+    <p className="text-[11px] text-zinc-500">Write voice script fills each scene's "Voice says" box from the article, so the voice tells more than the screen shows. Edit any line, then voice it.</p>
     {stale && <p className="text-[11px] text-amber-300">Some scenes changed after they were voiced. Update the voiceover so it matches.</p>}
     {note && <p className="text-[11px] text-zinc-400" aria-live="polite">{note}</p>}
   </section>;
@@ -267,7 +271,8 @@ export function AIReelStudio({ active, onUseReel }: Props) {
 
   const recent = studio.drafts.map(d => ({ value: d.id, label: d.reel.scenes.find(s => s.headline)?.headline.slice(0, 60) || 'Untitled reel' }));
   const rendering = busy === 'render' || studio.working;
-  return <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 p-4 lg:p-6">
+  // In the editor each column scrolls on its own on wide screens: the preview and director stay in reach of any scene.
+  return <div className={`mx-auto flex w-full max-w-6xl flex-col gap-4 p-4 lg:p-6 ${doc ? 'lg:h-full lg:pb-0' : ''}`}>
     <header className="flex items-center gap-3">
       <Wand2 className="h-4 w-4 text-sky-400" aria-hidden="true" /><h1 className="text-sm font-semibold text-zinc-100">AI Reel Studio</h1>
       {recent.length > 0 && <div className="w-72 max-w-full shrink-0"><Select value={recent.some(r => r.value === studio.draftId) ? studio.draftId : ''} options={recent}
@@ -278,8 +283,8 @@ export function AIReelStudio({ active, onUseReel }: Props) {
     {studio.error && <Alert variant="danger" role="alert">{studio.error}</Alert>}
 
     {!doc ? <Start active={active} busy={busy === 'compose'} recipes={recipes} onCompose={(...args) => { void studio.compose(...args); }} />
-      : <div className="grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
-        <div className="space-y-4 lg:sticky lg:top-4 lg:self-start">
+      : <div className="grid gap-6 lg:min-h-0 lg:flex-1 lg:grid-cols-[320px_minmax(0,1fr)]">
+        <div className="space-y-4 lg:min-h-0 lg:overflow-y-auto lg:overscroll-contain lg:pb-6 lg:pr-1" aria-label="Preview and director">
           <Preview composition={doc.composition} scene={scene} onScene={setScene} video={video} />
           <DirectorPanel model={modelLabel(loadAISettings(), 'direct')} busy={!!busy} directing={busy === 'direct'} result={studio.directed}
             onDirect={instruction => { void studio.direct(instruction); }} onUndo={studio.undoDirected} onScene={setScene} />
@@ -299,7 +304,7 @@ export function AIReelStudio({ active, onUseReel }: Props) {
           </div>
         </div>
 
-        <div className="min-w-0 space-y-4">
+        <div className="min-w-0 space-y-4 lg:min-h-0 lg:overflow-y-auto lg:overscroll-contain lg:pb-6 lg:pr-1" aria-label="Scenes and settings">
           <div className="flex flex-wrap items-end gap-3">
             <div className="w-48 space-y-1"><p className="text-[10px] uppercase tracking-wide text-zinc-500">Recipe</p>
               <Select ariaLabel="Recipe" value={doc.composition.recipe ?? 'clean'} options={recipes} disabled={!!busy}
@@ -322,10 +327,15 @@ export function AIReelStudio({ active, onUseReel }: Props) {
             {studio.notes.map((note, i) => <p key={i} className={`flex gap-1.5 ${note.rule === 'fit' ? 'text-red-400' : 'text-zinc-400'}`}>
               <CircleAlert className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />{note.scene ? `Scene ${note.scene}: ` : ''}{note.message}</p>)}
           </div>}
+          <CoachPanel composition={doc.composition} sourceText={doc.sourceText} goal={doc.goal} busy={!!busy}
+            onHook={(headline, highlight) => studio.editScene(0, { headline, highlight })}
+            onMove={(from, to) => studio.setComposition(c => { const scenes = [...c.scenes]; const [moved] = scenes.splice(from, 1); scenes.splice(to, 0, moved); return { ...c, scenes }; })}
+            onCut={index => studio.removeScene(index)} onDirect={instruction => studio.direct(instruction)} />
           <MusicPanel composition={doc.composition} busy={!!busy}
             onMusic={(music, music_id) => studio.setComposition(c => ({ ...c, music, music_id }))}
             onSting={sting => studio.setComposition(c => ({ ...c, sting }))} />
-          <VoicePanel composition={doc.composition} busy={!!busy} voicing={busy === 'voice'} note={studio.voiceNote}
+          <VoicePanel composition={doc.composition} busy={!!busy} voicing={busy === 'voice'} scripting={busy === 'script'} note={studio.voiceNote}
+            onScript={() => { void studio.writeScript(); }}
             onAdd={voice => { void studio.addVoiceover(voice); }} onRemove={studio.removeVoiceover}
             onCaptions={on => studio.setComposition(c => ({ ...c, captions: on ? 'voice' : 'off' }))}
             onChange={patch => studio.setComposition(c => ({ ...c, ...patch }))} />

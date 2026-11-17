@@ -11,7 +11,8 @@ from backend.services.reel_creator.audio_presets import preset_path
 from backend.services.ai import AIConfig
 from backend.services.reel_creator.composition import AnyDocument, Composition, DocumentDraftInput, DocumentRenderInput
 from backend.services.reel_creator.quality import review
-from backend.services.reel_creator.composer import ComposeDirectRequest, ComposeRequest, compose, direct_composition
+from backend.services.reel_creator.coach import CoachRequest
+from backend.services.reel_creator.composer import ComposeDirectRequest, ComposeRequest, ScriptRequest, compose, direct_composition, write_script
 from backend.services.reel_creator.vision_check import VisionRequest, check_with_ai
 from backend.services.reel_creator.director import DirectRequest, check_model, direct
 from backend.services.reel_creator.reel import MAX_HOUSE_STYLES, DraftInput, HouseStyle, Reel
@@ -121,6 +122,38 @@ def direct_composition_reel(value: ComposeDirectRequest):
         assets, images = _photo_facts(value.reel.image_ids())
         return direct_composition(value, assets=assets, images=images)
     return checked(run)
+
+
+class FactsInput(BaseModel):
+    composition: Composition
+    source_text: str = Field(default='', max_length=120000)
+
+
+@router.post('/compositions/facts')
+def composition_facts(value: FactsInput):
+    """Every number, name and quote in the reel next to the article sentence it comes from. Local and free."""
+    from backend.services.reel_creator.coach import fact_panel
+    return fact_panel(value.composition, value.source_text)
+
+
+@router.post('/compositions/hooks')
+def composition_hooks(value: CoachRequest):
+    """Three checked hook options for scene 1, best first."""
+    from backend.services.reel_creator.coach import coach_hooks
+    return checked(coach_hooks, value)
+
+
+@router.post('/compositions/story-check')
+def composition_story(value: CoachRequest):
+    """The AI's read of the running order, with suggestions this reel can take."""
+    from backend.services.reel_creator.coach import story_check
+    return checked(story_check, value)
+
+
+@router.post('/compositions/script')
+def voice_script(value: ScriptRequest):
+    """Write what each unlocked scene says aloud, from the article; the lines are checked and nothing is voiced yet."""
+    return checked(write_script, value)
 
 
 class VoiceoverInput(AIConfig):
