@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { BatteryCharging, BatteryMedium, Check, ChevronRight, CircleAlert, Loader2, Copy, Cpu, MemoryStick, ScanSearch, Monitor, PencilLine, Plus, Power, RefreshCw, ScanLine, ShieldCheck, Smartphone, Thermometer, Trash2, Usb, UserRound, Wifi } from 'lucide-react';
+import { BatteryCharging, BatteryMedium, Check, ChevronRight, CircleAlert, Loader2, Copy, Cpu, MemoryStick, ScanSearch, Monitor, PencilLine, Plus, Power, RefreshCw, ScanLine, ShieldCheck, Smartphone, Thermometer, Trash2, Usb, UserRound, Users, Wifi } from 'lucide-react';
 import { AndroidDevice, AndroidUserRow, DeviceListResponse } from '../../types/device';
 import { AutoWarmingDevice, AutoWarmingSummary } from '../../types/automation';
 import { Profile, SystemStats } from '../../types/profile';
 import { ProxyItem } from '../../types/proxy';
 import { adoptDeviceUser, fetchDevices, forgetDevice, makeDevicePrimary, renameDevice, restartDevice, scanDevice, setDevicePin, setDeviceTimezone, switchDeviceUser, updateDeviceSettings } from '../../services/devices';
-import { PhoneLiveView } from './PhoneLiveView';
+import { PhoneLiveView, SendFilesButton } from './PhoneLiveView';
+import { PhoneDrop, PhoneFilesDialog } from '../accounts/PhoneFilesDialog';
 import { Dialog } from '../ui/Dialog';
 import { Checkbox } from '../ui/Checkbox';
 import { Select } from '../ui/Select';
@@ -57,7 +58,7 @@ function roleBadge(device: AndroidDevice) {
 const PIN_RE = /^\d{4}$/;
 
 /** The hardware accounts live on: This PC (browser accounts) and physical Android phones. */
-export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpenAccount, onAccountsChanged, focus, rescan }: {
+export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpenAccount, onAccountsChanged, onViewAccounts, focus, rescan }: {
   active: boolean; profiles: Profile[]; proxies: ProxyItem[]; stats: SystemStats;
   /** Opens New account for this Android user. */
   onImport: (device: AndroidDevice, user: AndroidUserRow) => void;
@@ -66,6 +67,8 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
   onAccountsChanged?: () => Promise<void> | void;
   /** Device to select when another page links here (null is This PC); a new object re-selects it. */
   focus?: { serial: string | null } | null;
+  /** Opens the Accounts page showing only this phone's accounts, or This PC's when null. */
+  onViewAccounts?: (serial: string | null) => void;
   /** Phone to scan again after one of its users became an account. */
   rescan?: { serial: string } | null;
 }) {
@@ -78,6 +81,11 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
   const [fullScanning, setFullScanning] = useState<string | null>(null);
   const [taking, setTaking] = useState(false);
   const [viewingUser, setViewingUser] = useState<AndroidUserRow | null>(null);
+  // Send files to phone, opened over the screen popup, with any files dropped on the screen.
+  const [sendingFiles, setSendingFiles] = useState<{ files?: PhoneDrop[] } | null>(null);
+  // Send files shows only while the popup's screen is live and free.
+  const [canSendFiles, setCanSendFiles] = useState(false);
+  const viewingProfile = viewingUser?.profile_id ? profiles.find(p => p.id === viewingUser.profile_id) ?? null : null;
   useEffect(() => setViewingUser(null), [selected, active]);
   // A switch from the users table: the phone changes user without opening its screen here.
   const [switching, setSwitching] = useState<{ serial: string; userId: number } | null>(null);
@@ -366,7 +374,7 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
         </div>
 
         <div className="min-w-0 lg:-m-1 lg:min-h-0 lg:overflow-y-auto lg:p-1">
-        {selected === THIS_PC && <PcDetail profiles={profiles} stats={stats} onOpenAccount={onOpenAccount}
+        {selected === THIS_PC && <PcDetail profiles={profiles} stats={stats} onOpenAccount={onOpenAccount} onViewAccounts={onViewAccounts && (() => onViewAccounts(null))}
           warming={warmingOf('pc')} onToggleWarming={(on) => void togglePcWarming(on)} />}
         {selected === ADD_PHONE && (loadError && !data
           ? <PhoneUnavailable error={loadError} loading={loading} onRetry={() => void load()} />
@@ -379,6 +387,8 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
                 {[device.manufacturer, device.model, device.android_version && `Android ${device.android_version}`, device.serial].filter(Boolean).join(' · ')}
               </p>
             </div>
+            {onViewAccounts && <Button size="sm" variant="outline" onClick={() => onViewAccounts(device.serial)} title="Open the Accounts page showing only this phone’s accounts">
+              <Users className="mr-1.5 h-3.5 w-3.5" />View accounts</Button>}
             <Button size="sm" onClick={() => void scan(device.serial)} loading={scanning === device.serial && fullScanning !== device.serial}
               disabled={device.state !== 'device' || scanning === device.serial}
               title="Reads the phone's users. Stopped users keep the companion app details from their last read.">
@@ -440,14 +450,18 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
           </div>
           <DeviceWarnings device={device} profiles={profiles} proxies={proxies} onSetTimezone={(zone) => void setTimezone(device, zone)} />
           {active && viewingUser && device.state === 'device' && <Dialog open
-            onOpenChange={(open) => { if (!open) { setViewingUser(null); void scan(device.serial, true); } }}
-            title={`${device.label} · ${viewingUser.profile_name || viewingUser.name}`} className="max-w-sm">
+            onOpenChange={(open) => { if (!open) { setViewingUser(null); setSendingFiles(null); setCanSendFiles(false); void scan(device.serial, true); } }}
+            title={`${device.label} · ${viewingUser.profile_name || viewingUser.name}`} className="max-w-sm"
+            actions={viewingProfile && canSendFiles && <SendFilesButton onClick={() => setSendingFiles({})} />}>
             <div className="flex h-[min(75vh,48rem)] min-h-0">
               <PhoneLiveView key={`${device.serial}:${viewingUser.user_id}`} autoStart screenOnly
                 runtime={{ kind: 'android_user', device_serial: device.serial,
                   android_user_id: viewingUser.user_id, android_user_serial: viewingUser.user_serial,
-                  android_user_name: viewingUser.profile_name || viewingUser.name }} />
+                  android_user_name: viewingUser.profile_name || viewingUser.name }}
+                onSendFiles={viewingProfile ? (files) => setSendingFiles({ files }) : undefined} onCanSendFiles={setCanSendFiles} />
             </div>
+            {viewingProfile && sendingFiles && <PhoneFilesDialog profile={viewingProfile} initialFiles={sendingFiles.files}
+              onClose={() => setSendingFiles(null)} />}
           </Dialog>}
           </div>
           <UsersTable device={device} onView={setViewingUser} onSwitch={(user) => void switchTo(device.serial, user)}
@@ -536,8 +550,8 @@ function SettingCheckbox({ label, hint, checked, disabled, onChange, status }: {
   </label>;
 }
 
-function PcDetail({ profiles, stats, onOpenAccount, warming, onToggleWarming }: {
-  profiles: Profile[]; stats: SystemStats; onOpenAccount: (profileId: string) => void;
+function PcDetail({ profiles, stats, onOpenAccount, onViewAccounts, warming, onToggleWarming }: {
+  profiles: Profile[]; stats: SystemStats; onOpenAccount: (profileId: string) => void; onViewAccounts?: () => void;
   warming: AutoWarmingDevice | null; onToggleWarming: (on: boolean) => void;
 }) {
   const facts = pcFacts(profiles, stats);
@@ -547,6 +561,8 @@ function PcDetail({ profiles, stats, onOpenAccount, warming, onToggleWarming }: 
         <p className="flex items-center gap-2 truncate text-sm font-semibold text-zinc-100">This PC {stats.docker_running ? <Badge variant="success">Online</Badge> : <Badge variant="danger">Docker offline</Badge>}</p>
         <p className="truncate text-[11px] text-zinc-500">Each browser account runs in its own container on this computer.</p>
       </div>
+      {onViewAccounts && <Button size="sm" variant="outline" onClick={onViewAccounts} title="Open the Accounts page showing only This PC’s accounts">
+        <Users className="mr-1.5 h-3.5 w-3.5" />View accounts</Button>}
     </div>
     <div className="space-y-2 px-4 pt-3">
       <p className="text-[11px] text-zinc-500">{[

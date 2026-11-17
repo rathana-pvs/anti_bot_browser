@@ -5,8 +5,8 @@ import { cn } from '../ui/cn';
 import { deviceLabel, isAndroid } from './accountModel';
 
 /** The device an account lives on. Violet is always the PC, teal always a phone. */
-export function DeviceChip({ profile, devices, onClick, className }: {
-  profile: Profile; devices: AndroidDevice[]; onClick?: () => void; className?: string;
+export function DeviceChip({ profile, devices, onClick, className, title = 'Show this device on the Devices page' }: {
+  profile: Profile; devices: AndroidDevice[]; onClick?: () => void; className?: string; title?: string;
 }) {
   const phone = isAndroid(profile);
   const Icon = phone ? Smartphone : Monitor;
@@ -15,7 +15,7 @@ export function DeviceChip({ profile, devices, onClick, className }: {
     onClick && 'hover:underline underline-offset-2', className);
   const content = <><Icon className="h-3 w-3 shrink-0" aria-hidden="true" /><span className="truncate">{deviceLabel(profile, devices)}</span></>;
   return onClick
-    ? <button type="button" title="Show this device on the Devices page" className={classes}
+    ? <button type="button" title={title} className={classes}
       onClick={(event) => { event.stopPropagation(); onClick(); }}>{content}</button>
     : <span className={classes}>{content}</span>;
 }

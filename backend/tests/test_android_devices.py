@@ -547,7 +547,7 @@ def test_quick_scan_starts_no_user_while_a_job_holds_the_phone(phone, monkeypatc
     assert android_devices.hold_for_job("R58M12345ABC", "job")
     try:
         result = android_devices.scan_device("R58M12345ABC")
-        with pytest.raises(AdbError, match="queued post"):
+        with pytest.raises(AdbError, match="running a queued job"):
             android_devices.scan_device("R58M12345ABC", full=True)
     finally:
         android_devices.release_job("R58M12345ABC")
@@ -577,7 +577,7 @@ def test_viewing_the_user_on_screen_is_refused_while_a_job_holds_the_phone(phone
     phone.current = 10
     assert android_devices.hold_for_job("R58M12345ABC", "job")
     try:
-        with pytest.raises(adb_client.AdbError, match="queued post"):
+        with pytest.raises(android_devices.PhoneBusy, match="running a queued job"):
             android_devices.show_if_on_screen("R58M12345ABC", 10)
     finally:
         android_devices.release_job("R58M12345ABC")
@@ -783,12 +783,41 @@ def test_restart_reboots_the_phone(phone):
     assert restarted == ['R58M12345ABC']
 
 
+def test_busy_phone_names_the_job_and_its_account(phone, monkeypatch):
+    monkeypatch.setattr(android_devices, "linked_profiles", lambda: [
+        {"profile_id": "p2", "name": "P6_2", "runtime": {"device_serial": "R58M12345ABC", "android_user_id": 11}}])
+    assert android_devices.hold_for_job("R58M12345ABC", "post:e1", "p2")
+    try:
+        assert android_devices.busy_message("R58M12345ABC") == "This phone is posting for P6_2. The screen opens when it finishes."
+        assert android_devices.view_only_message("R58M12345ABC") == "Posting for P6_2. View only until it finishes."
+        # The job's own account can be watched; any other user would need a switch.
+        assert android_devices.watch_job("R58M12345ABC", 11) is True
+        assert android_devices.watch_job("R58M12345ABC", 10) is False
+        with pytest.raises(android_devices.PhoneBusy, match="posting for P6_2"):
+            android_devices.show_if_on_screen("R58M12345ABC", 10)
+    finally:
+        android_devices.release_job("R58M12345ABC")
+    assert android_devices.job_account("R58M12345ABC") is None
+    assert android_devices.watch_job("R58M12345ABC", 11) is False
+
+
+def test_job_without_a_known_account_can_be_watched_on_the_user_on_screen(phone):
+    phone.current = 10
+    assert android_devices.hold_for_job("R58M12345ABC", "warming:e1")
+    try:
+        assert android_devices.watch_job("R58M12345ABC", 10) is True
+        assert android_devices.watch_job("R58M12345ABC", 11) is False
+        assert android_devices.busy_message("R58M12345ABC").startswith("This phone is warming up.")
+    finally:
+        android_devices.release_job("R58M12345ABC")
+
+
 def test_restart_is_refused_while_a_job_holds_the_phone(phone):
     restarted = []
     phone.reboot = restarted.append
     assert android_devices.hold_for_job('R58M12345ABC', 'post:1')
     try:
-        with pytest.raises(AdbError, match='queued post'):
+        with pytest.raises(AdbError, match='is posting'):
             android_devices.restart_phone('R58M12345ABC')
     finally:
         android_devices.release_job('R58M12345ABC')
@@ -907,7 +936,7 @@ def test_inventory_merges_saved_transports_without_losing_accounts_or_settings(p
     try:
         assert android_devices.job_on(usb) == 'post:1'
         assert not android_devices.hold_for_job(usb, 'post:2')
-        with pytest.raises(AdbError, match='queued post'):
+        with pytest.raises(AdbError, match='is posting'):
             with android_devices.phone_lock(usb):
                 pass
     finally:

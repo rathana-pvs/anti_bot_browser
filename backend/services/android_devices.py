@@ -481,17 +481,29 @@ def set_timezone(serial: str, zone: str, client: AdbClient | None = None) -> dic
     return state
 
 
-# serial -> the queued job holding the phone ("post:<execution>" or "comment:<execution>")
+# serial -> the queued job holding the phone ("post:<execution>", "warming:…", "comment:…", "setup:…")
 _job_holders: dict[str, str] = {}
+# serial -> the account that job runs for, when known
+_job_accounts: dict[str, str] = {}
+
+JOB_ACTIVITY = {"post": "posting", "warming": "warming up", "comment": "commenting", "setup": "getting ready"}
 
 
-def hold_for_job(serial: str, holder: str) -> bool:
+class PhoneBusy(AdbError):
+    """A queued job holds the phone, so it can't switch users or take input until the job ends."""
+
+
+def hold_for_job(serial: str, holder: str, profile_id: str | None = None) -> bool:
     """Reserves the phone for one queued job; False when another job has it."""
     serial = canonical_serial(serial)
     with _store_lock:
         if job_on(serial) is not None:
             return False
         _job_holders[serial] = holder
+        if profile_id:
+            _job_accounts[serial] = profile_id
+        else:
+            _job_accounts.pop(serial, None)
         return True
 
 
@@ -501,11 +513,52 @@ def release_job(serial: str) -> None:
         for key in list(_job_holders):
             if canonical_serial(key) == serial:
                 _job_holders.pop(key, None)
+        for key in list(_job_accounts):
+            if canonical_serial(key) == serial:
+                _job_accounts.pop(key, None)
 
 
 def job_on(serial: str) -> str | None:
     serial = canonical_serial(serial)
     return next((holder for key, holder in list(_job_holders.items()) if canonical_serial(key) == serial), None)
+
+
+def job_account(serial: str) -> dict | None:
+    """The account the phone's queued job runs for ({profile_id, name, runtime}), when known."""
+    serial = canonical_serial(serial)
+    profile_id = next((value for key, value in list(_job_accounts.items()) if canonical_serial(key) == serial), None)
+    if not profile_id:
+        return None
+    return next((link for link in linked_profiles() if link["profile_id"] == profile_id), None)
+
+
+def busy_message(serial: str) -> str:
+    """Names what holds the phone, e.g. "This phone is posting for P6_2. …"."""
+    holder = job_on(serial) or ""
+    activity = JOB_ACTIVITY.get(holder.split(":", 1)[0], "running a queued job")
+    account = job_account(serial)
+    who = f" for {account['name']}" if account else ""
+    return f"This phone is {activity}{who}. The screen opens when it finishes."
+
+
+def view_only_message(serial: str) -> str:
+    holder = job_on(serial) or ""
+    activity = JOB_ACTIVITY.get(holder.split(":", 1)[0], "running a queued job")
+    account = job_account(serial)
+    who = f" for {account['name']}" if account else ""
+    return f"{activity[:1].upper()}{activity[1:]}{who}. View only until it finishes."
+
+
+def watch_job(serial: str, user_id: int) -> bool:
+    """True when a queued job holds the phone and runs for Android user N, or N is the user on
+    screen, so a viewer of N can watch it without switching or touching anything."""
+    serial = canonical_serial(serial)
+    if job_on(serial) is None:
+        return False
+    account = job_account(serial)
+    if account:
+        return account["runtime"].get("android_user_id") == user_id
+    return _client().current_user(serial) == user_id
 
 
 @contextmanager
@@ -514,7 +567,7 @@ def phone_lock(serial: str, job: bool = False):
     queued job holds the phone, only that job (`job=True`) may switch it."""
     serial = canonical_serial(serial)
     if not job and job_on(serial) is not None:
-        raise AdbError("This phone is running a queued post. Wait for it to finish.")
+        raise PhoneBusy(busy_message(serial))
     with _store_lock:
         aliases = [lock for key, lock in _switch_locks.items() if canonical_serial(key) == serial]
         lock = next((lock for lock in aliases if lock.locked()), aliases[0] if aliases else threading.Lock())

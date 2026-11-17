@@ -108,7 +108,8 @@ export function AccountPage({ profile, devices, tab: requestedTab, onTabChange, 
     </div>}
 
     {tab === 'browser' && android && profile.runtime
-      ? <div className="flex min-h-0 flex-1"><PhoneLiveView key={profile.id} runtime={profile.runtime} /></div>
+      ? <div className="flex min-h-0 flex-1"><PhoneLiveView key={profile.id} runtime={profile.runtime} onScreen={isOnScreen(profile, devices)}
+        onSendFiles={(dropped) => handlers.phoneFiles(profile, dropped)} /></div>
       : tab === 'browser'
       ? <div className="flex min-h-0 flex-1"><VncViewer profile={profile} onAction={(_id, action) => run(action)} embedded /></div>
       : <div className="min-h-0 flex-1 overflow-y-auto p-6">

@@ -221,7 +221,7 @@ async def execute_queue_phone(claim_res: dict) -> dict:
         return finish("skipped_unsupported", reason or "The account's phone is not known.")
     # Space posts for the same account; the phone stays free for other accounts during the wait.
     await _wait_post_cooldown(profile_id)
-    if not android_devices.hold_for_job(serial, f"post:{execution_id}"):
+    if not android_devices.hold_for_job(serial, f"post:{execution_id}", profile_id):
         def back_to_pending(ex):
             ex.update(status="pending", stage="pending", automation_container_owned=False)
         _update(execution_id, lease_id, back_to_pending)
@@ -317,7 +317,7 @@ async def execute_queue_warming(claim_res: dict) -> dict:
     reason = unsupported_reason(post)
     if reason or not serial:
         return finish("skipped_unsupported", reason or "The account's phone is not known.")
-    if not android_devices.hold_for_job(serial, f"warming:{execution_id}"):
+    if not android_devices.hold_for_job(serial, f"warming:{execution_id}", profile_id):
         def back_to_pending(ex):
             ex.update(status="pending", stage="pending", automation_container_owned=False)
         _update(execution_id, lease_id, back_to_pending)
@@ -374,7 +374,7 @@ def run_get_ready(profile_id: str) -> dict:
     from backend.services.automation_service import automation_worker_env
     runtime = phone_of(profile_id) or {}
     serial = runtime.get("device_serial")
-    if not serial or not android_devices.hold_for_job(serial, f"setup:{profile_id}"):
+    if not serial or not android_devices.hold_for_job(serial, f"setup:{profile_id}", profile_id):
         return {"status": "failed", "reason": "The phone is running a queued job; try again when it finishes."}
     try:
         opened = android_network.open_account(profile_id, True)
@@ -443,7 +443,7 @@ def dispatch_comments(active_profiles: set[str]) -> list[str]:
             auto_warming.yield_phone_for_post(queue, runtime["device_serial"])
         if not runtime or profile_id in active_profiles or phone_busy(runtime["device_serial"]):
             continue
-        if not android_devices.hold_for_job(runtime["device_serial"], f"comment:{execution['execution_id']}"):
+        if not android_devices.hold_for_job(runtime["device_serial"], f"comment:{execution['execution_id']}", profile_id):
             continue
         active_profiles.add(profile_id)
         asyncio.create_task(run_comment(execution["execution_id"], runtime, post))

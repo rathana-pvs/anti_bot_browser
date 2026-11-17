@@ -41,7 +41,8 @@ import type { PhoneAccountRequest } from './components/devices/PhoneAccountForm'
 import { AccountPage } from './components/accounts/AccountPage';
 import { MoveToGroupDialog } from './components/accounts/MoveToGroupDialog';
 import { ChangeProxyDialog } from './components/accounts/ChangeProxyDialog';
-import { PhoneFilesDialog } from './components/accounts/PhoneFilesDialog';
+import { PhoneDrop, PhoneFilesDialog } from './components/accounts/PhoneFilesDialog';
+import { PC_DEVICE } from './components/accounts/accountDevices';
 import { AccountHandlers, FolderHandlers, ProfileAction } from './components/accounts/accountActions';
 import { refreshAccountHealth } from './components/accounts/accountHealth';
 import { FolderNameDialog, FolderDialogState } from './components/accounts/FolderNameDialog';
@@ -77,6 +78,8 @@ export const App: React.FC = () => {
   const [page, setPage] = useState<AppPage>('accounts');
   const [openAccount, setOpenAccount] = useState<{ id: string; tab: AccountTab; from?: 'devices' } | null>(null);
   const [phoneFocus, setPhoneFocus] = useState<{ serial: string | null } | null>(null);
+  // Set by the Devices page's View accounts; a new object each time, so the same device can be shown again.
+  const [accountsDevice, setAccountsDevice] = useState<{ key: string } | null>(null);
   const [phoneRescan, setPhoneRescan] = useState<{ serial: string } | null>(null);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [phonePreset, setPhonePreset] = useState<{ serial: string; userId: number } | null>(null);
@@ -88,7 +91,7 @@ export const App: React.FC = () => {
   const settleMove = (moved: boolean) => { moveDone.current?.(moved); moveDone.current = null; };
   const [folderDialog, setFolderDialog] = useState<FolderDialogState>(null);
   const [changeProxyFor, setChangeProxyFor] = useState<Profile | null>(null);
-  const [phoneFilesFor, setPhoneFilesFor] = useState<Profile | null>(null);
+  const [phoneFilesFor, setPhoneFilesFor] = useState<{ profile: Profile; files?: PhoneDrop[] } | null>(null);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [campaignAttention, setCampaignAttention] = useState(0);
   const [queueRequest, setQueueRequest] = useState<{ profileId?: string; executionId?: string; key: number } | null>(null);
@@ -193,6 +196,13 @@ export const App: React.FC = () => {
   const openDevice = useCallback((serial: string | null) => {
     setPhoneFocus({ serial });
     setPage('devices');
+  }, []);
+
+  /** Opens the Accounts list showing only one device's accounts (This PC when `serial` is null). */
+  const viewDeviceAccounts = useCallback((serial: string | null) => {
+    setOpenAccount(null);
+    setAccountsDevice({ key: serial ?? PC_DEVICE });
+    setPage('accounts');
   }, []);
 
   /** Resolves true once the action has run (some accounts may have failed or been left running). */
@@ -355,7 +365,7 @@ export const App: React.FC = () => {
     rename: (profile) => { void renameAccount(profile); },
     toggleHold: (profile) => { void toggleHold(profile); },
     changeProxy: setChangeProxyFor,
-    phoneFiles: setPhoneFilesFor,
+    phoneFiles: (profile, files) => setPhoneFilesFor({ profile, files }),
     openQueue,
     clearFailures: (profile, before) => { void clearFailures(profile, before); },
     open: openAccountPage,
@@ -495,16 +505,18 @@ export const App: React.FC = () => {
           badges={{ accounts: accountsAttention, queue: campaignAttention }} />
 
         <main className={`flex-1 flex min-w-0 overflow-hidden ${page === 'accounts' ? '' : 'hidden'}`}>
-          {currentAccount && openAccount
-            ? <AccountPage key={currentAccount.id} profile={currentAccount} devices={devices} tab={openAccount.tab}
+          {currentAccount && openAccount && <AccountPage key={currentAccount.id} profile={currentAccount} devices={devices} tab={openAccount.tab}
               onTabChange={(tab) => setOpenAccount({ ...openAccount, id: currentAccount.id, tab })}
               backLabel={openAccount.from === 'devices' ? 'Devices' : 'Accounts'}
               onBack={() => { const from = openAccount.from; setOpenAccount(null); if (from === 'devices') setPage('devices'); }}
               onOpenDevice={openDevice} handlers={handlers} busy={busyIds.has(currentAccount.id)}
               executions={executions} proxies={proxies} profiles={profiles} groups={profileGroups} onSave={handleUpdate}
-              onOpenQueue={(executionId) => openQueue(currentAccount.id, executionId)} onReload={loadData} />
-            : <AccountsPage profiles={profiles} proxies={proxies} devices={devices} onOpenDevice={openDevice} groups={profileGroups} executions={executions} handlers={handlers} folderHandlers={folderHandlers}
-              busyIds={busyIds} onCreate={() => { setPhonePreset(null); setIsCreateModalOpen(true); }} />}
+              onOpenQueue={(executionId) => openQueue(currentAccount.id, executionId)} onReload={loadData} />}
+          {/* Kept mounted behind an open account, so Back returns to the same folder, filters and scroll. */}
+          <div className={`flex min-h-0 min-w-0 flex-1 ${currentAccount && openAccount ? 'hidden' : ''}`}>
+            <AccountsPage profiles={profiles} proxies={proxies} devices={devices} onOpenDevice={openDevice} groups={profileGroups} executions={executions} handlers={handlers} folderHandlers={folderHandlers}
+              busyIds={busyIds} deviceFocus={accountsDevice} onDeviceFocused={() => setAccountsDevice(null)} onCreate={() => { setPhonePreset(null); setIsCreateModalOpen(true); }} />
+          </div>
         </main>
 
         <main className={`flex-1 flex min-w-0 overflow-hidden ${page === 'post' || page === 'queue' ? '' : 'hidden'}`}>
@@ -528,7 +540,7 @@ export const App: React.FC = () => {
         <main className={`flex-1 flex min-w-0 overflow-hidden ${page === 'devices' ? '' : 'hidden'}`}>
           <DevicesPage active={page === 'devices'} profiles={profiles} proxies={proxies} stats={systemStats} focus={phoneFocus} rescan={phoneRescan}
             onImport={(device, user) => { setPhonePreset({ serial: device.serial, userId: user.user_id }); setIsCreateModalOpen(true); }}
-            onAccountsChanged={loadData}
+            onAccountsChanged={loadData} onViewAccounts={viewDeviceAccounts}
             onOpenAccount={(profileId) => openAccountPage(profileId, 'overview', 'devices')} />
         </main>
 
@@ -566,7 +578,7 @@ export const App: React.FC = () => {
       {changeProxyFor && <ChangeProxyDialog profile={changeProxyFor} onClose={() => setChangeProxyFor(null)}
         onChanged={(message) => { showToast(message, 'success'); refreshAccountHealth(); void loadData(); }} />}
 
-      {phoneFilesFor && <PhoneFilesDialog profile={phoneFilesFor} onClose={() => setPhoneFilesFor(null)} />}
+      {phoneFilesFor && <PhoneFilesDialog profile={phoneFilesFor.profile} initialFiles={phoneFilesFor.files} onClose={() => setPhoneFilesFor(null)} />}
 
       <SettingsModal
         onRequestOpen={() => setIsSettingsOpen(true)}

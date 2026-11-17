@@ -2,6 +2,7 @@ import { Copy, Eye, Eraser, Shuffle, FolderInput, FolderMinus, FolderPlus, Hand,
 import { Profile } from '../../types/profile';
 import type { ActionMenuItem } from '../ui/ActionMenu';
 import { isAndroid, type AccountTab } from './accountModel';
+import type { PhoneDrop } from './PhoneFilesDialog';
 
 export type ProfileAction = 'start' | 'stop' | 'pause' | 'unpause';
 
@@ -22,8 +23,9 @@ export interface AccountHandlers {
   toggleHold: (profile: Profile) => void;
   /** Change: move the account to another proxy already in the pool. */
   changeProxy: (profile: Profile) => void;
-  /** Phone accounts: copy photos and videos into the account's gallery by hand. */
-  phoneFiles: (profile: Profile) => void;
+  /** Phone accounts: copy photos and videos into the account's gallery by hand,
+   * starting with any files dropped on the phone's screen. */
+  phoneFiles: (profile: Profile, files?: PhoneDrop[]) => void;
 }
 
 const browserOpen = (profile: Profile) => profile.status === 'running' || profile.status === 'paused';
