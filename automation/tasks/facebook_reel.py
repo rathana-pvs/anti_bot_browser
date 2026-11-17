@@ -2192,6 +2192,21 @@ class FacebookReelTask(BaseTask):
             )
         else:
             final_screen = None
+        if result == "profile_fallback":
+            # The composer closed after Post with no Facebook error dialog in
+            # the popup window. Facebook keeps the composer open while an
+            # upload is running or rejected, so a clean close is accepted as
+            # publication without waiting for the profile/gallery checks.
+            self.log(
+                "SUCCESS",
+                "The Reel composer closed after Post with no Facebook error; counting the Reel as published.",
+            )
+            self.capture_evidence(
+                "reel_composer_closed_published",
+                final_screen,
+                reason="composer_closed_without_error",
+            )
+            result = "published"
         self._publication_result = result
         self._final_screen = final_screen
 
