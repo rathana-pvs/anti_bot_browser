@@ -2259,6 +2259,13 @@ class ReelPublicationVerificationTests(unittest.TestCase):
         task._uncertain.assert_not_called()
         labels = [c.args[0] for c in task.capture_evidence.call_args_list]
         self.assertIn("reel_composer_closed_published", labels)
+        # The first-comment profile check must not recheck closure and
+        # downgrade the published Reel to uncertain.
+        task._reel_profile_opened = False
+        task.client.screenshot.reset_mock()
+        self.assertTrue(task._allow_reel_profile_navigation())
+        task.client.screenshot.assert_not_called()
+        task._uncertain.assert_not_called()
 
     def test_blocked_event_prompt_is_uncertain_not_a_network_timeout(self):
         task = self.make_task([], [])
@@ -3047,7 +3054,7 @@ class FirstCommentTargetTests(unittest.TestCase):
         self.assertEqual(permalink["permalink_status"], "not_requested")
         task.navigate_to.assert_called_once_with(
             "https://www.facebook.com/me",
-            wait_seconds=3.0,
+            wait_seconds=30.0,
         )
         task.post_first_comment.assert_called_once_with(
             "https://example.com/link",

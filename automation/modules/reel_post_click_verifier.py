@@ -202,7 +202,8 @@ class ReelPostClickVerifier:
         cannot leave an open composer behind. Rechecking them only misread a
         slowly loading profile (Facebook's logo screen) as an open composer.
         """
-        if getattr(self.task, "_reel_profile_opened", False) is True:
+        if (getattr(self.task, "_reel_profile_opened", False) is True
+                or getattr(self.task, "_reel_composer_closed", False) is True):
             return True
         screen = self.task.client.screenshot()
         observation = self.task.recognizer.observe(screen)

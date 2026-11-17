@@ -193,6 +193,10 @@ class ImagePublicationResultVerifier:
 class ReelPublicationResultVerifier:
     """Check the profile once, then refresh up to twice after unconfirmed reads."""
 
+    # Give Facebook time to finish processing a just-published Reel before
+    # each profile read.
+    PROFILE_OPEN_WAIT_SECONDS = 30.0
+
     def __init__(self, task, *, attempts: int = 3):
         self.task = task
         self.attempts = attempts
@@ -220,7 +224,7 @@ class ReelPublicationResultVerifier:
                 "INFO",
                 f"{'Opening' if attempt == 1 else 'Refreshing'} the profile to check for the latest Reel (attempt {attempt}/{self.attempts}).",
             )
-            self.task.navigate_to("https://www.facebook.com/me", wait_seconds=3.0)
+            self.task.navigate_to("https://www.facebook.com/me", wait_seconds=self.PROFILE_OPEN_WAIT_SECONDS)
             self.task._reel_profile_opened = True
             if not self.task._wait_for_reel_profile_ready():
                 continue
