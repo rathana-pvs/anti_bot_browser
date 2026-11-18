@@ -516,7 +516,7 @@ export const VncViewer: React.FC<VncViewerProps> = ({
         <div
           ref={containerRef}
           onContextMenu={(e) => e.preventDefault()}
-          className="absolute inset-0 flex items-center justify-center select-none"
+          className="vnc-screen absolute inset-0 flex items-center justify-center select-none"
         />
 
         {/* State Overlays */}

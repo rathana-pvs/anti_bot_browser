@@ -56,3 +56,10 @@
 ::-webkit-scrollbar-thumb:hover {
   background: #3f3f46;
 }
+
+/* The desktop app's WebKit drops to blocky nearest-pixel scaling for a canvas that redraws
+   all the time, as the remote screen does; this asks it for smooth scaling. Chrome treats
+   the value as its normal (already smooth) scaling. */
+.vnc-screen canvas {
+  image-rendering: optimizeQuality;
+}
