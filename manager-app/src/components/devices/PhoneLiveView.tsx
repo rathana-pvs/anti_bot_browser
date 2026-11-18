@@ -8,6 +8,9 @@ import { Button } from '../ui/Button';
 import { IconButton } from '../ui/IconButton';
 import { Spinner } from '../ui/Spinner';
 import { h264DecoderConfig, h264Frame } from './phoneVideo';
+import { needsSmoothScreen } from '../../services/smoothScreen';
+
+const smooth = needsSmoothScreen();
 
 type ViewState = { kind: 'idle' } | { kind: 'connecting'; message: string } | { kind: 'live' } | { kind: 'asleep' } | { kind: 'error'; message: string }
   // A queued job holds the phone for another account: the viewer tries again on its own.
@@ -51,6 +54,8 @@ export function PhoneLiveView({ runtime, autoStart = false, screenOnly = false, 
   const [state, setState] = useState<ViewState>({ kind: 'idle' });
   const [screenRatio, setScreenRatio] = useState(DEFAULT_SCREEN_RATIO);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  // The phone's own screen size in pixels; touches are sent in these coordinates.
+  const phoneSizeRef = useRef({ width: 0, height: 0 });
   const socketRef = useRef<WebSocket | null>(null);
   const decoderRef = useRef<VideoDecoder | null>(null);
   const pointerDown = useRef(false);
@@ -132,14 +137,30 @@ export function PhoneLiveView({ runtime, autoStart = false, screenOnly = false, 
       if (socketRef.current !== socket) { frame.close(); return; }
       const canvas = canvasRef.current;
       if (canvas) {
-        if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
-          canvas.width = frame.displayWidth;
-          canvas.height = frame.displayHeight;
+        const phone = phoneSizeRef.current;
+        if (phone.width !== frame.displayWidth || phone.height !== frame.displayHeight) {
+          phoneSizeRef.current = { width: frame.displayWidth, height: frame.displayHeight };
           setScreenRatio(frame.displayWidth / frame.displayHeight);
+        }
+        // WebKit (the desktop app, Safari) scales a constantly redrawn canvas with blocky
+        // nearest-pixel sampling, so there each frame is drawn at its on-screen size, smoothly.
+        const ratio = window.devicePixelRatio || 1;
+        const width = smooth && canvas.clientWidth ? Math.round(canvas.clientWidth * ratio) : frame.displayWidth;
+        const height = smooth && canvas.clientHeight ? Math.round(canvas.clientHeight * ratio) : frame.displayHeight;
+        if (canvas.width !== width || canvas.height !== height) {
+          canvas.width = width;
+          canvas.height = height;
         }
         const context = canvas.getContext('2d');
         if (!context) { frame.close(); fail('The phone screen could not be drawn. Close this viewer and try again.'); return; }
-        context.drawImage(frame, 0, 0);
+        // Fit the frame inside the canvas the way object-contain does, so touches map the same.
+        const fit = Math.min(width / frame.displayWidth, height / frame.displayHeight);
+        const drawWidth = frame.displayWidth * fit;
+        const drawHeight = frame.displayHeight * fit;
+        context.imageSmoothingEnabled = true;
+        context.imageSmoothingQuality = 'high';
+        if (fit !== 1) context.clearRect(0, 0, width, height);
+        context.drawImage(frame, (width - drawWidth) / 2, (height - drawHeight) / 2, drawWidth, drawHeight);
         if (!receivedFrame) {
           receivedFrame = true;
           if (videoWaitRef.current !== null) window.clearTimeout(videoWaitRef.current);
@@ -264,16 +285,17 @@ export function PhoneLiveView({ runtime, autoStart = false, screenOnly = false, 
   const touch = (event: PointerEvent<HTMLCanvasElement>, action: 0 | 1 | 2) => {
     if (state.kind !== 'live' || viewOnly) return;
     const canvas = canvasRef.current;
-    if (!canvas || !canvas.width) return;
+    const phone = phoneSizeRef.current;
+    if (!canvas || !phone.width) return;
     const rect = canvas.getBoundingClientRect();
-    const scale = Math.min(rect.width / canvas.width, rect.height / canvas.height);
+    const scale = Math.min(rect.width / phone.width, rect.height / phone.height);
     if (!scale) return;
-    const x = (event.clientX - rect.left - (rect.width - canvas.width * scale) / 2) / scale;
-    const y = (event.clientY - rect.top - (rect.height - canvas.height * scale) / 2) / scale;
-    if (action === 0 && (x < 0 || y < 0 || x >= canvas.width || y >= canvas.height)) { pointerDown.current = false; return; }
-    send({ type: 'touch', action, width: canvas.width, height: canvas.height,
-      x: Math.round(Math.max(0, Math.min(canvas.width - 1, x))),
-      y: Math.round(Math.max(0, Math.min(canvas.height - 1, y))) });
+    const x = (event.clientX - rect.left - (rect.width - phone.width * scale) / 2) / scale;
+    const y = (event.clientY - rect.top - (rect.height - phone.height * scale) / 2) / scale;
+    if (action === 0 && (x < 0 || y < 0 || x >= phone.width || y >= phone.height)) { pointerDown.current = false; return; }
+    send({ type: 'touch', action, width: phone.width, height: phone.height,
+      x: Math.round(Math.max(0, Math.min(phone.width - 1, x))),
+      y: Math.round(Math.max(0, Math.min(phone.height - 1, y))) });
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLCanvasElement>) => {

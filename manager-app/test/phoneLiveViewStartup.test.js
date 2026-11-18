@@ -24,7 +24,8 @@ function mount(autoStart) {
     require: name => name === 'react' ? react
       : name === 'react/jsx-runtime' ? { jsx: () => null, jsxs: () => null }
       : name.endsWith('/services/devices') ? { deviceLiveUrl: () => 'ws://localhost/live' }
-      : name.endsWith('/phoneVideo') ? { h264DecoderConfig: () => ({codec: 'avc1.640020'}), h264Frame: value => value } : {},
+      : name.endsWith('/phoneVideo') ? { h264DecoderConfig: () => ({codec: 'avc1.640020'}), h264Frame: value => value }
+      : name.endsWith('/services/smoothScreen') ? { needsSmoothScreen: () => false } : {},
     window: {
       setTimeout: fn => { timers.set(++timerId, fn); return timerId; },
       clearTimeout: id => timers.delete(id),
