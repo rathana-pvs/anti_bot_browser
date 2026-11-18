@@ -1,5 +1,5 @@
 import { AndroidNetwork, Profile } from '../types/profile';
-import { AndroidDevice, AndroidUserRow, DeviceListResponse, SetupProgress, SwitchReadiness, TakeOverResult } from '../types/device';
+import { AndroidDevice, AndroidUserRow, DeviceListResponse, SetupProgress, SetupStepStatus, SwitchReadiness, TakeOverResult } from '../types/device';
 import { API_BASE, apiError, backendWebSocketUrl } from './api';
 
 const devicePath = (serial: string) => `${API_BASE}/devices/${encodeURIComponent(serial)}`;
@@ -154,6 +154,28 @@ export function startFacebookReady(profileId: string): Promise<SetupProgress> {
 
 export function confirmAccountLogin(profileId: string): Promise<SetupProgress> {
   return post(`${accountPath(profileId)}/setup/login-done`, undefined, 'Failed to confirm the login');
+}
+
+export interface CleanProgress {
+  profile_id: string;
+  android_user_id: number;
+  state: 'running' | 'done' | 'failed';
+  reason: string | null;
+  steps: { key: string; label: string; status: SetupStepStatus; detail: string | null }[];
+  /** Once done; `media_left` counts gallery files the phone did not delete. */
+  result: { cleared_apps: string[]; media_left: number } | null;
+}
+
+/** Starts clearing every app and the gallery in the account's Android user, then deleting the account
+ * on this PC. It runs in the background; the Android user stays on the phone, empty. */
+export function startPhoneClean(profileId: string): Promise<CleanProgress> {
+  return post(`${accountPath(profileId)}/clean`, undefined, 'Failed to clean the phone user');
+}
+
+export async function fetchPhoneClean(profileId: string): Promise<CleanProgress> {
+  const res = await fetch(`${accountPath(profileId)}/clean`);
+  if (!res.ok) throw await networkError(res, 'Failed to read the clean progress');
+  return res.json();
 }
 
 /** Gives a phone account another proxy; the phone keeps it only if traffic gets through. */

@@ -26,6 +26,8 @@ export interface AccountHandlers {
   /** Phone accounts: copy photos and videos into the account's gallery by hand,
    * starting with any files dropped on the phone's screen. */
   phoneFiles: (profile: Profile, files?: PhoneDrop[]) => void;
+  /** Phone accounts: wipe the Android user back to empty and delete the account. */
+  cleanPhone: (profile: Profile) => Promise<boolean>;
 }
 
 const browserOpen = (profile: Profile) => profile.status === 'running' || profile.status === 'paused';
@@ -67,7 +69,9 @@ export function accountMenu(profile: Profile, handlers: AccountHandlers, { inclu
       renameItem(profile, handlers),
       { label: 'Move to folder…', icon: <FolderInput className={icon} />, onSelect: () => handlers.moveToGroup([profile]) },
       { label: 'Copy account ID', icon: <Copy className={icon} />, onSelect: () => handlers.copyId(profile) },
-      { label: 'Delete', icon: <Trash2 className={icon} />, danger: true, divider: true, onSelect: () => handlers.remove([profile]) },
+      { label: 'Clean phone user…', icon: <Eraser className={icon} />, danger: true, divider: true,
+        hint: 'Clears Facebook, the companion app and the gallery in this Android user, then deletes the account. The user stays, empty.',
+        onSelect: () => { void handlers.cleanPhone(profile); } },
     );
     return items;
   }
@@ -109,11 +113,15 @@ export function bulkMenu(profiles: Profile[], handlers: AccountHandlers, onDone:
   const then = (action: Promise<boolean>) => { void action.then(done => { if (done) onDone(); }); };
   const startable = profiles.filter(p => !isAndroid(p) && (p.status === 'stopped' || p.status === 'error'));
   const stoppable = profiles.filter(p => !isAndroid(p) && (p.status === 'running' || p.status === 'paused'));
+  // Phone accounts are removed one at a time with Clean phone user, which also wipes their Android user.
+  const deletable = profiles.filter(p => !isAndroid(p));
   return [
     { label: countLabel('Start', startable.length), icon: <Play className={icon} />, disabled: !startable.length, onSelect: () => then(handlers.run(startable, 'start')) },
     { label: countLabel('Stop', stoppable.length), icon: <Square className={icon} />, disabled: !stoppable.length, onSelect: () => then(handlers.run(stoppable, 'stop')) },
     { label: `Move ${count} to folder…`, icon: <FolderInput className={icon} />, divider: true, onSelect: () => then(handlers.moveToGroup(profiles)) },
-    { label: countLabel('Delete', count), icon: <Trash2 className={icon} />, danger: true, divider: true, onSelect: () => then(handlers.remove(profiles)) },
+    { label: countLabel('Delete', deletable.length), icon: <Trash2 className={icon} />, danger: true, divider: true, disabled: !deletable.length,
+      hint: deletable.length < count ? 'Phone accounts are removed with Clean phone user, one at a time.' : undefined,
+      onSelect: () => then(handlers.remove(deletable)) },
   ];
 }
 

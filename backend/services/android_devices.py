@@ -364,6 +364,19 @@ def _scan(serial: str, full: bool) -> dict:
     return result
 
 
+def forget_saved_agent(serial: str, user_id: int) -> None:
+    """Drops what the last scan read from this user's companion app, so the next scan asks it
+    again. A scan keeps it for a stopped user, which is right unless this PC just changed it."""
+    serial = canonical_serial(serial)
+    with _store_lock:
+        store = load_store()
+        rows = ((store["devices"].get(serial) or {}).get("last_scan") or {}).get("users") or []
+        row = next((row for row in rows if row.get("user_id") == user_id), None)
+        if row is not None:
+            row["agent"] = None
+            _save_store(store)
+
+
 def _installed_users(client: AdbClient, serial: str, package: str) -> set[int] | None:
     try:
         return client.installed_users(serial, package)

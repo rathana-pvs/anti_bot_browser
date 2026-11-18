@@ -11,7 +11,7 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.security import websocket_token_valid
-from backend.services import android_devices, android_files, android_live, android_network, android_ownership, android_setup, proxy_change
+from backend.services import android_clean, android_devices, android_files, android_live, android_network, android_ownership, android_setup, proxy_change
 from backend.services.adb_client import AdbError, AdbUnavailable
 
 
@@ -197,6 +197,18 @@ def copy_phone_file_from_path(profile_id: str, request: PhoneFilePathRequest):
 @router.delete("/accounts/{profile_id}/files/{file_id}")
 def remove_phone_file(profile_id: str, file_id: str):
     return _call(lambda: android_files.remove_file(profile_id, file_id))
+
+
+@router.post("/accounts/{profile_id}/clean")
+def clean_phone_account(profile_id: str):
+    """Starts clearing every app's data and the gallery in the account's Android user, then forgets
+    the account. Runs in the background; returns its progress at once."""
+    return _call(lambda: android_clean.start(profile_id))
+
+
+@router.get("/accounts/{profile_id}/clean")
+def clean_progress(profile_id: str):
+    return _call(lambda: android_clean.progress(profile_id))
 
 
 @router.post("/{serial}/users", status_code=201)

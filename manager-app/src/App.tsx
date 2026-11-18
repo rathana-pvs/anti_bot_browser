@@ -37,17 +37,18 @@ import { NavRail, AppPage } from './components/NavRail';
 import { AccountsPage } from './components/accounts/AccountsPage';
 import { DevicesPage } from './components/devices/DevicesPage';
 import { useDevices } from './components/devices/useDevices';
-import { createDeviceUser, importDeviceUser, startAccountSetup } from './services/devices';
+import { CleanProgress, createDeviceUser, startPhoneClean, importDeviceUser, startAccountSetup } from './services/devices';
 import type { PhoneAccountRequest } from './components/devices/PhoneAccountForm';
 import { AccountPage } from './components/accounts/AccountPage';
 import { MoveToGroupDialog } from './components/accounts/MoveToGroupDialog';
 import { ChangeProxyDialog } from './components/accounts/ChangeProxyDialog';
+import { CleanPhoneDialog } from './components/accounts/CleanPhoneDialog';
 import { PhoneDrop, PhoneFilesDialog } from './components/accounts/PhoneFilesDialog';
 import { PC_DEVICE } from './components/accounts/accountDevices';
 import { AccountHandlers, FolderHandlers, ProfileAction } from './components/accounts/accountActions';
 import { refreshAccountHealth } from './components/accounts/accountHealth';
 import { FolderNameDialog, FolderDialogState } from './components/accounts/FolderNameDialog';
-import { AccountTab, clearableFailures, useQueueExecutions } from './components/accounts/accountModel';
+import { AccountTab, clearableFailures, phoneOf, useQueueExecutions } from './components/accounts/accountModel';
 import { fetchSetupStatus, isDesktopApp, SetupSnapshot } from './services/setup';
 import { useAppDialog } from './components/ui/AppDialogProvider';
 import { setVisibleInterval } from './services/visibleInterval';
@@ -93,6 +94,7 @@ export const App: React.FC = () => {
   const settleMove = (moved: boolean) => { moveDone.current?.(moved); moveDone.current = null; };
   const [folderDialog, setFolderDialog] = useState<FolderDialogState>(null);
   const [changeProxyFor, setChangeProxyFor] = useState<Profile | null>(null);
+  const [cleaning, setCleaning] = useState<{ profile: Profile; initial: CleanProgress } | null>(null);
   const [phoneFilesFor, setPhoneFilesFor] = useState<{ profile: Profile; files?: PhoneDrop[] } | null>(null);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [campaignAttention, setCampaignAttention] = useState(0);
@@ -327,6 +329,55 @@ export const App: React.FC = () => {
       removed === items.length ? 'success' : 'error');
   };
 
+  /** Resolves false when the user cancels or it can't start; the dialog then shows its progress. */
+  const cleanPhone = async (profile: Profile): Promise<boolean> => {
+    const userLabel = `${profile.runtime?.android_user_name || 'User'} (user ${profile.runtime?.android_user_id})`;
+    if (phoneOf(profile, devices)?.state !== 'device') {
+      // A lost or broken phone can't be cleaned, but its account must still be removable.
+      const remove = await showConfirm(
+        `The phone isn’t connected, so ${userLabel} can’t be cleaned. You can remove “${profile.name}” from this PC only: its proxy is freed, `
+        + `but the phone keeps the account’s data. Connect the phone and use Clean instead if you still have it.`,
+        { title: 'Phone not connected', confirmLabel: 'Remove from this PC', variant: 'danger' },
+      );
+      if (!remove) return false;
+      try {
+        await deleteProfile(profile.id, true);
+        setOpenAccount((current) => current?.id === profile.id ? null : current);
+        showToast(`Removed ${profile.name} from this PC.`, 'success');
+        return true;
+      } catch (err: any) {
+        await showAlert(err?.message || 'Couldn’t remove the account.', { title: 'Remove failed', variant: 'danger' });
+        return false;
+      } finally {
+        await loadData();
+      }
+    }
+    const confirmed = await showConfirm(
+      `Every app's data in ${userLabel} is cleared — Facebook, the companion app, Chrome, the gallery — and its photos and videos are deleted. `
+      + `“${profile.name}” is then deleted on this PC and its proxy is freed. The Android user stays on the phone, empty, ready for a new account and a fresh login. This can’t be undone.`,
+      { title: 'Clean phone user', confirmLabel: 'Clean', variant: 'danger' },
+    );
+    if (!confirmed) return false;
+    try {
+      setCleaning({ profile, initial: await startPhoneClean(profile.id) });
+      return true;
+    } catch (err: any) {
+      await showAlert(err?.message || 'Couldn’t clean the phone user.', { title: 'Clean failed', variant: 'danger' });
+      return false;
+    }
+  };
+
+  // The dialog calls this once per finished run, so a new identity on each render is fine.
+  const cleanFinished = (progress: CleanProgress) => {
+    if (progress.state === 'done') {
+      setOpenAccount((current) => current?.id === progress.profile_id ? null : current);
+      showToast(progress.result?.media_left ? 'Cleaned, but some gallery files stayed on the phone.' : 'Phone user cleaned.',
+        progress.result?.media_left ? 'error' : 'success');
+    }
+    void loadData();
+    void reloadDevices();
+  };
+
   const toggleHold = async (profile: Profile) => {
     try {
       if (profile.account?.on_hold) {
@@ -365,6 +416,7 @@ export const App: React.FC = () => {
   const handlers: AccountHandlers = {
     rename: (profile) => { void renameAccount(profile); },
     toggleHold: (profile) => { void toggleHold(profile); },
+    cleanPhone,
     changeProxy: setChangeProxyFor,
     phoneFiles: (profile, files) => setPhoneFilesFor({ profile, files }),
     openQueue,
@@ -580,6 +632,8 @@ export const App: React.FC = () => {
       <MoveToGroupDialog profiles={moveTargets} groups={profileGroups} onMove={async (targets, group, isNew) => { await moveProfiles(targets, group, isNew); settleMove(true); }}
         onClose={() => { settleMove(false); setMoveTargets(null); }} />
 
+      {cleaning && <CleanPhoneDialog key={cleaning.profile.id}
+        profile={cleaning.profile} initial={cleaning.initial} onClose={() => setCleaning(null)} onFinished={cleanFinished} />}
       {changeProxyFor && <ChangeProxyDialog profile={changeProxyFor} onClose={() => setChangeProxyFor(null)}
         onChanged={(message) => { showToast(message, 'success'); refreshAccountHealth(); void loadData(); }} />}
 
