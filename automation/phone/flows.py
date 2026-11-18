@@ -95,7 +95,9 @@ TAB_BAR_REVEALS = 2
 # agree, so a feed still moving after Home cannot carry the stories row (Create story, Create reel) under the tap.
 PROFILE_TAP_READS = 4
 PROFILE_TAP_STILL_PX = 20  # 1080-wide px the composer may move between two reads and still count as still
-PROFILE_TAP_TRIES = 2  # taps before a tap that keeps opening Create story or Create reel fails the step
+# Taps before a tap that keeps opening Create story or Create reel fails the step. The feed can jump on its
+# own right before a tap (seen on a Pixel 7 Pro: a refresh lands and the top bar folds away), so misses happen.
+PROFILE_TAP_TRIES = 3
 # What a missed profile tap opens: the stories row's cards right under the profile picture.
 CREATE_SCREENS = ["Create story", "Create reel"]
 # Swipes up to the top of the profile (its "followers" line) before a look scans down the posts.
@@ -385,6 +387,18 @@ class Flows:
                     FEED_PROMPT, "New post", "Create post", "New reel", "Post settings", "Reel settings", "Discard changes",
                     "Discard post", "Discard video", "Discard draft", screen.LEFT_UNFINISHED, "facebook"], timeout=12, evidence=False)
             except StepFailed as unknown:
+                # A feed scrolled down hides its top and tab bars, so none of the feed's words show.
+                # A flick brings the tab bar back; Home then jumps to the top. Back only when it does not.
+                if reveals < TAB_BAR_REVEALS and home_taps < HOME_TAPS and "com.facebook" in (
+                        await asyncio.to_thread(dev.focus) or ""):
+                    reveals += 1
+                    home = await self._reveal_home_tab()
+                    if home:
+                        home_taps += 1
+                        self.log(event="feed", action="tap Home", attempt=home_taps, after="hidden tab bar")
+                        await dev.tap(home)
+                        await dev.settle(timeout=2.0)
+                        continue
                 self.log(event="unknown screen", action="back", detail=str(unknown)[:200])
                 await dev.key(KEY_BACK)
                 continue
@@ -811,12 +825,14 @@ class Flows:
             raise StepFailed("feed for profile: the feed kept moving; the profile picture was not tapped")
         await dev.tap((dev.pt(77, 0)[0], again[1]))  # profile picture left of the box
 
-    async def _opened_create_screen(self, timeout: float = 4.0) -> str | None:
-        """Which create screen a profile tap opened instead of the profile (None: not one of them). The
-        profile of a Page has a Create reel button too, so only a screen with the picker's Gallery and
-        none of the profile's tabs counts."""
+    async def _missed_profile_tap(self, timeout: float = 4.0) -> str | None:
+        """What a profile tap opened instead of the profile: a create screen, or "the feed" when the tap
+        did nothing (a tap on a list still moving only stops it). None: the profile, or a screen the tab
+        search below can judge. The profile of a Page has a Create reel button too, so only a screen
+        with the picker's Gallery and none of the profile's tabs counts as a create screen."""
         dev = self.device
         deadline = dev.now() + timeout
+        on_feed = False
         while dev.now() < deadline:
             lines = await dev.read()
             if match(lines, "Posts", exact=True) or match(lines, "All", exact=True):
@@ -825,23 +841,29 @@ class Flows:
                 wrong = next((name for name in CREATE_SCREENS if match(lines, name)), None)
                 if wrong:
                     return wrong
+            on_feed = bool(match(lines, "facebook", exact=True))  # the profile has no "facebook" bar
+            if not on_feed:
+                return None
             await dev.sleep(0.6)
-        return None
+        return "the feed" if on_feed else None
 
     async def open_profile(self) -> None:
         dev = self.device
         for attempt in range(1, PROFILE_TAP_TRIES + 1):
             await self._tap_profile_picture()
-            wrong = await self._opened_create_screen()
+            wrong = await self._missed_profile_tap()
             if not wrong:
                 break
             # A missed tap: close the create screen (it holds nothing yet) and tap again from the feed.
             self.log(event="profile_tap_missed", screen=wrong, attempt=attempt)
             dev.snapshot(f"profile_tap_missed_{attempt}")
-            await dev.key(KEY_BACK)
-            await dev.settle(timeout=2.0)
+            if wrong != "the feed":
+                await dev.key(KEY_BACK)
+                await dev.settle(timeout=2.0)
             if attempt == PROFILE_TAP_TRIES:
                 raise StepFailed(f"profile: the profile tap opened {wrong} instead, {attempt} times")
+            # Back can leave the feed a little scrolled, its top bar over the composer: Home first.
+            await self.discard_until_feed()
         # A Page's profile has an All tab, with its Posts list further down. It reopens on the tab it
         # last showed, so the tab is tapped. Promo cards can push the tabs below the screen.
         timeout = 15
@@ -865,31 +887,55 @@ class Flows:
         found the post. Each look that misses keeps a screenshot of the profile it saw."""
         dev = self.device
         waits = comment_waits(item.kind) if waits is None else waits
+        last_miss = None
         for attempt, _ in enumerate(waits, 1):
             remaining = published_at + sum(waits[:attempt]) - dev.now()
             if remaining > 0:
                 await dev.sleep(remaining)
             allowed = max_age_minutes if max_age_minutes is not None else NEW_POST_MAX_MINUTES
-            if attempt == 1:
-                await self.open_feed()
-                await self.open_profile()
-            else:
-                await self.refresh_profile()
+            next_wait = waits[attempt] if attempt < len(waits) else None
+            try:
+                if attempt == 1 or not await self.on_profile():
+                    # First look, or the last one left the profile (a missed tap can open a create screen
+                    # or leave the home feed showing): open it again rather than scan another screen.
+                    if attempt > 1:
+                        self.log(event="reopen profile", attempt=attempt)
+                    await self.open_feed()
+                    await self.open_profile()
+                else:
+                    await self.refresh_profile()
+            except StepFailed as unopened:
+                # Not this look's post missing, only the profile not reached: the next look opens it again.
+                last_miss = str(unopened)[:200]
+                self.log(event="retry", step="open profile", attempt=attempt, reason=last_miss, next_wait=next_wait)
+                continue
             # The tab tap can leave the list with this job's post header under the sticky tab bar, so
             # each look scans down from the top of the profile, where that header passes in view.
             await self.profile_to_top()
             if await self.scan_profile(item, allowed, attempt):
                 await self.write_comment(item)
                 return attempt
-            self.log(event="retry", step="find post", attempt=attempt,
-                     next_wait=waits[attempt] if attempt < len(waits) else None)
+            last_miss = None
+            self.log(event="retry", step="find post", attempt=attempt, next_wait=next_wait)
+        if last_miss:
+            raise StepFailed(f"comment skipped: the profile did not open on the last look; {last_miss}")
         raise StepFailed(f"comment skipped: the post did not show on the profile after {len(waits)} looks")
+
+    async def on_profile(self) -> bool:
+        """The account's own profile shows: its tabs or its followers/friends line, and not the feed's
+        "facebook" bar. A look that ended elsewhere (a create screen, the home feed) is not scanned."""
+        lines = await self.device.read()
+        if match(lines, "facebook", exact=True) or match(lines, "Gallery"):
+            return False
+        return bool(match(lines, "Posts", exact=True) or match(lines, "All", exact=True)
+                    or match(lines, "followers") or match(lines, "friends"))
 
     async def profile_to_top(self) -> bool:
         """Swipes up until the profile's "followers" line shows. False when it never did."""
         dev = self.device
         for _ in range(PROFILE_TOP_SCROLLS):
-            if match(await dev.read(), "followers"):
+            lines = await dev.read()
+            if match(lines, "followers") and not match(lines, "facebook", exact=True):
                 return True
             await self.scroll(dev.pt(540, 800), dev.pt(540, 2000))
         self.log(event="profile_top", found=False)

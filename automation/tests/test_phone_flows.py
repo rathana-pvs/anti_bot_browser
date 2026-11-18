@@ -57,6 +57,9 @@ class FakeDevice:
     def keyboard_shown(self):
         return self.keyboard.pop(0) if self.keyboard else False
 
+    def focus(self):
+        return "com.facebook.katana/.LoginActivity"
+
     def image(self):
         return self.images.pop(0) if len(self.images) > 1 else (self.images[0] if self.images else None)
 
@@ -582,22 +585,51 @@ class PublishTests(unittest.TestCase):
     def test_a_profile_tap_that_opens_create_story_is_closed_and_tapped_again(self):
         feed = lines(("What's on your mind?", 300))
         story = lines(("Create story", 90), ("Text", 200), ("Gallery", 260), ("No photos on this device", 830))
-        device = FakeDevice([feed, feed, story, feed, feed, lines(("Posts", 900))])
+        # Back leaves the feed a little scrolled, the top bar over the composer: Home before the next tap.
+        covered = lines(("facebook", 50), ("Create story", 250), ("Create reel", 400))
+        top = lines(("facebook", 50), ("What's on your mind?", 300))
+        device = FakeDevice([feed, feed, story, covered, top, top, top, lines(("Posts", 900))])
+        device.icons["home_tab"] = (60.0, 1204.0)
         events = []
         run(Flows(device, lambda **e: events.append(e)).open_profile())
         self.assertIn(("key", flows_module.KEY_BACK), device.actions)
         self.assertIn(("snapshot", "profile_tap_missed_1"), device.actions)
         self.assertIn({"event": "profile_tap_missed", "screen": "Create story", "attempt": 1}, events)
+        self.assertIn({"event": "feed", "action": "tap Home", "attempt": 1}, events)
         self.assertEqual(device.actions[-1], ("tap", (100.0, 900.0)))
 
     def test_a_profile_tap_that_keeps_opening_create_reel_fails(self):
-        feed = lines(("What's on your mind?", 300))
+        top = lines(("facebook", 50), ("What's on your mind?", 300))
         reel = lines(("Create reel", 90), ("Camera", 200), ("Gallery", 260))
-        device = FakeDevice([feed, feed, reel, feed, feed, reel])
+        device = FakeDevice([top, top, reel, top, top, top, reel, top, top, top, reel])
         with self.assertRaises(StepFailed) as failed:
             run(Flows(device, lambda **e: None).open_profile())
-        self.assertIn("Create reel", str(failed.exception))
-        self.assertEqual(sum(action == ("key", flows_module.KEY_BACK) for action in device.actions), 2)
+        self.assertIn("Create reel instead, 3 times", str(failed.exception))
+        self.assertEqual(sum(action == ("key", flows_module.KEY_BACK) for action in device.actions), 3)
+
+    def test_a_profile_tap_that_does_nothing_is_tapped_again_not_swiped_on_the_feed(self):
+        # Pixel 7 Pro: a tap on a feed still moving only stops it; the feed stays. Before, the tab search
+        # then swiped the home feed for a Posts tab and failed.
+        top = lines(("facebook", 50), ("What's on your mind?", 300))
+        device = FakeDevice([top] * 12 + [lines(("Posts", 900))])
+        events = []
+        run(Flows(device, lambda **e: events.append(e)).open_profile())
+        self.assertIn({"event": "profile_tap_missed", "screen": "the feed", "attempt": 1}, events)
+        self.assertNotIn(("key", flows_module.KEY_BACK), device.actions)
+        self.assertFalse([a for a in device.actions if a[0] == "swipe"])
+        self.assertEqual(device.actions[-1], ("tap", (100.0, 900.0)))
+
+    def test_a_feed_with_its_bars_hidden_is_flicked_and_sent_home_not_backed_out_of(self):
+        # Pixel 7 Pro: a feed scrolled down shows no "facebook" bar and no composer, only posts.
+        scrolled = lines(("Houston Chronicle", 300), ("Follow", 300), ("The FAA said", 340))
+        top = lines(("facebook", 50), ("What's on your mind?", 300))
+        device = FakeDevice([scrolled] * 41 + [top])
+        device.icons["home_tab"] = (60.0, 1204.0)
+        events = []
+        run(Flows(device, lambda **e: events.append(e)).discard_until_feed())
+        self.assertNotIn(("key", flows_module.KEY_BACK), device.actions)
+        self.assertIn({"event": "feed", "action": "tap Home", "attempt": 1, "after": "hidden tab bar"}, events)
+        self.assertIn(("tap", (60.0, 1204.0)), device.actions)
 
     def test_a_page_profile_with_its_create_reel_button_is_not_a_missed_tap(self):
         feed = lines(("What's on your mind?", 300))
@@ -1003,6 +1035,70 @@ class FindPostTests(unittest.TestCase):
                 patch.object(flows, "write_comment", step("write")):
             run(flows.find_and_comment(PostItem("reel", "Clip", "hi"), published_at=0.0))
         self.assertEqual(order, ["feed", "profile", "top", "scan", "write"])
+
+    def _profile_steps(self, flows, order, opened, on_profile, found_on=None):
+        def step(name, result=None):
+            async def record(*args, **kwargs):
+                order.append(name)
+                return result
+            return record
+
+        async def open_profile():
+            order.append("profile")
+            if not opened.pop(0):
+                raise StepFailed("profile: the profile tap opened Create reel instead, 3 times")
+
+        async def where():
+            return on_profile.pop(0)
+
+        async def scan(item, allowed, attempt):
+            order.append("scan")
+            return attempt == found_on
+        return [patch.object(flows, "open_feed", step("feed")), patch.object(flows, "open_profile", open_profile),
+                patch.object(flows, "refresh_profile", step("refresh")), patch.object(flows, "on_profile", where),
+                patch.object(flows, "profile_to_top", step("top")), patch.object(flows, "scan_profile", scan),
+                patch.object(flows, "write_comment", step("write"))]
+
+    def _with(self, patches, coroutine):
+        for p in patches:
+            p.start()
+        try:
+            return run(coroutine)
+        finally:
+            for p in patches:
+                p.stop()
+
+    def test_a_profile_that_does_not_open_on_the_first_look_is_opened_on_the_next(self):
+        # Support report 2026-11-17 (profile_025): the first look's profile tap opened Create story and the
+        # comment was skipped at once. The next look opens the profile again instead.
+        flows = Flows(FakeDevice(), lambda **e: None)
+        order = []
+        patches = self._profile_steps(flows, order, opened=[False, True], on_profile=[False], found_on=2)
+        self.assertEqual(self._with(patches, flows.find_and_comment(PostItem("reel", "Clip", "hi"), 0.0)), 2)
+        self.assertEqual(order, ["feed", "profile", "feed", "profile", "top", "scan", "write"])
+
+    def test_a_look_that_ended_off_the_profile_reopens_it_instead_of_scanning_the_feed(self):
+        # Support report 2026-11-17 (profile_039): later looks refreshed and scanned the home feed.
+        flows = Flows(FakeDevice(), lambda **e: None)
+        order = []
+        patches = self._profile_steps(flows, order, opened=[True, True], on_profile=[False], found_on=2)
+        self.assertEqual(self._with(patches, flows.find_and_comment(PostItem("reel", "Clip", "hi"), 0.0)), 2)
+        self.assertEqual(order, ["feed", "profile", "top", "scan", "feed", "profile", "top", "scan", "write"])
+
+    def test_a_profile_that_never_opens_says_so_when_the_comment_is_skipped(self):
+        flows = Flows(FakeDevice(), lambda **e: None)
+        patches = self._profile_steps(flows, [], opened=[False] * 4, on_profile=[False] * 4)
+        with self.assertRaises(StepFailed) as failed:
+            self._with(patches, flows.find_and_comment(PostItem("reel", "Clip", "hi"), 0.0))
+        self.assertIn("the profile did not open on the last look", str(failed.exception))
+
+    def test_on_profile_tells_the_profile_from_the_feed_and_a_create_screen(self):
+        def where(*shown):
+            return run(Flows(FakeDevice([lines(*shown)]), lambda **e: None).on_profile())
+        self.assertTrue(where(("All", 90), ("Photos", 90), ("Sharing Blocks", 300)))
+        self.assertTrue(where(("Posts", 90), ("Natalie Smith", 400)))
+        self.assertFalse(where(("facebook", 50), ("What's on your mind?", 300), ("1.2K followers", 900)))
+        self.assertFalse(where(("Create reel", 90), ("Gallery", 260)))
 
     def test_a_post_up_to_10_minutes_old_is_new_on_every_look(self):
         device = FakeDevice()
