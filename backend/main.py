@@ -58,6 +58,9 @@ async def lifespan(app: FastAPI):
                 faulthandler.dump_traceback_later(10, repeat=True)
                 await asyncio.sleep(1)
         debug_watchdog = asyncio.create_task(trace_blocked_loop())
+    from backend import loop_profiler
+    from backend.config import DATA_DIR
+    loop_profiler.start(DATA_DIR / 'debug_loop_profile', DATA_DIR / 'loop_profile.txt')
     with exclusive_backend():
         session_path = None
         try:
