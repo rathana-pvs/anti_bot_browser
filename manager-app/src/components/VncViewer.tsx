@@ -3,6 +3,7 @@ import { Profile } from '../types/profile';
 import RFB from '@novnc/novnc';
 import { startVncConnection } from '../services/vncConnection';
 import { vncWebSocketUrl } from '../services/vncUrl';
+import { mirrorScreenSmoothly, needsSmoothScreen } from '../services/smoothScreen';
 import { pasteToProfile } from '../services/api';
 import { readHostClipboardText, writeHostClipboardText } from '../services/clipboard';
 import {
@@ -118,6 +119,7 @@ export const VncViewer: React.FC<VncViewerProps> = ({
         const rfb = new RFB(container, screenUrl, { wsProtocols: ['binary'] });
         rfb.scaleViewport = true;
         rfb.resizeSession = false;
+        if (needsSmoothScreen()) mirrorScreenSmoothly(rfb, container);
         setContainerClipboardText('');
         rfb.addEventListener('clipboard', async (event: { detail?: { text?: string } }) => {
           if (rfbRef.current !== rfb || typeof event.detail?.text !== 'string') return;
