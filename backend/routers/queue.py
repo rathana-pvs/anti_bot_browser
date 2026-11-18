@@ -10,7 +10,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Body
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from backend.config import PROFILES_DIR
 from backend.services import active_hours, android_jobs, batch_edit, posting_plan, queue_eta
@@ -102,6 +102,12 @@ async def cancel_batch_posts(batch_id: str):
 
 @router.get("")
 def get_queue():
+    # The app polls this every few seconds. Encoding here runs in the request's worker thread;
+    # FastAPI's own encoder walked every value on the event loop and stalled the whole backend.
+    return Response(json.dumps(queue_snapshot(), default=str), media_type="application/json")
+
+
+def queue_snapshot() -> dict:
     queue = load_posting_queue()
     all_executions = []
     for batch in queue.get("daily_batches", []):
@@ -175,7 +181,8 @@ def _without_details(execution: dict) -> dict:
 
 
 def _batch_without_details(batch: dict) -> dict:
-    return {**batch, "posts": [{**post, "executions": [_without_details(item) for item in post.get("executions", [])]}
+    # Every execution is already in the flat "executions" list; a second copy here doubled the response.
+    return {**batch, "posts": [{key: value for key, value in post.items() if key != "executions"}
                                for post in batch.get("posts", [])]}
 
 

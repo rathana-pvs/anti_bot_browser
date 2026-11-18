@@ -17,6 +17,8 @@ import {
 
 export interface DrawerActions {
   openProfile?: (item: QueueExecutionItem) => void;
+  /** Shows the account's live screen in the app (works on the PC and over web access). */
+  watch?: (item: QueueExecutionItem) => void;
   runNow: (item: QueueExecutionItem) => void;
   retryComment: (item: QueueExecutionItem) => void;
   stopLive: (item: QueueExecutionItem) => void;
@@ -31,14 +33,6 @@ export interface DrawerActions {
   edit?: (item: QueueExecutionItem) => void;
 }
 
-function browserViewerUrl(profile?: Profile) {
-  const wsPort = profile?.container?.ws_port || (profile?.container?.vnc_port ? profile.container.vnc_port + 180 : null);
-  if (!wsPort) return null;
-  const host = (!window.location.hostname || window.location.hostname === 'tauri.localhost' || window.location.protocol === 'tauri:')
-    ? '127.0.0.1' : window.location.hostname;
-  return `http://${host}:${wsPort}/vnc.html`;
-}
-
 export function QueueDetailDrawer({ item, profile, profileName, actions, onClose }: {
   item: QueueExecutionItem; profile?: Profile; profileName: string; actions: DrawerActions; onClose: () => void;
 }) {
@@ -50,7 +44,7 @@ export function QueueDetailDrawer({ item, profile, profileName, actions, onClose
   const canRerun = !(item.post_type === 'live' && uncertain)
     && (item.status === 'failed' || item.status === 'failed_before_publish' || isInterruptedRetry(item) || uncertain || item.status.startsWith('skipped'));
   const canRemove = !['running', 'uncertain', 'needs_review'].includes(item.status);
-  const viewer = browserViewerUrl(profile);
+  const watch = profile?.status === 'running' ? (actions.watch ?? actions.openProfile) : undefined;
   const resolve = async (outcome: 'published' | 'not_published') => {
     setResolving(true);
     try { await actions.resolve(item, outcome); } finally { setResolving(false); }
@@ -88,8 +82,8 @@ export function QueueDetailDrawer({ item, profile, profileName, actions, onClose
           <p className="font-semibold text-amber-200">Check Facebook, then record what happened</p>
           <p className="mt-1 text-zinc-400">Recording the real outcome keeps this from being posted twice. {item.post_type === 'live' ? 'Make sure the broadcast has ended.' : ''}</p>
         </div>
-        {viewer
-          ? <a href={viewer} target="_blank" rel="noreferrer" className="flex min-h-8 items-center justify-center gap-2 rounded-control border border-border text-zinc-200 hover:bg-elevated"><Eye className="h-3.5 w-3.5" />Open browser</a>
+        {watch
+          ? <Button size="sm" variant="outline" onClick={() => watch(item)}><Eye className="h-3.5 w-3.5" />Open browser</Button>
           : <p className="text-zinc-500">The browser isn’t running. Start the profile to look at the page.</p>}
         <div className="grid grid-cols-1 gap-2">
           <Button size="sm" className="bg-emerald-600 hover:bg-emerald-500" loading={resolving} onClick={() => resolve('published')}><Check className="h-3.5 w-3.5" />Yes, it’s posted</Button>

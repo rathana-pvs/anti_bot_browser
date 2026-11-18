@@ -189,9 +189,10 @@ def test_queue_list_leaves_details_out_and_the_drawer_reads_them(tmp_path, monke
         {"execution_id": "live", "status": "running", "scheduled_at": "2026-01-01T00:00:00+00:00", "logs": ["c"]},
     ]}]}]})
 
-    body = queue_router.get_queue()
+    body = queue_router.queue_snapshot()
 
-    for item in [*body["executions"], *body["batches"][0]["posts"][0]["executions"]]:
+    assert "executions" not in body["batches"][0]["posts"][0]
+    for item in body["executions"]:
         assert not any(key in item for key in queue_service.DETAIL_FIELDS)
     counts = {item["execution_id"]: item["log_count"] for item in body["executions"]}
     assert counts == {"done": 2, "live": 1}

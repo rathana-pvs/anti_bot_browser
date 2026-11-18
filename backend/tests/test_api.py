@@ -283,7 +283,9 @@ def test_queue_endpoints(client):
     updated_queue = client.get("/api/queue").json()
     updated_batch = next(batch for batch in updated_queue["batches"] if batch["batch_id"] == batch_data["batch_id"])
     assert len(updated_batch["posts"]) == 2
-    assert updated_batch["posts"][-1]["executions"][0]["stage_history"][0]["reason"] == "appended_to_active_batch"
+    appended = [item for item in updated_queue["executions"]
+                if item["batch_id"] == batch_data["batch_id"] and item["base_caption"] == "Appended while running"]
+    assert appended[0]["stage_history"][0]["reason"] == "appended_to_active_batch"
 
     # Reset status to stopped so test cleanup delete succeeds
     from backend.services.queue_service import save_posting_queue, load_posting_queue

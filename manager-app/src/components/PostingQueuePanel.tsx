@@ -3,7 +3,7 @@ import {
   AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Clock, Copy, Download, ExternalLink, Eye, Loader2, MessageCircle, Pause, Pencil, Play, Plus,
   RotateCcw, Search, ShieldAlert, Square, Trash2, User, X,
 } from 'lucide-react';
-import { DailyBatch, QueueDataResponse, QueueExecutionItem } from '../types/automation';
+import { QueueListBatch, QueueDataResponse, QueueExecutionItem } from '../types/automation';
 import { Profile } from '../types/profile';
 import { AppendBatchPostsDialog } from './AppendBatchPostsDialog';
 import { EditBatchDialog } from './EditBatchDialog';
@@ -96,10 +96,10 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
   const [busyId, setBusyId] = useState<string | null>(null);
   const [batchBusy, setBatchBusy] = useState(false);
   const [lightbox, setLightbox] = useState<LightboxMedia | null>(null);
-  const [appendBatch, setAppendBatch] = useState<DailyBatch | null>(null);
-  const [editBatch, setEditBatch] = useState<DailyBatch | null>(null);
+  const [appendBatch, setAppendBatch] = useState<QueueListBatch | null>(null);
+  const [editBatch, setEditBatch] = useState<QueueListBatch | null>(null);
   const [editJob, setEditJob] = useState<QueueExecutionItem | null>(null);
-  const [report, setReport] = useState<{ open: boolean; item: QueueExecutionItem | null; batch?: DailyBatch }>({ open: false, item: null });
+  const [report, setReport] = useState<{ open: boolean; item: QueueExecutionItem | null; batch?: QueueListBatch }>({ open: false, item: null });
   const lastAttention = useRef(0);
   const menu = useContextMenu();
 
@@ -274,7 +274,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
     });
   };
 
-  const stopAndCancel = async (batch?: DailyBatch) => {
+  const stopAndCancel = async (batch?: QueueListBatch) => {
     const confirmed = await showConfirm(
       `${batch ? `Stop running work and cancel everything still waiting in “${batch.name}”? Other batches keep going.` : 'Stop running work and cancel everything still waiting in every batch?'} Items hidden by filters are included. Active Live broadcasts will be ended. Posts already sent can’t be undone, and an interrupted post may need review. Cloud jobs aren’t affected.`,
       { title: batch ? 'Stop and cancel this batch?' : 'Stop and cancel everything?', confirmLabel: batch ? 'Stop and cancel batch' : 'Stop and cancel all', variant: 'danger' },
@@ -288,7 +288,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
     finally { setBatchBusy(false); await loadQueue(); }
   };
 
-  const rerun = async (batch: DailyBatch) => {
+  const rerun = async (batch: QueueListBatch) => {
     setBatchBusy(true);
     try {
       const result = await rerunBatch(batch.batch_id);
@@ -297,7 +297,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
     finally { setBatchBusy(false); await loadQueue(); }
   };
 
-  const togglePause = async (batch: DailyBatch) => {
+  const togglePause = async (batch: QueueListBatch) => {
     setBatchBusy(true);
     try {
       const result = await setBatchPaused(batch.batch_id, !batch.paused);
@@ -306,7 +306,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
     finally { setBatchBusy(false); await loadQueue(); }
   };
 
-  const removeBatch = async (batch: DailyBatch) => {
+  const removeBatch = async (batch: QueueListBatch) => {
     if (!await showConfirm(`Remove “${batch.name}” and all its queue records?`, { title: 'Remove batch', confirmLabel: 'Remove batch', variant: 'danger' })) return;
     try {
       await deleteBatch(batch.batch_id);
@@ -324,6 +324,10 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
     openProfile: onOpenAccount ? (item) => {
       setSelectedId(null);
       onOpenAccount(item.profile_id);
+    } : undefined,
+    watch: onWatchProfile ? (item) => {
+      setSelectedId(null);
+      onWatchProfile(item.profile_id);
     } : undefined,
     runNow, retryComment, stopLive: stopLiveItem, cancelRecovery, addPermalink, resolve, remove, preview,
     edit: (item) => setEditJob(item),
@@ -511,7 +515,7 @@ function useRememberedOpen(key: string): [boolean, (open: boolean) => void] {
   return [open, change];
 }
 
-const isLiveBatch = (batch: DailyBatch) => batch.posts.length > 0 && batch.posts.every(post => post.type === 'live');
+const isLiveBatch = (batch: QueueListBatch) => batch.posts.length > 0 && batch.posts.every(post => post.type === 'live');
 
 function Section({ title, count, icon, tone, children, collapsible, open = true, onToggle }: {
   title: string; count: number; icon: React.ReactNode; tone?: 'warning' | 'accent'; children: React.ReactNode;

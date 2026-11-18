@@ -3,7 +3,7 @@ import { Film, Image as ImageIcon, Loader2, Lock, Paperclip, PauseCircle } from 
 import {
   BatchChanges, BatchEditInfo, BatchPostChange, fetchBatchEditInfo, getSharedMediaUrl, updateBatch, uploadMediaFiles,
 } from '../services/api';
-import { DailyBatch, QueuePostItem } from '../types/automation';
+import { QueueListBatch, QueuePostItem } from '../types/automation';
 import { BatchSchedule, defaultStart, startFrom, startProblem } from './BatchSchedule';
 import { useAppDialog } from './ui/AppDialogProvider';
 import { Button } from './ui/Button';
@@ -15,7 +15,7 @@ import { restLabel, restOptions } from './restChoices';
 import { Textarea } from './ui/Textarea';
 
 interface Props {
-  batch: DailyBatch;
+  batch: QueueListBatch;
   profileName: (profileId: string) => string;
   onClose: () => void;
   onSaved: () => void | Promise<void>;

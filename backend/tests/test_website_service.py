@@ -180,7 +180,7 @@ def test_batch_snapshot_preserves_destinations_and_deduplicates_submission(monke
     repeated = asyncio.run(router.create_batch(payload))
     assert repeated['batch_id'] == result['batch_id']
     assert len(state['daily_batches']) == 1
-    assert [item['first_comment'] for item in router.get_queue()['executions']] == [item['first_comment'] for item in sorted(executions, key=lambda item: item['scheduled_at'])]
+    assert [item['first_comment'] for item in router.queue_snapshot()['executions']] == [item['first_comment'] for item in sorted(executions, key=lambda item: item['scheduled_at'])]
 
 
 def test_regenerating_hook_keeps_website_article_and_links(monkeypatch):

@@ -212,6 +212,9 @@ export interface QueuePostItem {
   executions: QueueExecutionItem[];
 }
 
+/** A batch as the queue list sends it; its jobs are only in the list's flat `executions`. */
+export type QueueListBatch = Omit<DailyBatch, 'posts'> & { posts: Omit<QueuePostItem, 'executions'>[] };
+
 export interface DailyBatch {
   batch_id: string;
   name: string;
@@ -315,7 +318,8 @@ export interface QueueDataResponse {
       fresh_confirmed: number;
     }>;
   };
-  batches: DailyBatch[];
+  /** Batches without their jobs: every job is in `executions`, which carries its batch_id. */
+  batches: QueueListBatch[];
   executions: QueueExecutionItem[];
 }
 

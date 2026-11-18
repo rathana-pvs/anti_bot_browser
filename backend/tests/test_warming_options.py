@@ -54,4 +54,4 @@ def test_queue_preserves_preferences_for_runner_and_monitor(monkeypatch, tmp_pat
     assert saved['min_scrolls'] == 3
     assert saved['max_scrolls'] == 7
     assert saved['max_seconds'] == 180
-    assert queue.get_queue()['executions'][0]['warming_options'] == saved
+    assert queue.queue_snapshot()['executions'][0]['warming_options'] == saved

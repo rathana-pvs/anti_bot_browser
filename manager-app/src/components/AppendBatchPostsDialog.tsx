@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Film, Image as ImageIcon, Loader2, Paperclip, Plus, Trash2, X } from 'lucide-react';
 import { appendPostsToBatch, getSharedMediaUrl, uploadMediaFiles } from '../services/api';
-import { AppendBatchPostInput, DailyBatch } from '../types/automation';
+import { AppendBatchPostInput, QueueListBatch } from '../types/automation';
 
 interface DraftRow extends AppendBatchPostInput {
   id: string;
@@ -9,7 +9,7 @@ interface DraftRow extends AppendBatchPostInput {
 }
 
 interface AppendBatchPostsDialogProps {
-  batch: DailyBatch;
+  batch: QueueListBatch;
   onClose: () => void;
   onAppended: () => void | Promise<void>;
 }
