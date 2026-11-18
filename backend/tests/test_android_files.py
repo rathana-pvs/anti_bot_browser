@@ -22,6 +22,10 @@ class FakePhone:
         self.events = []
         self.written = []
         self.media_state = "saved"
+        # States the next saves end in, one per save; then media_state.
+        self.media_states = []
+        self.media_error = "disk full"
+        self.log = ""
 
     def users(self, serial):
         return [SimpleNamespace(user_id=uid, running=on) for uid, on in self.running.items()]
@@ -46,13 +50,17 @@ class FakePhone:
         self.events.append(("write", user_id))
 
     def shell(self, serial, *command, timeout=None):
+        if command[0] == "logcat":
+            self.events.append(("logcat",))
+            return self.log
         method = command[command.index("--method") + 1]
         user = int(command[command.index("--user") + 1])
         assert self.running[user]
         self.events.append((method, user))
         if method == "media_status":
-            return reply({"state": self.media_state, "uri": "content://media/external/images/media/77", "size": 3,
-                          "error": "disk full"})
+            state = self.media_states.pop(0) if self.media_states else self.media_state
+            return reply({"state": state, "uri": "content://media/external/images/media/77", "size": 3,
+                          "error": self.media_error})
         if method == "delete_media":
             return reply({"deleted": 1})
         raise AssertionError(method)
@@ -142,6 +150,58 @@ def test_a_failed_save_is_not_recorded(account):
     with pytest.raises(AdbError, match="disk full"):
         android_files.copy_file("profile_020", photo, "a.jpg", client=phone)
     assert android_files.list_files("profile_020", client=phone)["files"] == []
+
+
+SCALAR = "Exception thrown by custom scalar function (code 1 SQLITE_ERROR)"
+PHONE_LOG = """E/MediaProvider( 900): java.lang.IllegalStateException: an older unrelated error
+E/SQLiteConnection( 900): An exception was thrown by custom scalar function.
+E/SQLiteConnection( 900): java.lang.RuntimeException: wrapped
+E/SQLiteConnection( 900): \tat com.android.providers.media.DatabaseHelper.lambda$onConfigure$1(DatabaseHelper.java:612)
+E/SQLiteConnection( 900): Caused by: java.lang.NumberFormatException: For input string: "abc"
+E/SQLiteConnection( 900): \t... 12 more
+"""
+
+
+def test_a_gallery_database_error_is_retried_once_under_a_new_name(account, monkeypatch):
+    monkeypatch.setattr(android_files, "RETRY_DELAY_S", 0)
+    _, photo = account
+    phone = FakePhone()
+    phone.media_states, phone.media_error = ["failed"], SCALAR
+    record = android_files.copy_file("profile_020", photo, "photo_2026-09-07_17-50-02.jpg", client=phone)
+    first, second = (uri for _, _, uri, _ in phone.written)
+    assert first != second and record["name"] in second
+    assert record["name"].startswith("photo_2026-09-07_17-50-02_") and record["name"].endswith(".jpg")
+    assert [item["id"] for item in android_files.list_files("profile_020", client=phone)["files"]] == [record["id"]]
+    assert ("logcat",) not in phone.events
+
+
+def test_a_repeated_gallery_database_error_reports_the_phones_own_reason(account, monkeypatch):
+    monkeypatch.setattr(android_files, "RETRY_DELAY_S", 0)
+    _, photo = account
+    phone = FakePhone()
+    phone.media_state, phone.media_error, phone.log = "failed", SCALAR, PHONE_LOG
+    with pytest.raises(AdbError, match='refused the file twice: .*SQLITE_ERROR.*NumberFormatException: For input string: "abc"'):
+        android_files.copy_file("profile_020", photo, "a.jpg", client=phone)
+    assert len(phone.written) == 2
+    assert android_files.list_files("profile_020", client=phone)["files"] == []
+
+
+def test_other_save_failures_are_not_retried(account):
+    _, photo = account
+    phone = FakePhone()
+    phone.media_state = "failed"
+    with pytest.raises(AdbError, match="could not save the file: disk full"):
+        android_files.copy_file("profile_020", photo, "a.jpg", client=phone)
+    assert len(phone.written) == 1
+
+
+@pytest.mark.parametrize("log, cause", [
+    (PHONE_LOG, 'NumberFormatException: For input string: "abc"'),
+    ("", None),
+    ("E/MediaProvider( 900): java.lang.IllegalStateException: Failed to set xattr", "IllegalStateException: Failed to set xattr"),
+])
+def test_the_phones_reason_is_read_from_its_log(log, cause):
+    assert android_files.gallery_cause(log) == cause
 
 
 def test_remove_deletes_on_the_phone_and_forgets_the_file(account):

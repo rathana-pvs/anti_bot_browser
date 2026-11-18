@@ -125,6 +125,49 @@ def _ensure_phone_free(serial: str) -> None:
         raise AdbError("The phone is running a job. Copy the files when it finishes.")
 
 
+class GalleryRefused(AdbError):
+    """The phone's gallery (MediaProvider) refused the companion app's save."""
+
+
+# How the phone's gallery database reports a Java error raised inside one of its own SQL functions.
+# The Java exception itself only goes to the phone's log (tag SQLiteConnection), so it is read from there.
+_GALLERY_DB_ERROR = re.compile(r"custom scalar function|SQLITE_|SQLiteException", re.IGNORECASE)
+_JAVA_EXCEPTION = re.compile(r"((?:[a-z][\w$]*\.)+[A-Z][\w$]*(?:Exception|Error))(?::\s*(.*))?")
+CAUSE_LOG_LINES = 600
+RETRY_DELAY_S = 2.0
+
+
+def gallery_cause(log: str) -> str | None:
+    """The Java exception the phone's media provider logged for the last failed gallery write, from
+    `logcat -v brief SQLiteConnection:E MediaProvider:E *:S`. Only what follows the last report of
+    the error counts, so an older unrelated error is not blamed. Stack frames (`at ...`) are skipped;
+    the last exception wins, which is the innermost `Caused by`."""
+    lines = log.splitlines()
+    marks = [index for index, line in enumerate(lines) if "custom scalar function" in line]
+    if marks:
+        lines = lines[marks[-1] + 1:]
+    cause = None
+    for line in lines:
+        text = line.split("): ", 1)[1] if "): " in line else line
+        text = text.strip()
+        if text.startswith("at ") or text.startswith("..."):
+            continue
+        match = _JAVA_EXCEPTION.search(text)
+        if match:
+            kind, message = match.group(1).rsplit(".", 1)[-1], (match.group(2) or "").strip()
+            cause = f"{kind}: {message}"[:300] if message else kind
+    return cause
+
+
+def _read_gallery_cause(client: AdbClient, serial: str) -> str | None:
+    try:
+        log = client.shell(serial, "logcat", "-d", "-t", str(CAUSE_LOG_LINES), "-v", "brief",
+                           "SQLiteConnection:E", "MediaProvider:E", "'*:S'", timeout=15)
+    except AdbError:
+        return None
+    return gallery_cause(log)
+
+
 def _wait_saved(client: AdbClient, serial: str, user_id: int, name: str) -> dict:
     deadline = time.monotonic() + SAVE_TIMEOUT_S
     while time.monotonic() < deadline:
@@ -132,9 +175,35 @@ def _wait_saved(client: AdbClient, serial: str, user_id: int, name: str) -> dict
         if status.get("state") == "saved":
             return status
         if status.get("state") == "failed":
-            raise AdbError(f"The phone could not save the file: {status.get('error') or 'unknown error'}")
+            error = status.get("error") or "unknown error"
+            if _GALLERY_DB_ERROR.search(error):
+                raise GalleryRefused(error)
+            raise AdbError(f"The phone could not save the file: {error}")
         time.sleep(0.5)
     raise AdbError("The phone did not finish saving the file.")
+
+
+def _save_to_gallery(client: AdbClient, serial: str, user_id: int, local: Path, original_name: str,
+                     mime: str, size: int) -> tuple[str, str, dict]:
+    """Streams the file to the companion app and waits for the gallery to take it. A gallery database
+    error is tried once more under a fresh name (the app deletes the half-made entry itself); if it
+    happens again, the phone's own logged reason is reported, since the database error alone says
+    nothing about the cause."""
+    timeout = max(120.0, size / (2 * 1024 ** 2))
+    for attempt in (1, 2):
+        token = secrets.token_hex(6)
+        name = phone_name(original_name, token)
+        uri = f"content://{AGENT_AUTHORITY}/media?name={name}&mime={mime}"
+        client.write_content(serial, user_id, uri, str(local), timeout=timeout)
+        try:
+            return token, name, _wait_saved(client, serial, user_id, name)
+        except GalleryRefused as error:
+            if attempt == 2:
+                cause = _read_gallery_cause(client, serial)
+                detail = f"{error} (phone's reason: {cause})" if cause else str(error)
+                raise AdbError(f"The phone's gallery refused the file twice: {detail}") from None
+            time.sleep(RETRY_DELAY_S)
+    raise AssertionError("unreachable")
 
 
 def copy_file(profile_id: str, local: Path, original_name: str, client: AdbClient | None = None) -> dict:
@@ -148,8 +217,6 @@ def copy_file(profile_id: str, local: Path, original_name: str, client: AdbClien
         raise ValueError(f"{original_name} is larger than 2 GB.")
     serial, user_id = runtime["device_serial"], int(runtime["android_user_id"])
     client = client or android_devices._client()
-    token = secrets.token_hex(6)
-    name = phone_name(original_name, token)
     lock = _phone_lock(serial)
     # One copy at a time per phone; a second waits its turn rather than failing.
     if not lock.acquire(timeout=SAVE_TIMEOUT_S * 2):
@@ -160,9 +227,7 @@ def copy_file(profile_id: str, local: Path, original_name: str, client: AdbClien
         free = client.free_storage_mb(serial)
         if free is not None and free - size / 1024 ** 2 < SPARE_MB:
             raise AdbError(f"The phone has only {free} MB free. Make room on it first.")
-        uri = f"content://{AGENT_AUTHORITY}/media?name={name}&mime={mime}"
-        client.write_content(serial, user_id, uri, str(local), timeout=max(120.0, size / (2 * 1024 ** 2)))
-        saved = _wait_saved(client, serial, user_id, name)
+        token, name, saved = _save_to_gallery(client, serial, user_id, local, original_name, mime, size)
     finally:
         lock.release()
     record = {"id": token, "name": name, "original_name": Path(original_name.replace("\\", "/")).name[:200],
