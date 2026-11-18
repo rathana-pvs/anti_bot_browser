@@ -9,6 +9,7 @@ import { IconButton } from '../ui/IconButton';
 import { Spinner } from '../ui/Spinner';
 import { h264DecoderConfig, h264Frame } from './phoneVideo';
 import { needsSmoothScreen } from '../../services/smoothScreen';
+import { planSwipe, wheelPixels } from './phoneSwipe';
 
 const smooth = needsSmoothScreen();
 
@@ -282,16 +283,75 @@ export function PhoneLiveView({ runtime, autoStart = false, screenOnly = false, 
     return () => window.clearTimeout(timer);
   }, [autoStart]);
 
-  const touch = (event: PointerEvent<HTMLCanvasElement>, action: 0 | 1 | 2) => {
-    if (state.kind !== 'live' || viewOnly) return;
+  // A point on the viewer in the phone's own pixels (outside the picture when unbounded).
+  const toPhone = (clientX: number, clientY: number) => {
     const canvas = canvasRef.current;
     const phone = phoneSizeRef.current;
-    if (!canvas || !phone.width) return;
+    if (!canvas || !phone.width) return null;
     const rect = canvas.getBoundingClientRect();
     const scale = Math.min(rect.width / phone.width, rect.height / phone.height);
-    if (!scale) return;
-    const x = (event.clientX - rect.left - (rect.width - phone.width * scale) / 2) / scale;
-    const y = (event.clientY - rect.top - (rect.height - phone.height * scale) / 2) / scale;
+    if (!scale) return null;
+    return {
+      x: (clientX - rect.left - (rect.width - phone.width * scale) / 2) / scale,
+      y: (clientY - rect.top - (rect.height - phone.height * scale) / 2) / scale,
+    };
+  };
+
+  // The mouse wheel scrolls the phone with finger swipes, so it only ever sees touchscreen input.
+  const live = state.kind === 'live' && !viewOnly;
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !live) return;
+    let pending = 0;
+    let cursor: { x: number; y: number } | undefined;
+    let swiping = false;
+    let lastTouch: { x: number; y: number; width: number; height: number } | null = null;
+    let waitTimer: number | undefined;
+    let stepTimers: number[] = [];
+    const swipe = () => {
+      const phone = phoneSizeRef.current;
+      if (swiping || !pending || !phone.width || pointerDown.current) return;
+      // Start near the cursor, so the wheel scrolls whatever is under it.
+      const points = planSwipe(pending, phone.width, phone.height, Math.random, cursor);
+      pending = 0;
+      swiping = true;
+      stepTimers = points.map(point => window.setTimeout(() => {
+        send({ type: 'touch', action: point.action, width: phone.width, height: phone.height, x: point.x, y: point.y });
+        lastTouch = point.action === 1 ? null : { x: point.x, y: point.y, width: phone.width, height: phone.height };
+        if (point.action !== 1) return;
+        swiping = false;
+        stepTimers = [];
+        // A short, uneven pause before the next swipe, like a finger lifting and landing again.
+        waitTimer = window.setTimeout(swipe, 60 + Math.random() * 120);
+      }, point.at));
+    };
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      if (pointerDown.current) return;
+      pending += wheelPixels(event.deltaY, event.deltaMode, canvas.clientHeight || 800);
+      cursor = toPhone(event.clientX, event.clientY) ?? undefined;
+      // One flick of the wheel arrives as many small events: gather them into one swipe.
+      if (!swiping) {
+        window.clearTimeout(waitTimer);
+        waitTimer = window.setTimeout(swipe, 70);
+      }
+    };
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    return () => {
+      canvas.removeEventListener('wheel', onWheel);
+      window.clearTimeout(waitTimer);
+      stepTimers.forEach(timer => window.clearTimeout(timer));
+      // Never leave the finger pressed on the phone halfway through a swipe.
+      if (lastTouch) send({ type: 'touch', action: 1, ...lastTouch });
+    };
+  }, [live]);
+
+  const touch = (event: PointerEvent<HTMLCanvasElement>, action: 0 | 1 | 2) => {
+    if (state.kind !== 'live' || viewOnly) return;
+    const phone = phoneSizeRef.current;
+    const point = toPhone(event.clientX, event.clientY);
+    if (!point) return;
+    const { x, y } = point;
     if (action === 0 && (x < 0 || y < 0 || x >= phone.width || y >= phone.height)) { pointerDown.current = false; return; }
     send({ type: 'touch', action, width: phone.width, height: phone.height,
       x: Math.round(Math.max(0, Math.min(phone.width - 1, x))),
