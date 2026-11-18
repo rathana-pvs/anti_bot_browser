@@ -116,10 +116,17 @@ def static_response(file: Path, request_headers):
     return FileResponse(file, media_type=content_type, headers={'Cache-Control': cache})
 
 
+# Larger chunks are compressed in a worker thread (zlib releases the GIL) so the
+# backend's event loop, which this gateway shares, keeps serving everything else.
+THREADED_COMPRESS_BYTES = 64 * 1024
+
+
 async def gzip_stream(chunks):
     compressor = zlib.compressobj(6, zlib.DEFLATED, 31)
     async for chunk in chunks:
-        if data := compressor.compress(chunk):
+        data = (await asyncio.to_thread(compressor.compress, chunk) if len(chunk) >= THREADED_COMPRESS_BYTES
+                else compressor.compress(chunk))
+        if data:
             yield data
     yield compressor.flush()
 

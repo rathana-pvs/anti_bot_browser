@@ -37,6 +37,7 @@ def main():
              'Trusted Wi-Fi only: HTTP is not encrypted.\n')
           + 'Stop this command to close gateway access.\n', flush=True)
     uvicorn.run(app, host=args.host, port=args.port, proxy_headers=False, access_log=False,
+                ws_per_message_deflate=False,
                 ssl_certfile=str(args.tls_cert) if tls else None,
                 ssl_keyfile=str(args.tls_key) if tls else None)
 

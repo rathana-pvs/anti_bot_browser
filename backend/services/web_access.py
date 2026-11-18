@@ -226,7 +226,10 @@ class WebAccess:
             except OSError:
                 listener.close()
                 raise WebAccessError(f'Port {GATEWAY_PORT} on this PC is already in use, so web access could not start.') from None
-            server = _EmbeddedServer(uvicorn.Config(app, log_level='warning', access_log=False, proxy_headers=False))
+            # Screen frames are already compressed by VNC, and deflating them again on this event loop
+            # halved the frame rate and slowed every other backend request.
+            server = _EmbeddedServer(uvicorn.Config(app, log_level='warning', access_log=False, proxy_headers=False,
+                                                    ws_per_message_deflate=False))
             task = asyncio.create_task(server.serve(sockets=[listener]))
             while not server.started and not task.done():
                 await asyncio.sleep(0.05)
