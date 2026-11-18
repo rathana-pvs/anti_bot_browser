@@ -5,6 +5,9 @@ A source is one provider account or one batch of proxies, such as "Webshare resi
 source sets:
 
 - `provider`: `manual`, or `webshare` (its API key can replace proxies).
+
+A source with a provider API key (`uses_api`) gets its proxies only from that API: they are
+synced from the provider, and pasted proxies can't be imported into it.
 - `protocol`: `socks5` or `http`, used for every proxy imported into it. Fixed once it has proxies.
 - `accounts_per_proxy`: its own limit, or None to follow the global setting.
 - `use_on`: `both`, `pc` or `phone`. Phones only use SOCKS5, so an HTTP source is PC only.
@@ -184,10 +187,20 @@ def surface_message(proxy: dict, surface: str) -> str:
             f"so this {where} account can't use {proxy.get('host')}:{proxy.get('port')}. Choose a proxy from another source.")
 
 
+def uses_api(source: dict) -> bool:
+    """True when the source's proxies come from its provider's API, not from pasted lists."""
+    return source["provider"] != "manual" and bool(api_key(source["id"]))
+
+
+def import_message(source: dict) -> str:
+    return (f"{source['name']} gets its proxies from the {PROVIDER_LABEL[source['provider']]} API, so proxies can't be "
+            "pasted into it. Use Sync from Webshare, or import them into a manual source.")
+
+
 def public(source: dict, pool: list[dict] | None = None) -> dict:
     """What the Proxies page sees: never the key itself."""
     key = api_key(source["id"])
-    out = {**source, "key_set": bool(key), "key_hint": _key_hint(key),
+    out = {**source, "key_set": bool(key), "key_hint": _key_hint(key), "uses_api": uses_api(source),
            "provider_label": PROVIDER_LABEL[source["provider"]], "is_default": source["id"] == DEFAULT_ID}
     if pool is not None:
         out["proxy_count"] = sum(1 for p in pool if (p.get("source_id") or DEFAULT_ID) == source["id"])

@@ -237,22 +237,21 @@ def start_webshare_replace(request: ProxySelection):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@router.get("/webshare/replace")
-def webshare_replace_status():
-    return webshare_service.runner.status()
-
-@router.post("/import")
-def import_proxies(payload: dict = Body(...)):
-    text = payload.get("text")
-    if not text or not isinstance(text, str):
-        raise HTTPException(status_code=400, detail="No proxy text provided")
-    source_id = payload.get("source_id") or proxy_sources.DEFAULT_ID
-    if not isinstance(source_id, str):
-        raise HTTPException(status_code=422, detail="Choose a proxy source")
+@router.post("/sources/{source_id}/sync")
+def sync_proxy_source(source_id: str):
+    """Adds the source's Webshare proxies that aren't in the pool yet, then checks the new ones."""
+    if webshare_service.runner.running():
+        raise HTTPException(status_code=409, detail="Wait for the Webshare replacement to finish first.")
+    if proxy_check.runner.status().get("state") == "running":
+        raise HTTPException(status_code=409, detail="Wait for the proxy check to finish first.")
     try:
-        result = import_proxies_from_text(text, source_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        result = webshare_service.sync_source(source_id)
+    except webshare_service.WebshareError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _with_status(result)
+
+
+def _with_status(result: dict) -> dict:
     added_ids = result.pop("added_ids", [])
     status = refresh_proxy_statuses(added_ids) if added_ids else {
         "online": 0, "offline": 0, "geo_checked": 0, "geo_failed": 0,
@@ -265,6 +264,27 @@ def import_proxies(payload: dict = Body(...)):
         "geo_checked": status["geo_checked"],
         "geo_failed": status["geo_failed"],
     }
+
+
+@router.get("/webshare/replace")
+def webshare_replace_status():
+    return webshare_service.runner.status()
+
+@router.post("/import")
+def import_proxies(payload: dict = Body(...)):
+    text = payload.get("text")
+    if not text or not isinstance(text, str):
+        raise HTTPException(status_code=400, detail="No proxy text provided")
+    source_id = payload.get("source_id") or proxy_sources.DEFAULT_ID
+    if not isinstance(source_id, str):
+        raise HTTPException(status_code=422, detail="Choose a proxy source")
+    if proxy_sources.exists(source_id) and proxy_sources.uses_api(proxy_sources.get(source_id)):
+        raise HTTPException(status_code=409, detail=proxy_sources.import_message(proxy_sources.get(source_id)))
+    try:
+        result = import_proxies_from_text(text, source_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return _with_status(result)
 
 
 @router.post("/refresh-status")

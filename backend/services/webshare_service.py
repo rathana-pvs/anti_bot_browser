@@ -145,6 +145,49 @@ def already_replaced(ip: str, port: int | None, key: str) -> tuple[str, int, dic
     return None
 
 
+# --- Sync ---------------------------------------------------------------------------------------
+
+LIST_PAGES = 100
+LIST_PAGE_SIZE = 100
+
+
+def list_proxies(key: str) -> list[dict]:
+    """Every proxy in the Webshare account, following its pages."""
+    rows, page = [], 1
+    while page <= LIST_PAGES:
+        data = _request("GET", "/v2/proxy/list/", key, params={"mode": "direct", "page": page, "page_size": LIST_PAGE_SIZE})
+        rows += data.get("results") or []
+        if not data.get("next"):
+            break
+        page += 1
+    return rows
+
+
+def sync_source(source_id: str) -> dict:
+    """Adds the Webshare account's proxies that aren't in the pool yet to the source.
+
+    Proxies already in the pool (in any source) are skipped and never moved, so accounts keep
+    theirs. Pool proxies of this source that Webshare no longer lists are counted, not deleted:
+    they may still hold accounts, and the person decides what to do with them."""
+    if not proxy_sources.exists(source_id):
+        raise WebshareError("This proxy source no longer exists.")
+    source = proxy_sources.get(source_id)
+    if source["provider"] != "webshare":
+        raise WebshareError(f"{source['name']} isn't a Webshare source.")
+    key = proxy_sources.api_key(source_id)
+    if not key:
+        raise WebshareError(f"Add the Webshare API key to {source['name']} first (its settings on the Proxies page).")
+    rows = [r for r in list_proxies(key) if r.get("proxy_address") and r.get("port") and r.get("valid") is not False]
+    lines = [f"{r['proxy_address']}:{int(r['port'])}:{r.get('username') or ''}:{r.get('password') or ''}" for r in rows]
+    result = proxy_service.import_proxies_from_text("\n".join(lines), source_id) if lines else {
+        "added": 0, "skipped": 0, "total": len(proxy_service.load_proxy_pool()), "added_ids": []}
+    listed = {(r["proxy_address"], int(r["port"])) for r in rows}
+    gone = [p for p in proxy_service.load_proxy_pool()
+            if (p.get("source_id") or proxy_sources.DEFAULT_ID) == source_id and not p.get("replaced_by")
+            and (p.get("host"), p.get("port")) not in listed]
+    return {**result, "listed": len(rows), "not_in_webshare": len(gone)}
+
+
 # --- Replacement --------------------------------------------------------------------------------
 
 def replace_one(proxy_id: str, sleep=time.sleep) -> dict:

@@ -94,7 +94,8 @@ export const ProxySourceDialog: React.FC<{
         {source?.key_set && !removeKey && <p className="text-[11px] text-zinc-500">A key is saved{source.key_hint ? ` (${source.key_hint})` : ''}. Enter a new one to replace it.</p>}
         <input type="password" autoComplete="off" value={key} onChange={e => { setKey(e.target.value); setRemoveKey(false); }}
           placeholder={source?.key_set ? 'Keep the saved key' : 'Paste the API key'} className={`${inputClass} font-mono`} aria-label="Webshare API key" />
-        <p className="text-[11px] text-zinc-500">Saved only on this PC and sent only to Webshare. Each source keeps its own key.</p>
+        <p className="text-[11px] text-zinc-500">Saved only on this PC and sent only to Webshare. Each source keeps its own key.
+          With a key, this source gets its proxies only from Webshare (Sync from Webshare), not from pasted lists.</p>
         {source?.key_set && <button type="button" disabled={saving} onClick={() => { setRemoveKey(!removeKey); setKey(''); }}
           className="text-[11px] text-red-300 hover:text-red-200">{removeKey ? 'Keep the saved key' : 'Remove the saved key'}</button>}
       </div>}

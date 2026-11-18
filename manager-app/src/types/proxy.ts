@@ -17,6 +17,8 @@ export interface ProxySource {
   use_on: ProxyUse;
   key_set: boolean;
   key_hint: string | null;
+  /** Its proxies come only from the provider's API (Sync), never from pasted lists. */
+  uses_api: boolean;
   is_default: boolean;
   proxy_count?: number;
 }

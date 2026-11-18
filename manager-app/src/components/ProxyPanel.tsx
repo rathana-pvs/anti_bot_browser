@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { accountLimit, formatProxyGeography, hasRoom, PROXY_FOLDERS, PROXY_USE_LABEL, ProxyItem, ProxySource, proxyHolders, proxyIpListText, qualityRank } from '../types/proxy';
-import { checkProxyGeography, fetchProxySettings, fetchProxySources, importProxies, refreshProxyStatuses, testProxyPing, deleteSelectedProxies, saveProxyList, updateAccountsPerProxy } from '../services/api';
+import { checkProxyGeography, fetchProxySettings, fetchProxySources, importProxies, syncProxySource, refreshProxyStatuses, testProxyPing, deleteSelectedProxies, saveProxyList, updateAccountsPerProxy } from '../services/api';
 import { Download, Globe, Plus, Trash2, Activity, MapPin, X, Loader2, Search, Lock, Folder, Gauge, Monitor, Smartphone, Users, RefreshCw, Settings2 } from 'lucide-react';
 import { useAppDialog } from './ui/AppDialogProvider';
 import { Checkbox } from './ui/Checkbox';
@@ -52,6 +52,7 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [importText, setImportText] = useState('');
   const [isImporting, setIsImporting] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [geoCheckingId, setGeoCheckingId] = useState<string | null>(null);
   const [isRefreshingStatus, setIsRefreshingStatus] = useState(false);
@@ -63,8 +64,13 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
   const inLocation = new Set(location.filtered.map(p => p.id));
   const [isDeleting, setIsDeleting] = useState(false);
   const webshare = useWebshare(onRefresh);
-  const busy = isDeleting || isImporting || isRefreshingStatus || checkRun.running || webshare.running;
-  const openImport = () => { setImportSource(source?.id ?? sources[0]?.id ?? 'default'); setIsImportOpen(true); };
+  const busy = isDeleting || isImporting || isSyncing || isRefreshingStatus || checkRun.running || webshare.running;
+  // A source that uses its provider's API only gets proxies by syncing; pasted ones go to a manual source.
+  const importable = sources.filter(s => !s.uses_api);
+  const openImport = () => {
+    setImportSource(source && !source.uses_api ? source.id : importable[0]?.id ?? '');
+    setIsImportOpen(true);
+  };
   const inUse = (proxy: ProxyItem) => proxyHolders(proxy).length > 0;
   const accountsOf = (proxy: ProxyItem) => proxyHolders(proxy).map(id => ({ id, profile: profiles.find(profile => profile.id === id) }));
   const { sort, toggle } = useSort<ProxySortKey>();
@@ -135,9 +141,27 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
     }
   };
 
+  const handleSync = async () => {
+    if (!source) return;
+    setIsSyncing(true);
+    try {
+      const result = await syncProxySource(source.id);
+      await showAlert(`Webshare lists ${result.listed} proxies. Added ${result.added} new ones to ${source.name}`
+        + (result.skipped ? `; ${result.skipped} already in the pool were skipped.` : '.')
+        + (result.added ? ` Online: ${result.online}; offline: ${result.offline}; locations found: ${result.geo_checked}.` : '')
+        + (result.not_in_webshare ? ` ${result.not_in_webshare} proxies in this source are no longer in your Webshare account; they were kept so their accounts don't lose them.` : ''),
+        { title: 'Webshare sync complete' });
+      onRefresh();
+    } catch (err: any) {
+      await showAlert(`Sync failed: ${err.message}`, { title: 'Webshare sync failed', variant: 'danger' });
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
   const handleImport = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!importText.trim()) return;
+    if (!importText.trim() || !importSource) return;
 
     setIsImporting(true);
     try {
@@ -288,10 +312,16 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
             {isRefreshingStatus ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Activity className="h-3.5 w-3.5" />}
             {isRefreshingStatus ? 'Checking…' : 'Check status'}
           </button>
-          <button onClick={openImport} disabled={busy}
+          {source?.uses_api ? <button onClick={() => void handleSync()} disabled={busy}
+            title={`Adds the proxies in this Webshare account that aren't in the pool yet. Proxies of ${source.name} come only from its API.`}
+            className="flex items-center gap-1.5 rounded-md bg-white px-3 py-1.5 text-xs font-semibold text-zinc-950 hover:bg-zinc-200 disabled:opacity-40">
+            {isSyncing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+            {isSyncing ? 'Syncing…' : 'Sync from Webshare'}
+          </button> : <button onClick={openImport} disabled={busy || !importable.length}
+            title={importable.length ? undefined : 'Every source gets its proxies from an API. Add a manual source to paste proxies.'}
             className="flex items-center gap-1.5 rounded-md bg-white px-3 py-1.5 text-xs font-semibold text-zinc-950 hover:bg-zinc-200 disabled:opacity-40">
             <Plus className="h-3.5 w-3.5" />Import proxies
-          </button>
+          </button>}
         </div>
       </div>
 
@@ -453,7 +483,9 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
                 <tr><td colSpan={7} className="py-16 text-center">
                   <p className="text-xs text-zinc-400">{proxies.length === 0 ? 'Your proxy pool is empty.' : sourceProxies.length === 0 ? `${source?.name ?? 'This source'} has no proxies yet.` : folder !== ALL_FOLDERS ? 'No proxies in this folder match your filters.' : 'No proxies match your search.'}</p>
                   {sourceProxies.length === 0 ? (
-                    <button onClick={openImport} disabled={busy} className="mt-3 text-xs text-blue-300 hover:text-blue-200">{source ? `Import proxies into ${source.name}` : 'Import your first proxies'}</button>
+                    source?.uses_api
+                      ? <button onClick={() => void handleSync()} disabled={busy} className="mt-3 text-xs text-blue-300 hover:text-blue-200">Sync {source.name} from Webshare</button>
+                      : <button onClick={openImport} disabled={busy || !importable.length} className="mt-3 text-xs text-blue-300 hover:text-blue-200">{source ? `Import proxies into ${source.name}` : 'Import your first proxies'}</button>
                   ) : <button onClick={() => { setSearch(''); setFilter('all'); location.reset(); setFolder(ALL_FOLDERS); }} className="mt-3 text-xs text-blue-300 hover:text-blue-200">Clear filters</button>}
                 </td></tr>
               )}
@@ -494,8 +526,9 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
               <div className="space-y-1.5">
                 <span className="block font-medium text-zinc-400">Source</span>
                 <Select value={importSource} onValueChange={setImportSource} ariaLabel="Import into source" disabled={isImporting}
-                  options={sources.map(s => ({ value: s.id, label: `${s.name} · ${s.provider_label} · ${s.protocol.toUpperCase()}` }))} />
-                <p className="text-[11px] text-zinc-500">They get this source's protocol, limit and key. A proxy already in the pool is skipped.</p>
+                  options={importable.map(s => ({ value: s.id, label: `${s.name} · ${s.provider_label} · ${s.protocol.toUpperCase()}` }))} />
+                <p className="text-[11px] text-zinc-500">They get this source's protocol and limit. A proxy already in the pool is skipped.
+                  {importable.length < sources.length ? ' Sources with an API key aren\'t listed: they sync from their provider.' : ''}</p>
               </div>
               <div>
                 <label className="block text-zinc-400 font-medium mb-1.5">
@@ -526,7 +559,7 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
                 </button>
                 <button
                   type="submit"
-                  disabled={isImporting}
+                  disabled={isImporting || !importSource}
                   className="px-4 py-1.5 rounded-md bg-white text-zinc-950 font-semibold hover:bg-zinc-200 transition-colors shadow-sm disabled:opacity-50"
                 >
                   {isImporting ? 'Importing…' : 'Add to source'}

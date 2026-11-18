@@ -489,6 +489,15 @@ export async function fetchWebshareReplace(): Promise<WebshareReplaceRun> {
   return res.json();
 }
 
+export interface ProxyImportResult { added: number; skipped: number; total: number; status_checked: number; online: number; offline: number; geo_checked: number; geo_failed: number }
+
+/** Adds the source's Webshare proxies that aren't in the pool yet. */
+export async function syncProxySource(id: string): Promise<ProxyImportResult & { listed: number; not_in_webshare: number }> {
+  const res = await fetch(`${API_BASE}/proxies/sources/${encodeURIComponent(id)}/sync`, { method: 'POST' });
+  if (!res.ok) throw await apiError(res, 'Could not sync from Webshare');
+  return res.json();
+}
+
 export async function importProxies(text: string, sourceId: string): Promise<{ added: number; skipped: number; total: number; status_checked: number; online: number; offline: number; geo_checked: number; geo_failed: number }> {
   const res = await fetch(`${API_BASE}/proxies/import`, {
     method: 'POST',

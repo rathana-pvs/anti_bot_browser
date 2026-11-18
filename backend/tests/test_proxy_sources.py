@@ -165,3 +165,67 @@ def test_change_proxy_lists_the_accounts_own_source_first(pool, monkeypatch):
     options = proxy_change.options("acct")["options"]
     assert [o["id"] for o in options] == ["p2", other]
     assert options[0]["same_source"] is True and options[0]["source_name"] == "My proxies"
+
+
+def _webshare_source(name="Webshare DC"):
+    return proxy_sources.create({"name": name, "provider": "webshare", "api_key": "datacenter2222"},
+                                verify=lambda key: None)
+
+
+def test_sync_adds_the_webshare_accounts_new_proxies_to_the_source(pool, monkeypatch):
+    source = _webshare_source()
+    pages = {1: {"results": [{"proxy_address": "10.0.0.1", "port": 1080, "username": "u", "password": "pw", "valid": True},
+                             {"proxy_address": "10.0.0.9", "port": 6000, "username": "w", "password": "s", "valid": True}],
+                 "next": "page2"},
+             2: {"results": [{"proxy_address": "10.0.0.8", "port": 6001, "username": "w", "password": "s", "valid": False}],
+                 "next": None}}
+    seen = []
+
+    def fake_request(method, path, key=None, **kwargs):
+        seen.append((path, key))
+        return pages[kwargs["params"]["page"]]
+
+    monkeypatch.setattr(webshare_service, "_request", fake_request)
+    result = webshare_service.sync_source(source["id"])
+    assert seen == [("/v2/proxy/list/", "datacenter2222")] * 2
+    # 10.0.0.1 is already in the pool (in another source) and stays there; the invalid one is left out.
+    assert (result["listed"], result["added"], result["skipped"]) == (2, 1, 1)
+    [new] = [p for p in pool().values() if p["host"] == "10.0.0.9"]
+    assert new["source_id"] == source["id"] and new["port"] == 6000 and new["username"] == "w"
+    assert pool()["p1"]["source_id"] == proxy_sources.DEFAULT_ID
+
+
+def test_sync_counts_but_keeps_proxies_webshare_no_longer_lists(pool, monkeypatch):
+    source = _webshare_source()
+    monkeypatch.setattr(webshare_service, "_request", lambda *a, **k: {
+        "results": [{"proxy_address": "10.0.0.9", "port": 6000, "username": "w", "password": "s"}], "next": None})
+    webshare_service.sync_source(source["id"])
+    monkeypatch.setattr(webshare_service, "_request", lambda *a, **k: {"results": [], "next": None})
+    result = webshare_service.sync_source(source["id"])
+    assert result["not_in_webshare"] == 1 and any(p["host"] == "10.0.0.9" for p in pool().values())
+
+
+def test_sync_needs_a_webshare_source_with_a_key(pool):
+    manual = proxy_sources.create({"name": "Manual list"})
+    with pytest.raises(webshare_service.WebshareError, match="isn't a Webshare source"):
+        webshare_service.sync_source(manual["id"])
+    keyless = proxy_sources.create({"name": "Webshare later", "provider": "webshare"})
+    with pytest.raises(webshare_service.WebshareError, match="API key"):
+        webshare_service.sync_source(keyless["id"])
+
+
+def test_a_source_with_an_api_key_refuses_pasted_proxies(pool, monkeypatch):
+    from fastapi import HTTPException
+    from backend.routers import proxies as proxies_router
+    monkeypatch.setattr(proxies_router, "refresh_proxy_statuses",
+                        lambda ids: {"online": 0, "offline": 0, "geo_checked": 0, "geo_failed": 0})
+    source = _webshare_source()
+    assert proxy_sources.public(proxy_sources.get(source["id"]))["uses_api"] is True
+    with pytest.raises(HTTPException) as refused:
+        proxies_router.import_proxies({"text": "10.0.0.7:1080", "source_id": source["id"]})
+    assert refused.value.status_code == 409 and "API" in refused.value.detail
+    assert not any(p["host"] == "10.0.0.7" for p in pool().values())
+    # A manual source and a Webshare source without a key still take pasted proxies.
+    keyless = proxy_sources.create({"name": "Webshare later", "provider": "webshare"})
+    imported = proxies_router.import_proxies({"text": "10.0.0.7:1080", "source_id": keyless["id"]})
+    assert imported["added"] == 1
