@@ -102,7 +102,7 @@ class ProfileWithCards(FakeDevice):
     async def read(self):
         self.t += 0.3
         self.reads += 1
-        if self.reads == 1:
+        if self.reads <= 2:  # the composer, read twice before the profile picture is tapped
             return self.screens[0]
         swipes = sum(action[0] == "swipe" for action in self.actions)
         if self.swipes_to_tabs is not None and swipes >= self.swipes_to_tabs:
@@ -279,11 +279,33 @@ class FeedTests(unittest.TestCase):
         self.assertEqual(device.actions, [("tap", (48.0, 1211.0))])
 
     def test_home_that_does_not_reach_the_composer_falls_back_to_swiping(self):
+        device = FakeDevice([lines(("facebook", 100))] * 3 +
+                            [lines(("facebook", 100), ("What's on your mind?", 200))])
+        device.icons["home_tab"] = (48.0, 1211.0)
+        run(Flows(device, lambda **e: None).discard_until_feed())
+        self.assertEqual([action[0] for action in device.actions], ["tap", "tap", "swipe", "swipe"])
+
+    def test_a_short_home_tap_gets_a_second_one(self):
         device = FakeDevice([lines(("facebook", 100)), lines(("facebook", 100)),
                              lines(("facebook", 100), ("What's on your mind?", 200))])
         device.icons["home_tab"] = (48.0, 1211.0)
         run(Flows(device, lambda **e: None).discard_until_feed())
-        self.assertEqual([action[0] for action in device.actions], ["tap", "swipe", "swipe"])
+        self.assertEqual(device.actions, [("tap", (48.0, 1211.0))] * 2)
+
+    def test_a_hidden_tab_bar_is_flicked_back_before_home_is_tapped(self):
+        class HiddenBar(FakeDevice):
+            def find_icon(self, name, below=None):  # the tab bar shows only after a swipe
+                return (48.0, 1211.0) if name == "home_tab" and any(a[0] == "swipe" for a in self.actions) else None
+
+        device = HiddenBar([lines(("facebook", 100)),
+                            lines(("facebook", 100), ("What's on your mind?", 200))])
+        events = []
+        run(Flows(device, lambda **e: events.append(e)).discard_until_feed())
+        self.assertEqual([action[0] for action in device.actions], ["swipe", "tap"])
+        _, start, end = device.actions[0]
+        self.assertGreater(end[1], start[1])  # a flick up the feed (finger moves down), towards the top
+        self.assertIn({"event": "feed", "action": "reveal tab bar"}, events)
+        self.assertIn({"event": "feed", "action": "tap Home", "attempt": 1}, events)
 
     def test_start_post_recovers_the_scrolled_feed_before_opening_gallery(self):
         for kind in ("photo", "reel"):
@@ -533,12 +555,57 @@ class PublishTests(unittest.TestCase):
         device = FakeDevice([lines(("facebook", 100)), lines(("facebook", 100)),
                              lines(("facebook", 100), ("What's on your mind?", 200))])
         run(Flows(device, lambda **e: None).discard_until_feed())
-        self.assertEqual([action[0] for action in device.actions], ["swipe"] * 4)
+        # Each pass: one flick to bring the tab bar back (twice at most), then the two swipes to the top.
+        self.assertEqual([action[0] for action in device.actions], ["swipe"] * 6)
 
     def test_page_profile_opens_on_its_all_tab(self):
-        device = FakeDevice([lines(("What's on your mind?", 300)), lines(("All", 1100), ("Photos", 1100))])
+        feed = lines(("What's on your mind?", 300))
+        device = FakeDevice([feed, feed, lines(("All", 1100), ("Photos", 1100))])
         run(Flows(device, lambda **e: None).open_profile())
         self.assertIn(("tap", (100.0, 1100.0)), device.actions)
+
+    def test_profile_picture_is_tapped_only_once_the_composer_stops_moving(self):
+        device = FakeDevice([lines(("What's on your mind?", 500)), lines(("What's on your mind?", 380)),
+                             lines(("What's on your mind?", 300)), lines(("What's on your mind?", 302)),
+                             lines(("Posts", 900))])
+        run(Flows(device, lambda **e: None).open_profile())
+        taps = [action[1] for action in device.actions if action[0] == "tap"]
+        self.assertEqual(taps[0], (device.pt(77, 0)[0], 302.0))
+
+    def test_a_feed_that_never_stops_is_not_tapped(self):
+        device = FakeDevice([lines(("What's on your mind?", 300 + 100 * i)) for i in range(8)])
+        with self.assertRaises(StepFailed):
+            run(Flows(device, lambda **e: None).open_profile())
+        self.assertFalse(any(action[0] == "tap" for action in device.actions))
+        self.assertTrue(any(action[0] == "snapshot" for action in device.actions))
+
+    def test_a_profile_tap_that_opens_create_story_is_closed_and_tapped_again(self):
+        feed = lines(("What's on your mind?", 300))
+        story = lines(("Create story", 90), ("Text", 200), ("Gallery", 260), ("No photos on this device", 830))
+        device = FakeDevice([feed, feed, story, feed, feed, lines(("Posts", 900))])
+        events = []
+        run(Flows(device, lambda **e: events.append(e)).open_profile())
+        self.assertIn(("key", flows_module.KEY_BACK), device.actions)
+        self.assertIn(("snapshot", "profile_tap_missed_1"), device.actions)
+        self.assertIn({"event": "profile_tap_missed", "screen": "Create story", "attempt": 1}, events)
+        self.assertEqual(device.actions[-1], ("tap", (100.0, 900.0)))
+
+    def test_a_profile_tap_that_keeps_opening_create_reel_fails(self):
+        feed = lines(("What's on your mind?", 300))
+        reel = lines(("Create reel", 90), ("Camera", 200), ("Gallery", 260))
+        device = FakeDevice([feed, feed, reel, feed, feed, reel])
+        with self.assertRaises(StepFailed) as failed:
+            run(Flows(device, lambda **e: None).open_profile())
+        self.assertIn("Create reel", str(failed.exception))
+        self.assertEqual(sum(action == ("key", flows_module.KEY_BACK) for action in device.actions), 2)
+
+    def test_a_page_profile_with_its_create_reel_button_is_not_a_missed_tap(self):
+        feed = lines(("What's on your mind?", 300))
+        page = lines(("0 followers", 200), ("Create reel", 400), ("All", 500), ("Photos", 500), ("Gallery", 900))
+        device = FakeDevice([feed, feed, page])
+        run(Flows(device, lambda **e: None).open_profile())
+        self.assertNotIn(("key", flows_module.KEY_BACK), device.actions)
+        self.assertEqual(device.actions[-1], ("tap", (100.0, 500.0)))
 
     def test_profile_scrolls_past_promo_cards_to_its_tabs(self):
         device = ProfileWithCards(swipes_to_tabs=3)
@@ -699,7 +766,7 @@ class PublishTests(unittest.TestCase):
 
     def test_video_that_opens_a_plain_post_goes_through_create_reel(self):
         feed = lines(("facebook", 100), ("What's on your mind?", 300))
-        device = FakeDevice([feed, feed, feed, lines(("All", 1100), ("Create reel", 800)),
+        device = FakeDevice([feed, feed, feed, feed, lines(("All", 1100), ("Create reel", 800)),
                              lines(("Gallery", 280)), lines(("→ Next", 1130)), lines(("Describe your reel", 300)),
                              lines(("Describe your reel", 300)), lines(("Morning coffee test", 300))])
         flows = Flows(device, lambda **e: None)
@@ -772,7 +839,8 @@ class PublishTests(unittest.TestCase):
         self.assertEqual(device.actions[-1], ("tap", (100.0, 90.0)))
 
     def test_create_reel_scrolls_up_to_find_the_button(self):
-        device = FakeDevice([lines(("What's on your mind?", 300)), lines(("All", 200)), lines(("All", 900)),
+        device = FakeDevice([lines(("What's on your mind?", 300)), lines(("What's on your mind?", 300)),
+                             lines(("All", 200)), lines(("All", 900)),
                              lines(("Create reel", 800)), lines(("Gallery", 280)), lines(("→ Next", 1130)),
                              lines(("Describe your reel", 300))])
         run(Flows(device, lambda **e: None)._compose_from_create_reel())
