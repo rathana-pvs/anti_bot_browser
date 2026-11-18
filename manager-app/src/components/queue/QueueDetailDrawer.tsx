@@ -142,16 +142,20 @@ function CommentAndLinkNotes({ item }: { item: QueueExecutionItem }) {
 }
 
 function Timeline({ item }: { item: QueueExecutionItem }) {
-  const stages = item.stage_history || [];
+  // The queue list leaves out logs and the stage history; both come with the item's details.
+  const [stages, setStages] = useState<NonNullable<QueueExecutionItem['stage_history']>>(item.stage_history || []);
   const [logs, setLogs] = useState<string[]>(item.logs || []);
   useEffect(() => {
-    if (!item.log_count) { setLogs(item.logs || []); return; }
     let cancelled = false;
     fetchExecutionDetails(item.execution_id)
-      .then(details => { if (!cancelled) setLogs(details.logs || []); })
+      .then(details => {
+        if (cancelled) return;
+        setLogs(details.logs || []);
+        setStages(details.stage_history || []);
+      })
       .catch(() => undefined);
     return () => { cancelled = true; };
-  }, [item.execution_id, item.log_count, item.status, item.logs]);
+  }, [item.execution_id, item.log_count, item.status, item.stage]);
   if (!stages.length && !logs.length) return null;
   return <details className="text-zinc-400" open={ACTIVE_STATUSES.has(item.status)}>
     <summary className="cursor-pointer text-zinc-300">Timeline{logs.length ? ` and logs (${logs.length})` : ''}</summary>

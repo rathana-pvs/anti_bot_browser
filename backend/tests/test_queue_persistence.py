@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
 from backend.services import automation_service, queue_service
@@ -227,3 +228,36 @@ def test_unchanged_queue_list_answers_304_without_a_body(tmp_path, monkeypatch):
     queue_service.save_posting_queue(queue)
     changed = get(etag)
     assert changed.status_code == 200 and changed.headers["etag"] != etag
+
+
+def test_queue_list_limits_finished_history_but_keeps_jobs_that_need_the_user(tmp_path, monkeypatch):
+    from backend.routers import queue as queue_router
+    _details_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(queue_router, "load_posting_queue", queue_service.load_posting_queue)
+    old, recent = "2026-01-01T00:00:00+00:00", "2026-01-30T12:00:00+00:00"
+    monkeypatch.setattr(queue_router.time, "time", lambda: datetime.fromisoformat("2026-01-31T00:00:00+00:00").timestamp())
+    jobs = [
+        {"execution_id": "old_posted", "status": "published", "published_at": old, "scheduled_at": old,
+         "stage_history": [{"stage": "published"}], "container_owner_token": "secret"},
+        {"execution_id": "recent_posted", "status": "published", "published_at": recent, "scheduled_at": recent},
+        {"execution_id": "old_failed", "status": "failed", "scheduled_at": old},
+        {"execution_id": "old_comment", "status": "published", "published_at": old, "scheduled_at": old,
+         "first_comment_status": "failed_input_not_found"},
+        {"execution_id": "old_recovering", "status": "stopped", "scheduled_at": old, "network_recovery": {"state": "waiting_network"}},
+        {"execution_id": "waiting", "status": "pending", "scheduled_at": old},
+    ]
+    queue_service.save_posting_queue({"queue_version": "2.0", "daily_batches": [{"batch_id": "b", "posts": [{"type": "post", "executions": jobs}]}]})
+
+    everything = queue_router.queue_snapshot()
+    assert len(everything["executions"]) == 6 and everything["history"]["older_finished"] == 0
+    assert not any(key in item for item in everything["executions"] for key in queue_router.LIST_OMITTED_FIELDS)
+
+    recent_only = queue_router.queue_snapshot(finished_days=3)
+    assert {item["execution_id"] for item in recent_only["executions"]} == {
+        "recent_posted", "old_failed", "old_comment", "old_recovering", "waiting"}
+    assert recent_only["history"] == {"finished_days": 3, "older_finished": 1}
+    assert recent_only["batches"][0]["job_counts"] == {"total": 6, "done": 3}
+
+    active_only = queue_router.queue_snapshot(finished_days=0)
+    assert "recent_posted" not in {item["execution_id"] for item in active_only["executions"]}
+    assert queue_router.get_execution_details("old_posted")["stage_history"] == [{"stage": "published"}]

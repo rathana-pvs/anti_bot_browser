@@ -763,21 +763,28 @@ export async function fetchAutomationTasks(): Promise<
 }
 
 // Queue & Batch API Functions
-// The last queue the backend sent; an unchanged queue comes back as 304 with no body.
-let lastQueue: { etag: string; data: import('../types/automation').QueueDataResponse } | null = null;
+// The last queue the backend sent for each view; an unchanged queue comes back as 304 with no body.
+const lastQueues = new Map<string, { etag: string; data: import('../types/automation').QueueDataResponse }>();
 
-export async function fetchQueue(): Promise<import('../types/automation').QueueDataResponse> {
-  const res = await fetch(`${API_BASE}/queue`, lastQueue ? { headers: { 'If-None-Match': lastQueue.etag } } : undefined);
-  if (res.status === 304 && lastQueue) return lastQueue.data;
+/**
+ * The queue list. `finishedDays` keeps only that many days of finished history (0: none);
+ * jobs that are waiting, running or need the user always come back. Omit it for everything.
+ */
+export async function fetchQueue(finishedDays?: number): Promise<import('../types/automation').QueueDataResponse> {
+  const url = finishedDays === undefined ? `${API_BASE}/queue` : `${API_BASE}/queue?finished_days=${finishedDays}`;
+  const last = lastQueues.get(url);
+  const res = await fetch(url, last ? { headers: { 'If-None-Match': last.etag } } : undefined);
+  if (res.status === 304 && last) return last.data;
   if (!res.ok) throw new Error('Failed to fetch queue');
   const data = await res.json();
   const etag = res.headers.get('ETag');
-  lastQueue = etag ? { etag, data } : null;
+  if (etag) lastQueues.set(url, { etag, data });
+  else lastQueues.delete(url);
   return data;
 }
 
 /** One queue item's logs and telemetry; the queue list leaves them out. */
-export async function fetchExecutionDetails(executionId: string): Promise<{ execution_id: string; logs: string[] | null; telemetry: Record<string, unknown> | null; preparation_telemetry: Record<string, unknown> | null }> {
+export async function fetchExecutionDetails(executionId: string): Promise<{ execution_id: string; logs: string[] | null; telemetry: Record<string, unknown> | null; preparation_telemetry: Record<string, unknown> | null; stage_history?: import('../types/automation').QueueExecutionItem['stage_history'] }> {
   const res = await fetch(`${API_BASE}/queue/execution/${encodeURIComponent(executionId)}/details`);
   if (!res.ok) throw new Error('Failed to fetch item details');
   return res.json();

@@ -216,7 +216,8 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
     let cancelled = false;
     const load = async () => {
       try {
-        const queue = await fetchQueue();
+        // Only accounts with work still to do matter here, so skip finished history.
+        const queue = await fetchQueue(0);
         if (!cancelled) setBusyProfileIds([...new Set(queue.executions
           .filter(item => ['pending', 'ready', 'running', 'preparing'].includes(item.status)).map(item => item.profile_id))]);
       } catch (_) {}

@@ -70,6 +70,8 @@ const dateFilterStart = (filter: DateFilter): number | null => {
 };
 const endOfToday = () => { const end = new Date(); end.setHours(23, 59, 59, 999); return end.getTime(); };
 const NEXT_PAGE = 25;
+// Finished history the queue loads by default; older finished jobs load on request.
+const RECENT_FINISHED_DAYS = 3;
 const FINISHED_PAGE = 25;
 
 const sortTime = (item: QueueExecutionItem) => new Date(item.published_at || item.stage_updated_at || item.scheduled_at).getTime() || 0;
@@ -108,15 +110,19 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
     showToast(err instanceof Error && err.message ? err.message : fallback, 'error');
   }, [showToast]);
 
+  const [fullHistory, setFullHistory] = useState(false);
+  // Enough history for the date filter (plus a day for time zones), or everything once asked.
+  const finishedDays = fullHistory ? undefined
+    : Math.max(RECENT_FINISHED_DAYS, dateFilter === 'all' ? 0 : Number(dateFilter) + 1);
   const loadQueue = useCallback(async () => {
     try {
-      setQueueData(await fetchQueue());
+      setQueueData(await fetchQueue(finishedDays));
     } catch (err) {
       console.error('Failed to load queue:', err);
     } finally {
       setLoaded(true);
     }
-  }, []);
+  }, [finishedDays]);
 
   useEffect(() => {
     loadQueue();
@@ -176,17 +182,20 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
   const lastScheduled = remaining.reduce<QueueExecutionItem | null>((last, item) => !last || scheduledTime(item) > scheduledTime(last) ? item : last, null);
   const hasStoppable = remaining.length > 0 || executions.some(hasOpenRecovery);
 
+  const olderFinished = queueData?.history?.older_finished ?? 0;
   const batchStats = useCallback((batchId: string) => {
     const items = executions.filter(item => item.batch_id === batchId);
+    // Totals come from the backend: finished history older than the list is only counted there.
+    const counts = queueData?.batches.find(batch => batch.batch_id === batchId)?.job_counts;
     return {
-      total: items.length,
-      done: items.filter(item => ['published', 'completed'].includes(item.status)).length,
+      total: counts?.total ?? items.length,
+      done: counts?.done ?? items.filter(item => ['published', 'completed'].includes(item.status)).length,
       active: items.filter(item => ACTIVE_STATUSES.has(item.status)).length,
       waiting: items.filter(item => WAITING_STATUSES.has(item.status)).length,
       attention: items.filter(item => sectionOf(item) === 'attention').length,
       recovering: items.filter(hasOpenRecovery).length,
     };
-  }, [executions]);
+  }, [executions, queueData?.batches]);
   const batchOptions = useMemo(() => [{ value: ALL_BATCHES, label: 'All batches' }, ...batches.map(batch => {
     const stats = batchStats(batch.batch_id);
     return { value: batch.batch_id, label: `${batch.name} · ${stats.done}/${stats.total} done` };
@@ -441,7 +450,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
 
       {!loaded ? (
         <div className="flex flex-1 items-center justify-center gap-2 text-xs text-zinc-500"><Loader2 className="h-4 w-4 animate-spin" />Loading queue…</div>
-      ) : executions.length === 0 ? (
+      ) : executions.length === 0 && olderFinished === 0 ? (
         <EmptyState icon={<Clock className="h-6 w-6" />} title="Your queue is empty"
           description="Go to Post to schedule posts, reels, Live broadcasts, or warm-ups."
           action={onCreate && <Button onClick={onCreate}><Plus className="h-3.5 w-3.5" />New post</Button>} />
@@ -471,10 +480,14 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
               {sections.next.length > nextLimit && <ShowMore remaining={sections.next.length - nextLimit} onClick={() => setNextLimit(nextLimit + NEXT_PAGE * 2)} />}
             </Section>}
 
-            {sections.finished.length > 0 && <Section title="Finished" count={sections.finished.length} icon={<CheckCircle2 className="h-3.5 w-3.5" />}
+            {(sections.finished.length > 0 || olderFinished > 0) && <Section title="Finished" count={sections.finished.length} icon={<CheckCircle2 className="h-3.5 w-3.5" />}
               collapsible open={finishedOpen} onToggle={() => setFinishedOpen(!finishedOpen)}>
               {renderRows(sections.finished.slice(0, finishedLimit))}
               {sections.finished.length > finishedLimit && <ShowMore remaining={sections.finished.length - finishedLimit} onClick={() => setFinishedLimit(finishedLimit + FINISHED_PAGE * 2)} />}
+              {olderFinished > 0 && <button type="button" onClick={() => setFullHistory(true)}
+                className="w-full border-t border-zinc-800/70 py-2 text-xs text-zinc-400 hover:bg-zinc-900/60 hover:text-zinc-200">
+                Load older history · {olderFinished} finished job{olderFinished === 1 ? '' : 's'}
+              </button>}
             </Section>}
           </div>
 

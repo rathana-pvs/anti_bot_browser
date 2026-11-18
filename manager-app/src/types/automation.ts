@@ -213,7 +213,11 @@ export interface QueuePostItem {
 }
 
 /** A batch as the queue list sends it; its jobs are only in the list's flat `executions`. */
-export type QueueListBatch = Omit<DailyBatch, 'posts'> & { posts: Omit<QueuePostItem, 'executions'>[] };
+export type QueueListBatch = Omit<DailyBatch, 'posts'> & {
+  posts: Omit<QueuePostItem, 'executions'>[];
+  /** Every job in the batch, including finished history the list left out. */
+  job_counts?: { total: number; done: number };
+};
 
 export interface DailyBatch {
   batch_id: string;
@@ -321,6 +325,8 @@ export interface QueueDataResponse {
   /** Batches without their jobs: every job is in `executions`, which carries its batch_id. */
   batches: QueueListBatch[];
   executions: QueueExecutionItem[];
+  /** How much finished history the list holds; older finished jobs are only counted. */
+  history?: { finished_days: number | null; older_finished: number };
 }
 
 export type ResourceMode = 'auto' | 'extreme' | 'custom';

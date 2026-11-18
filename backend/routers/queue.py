@@ -102,10 +102,12 @@ async def cancel_batch_posts(batch_id: str):
         raise HTTPException(status_code=500, detail=str(error)) from error
 
 @router.get("")
-def get_queue(request: Request):
+def get_queue(request: Request, finished_days: int | None = None):
+    """The queue list. finished_days limits finished history to that many days (0: none);
+    jobs that are waiting, running or need the user are always included."""
     # The app polls this every few seconds. Encoding here runs in the request's worker thread;
     # FastAPI's own encoder walked every value on the event loop and stalled the whole backend.
-    body = json.dumps(queue_snapshot(), default=str).encode()
+    body = json.dumps(queue_snapshot(finished_days), default=str).encode()
     # An unchanged queue is answered with 304 and no body, so idle polling costs almost no data.
     etag = '"' + hashlib.blake2b(body, digest_size=16).hexdigest() + '"'
     headers = {"ETag": etag, "Cache-Control": "no-cache"}
@@ -114,7 +116,7 @@ def get_queue(request: Request):
     return Response(body, media_type="application/json", headers=headers)
 
 
-def queue_snapshot() -> dict:
+def queue_snapshot(finished_days: int | None = None) -> dict:
     queue = load_posting_queue()
     all_executions = []
     for batch in queue.get("daily_batches", []):
@@ -169,6 +171,16 @@ def queue_snapshot() -> dict:
         if item.get("execution_id") in timing:
             item.update(timing[item["execution_id"]])
     telemetry_summary = build_queue_telemetry_summary(all_executions)
+    # Counts cover every job, including finished history the list below may leave out.
+    job_counts: dict = {}
+    for item in all_executions:
+        counts = job_counts.setdefault(item.get("batch_id"), {"total": 0, "done": 0})
+        counts["total"] += 1
+        counts["done"] += item.get("status") in ("published", "completed")
+    listed = all_executions
+    if finished_days is not None:
+        cutoff = time.time() - max(0, finished_days) * 86400
+        listed = [item for item in all_executions if not _settled(item) or _finished_at(item) >= cutoff]
     # Logs and telemetry were most of a 14 MB response sent every few seconds;
     # the detail drawer reads them per item from /execution/{id}/details.
     return {
@@ -176,9 +188,42 @@ def queue_snapshot() -> dict:
         "stats": stats,
         "scheduler": scheduler,
         "telemetry_summary": telemetry_summary,
-        "batches": [_batch_without_details(batch) for batch in queue.get("daily_batches", [])],
-        "executions": [_without_details(item) for item in all_executions],
+        "batches": [{**_batch_without_details(batch), "job_counts": job_counts.get(batch.get("batch_id"), {"total": 0, "done": 0})}
+                    for batch in queue.get("daily_batches", [])],
+        "executions": [_list_item(item) for item in listed],
+        "history": {"finished_days": finished_days, "older_finished": len(all_executions) - len(listed)},
     }
+
+
+# Statuses whose jobs are done and need nothing from the user (the queue's "Finished" section).
+SETTLED_STATUSES = {"published", "completed", "stopped", "cancelled"}
+OPEN_RECOVERY_STATES = {"waiting_network", "confirming_network", "waiting_review", "ready", "retrying"}
+# Per-job fields the queue list never shows; stage_history comes with the item's details.
+LIST_OMITTED_FIELDS = ("stage_history", "last_scheduler_lease", "telemetry_digest", "container_cleanup",
+                       "container_owner_token", "preparation_evidence_dir", "ended_at", "auto_warming")
+
+
+def _settled(item: dict) -> bool:
+    status = str(item.get("status") or "")
+    if status not in SETTLED_STATUSES and not status.startswith("skipped"):
+        return False
+    if (item.get("network_recovery") or {}).get("state") in OPEN_RECOVERY_STATES:
+        return False
+    # A first comment that could not be posted still needs the user.
+    return item.get("first_comment_status") != "failed_input_not_found"
+
+
+def _finished_at(item: dict) -> float:
+    for key in ("published_at", "stage_updated_at", "scheduled_at"):
+        try:
+            return datetime.fromisoformat(str(item[key]).replace("Z", "+00:00")).timestamp()
+        except (KeyError, ValueError, TypeError):
+            continue
+    return 0.0
+
+
+def _list_item(item: dict) -> dict:
+    return {key: value for key, value in _without_details(item).items() if key not in LIST_OMITTED_FIELDS}
 
 
 def _without_details(execution: dict) -> dict:
@@ -203,7 +248,8 @@ def get_execution_details(execution_id: str):
     if not match:
         raise HTTPException(status_code=404, detail="Execution not found")
     details = execution_details(match["execution"])
-    return {"execution_id": execution_id, **{key: details.get(key) for key in DETAIL_FIELDS}}
+    return {"execution_id": execution_id, **{key: details.get(key) for key in DETAIL_FIELDS},
+            "stage_history": match["execution"].get("stage_history") or []}
 
 @router.post("/schedule-preview")
 def schedule_preview(payload: dict = Body(...)):
