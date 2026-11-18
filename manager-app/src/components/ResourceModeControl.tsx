@@ -3,6 +3,7 @@ import { Cpu, ChevronDown, Loader2 } from 'lucide-react';
 import { Select } from './ui/Select';
 import { fetchResourceMode, updateResourceMode, updateOcrEngine, updateAdaptiveLimits } from '../services/api';
 import { AdaptiveLimitsUpdate, ResourceMode, ResourceModeSettings, OcrEngine } from '../types/automation';
+import { setVisibleInterval } from '../services/visibleInterval';
 
 export const ResourceModeControl: React.FC = () => {
   const [settings, setSettings] = useState<ResourceModeSettings | null>(null);
@@ -20,8 +21,7 @@ export const ResourceModeControl: React.FC = () => {
 
   useEffect(() => {
     refresh();
-    const interval = setInterval(refresh, 5000);
-    return () => clearInterval(interval);
+    return setVisibleInterval(refresh, 5000);
   }, []);
 
   const selectMode = async (mode: ResourceMode) => {

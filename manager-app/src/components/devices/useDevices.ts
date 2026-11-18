@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AndroidDevice } from '../../types/device';
 import { fetchDevices } from '../../services/devices';
+import { setVisibleInterval } from '../../services/visibleInterval';
 
 /** Phones known to this computer, polled so account pages can show where each phone account lives. */
 export function useDevices(intervalMs = 20000) {
@@ -8,8 +9,7 @@ export function useDevices(intervalMs = 20000) {
   const reload = useCallback(() => fetchDevices().then(result => setDevices(result.devices)).catch(() => undefined), []);
   useEffect(() => {
     void reload();
-    const timer = setInterval(() => void reload(), intervalMs);
-    return () => clearInterval(timer);
+    return setVisibleInterval(() => void reload(), intervalMs);
   }, [reload, intervalMs]);
   return { devices, reload };
 }

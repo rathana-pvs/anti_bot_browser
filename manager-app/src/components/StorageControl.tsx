@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { HardDrive, Loader2, Lock } from 'lucide-react';
 import { Button } from './ui/Button';
 import { cleanStorage, fetchStorage, StorageRun, StorageStatus } from '../services/api';
+import { setVisibleInterval } from '../services/visibleInterval';
 
 const formatBytes = (bytes: number) => bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GB` : `${Math.round(bytes / 1024 ** 2)} MB`;
 
@@ -22,8 +23,8 @@ export function useStorageCleaning(intervalMs = 5000) {
     let cancelled = false;
     const load = () => fetchStorage().then(value => { if (!cancelled) setCleaning(Boolean(value.progress?.running && !value.progress.dry_run)); }).catch(() => undefined);
     load();
-    const timer = setInterval(load, intervalMs);
-    return () => { cancelled = true; clearInterval(timer); };
+    const stop = setVisibleInterval(load, intervalMs);
+    return () => { cancelled = true; stop(); };
   }, [intervalMs]);
   return cleaning;
 }

@@ -4,6 +4,7 @@ import { AccountHealth, AccountStage } from '../../types/profile';
 import { fetchAccountHealth } from '../../services/api';
 import { cn } from '../ui/cn';
 import type { StageView } from './accountStage';
+import { setVisibleInterval } from '../../services/visibleInterval';
 export { stageView } from './accountStage';
 export type { StageEvidence, StageView } from './accountStage';
 
@@ -102,9 +103,9 @@ export function useAccountHealth(active = true, intervalMs = 30000) {
     let cancelled = false;
     const load = () => fetchAccountHealth().then(data => { if (!cancelled) setHealth(data.profiles); }).catch(() => undefined);
     load();
-    const timer = setInterval(load, intervalMs);
+    const stop = setVisibleInterval(load, intervalMs);
     window.addEventListener(HEALTH_CHANGED, load);
-    return () => { cancelled = true; clearInterval(timer); window.removeEventListener(HEALTH_CHANGED, load); };
+    return () => { cancelled = true; stop(); window.removeEventListener(HEALTH_CHANGED, load); };
   }, [active, intervalMs, reloadKey]);
   return { health, reload: () => setReloadKey(key => key + 1) };
 }

@@ -30,6 +30,7 @@ import {
   backfillExecutionPermalink, cancelAllQueuePosts, cancelNetworkRecovery, deleteBatch, deleteExecution, fetchQueue,
   getSharedMediaUrl, rerunBatch, resolveUncertainExecution, retryExecutionComment, runExecutionNow, setBatchPaused,
 } from '../services/api';
+import { setVisibleInterval } from '../services/visibleInterval';
 
 interface PostingQueuePanelProps {
   profiles: Profile[];
@@ -119,8 +120,7 @@ export const PostingQueuePanel: React.FC<PostingQueuePanelProps> = ({ profiles, 
 
   useEffect(() => {
     loadQueue();
-    const interval = setInterval(loadQueue, 5000);
-    return () => clearInterval(interval);
+    return setVisibleInterval(loadQueue, 5000);
   }, [loadQueue]);
 
   useEffect(() => { setNextLimit(NEXT_PAGE); setFinishedLimit(FINISHED_PAGE); }, [typeFilter, batchFilter, search, accountFilter, dateFilter]);

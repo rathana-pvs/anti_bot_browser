@@ -4,6 +4,7 @@ import { AndroidDevice } from '../../types/device';
 import { QueueExecutionItem } from '../../types/automation';
 import { fetchQueue } from '../../services/api';
 import { ACTIVE_STATUSES, FAILED_STATUSES, UNCERTAIN_STATUSES, WAITING_STATUSES, commentNeedsRetry, hasOpenRecovery, sectionOf } from '../queue/queueModel';
+import { setVisibleInterval } from '../../services/visibleInterval';
 
 export type AccountTab = 'browser' | 'overview' | 'settings' | 'activity';
 export type HealthTone = 'ok' | 'warn' | 'bad' | 'muted';
@@ -155,8 +156,8 @@ export function useQueueExecutions(active: boolean, intervalMs = 8000) {
     let cancelled = false;
     const load = () => fetchQueue().then(data => { if (!cancelled) setExecutions(data.executions); }).catch(() => undefined);
     load();
-    const timer = setInterval(load, intervalMs);
-    return () => { cancelled = true; clearInterval(timer); };
+    const stop = setVisibleInterval(load, intervalMs);
+    return () => { cancelled = true; stop(); };
   }, [active, intervalMs, reloadKey]);
   return { executions, reload: () => setReloadKey(key => key + 1) };
 }

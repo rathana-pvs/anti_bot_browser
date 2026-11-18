@@ -39,6 +39,7 @@ import { restLabel, restOptions, savedRest } from './restChoices';
 import { ActionMenu } from './ui/ActionMenu';
 import { useAppDialog } from './ui/AppDialogProvider';
 import { useFileDrop } from '../hooks/useFileDrop';
+import { setVisibleInterval } from '../services/visibleInterval';
 
 export type CampaignKind = 'posts' | 'live' | 'warmup';
 
@@ -221,8 +222,8 @@ export const BatchPostCreator: React.FC<BatchPostCreatorProps> = ({
       } catch (_) {}
     };
     load();
-    const interval = setInterval(load, 10000);
-    return () => { cancelled = true; clearInterval(interval); };
+    const stop = setVisibleInterval(load, 10000);
+    return () => { cancelled = true; stop(); };
   }, []);
 
   useEffect(() => {

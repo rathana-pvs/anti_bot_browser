@@ -50,6 +50,7 @@ import { FolderNameDialog, FolderDialogState } from './components/accounts/Folde
 import { AccountTab, clearableFailures, useQueueExecutions } from './components/accounts/accountModel';
 import { fetchSetupStatus, isDesktopApp, SetupSnapshot } from './services/setup';
 import { useAppDialog } from './components/ui/AppDialogProvider';
+import { setVisibleInterval } from './services/visibleInterval';
 
 interface ProfileActionError {
   profileId: string;
@@ -177,13 +178,12 @@ export const App: React.FC = () => {
   useEffect(() => {
     if (setupStatus !== null || !backendReady) return;
     let loading = false;
-    const interval = setInterval(() => {
+    return setVisibleInterval(() => {
       if (!isModalOpenRef.current && !loading) {
         loading = true;
         void loadData().finally(() => { loading = false; });
       }
     }, 3000);
-    return () => clearInterval(interval);
   }, [setupStatus, backendReady]);
 
   const { executions, reload: reloadExecutions } = useQueueExecutions(backendReady && page === 'accounts');

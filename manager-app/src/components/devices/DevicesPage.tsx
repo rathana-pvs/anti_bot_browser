@@ -21,6 +21,7 @@ import { IconButton } from '../ui/IconButton';
 import { useAppDialog } from '../ui/AppDialogProvider';
 import { cn } from '../ui/cn';
 import { STATUS_LABEL, STATUS_TONE, isAndroid } from '../accounts/accountModel';
+import { setVisibleInterval } from '../../services/visibleInterval';
 
 const HOT_C = 40;
 /** List keys for the two entries that are not phones. ADB serials never take these values. */
@@ -102,8 +103,7 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
   useEffect(() => {
     if (!active) return;
     void loadWarming();
-    const timer = setInterval(() => void loadWarming(), 15000);
-    return () => clearInterval(timer);
+    return setVisibleInterval(() => void loadWarming(), 15000);
   }, [active, loadWarming]);
   const warmingOf = (key: string) => warming?.devices?.find(item => item.device === key) ?? null;
   const togglePcWarming = async (on: boolean) => {

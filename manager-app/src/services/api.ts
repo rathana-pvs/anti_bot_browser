@@ -763,10 +763,17 @@ export async function fetchAutomationTasks(): Promise<
 }
 
 // Queue & Batch API Functions
+// The last queue the backend sent; an unchanged queue comes back as 304 with no body.
+let lastQueue: { etag: string; data: import('../types/automation').QueueDataResponse } | null = null;
+
 export async function fetchQueue(): Promise<import('../types/automation').QueueDataResponse> {
-  const res = await fetch(`${API_BASE}/queue`);
+  const res = await fetch(`${API_BASE}/queue`, lastQueue ? { headers: { 'If-None-Match': lastQueue.etag } } : undefined);
+  if (res.status === 304 && lastQueue) return lastQueue.data;
   if (!res.ok) throw new Error('Failed to fetch queue');
-  return res.json();
+  const data = await res.json();
+  const etag = res.headers.get('ETag');
+  lastQueue = etag ? { etag, data } : null;
+  return data;
 }
 
 /** One queue item's logs and telemetry; the queue list leaves them out. */

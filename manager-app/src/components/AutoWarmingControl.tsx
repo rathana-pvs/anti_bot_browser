@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Flame } from 'lucide-react';
 import { fetchAutoWarming, fetchProfiles } from '../services/api';
 import { AutoWarmingSummary } from '../types/automation';
+import { setVisibleInterval } from '../services/visibleInterval';
 
 /** Auto warming at a glance. It is switched on or off for each device on the Devices page. */
 export function AutoWarmingControl() {
@@ -15,8 +16,8 @@ export function AutoWarmingControl() {
       .catch(reason => { if (!cancelled) setError(reason.message || 'Couldn’t load auto warming'); });
     load();
     fetchProfiles().then(profiles => { if (!cancelled) setNames(Object.fromEntries(profiles.map(p => [p.id, p.name]))); }).catch(() => undefined);
-    const timer = setInterval(load, 15000);
-    return () => { cancelled = true; clearInterval(timer); };
+    const stop = setVisibleInterval(load, 15000);
+    return () => { cancelled = true; stop(); };
   }, []);
 
   const name = (id: string) => names[id] || id;
