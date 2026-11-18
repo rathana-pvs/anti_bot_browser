@@ -126,8 +126,9 @@ app.add_middleware(
     ],
     allow_credentials=False,
     allow_methods=["*"],
-    allow_headers=["Content-Type", "X-Manager-Token"],
-    expose_headers=["X-Reel-Warnings"],
+    # If-None-Match/ETag let an unchanged queue poll come back as an empty 304.
+    allow_headers=["Content-Type", "X-Manager-Token", "If-None-Match"],
+    expose_headers=["X-Reel-Warnings", "ETag"],
 )
 
 # Register API Routers

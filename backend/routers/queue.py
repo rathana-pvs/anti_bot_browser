@@ -9,7 +9,7 @@ import random
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, Body
+from fastapi import APIRouter, HTTPException, Body, Request
 from fastapi.responses import FileResponse, Response
 
 from backend.config import PROFILES_DIR
@@ -64,6 +64,7 @@ from backend.services.automation_service import (
 )
 
 router = APIRouter(prefix="/api/queue", tags=["queue"])
+ETA_CLOCK_STEP_S = 30
 
 
 @router.post("/network-recovery/{execution_id}/cancel")
@@ -101,10 +102,16 @@ async def cancel_batch_posts(batch_id: str):
         raise HTTPException(status_code=500, detail=str(error)) from error
 
 @router.get("")
-def get_queue():
+def get_queue(request: Request):
     # The app polls this every few seconds. Encoding here runs in the request's worker thread;
     # FastAPI's own encoder walked every value on the event loop and stalled the whole backend.
-    return Response(json.dumps(queue_snapshot(), default=str), media_type="application/json")
+    body = json.dumps(queue_snapshot(), default=str).encode()
+    # An unchanged queue is answered with 304 and no body, so idle polling costs almost no data.
+    etag = '"' + hashlib.blake2b(body, digest_size=16).hexdigest() + '"'
+    headers = {"ETag": etag, "Cache-Control": "no-cache"}
+    if etag in (request.headers.get("if-none-match") or "").split(", "):
+        return Response(status_code=304, headers=headers)
+    return Response(body, media_type="application/json", headers=headers)
 
 
 def queue_snapshot() -> dict:
@@ -151,7 +158,10 @@ def queue_snapshot() -> dict:
     scheduler = current_scheduler_snapshot(queue)
     try:
         busy = (scheduler.get("available") or {}).get("total", 1) <= 0
-        timing = queue_eta.explain(queue, time.time() * 1000, busy=busy)
+        # Estimates use a clock rounded to 30 s so an idle queue reads the same on every poll
+        # and the ETag above can answer 304; a due job still reads as starting now.
+        now_ms = (time.time() // ETA_CLOCK_STEP_S) * ETA_CLOCK_STEP_S * 1000
+        timing = queue_eta.explain(queue, now_ms, busy=busy)
     except Exception as error:  # an estimate must never break the queue view
         print(f"[Queue] Could not estimate start times: {error}")
         timing = {}

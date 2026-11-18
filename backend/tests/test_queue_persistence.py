@@ -199,3 +199,31 @@ def test_queue_list_leaves_details_out_and_the_drawer_reads_them(tmp_path, monke
     assert body["telemetry_summary"]["median_execution_duration_ms"] == 7
     assert queue_router.get_execution_details("done")["logs"] == ["a", "b"]
     assert queue_router.get_execution_details("live")["logs"] == ["c"]
+
+
+def test_unchanged_queue_list_answers_304_without_a_body(tmp_path, monkeypatch):
+    from starlette.requests import Request
+    from backend.routers import queue as queue_router
+    _details_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(queue_router, "load_posting_queue", queue_service.load_posting_queue)
+    queue_service.save_posting_queue({"queue_version": "2.0", "daily_batches": [{"batch_id": "b", "posts": [{"type": "post", "executions": [
+        {"execution_id": "one", "status": "pending", "scheduled_at": "2026-01-01T00:00:00+00:00"},
+    ]}]}]})
+
+    monkeypatch.setattr(queue_router.time, "time", lambda: 1_800_000_000.0)
+
+    def get(etag=None):
+        headers = [(b"if-none-match", etag.encode())] if etag else []
+        return queue_router.get_queue(Request({"type": "http", "method": "GET", "path": "/api/queue", "headers": headers}))
+
+    first = get()
+    etag = first.headers["etag"]
+    assert first.status_code == 200 and json.loads(first.body)["executions"][0]["execution_id"] == "one"
+    again = get(etag)
+    assert again.status_code == 304 and again.body == b"" and again.headers["etag"] == etag
+
+    queue = queue_service.load_posting_queue()
+    queue["daily_batches"][0]["posts"][0]["executions"][0]["status"] = "published"
+    queue_service.save_posting_queue(queue)
+    changed = get(etag)
+    assert changed.status_code == 200 and changed.headers["etag"] != etag
