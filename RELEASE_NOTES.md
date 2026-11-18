@@ -1,3 +1,31 @@
+# Version 2.4.0
+
+- New AI Reel Studio page: an AI director plans each Reel scene by scene using
+  Gemini, Claude or any OpenAI-compatible model, with recipes, text motion,
+  camera moves, transitions and layouts.
+- Add voiceover with word-by-word captions, AI voice scripts, music and
+  multi-track import, plus output options for each Reel.
+- Check with AI looks at every scene and fixes how it looks, quality rules keep
+  every composition readable, and a before-you-post coach reviews the Reel.
+- Turn on private web access from Settings to open the app and its live screens
+  from another device over an authenticated connection.
+- Add proxy sources, each with its own API key, protocol, limit and devices,
+  and sync Webshare proxies into a source that has an API key.
+- Clean a phone account back to an empty Android user.
+- Watch the phone screen view-only while queued jobs run, filter accounts by
+  device, and scroll the phone screen with the mouse wheel as finger swipes.
+- Keep the phone and remote screens sharp and smoothly scaled in the desktop app.
+- Load recent queue history by default, pause background polling while the
+  page is hidden, and keep the backend responsive under a busy queue.
+- Reel now falls back to Reels tab → Create reel and never posts on personal
+  profiles; a cleanly closed Reel composer counts as published.
+- Never skip a first comment because the profile tap missed, and find a new
+  post's header before it slips under the profile tab bar.
+- Retry a phone gallery save once and report the phone's own reason on failure.
+
+**Linux only.** After installing, run **Settings → Setup and repair → Install /
+update runtime** when prompted.
+
 # Version 2.3.3
 
 - Handle Facebook's “Hosting an event?” prompt after Reel Post by choosing
