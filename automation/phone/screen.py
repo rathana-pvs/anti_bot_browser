@@ -276,6 +276,10 @@ def interruption(lines: list[Line]) -> tuple[str, str, Point | None] | None:
             return "permission prompt", "tap", point
     if match(lines, "reels streak") or match(lines, "View my reels achievements"):
         return "reels streak", "back", None
+    # Android's own contact-sharing sheet, raised when two phones come close (phones side by side on a hub).
+    # It covers the bottom of the screen, where the app drawer is swiped open.
+    if match(lines, "Receive only", exact=True) or match(lines, "Share your contact info"):
+        return "contact sharing sheet", "back", None
     point = match(lines, "Not now", exact=True)
     if point:
         return "not now", "tap", point

@@ -89,6 +89,7 @@ NEW_POST_MAX_MINUTES = 10  # a post whose time label is at most this old counts 
 PROFILE_BACK_UP_SCROLLS = 2  # swipes back up before an older post ends a look: the profile may open past our post
 # Home taps that jump the feed to its top. A tap can stop short while the feed still coasts, so it gets one more.
 HOME_TAPS = 2
+LAUNCHES = 2  # reopenings of Facebook from the app drawer while returning to its feed
 PLUS_LOOKS = 2  # looks for the feed's + button, the second after the screen settles
 CREATE_BAR_BOTTOM = 300  # 1080-wide px: the feed's top bar, where its + sits, ends above this
 # Taps on the gallery's newest cell. One that lands while the grid still loads opens nothing (seen on a Pixel).
@@ -379,10 +380,18 @@ class Flows:
     # --- feed ---------------------------------------------------------------------------------
     async def open_feed(self) -> None:
         """Facebook on its feed, scrolled to the top, with nothing half-made left open."""
+        await self._launch_from_drawer()
+        await self.discard_until_feed()
+
+    async def _launch_from_drawer(self) -> None:
+        """Facebook opened by its icon in the phone's app drawer."""
         dev = self.device
         # Home twice closes an open app drawer; then open it, scrolled to the top when needed.
         await dev.key(KEY_HOME)
         await dev.key(KEY_HOME)
+        # A sheet over the home screen (Android's contact sharing) would take the swipe that opens the drawer.
+        if await self.close_interruption(await dev.read()):
+            await dev.key(KEY_HOME)
         await dev.swipe(dev.pt(540, 1900), dev.pt(540, 600))
         label = None
         for attempt in range(3):
@@ -391,17 +400,31 @@ class Flows:
             if label:
                 break
             self.log(event="retry", step="app drawer", attempt=attempt + 1, screen=texts(lines, 8))
+            if await self.close_interruption(lines):  # it came up after the swipe: close it, swipe again
+                await dev.key(KEY_HOME)
+                await dev.swipe(dev.pt(540, 1900), dev.pt(540, 600))
+                continue
             await self.scroll(dev.pt(540, 700), dev.pt(540, 1900))
         if not label:
             dev.snapshot(f"fail_drawer_{int(time.time())}")
             raise StepFailed("app drawer: the Facebook icon was not found")
         await dev.tap((label[0], label[1] - dev.pt(0, 110)[1]))  # the icon sits above its label
-        await self.discard_until_feed()
+
+    async def _relaunch_if_left(self, launches: int) -> bool:
+        """When the phone's launcher (home screen or app drawer) is in front instead of Facebook, Facebook
+        is opened from the drawer again; Back there does nothing. The drawer's own "Facebook" label must
+        not pass for a Facebook screen either. False when Facebook is in front, or after LAUNCHES tries."""
+        focus = await asyncio.to_thread(self.device.focus) or ""
+        if launches >= LAUNCHES or "launcher" not in focus.casefold():
+            return False
+        self.log(event="feed", action="reopen facebook", reason="the phone's home screen is in front", attempt=launches + 1)
+        await self._launch_from_drawer()
+        return True
 
     async def discard_until_feed(self) -> None:
         """Back to the feed without publishing anything: a draft left by an earlier job is discarded."""
         dev = self.device
-        home_taps = reveals = 0
+        home_taps = reveals = launches = 0
         for _ in range(8):
             try:
                 found, _, lines = await self.wait_for("open facebook", [
@@ -420,6 +443,9 @@ class Flows:
                         await dev.tap(home)
                         await dev.settle(timeout=2.0)
                         continue
+                if await self._relaunch_if_left(launches):
+                    launches += 1
+                    continue
                 self.log(event="unknown screen", action="back", detail=str(unknown)[:200])
                 await dev.key(KEY_BACK)
                 continue
@@ -447,6 +473,9 @@ class Flows:
                     await self.scroll(dev.pt(540, 700), dev.pt(540, 1900))
                     await self.scroll(dev.pt(540, 700), dev.pt(540, 1900))
                 await dev.settle(timeout=2.0)  # read the feed where it stopped, not while it still moves
+                continue
+            if await self._relaunch_if_left(launches):
+                launches += 1
                 continue
             self.log(event="leftover", screen=found, action="back")
             await dev.key(KEY_BACK)

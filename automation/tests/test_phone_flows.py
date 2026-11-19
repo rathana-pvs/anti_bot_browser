@@ -270,8 +270,67 @@ class ReelEditorButtonTests(unittest.TestCase):
 
 class FeedTests(unittest.TestCase):
     def test_facebook_opens_by_tapping_the_icon_ocr_found(self):
-        device = FakeDevice([lines(("Facebook", 500)), lines(("facebook", 100), ("What's on your mind?", 200))])
+        device = FakeDevice([lines(("Play Store", 900)), lines(("Facebook", 500)),
+                             lines(("facebook", 100), ("What's on your mind?", 200))])
         run(Flows(device, lambda **e: None).open_feed())
+        self.assertIn(("tap", (100.0, 500.0 - device.pt(0, 110)[1])), device.actions)
+
+    def test_the_drawer_label_is_not_taken_for_facebook_and_facebook_is_opened_again(self):
+        drawer = lines(("Facebook", 500), ("Gmail", 500))
+        feed = lines(("facebook", 100), ("What's on your mind?", 200))
+
+        class SlowStart(FakeDevice):
+            """Facebook stays behind the launcher until its icon is tapped a second time."""
+            def focus(self):
+                taps = sum(a[0] == "tap" for a in self.actions)
+                return "com.facebook.katana/.LoginActivity" if taps >= 2 else "com.google.android.apps.nexuslauncher/.NexusLauncherActivity"
+
+            async def tap(self, point):
+                await super().tap(point)
+                if sum(a[0] == "tap" for a in self.actions) == 2:
+                    self.screens = [feed]
+
+        device = SlowStart([lines(("Play Store", 900)), drawer, drawer, lines(("Play Store", 900)), drawer])
+        events = []
+        run(Flows(device, lambda **e: events.append(e)).open_feed())
+        icon = (100.0, 500.0 - device.pt(0, 110)[1])
+        self.assertEqual([a[1] for a in device.actions if a[0] == "tap"], [icon, icon])
+        self.assertNotIn(("key", flows_module.KEY_BACK), device.actions)
+        self.assertTrue(any(e.get("action") == "reopen facebook" for e in events))
+
+    def test_the_home_screen_is_left_for_facebook_only_twice(self):
+        class Launcher(FakeDevice):
+            def focus(self):
+                return "com.google.android.apps.nexuslauncher/.NexusLauncherActivity"
+
+        device = Launcher([lines(("Play Store", 900), ("Gmail", 900))])
+        flows = Flows(device, lambda **e: None)
+        reopened = []
+
+        async def launch():
+            reopened.append(1)
+        flows._launch_from_drawer = launch
+        with self.assertRaises(StepFailed):
+            run(flows.discard_until_feed())
+        self.assertEqual(len(reopened), 2)
+
+    def test_the_contact_sharing_sheet_is_closed_before_the_drawer_swipe(self):
+        sheet = lines(("Play Store", 900), ("Add your info", 990), ("Share your contact info", 1025),
+                      ("Receive only", 1198), ("Share", 1198))
+        device = FakeDevice([sheet, lines(("Facebook", 500)), lines(("facebook", 100), ("What's on your mind?", 200))])
+        run(Flows(device, lambda **e: None).open_feed())
+        keys = [a for a in device.actions if a[0] in ("key", "swipe")]
+        back = keys.index(("key", flows_module.KEY_BACK))
+        self.assertLess(back, next(i for i, a in enumerate(keys) if a[0] == "swipe"))
+        self.assertIn(("tap", (100.0, 500.0 - device.pt(0, 110)[1])), device.actions)
+
+    def test_a_contact_sharing_sheet_after_the_swipe_is_closed_and_the_drawer_opened_again(self):
+        sheet = lines(("Play Store", 900), ("Receive only", 1198), ("Share", 1198))
+        device = FakeDevice([lines(("Play Store", 900)), sheet, lines(("Facebook", 500)),
+                             lines(("facebook", 100), ("What's on your mind?", 200))])
+        run(Flows(device, lambda **e: None).open_feed())
+        self.assertEqual(sum(a[0] == "swipe" for a in device.actions), 2)
+        self.assertIn(("key", flows_module.KEY_BACK), device.actions)
         self.assertIn(("tap", (100.0, 500.0 - device.pt(0, 110)[1])), device.actions)
 
     def test_a_scrolled_feed_taps_home_before_swiping(self):
