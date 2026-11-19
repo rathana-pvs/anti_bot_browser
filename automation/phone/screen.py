@@ -215,13 +215,20 @@ def load_templates(names=("comment", "send", "home_tab", "create", "create_round
     return templates
 
 
-def find_template(image: np.ndarray, template: np.ndarray, below: float | None = None) -> Point | None:
-    """Centre of the best match at the frame's scale (searched ±6 %), or None under the threshold."""
+# How far from its 1080-wide size an icon is searched for, when not the default ±6 %. Facebook draws its +
+# about 6 % smaller than the template on many phones, right at the default's edge, so a bit smaller still
+# was missed.
+ICON_SPREAD = {"create": 0.12, "create_round": 0.12}
+
+
+def find_template(image: np.ndarray, template: np.ndarray, below: float | None = None,
+                  spread: float = 0.06) -> Point | None:
+    """Centre of the best match at the frame's scale (searched ±`spread`), or None under the threshold."""
     scale = image.shape[1] / TEMPLATE_WIDTH
     offset = 0 if below is None else max(0, int(below))
     area = image[offset:]
     best_score, best = 0.0, None
-    for factor in np.linspace(scale * 0.94, scale * 1.06, 7):
+    for factor in np.linspace(scale * (1 - spread), scale * (1 + spread), int(round(spread / 0.02)) * 2 + 1):
         small = cv2.resize(template, None, fx=factor, fy=factor, interpolation=cv2.INTER_AREA)
         if area.shape[0] < small.shape[0] or area.shape[1] < small.shape[1]:
             continue

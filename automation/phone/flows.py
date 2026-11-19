@@ -77,6 +77,8 @@ UPLOAD_TIMEOUT_S = 900
 UPLOAD_GONE_S = 20
 # How long a reel waits on its result screen when the bar was never seen.
 UPLOAD_NEVER_SEEN_S = 60
+CAPTION_TRIES = 2  # pastes into a caption field that stays empty: one more after a paste that went nowhere
+KEYBOARD_WAIT_S = 3.0  # for the keyboard after a tap on a text field, before typing or pasting
 CAPTION_PROMPTS = [FEED_PROMPT, PHOTO_PROMPT, "Describe your reel", "Add a description"]  # an empty caption field
 # The comment box's placeholder: "Write a comment..." on posts, "Add a comment" in the reel player, and
 # "Comment as NAME" under the "Get the ball rolling" sheet of a post with no comments yet.
@@ -87,6 +89,7 @@ NEW_POST_MAX_MINUTES = 10  # a post whose time label is at most this old counts 
 PROFILE_BACK_UP_SCROLLS = 2  # swipes back up before an older post ends a look: the profile may open past our post
 # Home taps that jump the feed to its top. A tap can stop short while the feed still coasts, so it gets one more.
 HOME_TAPS = 2
+PLUS_LOOKS = 2  # looks for the feed's + button, the second after the screen settles
 CREATE_BAR_BOTTOM = 300  # 1080-wide px: the feed's top bar, where its + sits, ends above this
 # Taps on the gallery's newest cell. One that lands while the grid still loads opens nothing (seen on a Pixel).
 PICKER_TAPS = 3
@@ -210,6 +213,19 @@ class Flows:
         else:
             await self.device.key(KEY_BACK)
         return True
+
+    async def _wait_for_keyboard(self) -> bool:
+        """Until the keyboard shows (the tapped field has focus), at most KEYBOARD_WAIT_S. False when it
+        never did: the text is still entered, as some fields open their own screen first."""
+        dev = self.device
+        deadline = dev.now() + KEYBOARD_WAIT_S
+        while True:
+            if await asyncio.to_thread(dev.keyboard_shown):
+                return True
+            if dev.now() >= deadline:
+                self.log(event="keyboard", action="not shown after the tap")
+                return False
+            await dev.sleep(0.3)
 
     async def scroll(self, start: Point, end: Point, duration: float = 0.35) -> None:
         """A swipe that never lands on the keyboard: with the keyboard up (a comment box focused) it
@@ -473,11 +489,18 @@ class Flows:
         dev = self.device
         # Facebook draws its + as a rounded square on some feeds and as a circle on others. The circle is
         # taken only from the top bar: further down a reel's settings have a dashed one (Share to story).
-        plus = dev.find_icon("create")
+        plus = None
+        for look in range(PLUS_LOOKS):
+            if look:  # the top bar can still be sliding back in after Home brought the feed up
+                await dev.settle(timeout=1.5)
+            plus = dev.find_icon("create")
+            if not plus:
+                round_plus = dev.find_icon("create_round")
+                plus = round_plus if round_plus and round_plus[1] < dev.pt(0, CREATE_BAR_BOTTOM)[1] else None
+            if plus:
+                break
         if not plus:
-            round_plus = dev.find_icon("create_round")
-            plus = round_plus if round_plus and round_plus[1] < dev.pt(0, CREATE_BAR_BOTTOM)[1] else None
-        if not plus:
+            dev.snapshot(f"no_plus_{int(time.time())}")
             self.log(event="route", step="create menu", reason="no + button on the feed")
             return False
         await dev.tap(plus)
@@ -744,15 +767,25 @@ class Flows:
         have left its empty prompt. A prompt still showing is given a moment, as the paste may still be drawing."""
         dev = self.device
         _, field_point, _ = await self.wait_for("caption field", CAPTION_PROMPTS, timeout=15)
-        await dev.tap(field_point)
-        await self._enter_text(item.caption, "caption")
-        await dev.key(KEY_ESCAPE)
-        lines = await dev.read()
-        for _ in range(3):
-            if not item.caption or not any(match(lines, prompt) for prompt in CAPTION_PROMPTS):
-                break
-            await dev.settle(timeout=1.0)
+        lines: list[Line] = []
+        for attempt in range(1, CAPTION_TRIES + 1):
+            # A paste before the field has taken the tap (no keyboard yet) goes nowhere and leaves it empty.
+            await dev.tap(field_point)
+            await self._wait_for_keyboard()
+            await self._enter_text(item.caption, "caption")
+            await dev.key(KEY_ESCAPE)
             lines = await dev.read()
+            for _ in range(3):
+                if not item.caption or not any(match(lines, prompt) for prompt in CAPTION_PROMPTS):
+                    break
+                await dev.settle(timeout=1.0)
+                lines = await dev.read()
+            # Only a field still showing its empty prompt is pasted into again, so the caption cannot double.
+            prompt = next((p for p in (match(lines, prompt) for prompt in CAPTION_PROMPTS) if p), None)
+            if not item.caption or not prompt or attempt == CAPTION_TRIES:
+                break
+            self.log(event="retry", step="caption", attempt=attempt + 1, reason="the field stayed empty")
+            field_point = prompt
         if item.caption and any(match(lines, prompt) for prompt in CAPTION_PROMPTS):
             dev.snapshot(f"fail_caption_{int(time.time())}")
             raise StepFailed(f"caption: the field is still empty after paste; screen shows {texts(lines, 10)}")

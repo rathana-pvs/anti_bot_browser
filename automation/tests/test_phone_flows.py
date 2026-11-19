@@ -328,7 +328,8 @@ class FeedTests(unittest.TestCase):
                 with patch.object(flows, "_compose_from_gallery", compose), \
                         patch.object(flows, "write_caption", caption):
                     run(flows.start_post(PostItem(kind, "Clip")))
-                self.assertEqual(device.actions[:2], [("tap", (48.0, 1211.0)), ("tap", (100.0, 200.0))])
+                taps = [action for action in device.actions if action[0] != "snapshot"]
+                self.assertEqual(taps[:2], [("tap", (48.0, 1211.0)), ("tap", (100.0, 200.0))])
 
     def test_start_post_does_not_compose_if_home_and_swipes_cannot_recover_feed(self):
         device = FakeDevice([lines(("facebook", 100))])
@@ -902,11 +903,22 @@ class PublishTests(unittest.TestCase):
         taps = [action[1] for action in device.actions if action[0] == "tap"]
         self.assertEqual(taps, [(428.0, 92.0), (100.0, 297.0)])
 
+    def test_a_plus_found_once_the_screen_settles_is_used(self):
+        class SlidingBar(FakeDevice):
+            """The top bar slides back in: the + shows only after the screen settles."""
+            async def settle(self, quiet=0.6, timeout=5.0):
+                await super().settle(quiet, timeout)
+                self.icons["create"] = (428.0, 92.0)
+
+        device = SlidingBar([lines(("facebook", 100)), lines(("Story", 229), ("B Reel", 297), ("Live", 369))])
+        self.assertTrue(run(Flows(device, lambda **e: None)._reel_from_create_menu()))
+        self.assertEqual([a[1] for a in device.actions if a[0] == "tap"][0], (428.0, 92.0))
+
     def test_a_round_plus_below_the_top_bar_is_not_the_create_button(self):
         device = FakeDevice([lines(("facebook", 100), ("What's on your mind?", 300))])
         device.icons["create_round"] = (30.0, 489.0)
         self.assertFalse(run(Flows(device, lambda **e: None)._reel_from_create_menu()))
-        self.assertEqual(device.actions, [])
+        self.assertEqual([a[0] for a in device.actions], ["snapshot"])  # the feed, kept to show the miss
 
     def test_reel_without_the_plus_button_takes_the_old_route(self):
         device = FakeDevice([lines(("facebook", 100), ("What's on your mind?", 300))])
@@ -916,7 +928,7 @@ class PublishTests(unittest.TestCase):
             return None
         with patch.object(flows, "_compose_from_gallery", nothing) as gallery, patch.object(flows, "write_caption", nothing):
             run(flows.start_post(PostItem("reel", "Clip")))
-        self.assertEqual(device.actions, [])
+        self.assertEqual([a[0] for a in device.actions], ["snapshot"])  # the feed, kept to show the miss
 
     def test_plus_menu_without_reel_is_closed_and_the_old_route_taken(self):
         feed = lines(("facebook", 100), ("What's on your mind?", 300))
@@ -945,6 +957,33 @@ class PublishTests(unittest.TestCase):
         with patch.object(flows, "_compose_from_gallery", nothing), patch.object(flows, "write_caption", nothing):
             run(flows.start_post(PostItem("photo", "Clip")))
         self.assertEqual(device.actions, [])
+
+    def test_a_caption_paste_that_went_nowhere_is_pasted_once_more(self):
+        empty = lines(("New post", 90), ("What's on your mind?", 334))
+        filled = lines(("New post", 90), ("Long caption text", 334))
+
+        class LateFocus(FakeDevice):
+            """The field takes the second tap only, as one tapped before the composer was ready."""
+            async def paste(self, text):
+                await super().paste(text)
+                self.screens = [filled] if sum(a[0] == "paste" for a in self.actions) == 2 else [empty]
+
+        device = LateFocus([empty])
+        caption = "Long caption text\nwith a second line"
+        run(Flows(device, lambda **e: None).write_caption(PostItem("photo", caption)))
+        self.assertEqual([a for a in device.actions if a[0] == "paste"], [("paste", caption)] * 2)
+
+    def test_a_filled_caption_is_not_pasted_again(self):
+        device = FakeDevice([lines(("What's on your mind?", 334)), lines(("Long caption text", 334))])
+        device.keyboard = [True]
+        run(Flows(device, lambda **e: None).write_caption(PostItem("photo", "Long caption text\nline two")))
+        self.assertEqual(sum(a[0] == "paste" for a in device.actions), 1)
+
+    def test_a_caption_field_that_never_fills_fails_after_two_pastes(self):
+        device = FakeDevice([lines(("What's on your mind?", 334))])
+        with self.assertRaises(StepFailed):
+            run(Flows(device, lambda **e: None).write_caption(PostItem("photo", "Long caption text\nline two")))
+        self.assertEqual(sum(a[0] == "paste" for a in device.actions), 2)
 
     def test_caption_on_its_own_screen_is_confirmed_with_done(self):
         device = FakeDevice([lines(("What's on your mind?", 300)),

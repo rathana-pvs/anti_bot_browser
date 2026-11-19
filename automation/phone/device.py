@@ -23,7 +23,7 @@ from backend.services import android_live
 from backend.services.adb_client import AdbClient, AdbError
 from backend.services.android_agent import AGENT_AUTHORITY, agent_call
 
-from phone.screen import Line, Point, find_template, lines_from_ocr, load_templates
+from phone.screen import ICON_SPREAD, Line, Point, find_template, lines_from_ocr, load_templates
 
 FACEBOOK = "com.facebook.katana"
 KEY_HOME, KEY_BACK, KEY_ESCAPE, KEY_PASTE = 3, 4, 111, 279
@@ -197,7 +197,7 @@ class PhoneDevice:
 
     def find_icon(self, name: str, below: float | None = None) -> Point | None:
         image = self._judge()
-        return None if image is None else find_template(image, self.templates[name], below)
+        return None if image is None else find_template(image, self.templates[name], below, ICON_SPREAD.get(name, 0.06))
 
     def snapshot(self, name: str) -> str | None:
         """Save the frame the last decision was made on. When the live screen has changed since, it
