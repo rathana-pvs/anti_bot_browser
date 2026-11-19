@@ -26,6 +26,8 @@ class FakePhone:
         self.media_states = []
         self.media_error = "disk full"
         self.log = ""
+        # The companion app stops reading the file once the gallery refuses it.
+        self.stalls = False
 
     def users(self, serial):
         return [SimpleNamespace(user_id=uid, running=on) for uid, on in self.running.items()]
@@ -44,10 +46,16 @@ class FakePhone:
     def free_storage_mb(self, serial):
         return self.free_mb
 
-    def write_content(self, serial, user_id, uri, local, timeout=120):
+    def write_content(self, serial, user_id, uri, local, timeout=120, stop_when=None):
         assert self.running[user_id], "wrote into a stopped user"
         self.written.append((serial, user_id, uri, open(local, "rb").read()))
         self.events.append(("write", user_id))
+        if self.stalls:
+            # The companion app stopped reading: only stop_when can end the write.
+            assert stop_when is not None and stop_when(), "a stalled write was never cut short"
+            self.events.append(("write stopped", user_id))
+            return False
+        return True
 
     def shell(self, serial, *command, timeout=None):
         if command[0] == "logcat":
@@ -186,6 +194,42 @@ def test_a_repeated_gallery_database_error_reports_the_phones_own_reason(account
     assert android_files.list_files("profile_020", client=phone)["files"] == []
 
 
+# As logged by a Pixel 8 Pro with 31 Android users, for user 33.
+MARKERS_FULL_LOG = """E/DatabaseBackupAndRecovery(17951): Failed to set xattr:user.extdbnextrowid33 to 1000001000 for path: /data/media/0.
+E/DatabaseBackupAndRecovery(17951): android.system.ErrnoException: setxattr failed: E2BIG (Argument list too long)
+E/MediaProvider(17439): Xattr:user.extdbnextrowid33 not found on external storage: android.system.ErrnoException: getxattr failed: ENODATA (No data available)
+E/SQLiteConnection(17439): Exception thrown by custom scalar function
+W/System.err(17439): java.lang.RuntimeException: Cannot find next row id xattr for external.db.
+"""
+
+
+def test_a_refused_file_stops_the_transfer_instead_of_waiting_for_adb(account, monkeypatch):
+    monkeypatch.setattr(android_files, "RETRY_DELAY_S", 0)
+    _, photo = account
+    phone = FakePhone()
+    phone.stalls, phone.media_state, phone.media_error = True, "failed", SCALAR
+    with pytest.raises(AdbError, match="refused the file twice"):
+        android_files.copy_file("profile_020", photo, "a.jpg", client=phone)
+    assert phone.events.count(("write stopped", 11)) == 2
+
+
+def test_a_phone_out_of_gallery_markers_is_explained(account, monkeypatch):
+    monkeypatch.setattr(android_files, "RETRY_DELAY_S", 0)
+    _, photo = account
+    phone = FakePhone()
+    phone.stalls, phone.media_state, phone.media_error, phone.log = True, "failed", SCALAR, MARKERS_FULL_LOG
+    with pytest.raises(AdbError) as error:
+        android_files.copy_file("profile_020", photo, "a.jpg", client=phone)
+    assert str(error.value) == android_files.MARKERS_FULL
+    assert "persist.sys.fuse.backup.nextrowid_enabled" in str(error.value)
+    assert android_files.list_files("profile_020", client=phone)["files"] == []
+
+
+@pytest.mark.parametrize("log, full", [(MARKERS_FULL_LOG, True), (PHONE_LOG, False), ("", False)])
+def test_the_full_marker_cause_is_read_from_the_log(log, full):
+    assert android_files.gallery_markers_full(log) is full
+
+
 def test_other_save_failures_are_not_retried(account):
     _, photo = account
     phone = FakePhone()
@@ -271,3 +315,19 @@ def test_a_dropped_folder_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(android_files, "copy_file", lambda *args, **kwargs: pytest.fail("nothing may be copied"))
     with pytest.raises(ValueError, match="not a file"):
         android_files.copy_local_file("profile_001", str(folder))
+
+
+def test_the_phones_log_is_filtered_before_it_is_cut(monkeypatch):
+    """A phone with many users logs hundreds of lines a second, so `logcat -t` would cut the gallery
+    errors away before the tag filter runs. Only the last filtered lines are kept."""
+    monkeypatch.setattr(android_files, "CAUSE_LOG_LINES", 3)
+    asked = []
+
+    class Phone:
+        def shell(self, serial, *command, timeout=None):
+            asked.append(command)
+            return "\n".join(f"E/MediaProvider( 1): line {n}" for n in range(10))
+
+    log = android_files._read_gallery_log(Phone(), "PIXEL")
+    assert "-t" not in asked[0] and "MediaProvider:E" in asked[0]
+    assert log.splitlines() == [f"E/MediaProvider( 1): line {n}" for n in (7, 8, 9)]

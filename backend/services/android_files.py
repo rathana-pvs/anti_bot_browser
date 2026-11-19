@@ -159,13 +159,43 @@ def gallery_cause(log: str) -> str | None:
     return cause
 
 
-def _read_gallery_cause(client: AdbClient, serial: str) -> str | None:
+# The gallery keeps a few small markers per Android user on one shared folder (/data/media/0). On a
+# phone with many users (about 24 or more) that folder runs out of room, the newest users get no
+# marker, and every gallery save for them fails. Clearing the gallery does not help.
+_MARKERS_FULL = re.compile(r"Cannot find next row id xattr|extdbnextrowid\d+ not found|setxattr failed: E2BIG")
+MARKERS_FULL = ("The phone's gallery can't take new files for this account. Android ran out of room for its "
+                "per-user gallery markers, which happens on phones with many Android users (about 24 or more), "
+                "so screenshots fail on it too. Fix it once on the phone: set "
+                "persist.sys.fuse.backup.nextrowid_enabled to false (this needs root).")
+
+
+def gallery_markers_full(log: str) -> bool:
+    """Whether the phone's log shows the gallery failing for want of its per-user marker."""
+    return bool(_MARKERS_FULL.search(log))
+
+
+def _read_gallery_log(client: AdbClient, serial: str) -> str:
+    """The last gallery-related lines of the phone's log. The phone filters the whole log first:
+    `-t` would cut it before filtering, and a phone with many users logs hundreds of lines a second."""
     try:
-        log = client.shell(serial, "logcat", "-d", "-t", str(CAUSE_LOG_LINES), "-v", "brief",
-                           "SQLiteConnection:E", "MediaProvider:E", "'*:S'", timeout=15)
+        log = client.shell(serial, "logcat", "-d", "-v", "brief",
+                           "SQLiteConnection:E", "MediaProvider:E", "DatabaseBackupAndRecovery:E",
+                           "System.err:W", "'*:S'", timeout=15)
     except AdbError:
-        return None
-    return gallery_cause(log)
+        return ""
+    return "\n".join(log.splitlines()[-CAUSE_LOG_LINES:])
+
+
+def _save_failed(client: AdbClient, serial: str, user_id: int, name: str):
+    """Asked while the file streams: once the companion app reports the save failed it stops
+    reading, so the transfer is stopped instead of waiting for ADB's timeout."""
+    def check() -> bool:
+        try:
+            status = agent_call(client, serial, user_id, "media_status", AGENT_TIMEOUT_S, {"name": name})
+        except AdbError:
+            return False
+        return status.get("state") == "failed"
+    return check
 
 
 def _wait_saved(client: AdbClient, serial: str, user_id: int, name: str) -> dict:
@@ -194,12 +224,16 @@ def _save_to_gallery(client: AdbClient, serial: str, user_id: int, local: Path, 
         token = secrets.token_hex(6)
         name = phone_name(original_name, token)
         uri = f"content://{AGENT_AUTHORITY}/media?name={name}&mime={mime}"
-        client.write_content(serial, user_id, uri, str(local), timeout=timeout)
+        client.write_content(serial, user_id, uri, str(local), timeout=timeout,
+                             stop_when=_save_failed(client, serial, user_id, name))
         try:
             return token, name, _wait_saved(client, serial, user_id, name)
         except GalleryRefused as error:
             if attempt == 2:
-                cause = _read_gallery_cause(client, serial)
+                log = _read_gallery_log(client, serial)
+                if gallery_markers_full(log):
+                    raise AdbError(MARKERS_FULL) from None
+                cause = gallery_cause(log)
                 detail = f"{error} (phone's reason: {cause})" if cause else str(error)
                 raise AdbError(f"The phone's gallery refused the file twice: {detail}") from None
             time.sleep(RETRY_DELAY_S)

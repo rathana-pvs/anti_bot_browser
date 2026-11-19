@@ -57,6 +57,49 @@ def test_a_silent_failure_names_the_command_and_exit_code(monkeypatch):
         client._execute(["-s", "SERIAL1", "shell", "uiautomator", "dump", "/sdcard/x.xml"])
 
 
+def _fake_adb(tmp_path, body):
+    """An `adb` that runs `body` as a shell script with the streamed file on its stdin."""
+    script = tmp_path / "adb"
+    script.write_text("#!/bin/sh\n" + body + "\n")
+    script.chmod(0o755)
+    client = adb_client.AdbClient(binary=str(script))
+    client._transports = {}
+    return client
+
+
+def test_write_content_streams_the_whole_file(tmp_path):
+    received = tmp_path / "received"
+    client = _fake_adb(tmp_path, f"cat > {received}")
+    local = tmp_path / "photo.jpg"
+    local.write_bytes(b"jpeg bytes")
+    assert client.write_content("PIXEL", 11, "content://x/media?name=a.jpg", str(local)) is True
+    assert received.read_bytes() == b"jpeg bytes"
+
+
+def test_write_content_stops_once_the_receiver_gave_up(tmp_path):
+    """The companion app stops reading when the gallery refuses a file; the write must not hang."""
+    import time
+    client = _fake_adb(tmp_path, "exec sleep 30")
+    local = tmp_path / "photo.jpg"
+    local.write_bytes(b"jpeg bytes")
+    asked = []
+    started = time.monotonic()
+    assert client.write_content("PIXEL", 11, "content://x/media?name=a.jpg", str(local), timeout=20,
+                                stop_when=lambda: asked.append(1) or len(asked) >= 2, check_every_s=0.05) is False
+    assert time.monotonic() - started < 5 and len(asked) == 2
+
+
+def test_write_content_times_out_and_reports_errors(tmp_path):
+    local = tmp_path / "photo.jpg"
+    local.write_bytes(b"jpeg bytes")
+    with pytest.raises(adb_client.AdbError, match="timed out"):
+        _fake_adb(tmp_path, "exec sleep 30").write_content("PIXEL", 11, "content://x", str(local), timeout=0.3,
+                                                           check_every_s=0.05)
+    with pytest.raises(adb_client.AdbError, match="Error while accessing provider"):
+        _fake_adb(tmp_path, "echo 'Error while accessing provider' >&2; exit 1").write_content(
+            "PIXEL", 11, "content://x", str(local))
+
+
 DUPLICATE_LISTING = """List of devices attached
 28251FDH300HW2         offline usb:3-2.2.7.2 transport_id:12
 28251FDH300HW2         device usb:3-2.2.7.2 product:cheetah model:Pixel_7_Pro device:cheetah transport_id:329

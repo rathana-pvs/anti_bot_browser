@@ -12,6 +12,8 @@ import re
 import shlex
 import shutil
 import subprocess
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 SERIAL_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,64}$")
@@ -573,19 +575,38 @@ class AdbClient:
         folder = path.rsplit("/", 1)[0]
         self.shell(serial, f"mkdir -p {shlex.quote(folder)} && echo {encoded} | base64 -d > {shlex.quote(path)}")
 
-    def write_content(self, serial: str, user_id: int, uri: str, local: str, timeout: float = 120) -> None:
-        """Streams a local file into a content URI (`content write`) inside one Android user."""
+    def write_content(self, serial: str, user_id: int, uri: str, local: str, timeout: float = 120,
+                      stop_when: Callable[[], bool] | None = None, check_every_s: float = 2.0) -> bool:
+        """Streams a local file into a content URI (`content write`) inside one Android user.
+
+        `stop_when` is asked every `check_every_s` while the file streams. When it answers True the
+        transfer is stopped and False is returned: a receiver that already gave up (the companion app
+        once the gallery refused the file) stops reading, and the write would otherwise hang until
+        the timeout. True means the whole file was handed over."""
         if not self.binary:
             raise AdbUnavailable("ADB is not installed. Install Android platform-tools and reopen the app.")
         command = f"content write --user {int(user_id)} --uri {shlex.quote(uri)}"
-        try:
-            with open(local, "rb") as source:
-                result = subprocess.run([self.binary, *self.transport_args(serial), "shell", command],
-                                        stdin=source, capture_output=True, timeout=timeout, check=False)
-        except subprocess.TimeoutExpired as exc:
-            raise AdbError("ADB timed out writing a file to the phone") from exc
-        if result.returncode != 0 or result.stderr.strip():
-            raise AdbError((result.stderr or result.stdout).decode("utf-8", "replace").strip() or "content write failed")
+        deadline = time.monotonic() + timeout
+        with open(local, "rb") as source:
+            process = subprocess.Popen([self.binary, *self.transport_args(serial), "shell", command],
+                                       stdin=source, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                while True:
+                    try:
+                        stdout, stderr = process.communicate(timeout=max(0.05, min(check_every_s, deadline - time.monotonic())))
+                        break
+                    except subprocess.TimeoutExpired:
+                        if time.monotonic() >= deadline:
+                            raise AdbError("ADB timed out writing a file to the phone") from None
+                        if stop_when is not None and stop_when():
+                            return False
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate()
+        if process.returncode != 0 or stderr.strip():
+            raise AdbError((stderr or stdout).decode("utf-8", "replace").strip() or "content write failed")
+        return True
 
     def focused_window(self, serial: str) -> str | None:
         # Android can report a null focus on one display before the active display's window.

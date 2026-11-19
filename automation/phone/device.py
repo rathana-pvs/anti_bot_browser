@@ -344,7 +344,7 @@ class PhoneDevice:
         any app saving a download. Returns the gallery item's content URI."""
         mime = media_mime(path)
         uri = f"content://{AGENT_AUTHORITY}/media?name={name}&mime={mime}"
-        self.client.write_content(self.serial, self.user_id, uri, path)
+        self.client.write_content(self.serial, self.user_id, uri, path, stop_when=lambda: self._media_failed(name))
         deadline = time.monotonic() + MEDIA_SAVE_TIMEOUT_S
         while time.monotonic() < deadline:
             status = agent_call(self.client, self.serial, self.user_id, "media_status", AGENT_TIMEOUT_S, {"name": name})
@@ -354,6 +354,14 @@ class PhoneDevice:
                 raise PhoneError(f"The companion app could not save the media: {status.get('error')}")
             time.sleep(0.5)
         raise PhoneError("The companion app did not finish saving the media")
+
+    def _media_failed(self, name: str) -> bool:
+        """The companion app stops reading once the gallery refuses a file, so the write is cut short."""
+        try:
+            status = agent_call(self.client, self.serial, self.user_id, "media_status", AGENT_TIMEOUT_S, {"name": name})
+        except AdbError:
+            return False
+        return status.get("state") == "failed"
 
     def delete_media(self, uri: str) -> None:
         if uri.startswith("content://media/"):
