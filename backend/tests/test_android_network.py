@@ -159,6 +159,11 @@ class FakeTwoUserPhone(FakePhone):
     def apply_privacy(self, serial, user_id, language="en-US"):
         self.privacy_applied += 1
 
+    media_granted = 0
+
+    def grant_media(self, serial, user_id):
+        self.media_granted += 1
+
     def privacy_state(self, serial, user_id, language="en-US"):
         return dict(self.privacy)
 
@@ -264,6 +269,7 @@ def test_automation_never_opens_a_phone_account_without_a_proxy(monkeypatch):
 def test_opening_an_account_turns_off_what_could_reveal_the_real_place(two_users, account):
     result = android_network.open_account("profile_020")
     assert two_users.privacy_applied == 1
+    assert two_users.media_granted == 1  # accounts set up before the picker's permission get it here
     assert result["privacy"]["location_off"] is True and result["privacy"]["blocking"] is None
     saved = json.loads((android_network.PROFILES_DIR / "profile_020" / "config.json").read_text())
     assert saved["android_privacy"]["facebook_location_blocked"] is True

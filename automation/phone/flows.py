@@ -87,6 +87,10 @@ NEW_POST_MAX_MINUTES = 10  # a post whose time label is at most this old counts 
 PROFILE_BACK_UP_SCROLLS = 2  # swipes back up before an older post ends a look: the profile may open past our post
 # Home taps that jump the feed to its top. A tap can stop short while the feed still coasts, so it gets one more.
 HOME_TAPS = 2
+CREATE_BAR_BOTTOM = 300  # 1080-wide px: the feed's top bar, where its + sits, ends above this
+# Taps on the gallery's newest cell. One that lands while the grid still loads opens nothing (seen on a Pixel).
+PICKER_TAPS = 3
+CONSENT_TAPS = 2  # taps on Facebook's "Allow access" (camera roll) before the step gives up
 # Facebook hides its tab bar (Home included) while the feed is scrolled down. A slow drag up does not bring it
 # back; a short quick flick up does (seen on a Pixel 7 Pro), without moving the feed much.
 TAB_BAR_FLICK_S = 0.18
@@ -466,7 +470,12 @@ class Flows:
     async def _reel_from_create_menu(self) -> bool:
         """From the feed: its + menu, then Reel. False, with the menu closed, when this feed has neither."""
         dev = self.device
+        # Facebook draws its + as a rounded square on some feeds and as a circle on others. The circle is
+        # taken only from the top bar: further down a reel's settings have a dashed one (Share to story).
         plus = dev.find_icon("create")
+        if not plus:
+            round_plus = dev.find_icon("create_round")
+            plus = round_plus if round_plus and round_plus[1] < dev.pt(0, CREATE_BAR_BOTTOM)[1] else None
         if not plus:
             self.log(event="route", step="create menu", reason="no + button on the feed")
             return False
@@ -489,10 +498,24 @@ class Flows:
         point = await self.open_gallery()
         # The job's media was just saved, so it is the newest: the first cell, its circle top-right.
         offset = dev.pt(168, 110)
-        await dev.tap((point[0] + offset[0], point[1] + offset[1]))
+        cell = (point[0] + offset[0], point[1] + offset[1])
+        # The grid's thumbnails draw after its "Gallery" title; a tap on a cell still loading does nothing.
+        await dev.settle(timeout=2.0)
+        await dev.tap(cell)
         # Picking can open the composer at once. Its own Next leads past the caption, so the prompts come first.
-        found, nxt, _ = await self.wait_for("picker selection", [VIDEO_PROMPT, PHOTO_PROMPT, FEED_PROMPT, "Next"], timeout=10,
-                                             whole=("Next",))
+        # A tap that changed nothing (the picker still up, no Next) is tapped again: one more tap then
+        # only selects what the first did not.
+        for attempt in range(1, PICKER_TAPS + 1):
+            last = attempt == PICKER_TAPS
+            try:
+                found, nxt, _ = await self.wait_for("picker selection", [VIDEO_PROMPT, PHOTO_PROMPT, FEED_PROMPT, "Next"],
+                                                     timeout=10 if last else 4, whole=("Next",), evidence=last)
+                break
+            except StepFailed:
+                if last or not match(await dev.read(), "Gallery", exact=True):
+                    raise
+                self.log(event="retry", step="picker selection", attempt=attempt + 1, reason="the tap opened nothing")
+                await dev.tap(cell)
         if found == "Next":  # the composer's prompt may not have drawn yet
             await dev.settle(timeout=2.0)
             lines = await dev.read()
@@ -508,12 +531,23 @@ class Flows:
         """From the feed: the profile's Create reel button, the newest video in its picker, then Next."""
         dev = self.device
         await self._tap_profile_picture()
-        _, _, lines = await self.wait_for("profile", ["Create reel", "All", "Posts"], timeout=15)
+        _, _, lines = await self.wait_for("profile", ["Create reel", "followers", "All", "Posts"], timeout=15)
         button = match(lines, "Create reel")
-        for _ in range(4):  # the profile reopens where it was last scrolled to
-            if button:
+        # The profile reopens where it was last scrolled to, so it is scrolled up to its header first. A new
+        # Page's "Finish setting up your Page" card can push the button below the screen, so from the header
+        # (its followers line) it is looked for further down.
+        for _ in range(4):
+            if button or match(lines, "followers"):
                 break
             await self.scroll(dev.pt(540, 700), dev.pt(540, 1900))
+            await dev.settle(timeout=2.0)
+            lines = await dev.read()
+            button = match(lines, "Create reel")
+        for _ in range(PROFILE_TAB_SCROLLS):
+            if button:
+                break
+            self.log(event="route", step="create reel", action="scroll down")
+            await self.scroll(dev.pt(540, 1700), dev.pt(540, 1150))
             await dev.settle(timeout=2.0)
             button = match(await dev.read(), "Create reel")
         if not button:
@@ -529,7 +563,18 @@ class Flows:
         # the layout without that title, from the "Recents" chip in the filter row right above the grid.
         offsets = {"Gallery": dev.pt(68, 394), "Recents": dev.pt(75, 290)}
         for _ in range(2):
-            found, anchor, lines = await self.wait_for("reel picker", list(offsets), exact=True, timeout=15)
+            found, anchor, lines = await self.wait_for("reel picker", [*offsets, "Allow access"], exact=True, timeout=15)
+            # Facebook's own camera roll consent, shown in place of the grid the first time (posting needs it).
+            for _ in range(CONSENT_TAPS):
+                if found != "Allow access":
+                    break
+                self.log(event="interruption", kind="camera roll consent", step="reel picker", answer="Allow access")
+                await dev.tap(anchor)
+                found, anchor, lines = await self.wait_for("reel picker", [*offsets, "Allow access"], exact=True,
+                                                           timeout=10)
+            if found == "Allow access":
+                dev.snapshot(f"fail_reel_picker_{int(time.time())}")
+                raise StepFailed(f"reel picker: still asking for camera roll access; {texts(lines)}")
             if not await self._discard_unfinished_reel(lines):
                 offset = offsets[found]
                 await dev.tap((anchor[0] + offset[0], anchor[1] + offset[1]))

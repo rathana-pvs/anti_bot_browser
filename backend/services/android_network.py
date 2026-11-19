@@ -164,6 +164,10 @@ def open_account(profile_id: str, job: bool = False, progress: Callable[[str], N
         note_active(profile_id)
         report("Turning off location and other privacy settings…")
         privacy = apply_privacy(profile_id, client, serial, user_id, language)
+        try:  # an account set up before a permission joined the list gets it here
+            client.grant_media(serial, user_id)
+        except AdbError:
+            pass  # posting reports a picker that stays closed on its own
         if job and privacy["blocking"]:
             # Fail closed: automation never runs Facebook while it could still learn the real location.
             return {"ready": False, "reason": privacy["blocking"], "switch": switch, "stopped_users": stopped,

@@ -145,9 +145,9 @@ class LiveSession:
         await asyncio.to_thread(self.client.wake_screen, self.serial)
         await asyncio.to_thread(_ensure_server_on_phone, self.client, self.serial)
         self.port = await asyncio.to_thread(self.client.forward, self.serial, f"localabstract:scrcpy_{self.scid:08x}")
-        transport = await asyncio.to_thread(self.client.transport_serial, self.serial)
+        transport = await asyncio.to_thread(self.client.transport_args, self.serial)
         self.process = await asyncio.create_subprocess_exec(
-            self.client.binary, "-s", transport, "shell", *server_command(self.scid),
+            self.client.binary, *transport, "shell", *server_command(self.scid),
             stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
         asyncio.create_task(self._collect_output())
         try:

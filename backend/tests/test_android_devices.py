@@ -33,9 +33,9 @@ DUMPSYS_USER = """Users:
 def test_parse_devices_reads_state_connection_and_model():
     parsed = adb_client.parse_devices(DEVICES_OUTPUT)
     assert parsed == [
-        {"serial": "R58M12345ABC", "state": "device", "connection": "usb", "model": "SM G973F"},
-        {"serial": "192.168.1.40:5555", "state": "device", "connection": "wifi", "model": "Pixel 6"},
-        {"serial": "0123456789ABCDEF", "state": "unauthorized", "connection": "usb", "model": None},
+        {"serial": "R58M12345ABC", "state": "device", "connection": "usb", "model": "SM G973F", "transport_id": "3"},
+        {"serial": "192.168.1.40:5555", "state": "device", "connection": "wifi", "model": "Pixel 6", "transport_id": "4"},
+        {"serial": "0123456789ABCDEF", "state": "unauthorized", "connection": "usb", "model": None, "transport_id": "5"},
     ]
 
 
@@ -63,7 +63,7 @@ def test_parsers_accept_pixel_android_17_output():
     # Recorded from a Pixel 10 Pro XL on Android 17 (SDK 37).
     assert adb_client.parse_devices(
         "List of devices attached\n57231FDCQ009EZ         device usb:3-1 product:mustang model:Pixel_10_Pro_XL device:mustang transport_id:1\n"
-    ) == [{"serial": "57231FDCQ009EZ", "state": "device", "connection": "usb", "model": "Pixel 10 Pro XL"}]
+    ) == [{"serial": "57231FDCQ009EZ", "state": "device", "connection": "usb", "model": "Pixel 10 Pro XL", "transport_id": "1"}]
     assert adb_client.parse_users("Users:\n\tUserInfo{0:Owner:4c13} running\n\tUserInfo{11:1:410}\n") == [
         AndroidUser(0, "Owner", 0x4C13, True), AndroidUser(11, "1", 0x410, False)]
     assert adb_client.parse_user_serials(

@@ -16,6 +16,11 @@ from dataclasses import dataclass
 
 SERIAL_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,64}$")
 FACEBOOK_PACKAGE = "com.facebook.katana"
+# Facebook's photo access. Without images and video it drops a shared photo and opens its feed instead
+# of the composer. Its reel picker also asks for the "selected photos" one: refused once, Android
+# answers every later "Allow access" tap with no, so the picker never shows its grid.
+MEDIA_PERMISSIONS = ("android.permission.READ_MEDIA_IMAGES", "android.permission.READ_MEDIA_VIDEO",
+                     "android.permission.READ_MEDIA_VISUAL_USER_SELECTED")
 DEFAULT_TIMEOUT = 15.0
 
 _USER_RE = re.compile(r"UserInfo\{(\d+):(.*):([0-9a-fA-F]+)\}(\s+running)?")
@@ -68,6 +73,7 @@ def parse_devices(output: str) -> list[dict]:
             "state": parts[1],
             "connection": "usb" if "usb" in details else ("wifi" if ":" in parts[0] else "unknown"),
             "model": (details.get("model") or "").replace("_", " ") or None,
+            "transport_id": details.get("transport_id") if (details.get("transport_id") or "").isdigit() else None,
         })
     return devices
 
@@ -306,9 +312,14 @@ def canonical_serial(serial: str) -> str:
 
 def _describe(args: list[str], limit: int = 160) -> str:
     """The command that failed, without the device serial, short enough for an error line."""
-    command = args[2:] if args[:1] == ["-s"] else args
+    command = args[2:] if args[:1] in (["-s"], ["-t"]) else args
     text = " ".join(command) or "adb"
     return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+# adb names more than one connection with this serial (a phone re-plugged before the old connection
+# closed), or a remembered connection id has gone away. Both are cured by listing devices again.
+_STALE_TRANSPORT_MARKERS = ("more than one device", "no device with transport id")
 
 
 class AdbClient:
@@ -318,9 +329,18 @@ class AdbClient:
         self._transports = None
 
     def _run(self, args: list[str], timeout: float | None = None) -> str:
-        if args[:1] == ["-s"]:
-            args = ["-s", self.transport_serial(args[1]), *args[2:]]
-        return self._execute(args, timeout)
+        if args[:1] != ["-s"]:
+            return self._execute(args, timeout)
+        serial, rest = args[1], args[2:]
+        try:
+            return self._execute([*self.transport_args(serial), *rest], timeout)
+        except AdbUnavailable:
+            raise
+        except AdbError as exc:
+            if not any(marker in str(exc) for marker in _STALE_TRANSPORT_MARKERS):
+                raise
+            self._transports = None
+            return self._execute([*self.transport_args(serial), *rest], timeout)
 
     def _execute(self, args: list[str], timeout: float | None = None) -> str:
         if not self.binary:
@@ -348,14 +368,19 @@ class AdbClient:
         raw = parse_devices(self._run(["devices", "-l"]))
         grouped = {}
         transports = {}
+        repeated = {serial for serial in (device["serial"] for device in raw)
+                    if sum(other["serial"] == serial for other in raw) > 1}
         for device in raw:
             endpoint = device["serial"]
+            # `-s` fails while adb holds two connections under one serial; the connection id is exact.
+            device["target"] = (["-t", device["transport_id"]] if endpoint in repeated and device["transport_id"]
+                                else ["-s", endpoint])
             identity = canonical_serial(endpoint)
             if identity == endpoint:
                 identity = wifi_endpoint_serial(endpoint) or endpoint
             if device["state"] == "device":
                 try:
-                    value = self._execute(["-s", endpoint, "shell", "getprop", "ro.serialno"]).strip()
+                    value = self._execute([*device["target"], "shell", "getprop", "ro.serialno"]).strip()
                     if value and value.casefold() not in {"unknown", "null"} and SERIAL_RE.fullmatch(value):
                         identity = value
                 except AdbError:
@@ -367,16 +392,20 @@ class AdbClient:
             chosen = min(entries, key=lambda entry: (entry["state"] != "device", entry["connection"] != "usb"))
             aliases = sorted({identity, *(entry["serial"] for entry in entries)})
             for alias in aliases:
-                transports[alias] = chosen["serial"]
-            result.append({**chosen, "serial": identity, "aliases": aliases})
+                transports[alias] = chosen["target"]
+            # The connection id changes on every re-plug, so it stays out of what callers keep.
+            device = {key: value for key, value in chosen.items() if key not in {"target", "transport_id"}}
+            result.append({**device, "serial": identity, "aliases": aliases})
         self._transports = transports
         return result
 
-    def transport_serial(self, serial: str) -> str:
+    def transport_args(self, serial: str) -> list[str]:
+        """The adb arguments that pick this phone's live connection: `-s <serial>`, or `-t <id>` while
+        adb lists the serial more than once."""
         validate_serial(serial)
         if self._transports is None:
             self.devices()
-        return self._transports.get(serial, self._transports.get(canonical_serial(serial), serial))
+        return list(self._transports.get(serial, self._transports.get(canonical_serial(serial), ["-s", serial])))
 
     def properties(self, serial: str) -> dict:
         names = ("ro.product.manufacturer", "ro.product.model", "ro.build.version.release", "ro.build.version.sdk")
@@ -514,6 +543,13 @@ class AdbClient:
     def grant_permission(self, serial: str, user_id: int, package: str, permission: str) -> None:
         self.shell(serial, "pm", "grant", "--user", str(int(user_id)), package, permission)
 
+    def grant_media(self, serial: str, user_id: int, package: str = FACEBOOK_PACKAGE) -> None:
+        """Facebook's photo access (MEDIA_PERMISSIONS) in one Android user. A permission this Android
+        version does not have is skipped."""
+        user, package = str(int(user_id)), validate_package(package)
+        self.shell(serial, "; ".join(f"pm grant --user {user} {package} {perm} >/dev/null 2>&1"
+                                     for perm in MEDIA_PERMISSIONS) + "; true")
+
     def revoke_permission(self, serial: str, user_id: int, package: str, permission: str) -> None:
         self.shell(serial, "pm", "revoke", "--user", str(int(user_id)), package, permission)
 
@@ -544,7 +580,7 @@ class AdbClient:
         command = f"content write --user {int(user_id)} --uri {shlex.quote(uri)}"
         try:
             with open(local, "rb") as source:
-                result = subprocess.run([self.binary, "-s", self.transport_serial(serial), "shell", command],
+                result = subprocess.run([self.binary, *self.transport_args(serial), "shell", command],
                                         stdin=source, capture_output=True, timeout=timeout, check=False)
         except subprocess.TimeoutExpired as exc:
             raise AdbError("ADB timed out writing a file to the phone") from exc

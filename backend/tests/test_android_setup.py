@@ -178,6 +178,10 @@ class FakePhone:
     def grant_permission(self, serial, user_id, package, permission):
         self.granted = getattr(self, "granted", set()) | {(user_id, package, permission)}
 
+    def grant_media(self, serial, user_id, package=FACEBOOK):
+        for permission in adb_client.MEDIA_PERMISSIONS:
+            self.grant_permission(serial, user_id, package, permission)
+
     def read_file(self, serial, path):
         return self.files.get(path)
 
@@ -249,6 +253,7 @@ def test_setup_runs_every_step_then_waits_for_the_login(phone):
     assert agent.proxy["password"] == "secret" and agent.account["name"] == "Anna"
     assert (11, FACEBOOK) in phone.packages and phone.settings[(11, "secure", "location_mode")] == "0"
     assert (11, FACEBOOK, "android.permission.READ_MEDIA_IMAGES") in phone.granted
+    assert (11, FACEBOOK, "android.permission.READ_MEDIA_VISUAL_USER_SELECTED") in phone.granted
     assert phone.settings[(11, "system", "screen_off_timeout")] == "300000"
     assert phone.settings[(11, "secure", "user_setup_complete")] == "1"
     assert android_ownership.role_of(json.loads(phone.files[android_ownership.PHONE_FILE])) == "primary"

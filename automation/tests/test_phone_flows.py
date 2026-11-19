@@ -772,6 +772,24 @@ class PublishTests(unittest.TestCase):
         taps = [a[1] for a in device.actions if a[0] == "tap"]
         self.assertEqual(taps.count((100.0, 1208.0)), 3)
 
+    def test_reel_picker_answers_the_camera_roll_consent(self):
+        consent = lines(("Create reel", 90), ("Allow access to your camera roll", 600), ("Allow access", 680))
+        device = FakeDevice([consent, lines(("Gallery", 280)), lines(("→ Next", 1130)), lines(("Describe your reel", 300))])
+        events = []
+        run(Flows(device, lambda **e: events.append(e))._pick_reel())
+        taps = [a[1] for a in device.actions if a[0] == "tap"]
+        offset = device.pt(68, 394)
+        self.assertEqual(taps[:3], [(100.0, 680.0), (100.0 + offset[0], 280.0 + offset[1]), (100.0, 1130.0)])
+        self.assertTrue(any(e.get("kind") == "camera roll consent" for e in events))
+
+    def test_reel_picker_that_keeps_asking_for_the_camera_roll_fails(self):
+        consent = lines(("Create reel", 90), ("Allow access to your camera roll", 600), ("Allow access", 680))
+        device = FakeDevice([consent])
+        with self.assertRaises(StepFailed) as failed:
+            run(Flows(device, lambda **e: None)._pick_reel())
+        self.assertIn("camera roll access", str(failed.exception))
+        self.assertEqual([a[1] for a in device.actions if a[0] == "tap"], [(100.0, 680.0)] * 2)
+
     def test_unfinished_reel_prompt_appearing_after_the_tap_is_discarded(self):
         dialog = lines(("Gallery", 280), ("Continue editing your last reel?", 500), ("DISCARD", 800))
         device = FakeDevice([lines(("Gallery", 280)), dialog, lines(("Gallery", 280)), lines(("→ Next", 1130)),
@@ -795,6 +813,40 @@ class PublishTests(unittest.TestCase):
         with patch.object(flows, "open_gallery", gallery), self.assertRaises(StepFailed):
             run(flows._compose_from_gallery())
         self.assertNotIn(("tap", (100.0, 60.0)), device.actions)
+
+    def test_a_gallery_tap_that_opened_nothing_is_tapped_again(self):
+        picker = lines(("New post", 100), ("Gallery", 200), ("Select multiple", 200))
+        composer = lines(("What's on your mind?", 300))
+
+        class SlowGrid(FakeDevice):
+            """The grid ignores the first tap, as one that lands while thumbnails still load."""
+            async def tap(self, point):
+                await super().tap(point)
+                if sum(a[0] == "tap" for a in self.actions) == 2:
+                    self.screens = [composer]
+
+        device = SlowGrid([picker])
+        flows = Flows(device, lambda **e: None)
+
+        async def gallery():
+            return (100.0, 200.0)
+        with patch.object(flows, "open_gallery", gallery):
+            run(flows._compose_from_gallery())
+        taps = [a[1] for a in device.actions if a[0] == "tap"]
+        self.assertEqual(len(taps), 2)
+        self.assertEqual(taps[0], taps[1])
+        self.assertNotIn("snapshot", [a[0] for a in device.actions])
+
+    def test_a_gallery_that_never_opens_the_post_fails_after_its_taps(self):
+        device = FakeDevice([lines(("New post", 100), ("Gallery", 200), ("Select multiple", 200))])
+        flows = Flows(device, lambda **e: None)
+
+        async def gallery():
+            return (100.0, 200.0)
+        with patch.object(flows, "open_gallery", gallery), self.assertRaises(StepFailed):
+            run(flows._compose_from_gallery())
+        self.assertEqual(sum(a[0] == "tap" for a in device.actions), 3)
+        self.assertEqual(sum(a[0] == "snapshot" for a in device.actions), 1)
 
     def test_video_that_opens_a_plain_post_goes_through_create_reel(self):
         feed = lines(("facebook", 100), ("What's on your mind?", 300))
@@ -825,6 +877,20 @@ class PublishTests(unittest.TestCase):
         taps = [action[1] for action in device.actions if action[0] == "tap"]
         offset = device.pt(68, 394)
         self.assertEqual(taps[:4], [(426.0, 90.0), (100.0, 297.0), (100.0 + offset[0], 280.0 + offset[1]), (100.0, 1130.0)])
+
+    def test_reel_through_a_round_plus_in_the_top_bar(self):
+        feed = lines(("facebook", 100), ("What's on your mind?", 300))
+        device = FakeDevice([feed, lines(("Create story", 530), ("Post", 158), ("Story", 229), ("B Reel", 297), ("Live", 369))])
+        device.icons["create_round"] = (428.0, 92.0)
+        self.assertTrue(run(Flows(device, lambda **e: None)._reel_from_create_menu()))
+        taps = [action[1] for action in device.actions if action[0] == "tap"]
+        self.assertEqual(taps, [(428.0, 92.0), (100.0, 297.0)])
+
+    def test_a_round_plus_below_the_top_bar_is_not_the_create_button(self):
+        device = FakeDevice([lines(("facebook", 100), ("What's on your mind?", 300))])
+        device.icons["create_round"] = (30.0, 489.0)
+        self.assertFalse(run(Flows(device, lambda **e: None)._reel_from_create_menu()))
+        self.assertEqual(device.actions, [])
 
     def test_reel_without_the_plus_button_takes_the_old_route(self):
         device = FakeDevice([lines(("facebook", 100), ("What's on your mind?", 300))])
@@ -878,6 +944,17 @@ class PublishTests(unittest.TestCase):
         run(Flows(device, lambda **e: None)._compose_from_create_reel())
         self.assertIn(("tap", (100.0, 800.0)), device.actions)
         self.assertEqual(len([a for a in device.actions if a[0] == "swipe"]), 2)
+
+    def test_create_reel_below_a_new_pages_setup_card_is_found_scrolling_down(self):
+        feed = lines(("What's on your mind?", 300))
+        header = lines(("DailyScope USA", 520), ("0 followers · 0 following", 557), ("Finish setting up your Page", 810))
+        device = FakeDevice([feed, feed, header, header, lines(("Create reel", 900)), lines(("Gallery", 280)),
+                             lines(("→ Next", 1130)), lines(("Describe your reel", 300))])
+        run(Flows(device, lambda **e: None)._compose_from_create_reel())
+        swipes = [a for a in device.actions if a[0] == "swipe"]
+        self.assertEqual(len(swipes), 2)
+        self.assertTrue(all(start[1] > end[1] for _, start, end in swipes))  # finger up: the page moves down
+        self.assertIn(("tap", (100.0, 900.0)), device.actions)
 
     def test_composer_opened_by_picking_is_not_skipped_with_its_next(self):
         composer = lines(("New post", 90), ("What's on your mind?", 300), ("Next", 1190))
