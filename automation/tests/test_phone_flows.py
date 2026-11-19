@@ -782,6 +782,22 @@ class PublishTests(unittest.TestCase):
         self.assertEqual(taps[:3], [(100.0, 680.0), (100.0 + offset[0], 280.0 + offset[1]), (100.0, 1130.0)])
         self.assertTrue(any(e.get("kind") == "camera roll consent" for e in events))
 
+    def test_reel_picker_with_selected_media_taps_the_video_after_view_all_media(self):
+        grid = lines(("Gallery", 274), ("You've allowed access to select media", 340), ("View all", 541), ("media", 565))
+        for screens in ([grid], [lines(("Gallery", 274), ("You've allowed access to select media", 340)), grid]):
+            with self.subTest(tile_read_late=len(screens) == 2):
+                device = FakeDevice([*screens, lines(("→ Next", 1130)), lines(("Describe your reel", 300))])
+                run(Flows(device, lambda **e: None)._pick_reel())
+                taps = [a[1] for a in device.actions if a[0] == "tap"]
+                self.assertEqual(taps[0], (100.0 + device.pt(360, 0)[0], 541.0))
+
+    def test_reel_picker_without_the_tile_still_taps_the_first_cell(self):
+        device = FakeDevice([lines(("Gallery", 280)), lines(("→ Next", 1130)),
+                             lines(("Describe your reel", 300))])
+        run(Flows(device, lambda **e: None)._pick_reel())
+        offset = device.pt(68, 394)
+        self.assertEqual([a[1] for a in device.actions if a[0] == "tap"][0], (100.0 + offset[0], 280.0 + offset[1]))
+
     def test_reel_picker_that_keeps_asking_for_the_camera_roll_fails(self):
         consent = lines(("Create reel", 90), ("Allow access to your camera roll", 600), ("Allow access", 680))
         device = FakeDevice([consent])

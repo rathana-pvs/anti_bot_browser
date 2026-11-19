@@ -90,6 +90,7 @@ HOME_TAPS = 2
 CREATE_BAR_BOTTOM = 300  # 1080-wide px: the feed's top bar, where its + sits, ends above this
 # Taps on the gallery's newest cell. One that lands while the grid still loads opens nothing (seen on a Pixel).
 PICKER_TAPS = 3
+GRID_CELL_PX = 360  # 1080-wide px: one cell of the three-across gallery grid
 CONSENT_TAPS = 2  # taps on Facebook's "Allow access" (camera roll) before the step gives up
 # Facebook hides its tab bar (Home included) while the feed is scrolled down. A slow drag up does not bring it
 # back; a short quick flick up does (seen on a Pixel 7 Pro), without moving the feed much.
@@ -577,7 +578,17 @@ class Flows:
                 raise StepFailed(f"reel picker: still asking for camera roll access; {texts(lines)}")
             if not await self._discard_unfinished_reel(lines):
                 offset = offsets[found]
-                await dev.tap((anchor[0] + offset[0], anchor[1] + offset[1]))
+                cell = (anchor[0] + offset[0], anchor[1] + offset[1])
+                # With access to selected media only, Facebook puts a "View all media" tile in the first cell
+                # (under a "You've allowed access to select media" bar): the newest video is the next cell.
+                tile = match(lines, "View all")
+                if not tile and match(lines, "allowed access to select"):  # the bar is up, its grid still drawing
+                    await dev.settle(timeout=2.0)
+                    tile = match(await dev.read(), "View all")
+                if tile:
+                    cell = (tile[0] + dev.pt(GRID_CELL_PX, 0)[0], tile[1])
+                    self.log(event="reel picker", layout="selected media", action="tap the cell after View all media")
+                await dev.tap(cell)
                 button, lines = await self._wait_reel_editor()
                 if button:
                     break
