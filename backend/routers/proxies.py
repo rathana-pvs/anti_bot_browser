@@ -251,6 +251,22 @@ def sync_proxy_source(source_id: str):
     return _with_status(result)
 
 
+class ProxyMove(BaseModel):
+    proxy_ids: list[str] = Field(min_length=1, max_length=5000)
+
+
+@router.post("/sources/{source_id}/move-proxies")
+def move_proxies_into_source(source_id: str, request: ProxyMove):
+    """Moves proxies this source's Webshare account lists out of the manual source they sit in.
+    Only their source changes: accounts keep their proxies and nothing is replaced."""
+    if webshare_service.runner.running():
+        raise HTTPException(status_code=409, detail="Wait for the Webshare replacement to finish first.")
+    try:
+        return webshare_service.move_into_source(source_id, request.proxy_ids)
+    except webshare_service.WebshareError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 def _with_status(result: dict) -> dict:
     added_ids = result.pop("added_ids", [])
     status = refresh_proxy_statuses(added_ids) if added_ids else {

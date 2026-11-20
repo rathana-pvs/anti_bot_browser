@@ -229,3 +229,75 @@ def test_a_source_with_an_api_key_refuses_pasted_proxies(pool, monkeypatch):
     keyless = proxy_sources.create({"name": "Webshare later", "provider": "webshare"})
     imported = proxies_router.import_proxies({"text": "10.0.0.7:1080", "source_id": keyless["id"]})
     assert imported["added"] == 1
+
+
+def _listing(*hosts):
+    return lambda *a, **k: {"results": [{"proxy_address": h, "port": 1080, "username": "new", "password": "new"}
+                                        for h in hosts], "next": None}
+
+
+@pytest.fixture
+def accounts(tmp_path, monkeypatch):
+    from backend import config
+    profiles = tmp_path / "profiles"
+    monkeypatch.setattr(config, "PROFILES_DIR", profiles)
+
+    def make(profile_id, phone=False):
+        (profiles / profile_id).mkdir(parents=True)
+        runtime = {"kind": "android_user"} if phone else {"kind": "docker"}
+        (profiles / profile_id / "config.json").write_text(json.dumps({"id": profile_id, "runtime": runtime}))
+    return make
+
+
+def test_sync_reports_proxies_in_a_pasted_source_and_moving_changes_only_their_source(pool, monkeypatch, accounts):
+    accounts("profile_001")
+    data = pool()
+    data["p1"].update(profile_ids=["profile_001"], profile_id="profile_001", assigned=True, latency_ms=80)
+    proxy_service.save_proxy_pool(list(data.values()))
+    before = pool()["p1"]
+    source = _webshare_source()
+    monkeypatch.setattr(webshare_service, "_request", _listing("10.0.0.1", "10.0.0.2"))
+    result = webshare_service.sync_source(source["id"])
+    assert result["added"] == 0
+    assert [(item["id"], item["from_source"], item["accounts"]) for item in result["in_other_sources"]] == [
+        ("p1", "My proxies", 1), ("p2", "My proxies", 0)]
+    assert pool()["p1"]["source_id"] == proxy_sources.DEFAULT_ID  # the sync itself moves nothing
+
+    moved = webshare_service.move_into_source(source["id"], ["p1"])
+    assert moved == {"moved": 1, "kept": [], "not_movable": 0}
+    after = pool()["p1"]
+    assert after["source_id"] == source["id"]
+    # Everything else stays: the account keeps the proxy, the login is not taken from Webshare.
+    assert {k: v for k, v in after.items() if k != "source_id"} == {k: v for k, v in before.items() if k != "source_id"}
+    assert pool()["p2"]["source_id"] == proxy_sources.DEFAULT_ID  # not chosen, not moved
+
+
+def test_proxies_another_api_source_lists_are_never_moved(pool, monkeypatch):
+    first = proxy_sources.create({"name": "Webshare A", "provider": "webshare", "api_key": "sameaccount1"},
+                                 verify=lambda key: None)
+    monkeypatch.setattr(webshare_service, "_request", _listing("10.0.0.9"))
+    webshare_service.sync_source(first["id"])
+    second = proxy_sources.create({"name": "Webshare B", "provider": "webshare", "api_key": "sameaccount2"},
+                                  verify=lambda key: None)
+    result = webshare_service.sync_source(second["id"])
+    [kept] = result["kept_elsewhere"]
+    assert result["in_other_sources"] == [] and "Webshare A gets it from its own API" in kept["reason"]
+    moved = webshare_service.move_into_source(second["id"], [kept["id"]])
+    assert moved["moved"] == 0 and moved["kept"][0]["id"] == kept["id"]
+    assert pool()[kept["id"]]["source_id"] == first["id"]
+
+
+def test_a_proxy_stays_when_its_account_or_protocol_does_not_fit_the_new_source(pool, monkeypatch, accounts):
+    accounts("profile_001", phone=True)
+    data = pool()
+    data["p1"].update(profile_ids=["profile_001"])
+    data["p2"]["type"] = "http"
+    proxy_service.save_proxy_pool(list(data.values()))
+    pc_only = proxy_sources.create({"name": "Webshare PC", "provider": "webshare", "api_key": "pconly3333",
+                                    "use_on": "pc"}, verify=lambda key: None)
+    monkeypatch.setattr(webshare_service, "_request", _listing("10.0.0.1", "10.0.0.2"))
+    result = webshare_service.sync_source(pc_only["id"])
+    reasons = {item["id"]: item["reason"] for item in result["kept_elsewhere"]}
+    assert "a phone account uses it" in reasons["p1"] and "HTTP" in reasons["p2"]
+    assert webshare_service.move_into_source(pc_only["id"], ["p1", "p2"])["moved"] == 0
+    assert {p["source_id"] for p in pool().values()} == {proxy_sources.DEFAULT_ID}

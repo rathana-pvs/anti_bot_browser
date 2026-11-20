@@ -15,6 +15,7 @@ One proxy per Webshare replacement, so the old→new pair is never ambiguous.
 """
 from __future__ import annotations
 
+import json
 import threading
 import time
 import uuid
@@ -163,12 +164,7 @@ def list_proxies(key: str) -> list[dict]:
     return rows
 
 
-def sync_source(source_id: str) -> dict:
-    """Adds the Webshare account's proxies that aren't in the pool yet to the source.
-
-    Proxies already in the pool (in any source) are skipped and never moved, so accounts keep
-    theirs. Pool proxies of this source that Webshare no longer lists are counted, not deleted:
-    they may still hold accounts, and the person decides what to do with them."""
+def _webshare_source(source_id: str) -> tuple[dict, str]:
     if not proxy_sources.exists(source_id):
         raise WebshareError("This proxy source no longer exists.")
     source = proxy_sources.get(source_id)
@@ -177,15 +173,97 @@ def sync_source(source_id: str) -> dict:
     key = proxy_sources.api_key(source_id)
     if not key:
         raise WebshareError(f"Add the Webshare API key to {source['name']} first (its settings on the Proxies page).")
-    rows = [r for r in list_proxies(key) if r.get("proxy_address") and r.get("port") and r.get("valid") is not False]
+    return source, key
+
+
+def _listed_rows(key: str) -> list[dict]:
+    return [r for r in list_proxies(key) if r.get("proxy_address") and r.get("port") and r.get("valid") is not False]
+
+
+def _surface(profile_id: str) -> str | None:
+    """'phone' or 'pc' for the account using a proxy; None when it is gone."""
+    from backend.config import PROFILES_DIR
+    from backend.services.android_devices import ANDROID_RUNTIME
+    try:
+        config = json.loads((PROFILES_DIR / profile_id / "config.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return "phone" if (config.get("runtime") or {}).get("kind") == ANDROID_RUNTIME else "pc"
+
+
+def _elsewhere(source: dict, rows: list[dict], pool: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Proxies the source's Webshare account lists that sit in another source: (movable, kept with a reason).
+
+    Moving changes only the proxy's source. A proxy stays where it is when another API source lists it
+    too (two sources on one Webshare account would pass it back and forth), when its protocol differs
+    from this source's, or when an account using it is on a surface this source doesn't serve."""
+    listed = {(r["proxy_address"], int(r["port"])) for r in rows}
+    names = {s["id"]: s["name"] for s in proxy_sources.list_public()}
+    movable, kept = [], []
+    for proxy in pool:
+        current = proxy.get("source_id") or proxy_sources.DEFAULT_ID
+        if current == source["id"] or proxy.get("replaced_by") or (proxy.get("host"), proxy.get("port")) not in listed:
+            continue
+        item = {"id": proxy["id"], "host": proxy.get("host"), "port": proxy.get("port"),
+                "from_source_id": current, "from_source": names.get(current, current),
+                "accounts": len(proxy_service.holders(proxy))}
+        surfaces = {_surface(pid) for pid in proxy_service.holders(proxy)} - {None}
+        if proxy_sources.uses_api(proxy_sources.get(current)):
+            kept.append({**item, "reason": f"{item['from_source']} gets it from its own API too"})
+        elif (proxy.get("type") or "socks5") != source["protocol"]:
+            kept.append({**item, "reason": f"it is {(proxy.get('type') or 'socks5').upper()} and "
+                                           f"{source['name']} is {source['protocol'].upper()}"})
+        elif any(surface != source["use_on"] for surface in surfaces) and source["use_on"] != "both":
+            where = "a phone" if "phone" in surfaces else "a PC"
+            kept.append({**item, "reason": f"{where} account uses it and {source['name']} is for "
+                                           f"{'PC' if source['use_on'] == 'pc' else 'phone'} accounts only"})
+        else:
+            movable.append(item)
+    return movable, kept
+
+
+def sync_source(source_id: str) -> dict:
+    """Adds the Webshare account's proxies that aren't in the pool yet to the source.
+
+    Proxies already in another source are reported, never moved here: `in_other_sources` can be moved
+    with `move_into_source` once the person confirms, `kept_elsewhere` stay with the reason. Pool proxies
+    of this source that Webshare no longer lists are counted, not deleted: they may still hold accounts,
+    and the person decides what to do with them."""
+    source, key = _webshare_source(source_id)
+    rows = _listed_rows(key)
     lines = [f"{r['proxy_address']}:{int(r['port'])}:{r.get('username') or ''}:{r.get('password') or ''}" for r in rows]
     result = proxy_service.import_proxies_from_text("\n".join(lines), source_id) if lines else {
         "added": 0, "skipped": 0, "total": len(proxy_service.load_proxy_pool()), "added_ids": []}
+    pool = proxy_service.load_proxy_pool()
     listed = {(r["proxy_address"], int(r["port"])) for r in rows}
-    gone = [p for p in proxy_service.load_proxy_pool()
+    gone = [p for p in pool
             if (p.get("source_id") or proxy_sources.DEFAULT_ID) == source_id and not p.get("replaced_by")
             and (p.get("host"), p.get("port")) not in listed]
-    return {**result, "listed": len(rows), "not_in_webshare": len(gone)}
+    movable, kept = _elsewhere(source, rows, pool)
+    return {**result, "listed": len(rows), "not_in_webshare": len(gone),
+            "in_other_sources": movable, "kept_elsewhere": kept}
+
+
+def move_into_source(source_id: str, proxy_ids: list[str]) -> dict:
+    """Moves the chosen proxies, which this source's Webshare account lists, into the source.
+
+    Only each proxy's `source_id` changes: its address, login, protocol, accounts and the accounts'
+    own proxies stay exactly as they are, and nothing is replaced. The rules are checked again against
+    the Webshare list now, so a proxy that may no longer move stays where it is and is reported."""
+    source, key = _webshare_source(source_id)
+    rows = _listed_rows(key)
+    wanted = set(proxy_ids)
+    with proxy_service._proxy_assignment_lock:
+        pool = proxy_service.load_proxy_pool()
+        movable, kept = _elsewhere(source, rows, pool)
+        moving = {item["id"] for item in movable} & wanted
+        for proxy in pool:
+            if proxy["id"] in moving:
+                proxy["source_id"] = source_id
+        if moving:
+            proxy_service.save_proxy_pool(pool, raise_errors=True)
+    return {"moved": len(moving), "kept": [item for item in kept if item["id"] in wanted],
+            "not_movable": len(wanted - moving - {item["id"] for item in kept})}
 
 
 # --- Replacement --------------------------------------------------------------------------------

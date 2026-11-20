@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { accountLimit, formatProxyGeography, hasRoom, PROXY_FOLDERS, PROXY_USE_LABEL, ProxyItem, ProxySource, proxyHolders, proxyIpListText, qualityRank } from '../types/proxy';
-import { checkProxyGeography, fetchProxySettings, fetchProxySources, importProxies, syncProxySource, refreshProxyStatuses, testProxyPing, deleteSelectedProxies, saveProxyList, updateAccountsPerProxy } from '../services/api';
+import { checkProxyGeography, fetchProxySettings, fetchProxySources, importProxies, moveProxiesIntoSource, syncProxySource, refreshProxyStatuses, testProxyPing, deleteSelectedProxies, saveProxyList, updateAccountsPerProxy } from '../services/api';
+import type { ProxyElsewhere } from '../services/api';
 import { Download, Globe, Plus, Trash2, Activity, MapPin, X, Loader2, Search, Lock, Folder, Gauge, Monitor, Smartphone, Users, RefreshCw, Settings2 } from 'lucide-react';
 import { useAppDialog } from './ui/AppDialogProvider';
 import { Checkbox } from './ui/Checkbox';
@@ -146,11 +147,28 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
     setIsSyncing(true);
     try {
       const result = await syncProxySource(source.id);
-      await showAlert(`Webshare lists ${result.listed} proxies. Added ${result.added} new ones to ${source.name}`
-        + (result.skipped ? `; ${result.skipped} already in the pool were skipped.` : '.')
+      const elsewhere = result.in_other_sources.length + result.kept_elsewhere.length;
+      const summary = `Webshare lists ${result.listed} proxies. Added ${result.added} new ones to ${source.name}`
+        + (result.skipped - elsewhere > 0 ? `; ${result.skipped - elsewhere} were already here.` : '.')
         + (result.added ? ` Online: ${result.online}; offline: ${result.offline}; locations found: ${result.geo_checked}.` : '')
-        + (result.not_in_webshare ? ` ${result.not_in_webshare} proxies in this source are no longer in your Webshare account; they were kept so their accounts don't lose them.` : ''),
-        { title: 'Webshare sync complete' });
+        + (result.not_in_webshare ? ` ${result.not_in_webshare} proxies in this source are no longer in your Webshare account; they were kept so their accounts don't lose them.` : '')
+        + keptNote(result.kept_elsewhere);
+      onRefresh();
+      const movable = result.in_other_sources;
+      if (!movable.length) {
+        await showAlert(summary, { title: 'Webshare sync complete' });
+        return;
+      }
+      const used = movable.filter(item => item.accounts > 0).length;
+      const move = await showConfirm(`${summary}\n\n${countBySource(movable)}. `
+        + `Move ${movable.length === 1 ? 'it' : 'them'} to ${source.name}?`
+        + (used ? ` ${used} ${used === 1 ? 'is' : 'are'} used by accounts.` : '')
+        + ' Only the source changes: accounts keep their proxies, and nothing is replaced.',
+        { title: 'Webshare sync complete', confirmLabel: `Move ${movable.length} to ${source.name}`, cancelLabel: 'Leave them' });
+      if (!move) return;
+      const moved = await moveProxiesIntoSource(source.id, movable.map(item => item.id));
+      await showAlert(`Moved ${moved.moved} ${moved.moved === 1 ? 'proxy' : 'proxies'} to ${source.name}.` + keptNote(moved.kept)
+        + (moved.not_movable ? ` ${moved.not_movable} had already changed and stayed where they were.` : ''), { title: 'Proxies moved' });
       onRefresh();
     } catch (err: any) {
       await showAlert(`Sync failed: ${err.message}`, { title: 'Webshare sync failed', variant: 'danger' });
@@ -572,3 +590,20 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
     </div>
   );
 };
+
+/** "12 more are in Uploaded list and 3 in Other": where proxies listed by a Webshare source sit now. */
+function countBySource(items: ProxyElsewhere[]): string {
+  const counts = new Map<string, number>();
+  items.forEach(item => counts.set(item.from_source, (counts.get(item.from_source) ?? 0) + 1));
+  const parts = [...counts].map(([name, count]) => `${count} in ${name}`);
+  const listed = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts[0];
+  return listed.replace(/^(\d+) in /, (_, count) => `${count} more ${count === '1' ? 'is' : 'are'} in `);
+}
+
+/** Why proxies this source lists stay in another source, grouped by reason. */
+function keptNote(kept: ProxyElsewhere[]): string {
+  if (!kept.length) return '';
+  const reasons = new Map<string, number>();
+  kept.forEach(item => reasons.set(item.reason || 'it can’t move', (reasons.get(item.reason || 'it can’t move') ?? 0) + 1));
+  return ' ' + [...reasons].map(([reason, count]) => `${count} stayed where ${count === 1 ? 'it is' : 'they are'}: ${reason}.`).join(' ');
+}

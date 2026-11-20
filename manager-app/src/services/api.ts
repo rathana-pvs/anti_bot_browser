@@ -504,10 +504,28 @@ export async function fetchWebshareReplace(): Promise<WebshareReplaceRun> {
 
 export interface ProxyImportResult { added: number; skipped: number; total: number; status_checked: number; online: number; offline: number; geo_checked: number; geo_failed: number }
 
-/** Adds the source's Webshare proxies that aren't in the pool yet. */
-export async function syncProxySource(id: string): Promise<ProxyImportResult & { listed: number; not_in_webshare: number }> {
+/** A proxy the source's Webshare account lists that sits in another source; `reason` when it can't move. */
+export interface ProxyElsewhere { id: string; host: string; port: number; from_source_id: string; from_source: string; accounts: number; reason?: string }
+
+export type ProxySyncResult = ProxyImportResult & {
+  listed: number; not_in_webshare: number; in_other_sources: ProxyElsewhere[]; kept_elsewhere: ProxyElsewhere[];
+};
+
+/** Adds the source's Webshare proxies that aren't in the pool yet; those in other sources are only reported. */
+export async function syncProxySource(id: string): Promise<ProxySyncResult> {
   const res = await fetch(`${API_BASE}/proxies/sources/${encodeURIComponent(id)}/sync`, { method: 'POST' });
   if (!res.ok) throw await apiError(res, 'Could not sync from Webshare');
+  return res.json();
+}
+
+/** Moves proxies into this Webshare source. Only their source changes: accounts keep them, nothing is replaced. */
+export async function moveProxiesIntoSource(id: string, proxyIds: string[]): Promise<{ moved: number; kept: ProxyElsewhere[]; not_movable: number }> {
+  const res = await fetch(`${API_BASE}/proxies/sources/${encodeURIComponent(id)}/move-proxies`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ proxy_ids: proxyIds }),
+  });
+  if (!res.ok) throw await apiError(res, 'Could not move the proxies');
   return res.json();
 }
 
