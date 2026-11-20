@@ -205,6 +205,19 @@ def test_open_account_stops_other_users_sets_time_and_verifies(two_users, accoun
     assert two_users.switcher is False
 
 
+def test_opening_an_account_writes_a_folder_its_stopped_user_missed(two_users, account, monkeypatch):
+    from backend.services import android_ownership
+    _, config = account
+    synced = []
+    monkeypatch.setattr(android_ownership, "try_sync_details", synced.append)
+    android_network.open_account("profile_020")
+    assert synced == []  # nothing waiting: no extra phone call
+    data = json.loads(config.read_text())
+    config.write_text(json.dumps({**data, android_ownership.DETAILS_PENDING: True}))
+    android_network.open_account("profile_020")
+    assert synced == ["profile_020"]
+
+
 def test_open_account_side_by_side_matches_proxy_time_without_stopping_other_users(two_users, account):
     android_devices._save_store({"devices": {"PIXEL": {"serial": "PIXEL", "label": "Pixel", "one_account_at_a_time": False}}})
     result = android_network.open_account("profile_020")

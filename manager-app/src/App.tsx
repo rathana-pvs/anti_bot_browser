@@ -10,6 +10,7 @@ import {
   deleteProfileGroup,
   createProfile,
   updateProfile,
+  moveProfilesToFolder,
   AccountBusyError,
   executeProfileAction,
   deleteProfile,
@@ -285,7 +286,7 @@ export const App: React.FC = () => {
   const moveProfiles = async (targets: Profile[], group: string, isNew: boolean) => {
     try {
       if (isNew && !profileGroups.includes(group)) await createProfileGroup(group);
-      for (const profile of targets) await updateProfile(profile.id, { group });
+      await moveProfilesToFolder(targets.map(profile => profile.id), group);
       const who = targets.length === 1 ? targets[0].name : `${targets.length} accounts`;
       showToast(group ? `Moved ${who} to ${group}.` : `Moved ${who} out of their folder.`, 'success');
     } catch (err: any) {

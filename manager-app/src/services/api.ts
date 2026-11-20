@@ -210,6 +210,19 @@ export async function updateProfile(
   return res.json();
 }
 
+/** Moves accounts to a folder ('' takes them out of theirs) in one request; phones take it in the background. */
+export async function moveProfilesToFolder(profileIds: string[], group: string): Promise<{ moved: string[]; group: string }> {
+  const res = await fetch(`${API_BASE}/profiles/move-to-folder`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ profile_ids: profileIds, group }),
+  });
+  if (!res.ok) {
+    throw await apiError(res, 'Couldn’t move these accounts.');
+  }
+  return res.json();
+}
+
 /** Puts an account on hold: nothing automatic runs on it until released. */
 export async function holdProfile(profileId: string, note: string): Promise<Profile> {
   const res = await fetch(`${API_BASE}/profiles/${profileId}/hold`, {

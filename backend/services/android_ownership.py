@@ -176,14 +176,50 @@ def sync_details(profile_id: str) -> None:
     })
 
 
+# Set on an account whose name or folder the phone has not taken yet: opening the account writes them.
+DETAILS_PENDING = "android_details_pending"
+
+
 def try_sync_details(profile_id: str) -> bool:
-    """For renames and folder moves: the phone may be unplugged, and the next setup run or
-    takeover writes the details again."""
+    """For renames and folder moves. The phone may be unplugged, or the account's Android user stopped
+    (its companion app cannot answer then), so the account is marked and opening it writes them."""
     try:
         sync_details(profile_id)
-        return True
+        synced = True
     except (AdbError, ValueError, DeviceNotFound):
-        return False
+        synced = False
+    _mark_details_pending(profile_id, not synced)
+    return synced
+
+
+def _mark_details_pending(profile_id: str, pending: bool) -> None:
+    """Never raises: it runs while a job opens the account, and a folder must not stop a job."""
+    path = PROFILES_DIR / profile_id / "config.json"
+    with android_network._write_lock:
+        try:
+            config = json.loads(path.read_text(encoding="utf-8"))
+            if bool(config.get(DETAILS_PENDING)) == pending:
+                return
+            if pending:
+                config[DETAILS_PENDING] = True
+            else:
+                config.pop(DETAILS_PENDING, None)
+            atomic_write_json(path, config)
+        except (OSError, ValueError):
+            pass  # the account was deleted meanwhile, or the disk refused: the next rename or open tries again
+
+
+def sync_details_in_background(profile_ids: list[str]) -> threading.Thread:
+    """After a bulk folder move: the phones take the new folders one account at a time, off the request."""
+    def run() -> None:
+        for profile_id in profile_ids:
+            try:
+                try_sync_details(profile_id)
+            except Exception:  # one account's surprise must not leave the others' phones without their folder
+                _mark_details_pending(profile_id, True)
+    thread = threading.Thread(target=run, name="android-details-sync", daemon=True)
+    thread.start()
+    return thread
 
 
 # --- Importing on a secondary PC -----------------------------------------------------------------

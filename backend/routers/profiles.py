@@ -19,7 +19,7 @@ from backend.services.docker_service import (
     get_container_stats, get_container_status, get_container_statuses, get_profile_disk_usage,
     paste_text_to_container, remove_container, run_profile_action,
 )
-from backend.services import android_ownership
+from backend.services import android_network, android_ownership
 from backend.services.android_devices import ANDROID_RUNTIME
 from backend.services.evidence_cleanup import clean_profile_evidence
 from backend.services.profile_service import (
@@ -290,6 +290,49 @@ def create_profile(request: ProfileCreateRequest):
             if profile_dir.exists() and not config_path.exists():
                 shutil.rmtree(profile_dir, ignore_errors=True)
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+class MoveToFolderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    profile_ids: list[str] = Field(min_length=1, max_length=2000)
+    group: str = Field(max_length=80)  # "" moves them out of their folder
+
+
+@router.post("/move-to-folder")
+def move_to_folder(request: MoveToFolderRequest):
+    """Moves many accounts at once. Nothing moves when one is missing or sits on a phone another PC manages.
+    Phones take the new folders in the background, so the move does not wait on them."""
+    accounts = []
+    for profile_id in dict.fromkeys(request.profile_ids):
+        profile_dir = _profile_dir(profile_id)
+        config_path = profile_dir / "config.json"
+        if not config_path.exists():
+            raise HTTPException(status_code=404, detail=f"Profile not found: {profile_id}")
+        config, _ = migrate_profile(json.loads(config_path.read_text(encoding="utf-8")), profile_dir)
+        if config.get("group", "") != request.group:
+            accounts.append((profile_id, config_path, config))
+    phones = {config["runtime"]["device_serial"] for _, _, config in accounts
+              if (config.get("runtime") or {}).get("kind") == ANDROID_RUNTIME}
+    for serial in phones:  # one check per phone; the phone keeps each account's folder
+        try:
+            android_ownership.ensure_primary_offline_safe(serial)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    on_phones = []
+    for profile_id, config_path, _ in accounts:
+        # Read again at write time, under the lock phone code saves with: a job opening a phone account may
+        # have saved its checks since the read above, and only the folder changes here.
+        with android_network._write_lock:
+            config, _ = migrate_profile(json.loads(config_path.read_text(encoding="utf-8")), config_path.parent)
+            config["group"] = request.group
+            config["configuration_revision"] = int(config.get("configuration_revision") or 1) + 1
+            config["updated_at"] = utc_now()
+            atomic_write_json(config_path, config)
+        if (config.get("runtime") or {}).get("kind") == ANDROID_RUNTIME:
+            on_phones.append(profile_id)
+    if on_phones:
+        android_ownership.sync_details_in_background(on_phones)
+    return {"moved": [profile_id for profile_id, _, _ in accounts], "group": request.group}
 
 
 @router.put("/{profile_id}")

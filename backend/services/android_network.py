@@ -168,6 +168,13 @@ def open_account(profile_id: str, job: bool = False, progress: Callable[[str], N
             client.grant_media(serial, user_id)
         except AdbError:
             pass  # posting reports a picker that stays closed on its own
+        from backend.services import android_ownership  # it imports this module
+        if config.get(android_ownership.DETAILS_PENDING):
+            # A rename or folder move made while this user was stopped: its companion app answers now.
+            try:
+                android_ownership.try_sync_details(profile_id)
+            except Exception:
+                pass  # a folder never stops a job; it stays marked and the next open tries again
         if job and privacy["blocking"]:
             # Fail closed: automation never runs Facebook while it could still learn the real location.
             return {"ready": False, "reason": privacy["blocking"], "switch": switch, "stopped_users": stopped,
