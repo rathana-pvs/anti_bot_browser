@@ -81,6 +81,13 @@ class FakeDevice:
         self.actions.append(("swipe", start, end))
         self.t += 1
 
+    async def drag(self, start, end, hold=1.0, duration=1.2):
+        self.actions.append(("drag", start, end))
+        self.t += 2
+
+    async def keep_awake(self, now=False):
+        self.actions.append(("wake",))
+
     async def key(self, code):
         self.actions.append(("key", code))
 
@@ -309,7 +316,7 @@ class FeedTests(unittest.TestCase):
 
         async def launch():
             reopened.append(1)
-        flows._launch_from_drawer = launch
+        flows._launch_facebook = launch
         with self.assertRaises(StepFailed):
             run(flows.discard_until_feed())
         self.assertEqual(len(reopened), 2)
@@ -317,7 +324,8 @@ class FeedTests(unittest.TestCase):
     def test_the_contact_sharing_sheet_is_closed_before_the_drawer_swipe(self):
         sheet = lines(("Play Store", 900), ("Add your info", 990), ("Share your contact info", 1025),
                       ("Receive only", 1198), ("Share", 1198))
-        device = FakeDevice([sheet, lines(("Facebook", 500)), lines(("facebook", 100), ("What's on your mind?", 200))])
+        device = FakeDevice([sheet, lines(("Play Store", 900)), lines(("Facebook", 500)),
+                             lines(("facebook", 100), ("What's on your mind?", 200))])
         run(Flows(device, lambda **e: None).open_feed())
         keys = [a for a in device.actions if a[0] in ("key", "swipe")]
         back = keys.index(("key", flows_module.KEY_BACK))
@@ -333,6 +341,89 @@ class FeedTests(unittest.TestCase):
         self.assertIn(("key", flows_module.KEY_BACK), device.actions)
         self.assertIn(("tap", (100.0, 500.0 - device.pt(0, 110)[1])), device.actions)
 
+    def test_facebook_on_the_home_screen_is_tapped_there_without_opening_the_drawer(self):
+        device = FakeDevice([lines(("Thu, Nov 19", 280), ("Facebook", 776), ("Play Store", 1776)),
+                             lines(("facebook", 100), ("What's on your mind?", 200))])
+        run(Flows(device, lambda **e: None).open_feed())
+        self.assertIn(("tap", (100.0, 776.0 - device.pt(0, 110)[1])), device.actions)
+        self.assertFalse(any(a[0] == "swipe" for a in device.actions))
+        self.assertEqual(device.actions[0], ("wake",))
+
+    def test_a_drawer_that_did_not_open_is_opened_again_never_swiping_down(self):
+        home = lines(("Play Store", 900))
+        device = FakeDevice([home, home, home, lines(("Facebook", 500)),
+                             lines(("facebook", 100), ("What's on your mind?", 200))])
+        run(Flows(device, lambda **e: None).open_feed())
+        swipes = [a for a in device.actions if a[0] == "swipe"]
+        self.assertEqual(len(swipes), 3)
+        self.assertTrue(all(end[1] < start[1] for _, start, end in swipes))  # every swipe goes up
+        self.assertIn(("tap", (100.0, 500.0 - device.pt(0, 110)[1])), device.actions)
+
+    def test_the_drawer_step_fails_after_three_swipes_up(self):
+        device = FakeDevice([lines(("Play Store", 900))])
+        with self.assertRaises(StepFailed):
+            run(Flows(device, lambda **e: None).open_feed())
+        self.assertEqual(sum(a[0] == "swipe" for a in device.actions), flows_module.DRAWER_OPENS)
+
+
+class HomeIconTests(unittest.TestCase):
+    class Launcher(FakeDevice):
+        def focus(self):
+            return "com.google.android.apps.nexuslauncher/.NexusLauncherActivity"
+
+    def test_the_icon_is_dragged_from_the_drawer_to_an_empty_top_spot(self):
+        home = lines(("Thu, Nov 19", 280), ("Play Store", 1776), ("Gmail", 1776))
+        device = self.Launcher([home, lines(("Facebook", 640)), lines(("Facebook", 776), ("Play Store", 1776))])
+        self.assertTrue(run(Flows(device, lambda **e: None).pin_to_home_screen()))
+        drags = [a for a in device.actions if a[0] == "drag"]
+        self.assertEqual(drags, [("drag", (100.0, 640.0 - device.pt(0, 110)[1]), device.pt(810, 750))])
+
+    def test_a_spot_with_an_app_label_near_it_is_skipped(self):
+        home = [screen.Line("Calendar", device_pt(810, 860))]
+        self.assertEqual(flows_module.home_drop_spot(home, device_pt), device_pt(270, 750))
+        crowded = [screen.Line("App", device_pt(x, y + 110)) for x, y in flows_module.HOME_DROP_SPOTS]
+        self.assertIsNone(flows_module.home_drop_spot(crowded, device_pt))
+
+    def test_an_icon_already_on_the_home_screen_is_left_alone(self):
+        device = self.Launcher([lines(("Facebook", 776))])
+        self.assertTrue(run(Flows(device, lambda **e: None).pin_to_home_screen()))
+        self.assertFalse(any(a[0] in ("drag", "swipe") for a in device.actions))
+
+    def test_a_drag_that_left_no_icon_reports_false_with_evidence(self):
+        home = lines(("Play Store", 1776))
+        device = self.Launcher([home, lines(("Facebook", 640)), home])
+        self.assertFalse(run(Flows(device, lambda **e: None).pin_to_home_screen()))
+        self.assertTrue(any(a[0] == "snapshot" and a[1].startswith("fail_home_icon") for a in device.actions))
+
+    def test_the_drawer_label_after_a_drag_that_never_started_is_not_taken_for_the_home_screen(self):
+        class StillInDrawer(FakeDevice):
+            def focus(self):
+                return "com.google.android.apps.nexuslauncher/.NexusLauncherActivity" if self.t < 0 else "other"
+        device = StillInDrawer([lines(("Play Store", 1776)), lines(("Facebook", 640))])
+        self.assertFalse(run(Flows(device, lambda **e: None).pin_to_home_screen()))
+
+    def test_get_ready_adds_the_icon_before_opening_facebook(self):
+        flows = Flows(FakeDevice(), lambda **e: None)
+        order = []
+
+        async def pin():
+            order.append("pin")
+            return True
+
+        async def feed():
+            order.append("feed")
+            raise StepFailed("stop here")
+        flows.pin_to_home_screen, flows.open_feed = pin, feed
+        with self.assertRaises(StepFailed):
+            run(flows.get_ready())
+        self.assertEqual(order, ["pin", "feed"])
+
+
+def device_pt(x, y):
+    return x * 576 / 1080, y * 576 / 1080
+
+
+class FeedScrollTests(unittest.TestCase):
     def test_a_scrolled_feed_taps_home_before_swiping(self):
         device = FakeDevice([lines(("facebook", 100)),
                              lines(("facebook", 100), ("What's on your mind?", 200))])
@@ -1397,7 +1488,8 @@ class GetReadyTests(unittest.TestCase):
 
         async def ok():
             return None
-        with patch.object(flows, "open_feed", ok), patch.object(flows, "discard_until_feed", ok):
+        with patch.object(flows, "open_feed", ok), patch.object(flows, "discard_until_feed", ok), \
+                patch.object(flows, "pin_to_home_screen", ok):
             run(flows.get_ready())
         kinds = [e["event"] for e in events]
         self.assertIn("gallery_ready", kinds)

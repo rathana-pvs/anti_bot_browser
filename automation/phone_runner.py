@@ -8,6 +8,7 @@ the account and phone locks and has checked the account's network before startin
   phone_runner.py --serial S --user 11 --task comment --kind photo|reel --caption TEXT --comment TEXT
                   [--published-ago SECONDS]
   phone_runner.py --serial S --user 11 --task get_ready     (setup: Facebook's first screens, no post)
+  phone_runner.py --serial S --user 11 --task home_icon     (Facebook's icon put on the home screen)
   phone_runner.py --serial S --user 11 --task warming --profile ID --warming-options JSON
 """
 
@@ -27,7 +28,7 @@ from engine.resource_signal import read_signal, read_yield  # noqa: E402
 from engine.runtime_paths import runtime_root  # noqa: E402
 from phone.device import PhoneDevice  # noqa: E402
 from phone.flows import PostItem  # noqa: E402
-from phone.job import run_comment, run_get_ready, run_post, run_warming  # noqa: E402
+from phone.job import run_comment, run_get_ready, run_home_icon, run_post, run_warming  # noqa: E402
 from warming_options import normalize_warming_options  # noqa: E402
 
 
@@ -43,6 +44,8 @@ async def main(args) -> dict:
     try:
         if args.task == "get_ready":
             return await run_get_ready(device, emit)
+        if args.task == "home_icon":
+            return await run_home_icon(device, emit)
         if args.task == "warming":
             started = time.time()
             return await run_warming(device, normalize_warming_options(json.loads(args.warming_options)), emit,
@@ -60,7 +63,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Phone job runner")
     parser.add_argument("--serial", required=True)
     parser.add_argument("--user", type=int, required=True, help="Android user of the account")
-    parser.add_argument("--task", required=True, choices=["photo", "reel", "comment", "get_ready", "warming"])
+    parser.add_argument("--task", required=True, choices=["photo", "reel", "comment", "get_ready", "home_icon", "warming"])
     parser.add_argument("--kind", choices=["photo", "reel"], default="photo", help="comment task: the post's kind")
     parser.add_argument("--media")
     parser.add_argument("--caption", default="")

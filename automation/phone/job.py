@@ -115,6 +115,18 @@ async def run_get_ready(device, log: Callable[..., None]) -> dict:
     return result
 
 
+async def run_home_icon(device, log: Callable[..., None]) -> dict:
+    """Facebook's icon put on the home screen of an account set up before setup did this. Taps only."""
+    flows = Flows(device, log)
+    try:
+        added = await flows.pin_to_home_screen()
+        result = {"status": "completed"} if added else {"status": "failed", "reason": "the icon could not be added"}
+    except Exception as failure:
+        result = {"status": "failed", "reason": f"{type(failure).__name__}: {failure}"[:400]}
+    await _home(flows)
+    return result
+
+
 async def run_warming(device, options: dict, log: Callable[..., None],
                       should_stop: Callable[[], bool] = lambda: False) -> dict:
     """A standalone warming session: `completed`, `failed`, or `blocked` when the account needs review.

@@ -139,10 +139,11 @@ class PhoneDevice:
                 raise PhoneError("The phone is locked with a PIN or pattern; remove the lock for this user")
         return True
 
-    async def keep_awake(self) -> None:
-        """Wakes the screen when it has timed out, checked at most every AWAKE_CHECK_S. Nothing is
-        tapped, so a wait such as an upload is not disturbed."""
-        if time.monotonic() - self._awake_checked < AWAKE_CHECK_S:
+    async def keep_awake(self, now: bool = False) -> None:
+        """Wakes the screen when it has timed out, checked at most every AWAKE_CHECK_S, or right away with
+        `now` (before the launcher is used: swipes on a dark screen open nothing). Nothing is tapped, so a
+        wait such as an upload is not disturbed."""
+        if not now and time.monotonic() - self._awake_checked < AWAKE_CHECK_S:
             return
         self._awake_checked = time.monotonic()
         try:
@@ -297,6 +298,23 @@ class PhoneDevice:
             await self._touch(android_live.ACTION_MOVE, start[0] + (end[0] - start[0]) * ease + random.uniform(-2, 2),
                               start[1] + (end[1] - start[1]) * ease)
             await asyncio.sleep(step_sleep * random.uniform(0.80, 1.20))
+        await self._touch(android_live.ACTION_UP, *end)
+        await self.settle()
+
+    async def drag(self, start: Point, end: Point, hold: float = 1.0, duration: float = 1.2) -> None:
+        """A long press, then the finger carried to `end` and held there before it lifts: how an app icon is
+        picked up in the launcher and dropped somewhere else."""
+        await self._clear_of_approval()
+        await self._touch(android_live.ACTION_DOWN, *start)
+        await asyncio.sleep(hold * random.uniform(0.95, 1.15))
+        steps = 24
+        for i in range(1, steps + 1):
+            t = i / steps
+            ease = t * t * (3 - 2 * t)
+            await self._touch(android_live.ACTION_MOVE, start[0] + (end[0] - start[0]) * ease + random.uniform(-2, 2),
+                              start[1] + (end[1] - start[1]) * ease)
+            await asyncio.sleep(duration / steps * random.uniform(0.80, 1.20))
+        await asyncio.sleep(random.uniform(0.7, 1.0))  # the home screen makes room under the finger
         await self._touch(android_live.ACTION_UP, *end)
         await self.settle()
 

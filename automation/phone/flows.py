@@ -89,7 +89,14 @@ NEW_POST_MAX_MINUTES = 10  # a post whose time label is at most this old counts 
 PROFILE_BACK_UP_SCROLLS = 2  # swipes back up before an older post ends a look: the profile may open past our post
 # Home taps that jump the feed to its top. A tap can stop short while the feed still coasts, so it gets one more.
 HOME_TAPS = 2
-LAUNCHES = 2  # reopenings of Facebook from the app drawer while returning to its feed
+LAUNCHES = 2  # reopenings of Facebook by its icon while returning to its feed
+DRAWER_OPENS = 3  # swipes up that open the app drawer before the launch step fails
+ICON_ABOVE_LABEL = 110  # 1080-wide px: a launcher icon sits this far above its label
+# Where setup drops Facebook's icon on the home screen (1080-wide px), in order: the top rows, which a new
+# Android user leaves empty under the date. A spot with any text near it (an app's label) is skipped, so the
+# icon never lands on another app, which would make a folder.
+HOME_DROP_SPOTS = ((810, 750), (270, 750), (810, 1000), (270, 1000))
+HOME_DROP_CLEAR = (270, 300)  # 1080-wide px: no text this close (across, down) to a drop spot
 PLUS_LOOKS = 2  # looks for the feed's + button, the second after the screen settles
 CREATE_BAR_BOTTOM = 300  # 1080-wide px: the feed's top bar, where its + sits, ends above this
 # Taps on the gallery's newest cell. One that lands while the grid still loads opens nothing (seen on a Pixel).
@@ -138,6 +145,17 @@ class PublishUncertain(Exception):
 
 class CommentUncertain(Exception):
     """The send arrow was tapped but the comment did not show. Never sent again automatically."""
+
+
+def home_drop_spot(lines: list[Line], pt: Callable[[float, float], Point]) -> Point | None:
+    """The first of HOME_DROP_SPOTS with no text near it on the home screen, in stream pixels; None when all
+    are taken. A widget without text may still cover it: the launcher then puts the icon in the nearest free cell."""
+    clear_x, clear_y = pt(*HOME_DROP_CLEAR)
+    for x, y in HOME_DROP_SPOTS:
+        spot = pt(x, y)
+        if not any(abs(line.point[0] - spot[0]) < clear_x and abs(line.point[1] - spot[1]) < clear_y for line in lines):
+            return spot
+    return None
 
 
 @dataclass
@@ -380,45 +398,91 @@ class Flows:
     # --- feed ---------------------------------------------------------------------------------
     async def open_feed(self) -> None:
         """Facebook on its feed, scrolled to the top, with nothing half-made left open."""
-        await self._launch_from_drawer()
+        await self._launch_facebook()
         await self.discard_until_feed()
 
-    async def _launch_from_drawer(self) -> None:
-        """Facebook opened by its icon in the phone's app drawer."""
+    async def _home_screen(self) -> list[Line]:
+        """The phone awake on its home screen, with no sheet over it (Android's contact sharing): its lines.
+        Home twice also closes an open app drawer."""
         dev = self.device
-        # Home twice closes an open app drawer; then open it, scrolled to the top when needed.
+        await dev.keep_awake(now=True)
         await dev.key(KEY_HOME)
         await dev.key(KEY_HOME)
-        # A sheet over the home screen (Android's contact sharing) would take the swipe that opens the drawer.
-        if await self.close_interruption(await dev.read()):
+        lines = await dev.read()
+        if await self.close_interruption(lines):
             await dev.key(KEY_HOME)
-        await dev.swipe(dev.pt(540, 1900), dev.pt(540, 600))
-        label = None
-        for attempt in range(3):
+            lines = await dev.read()
+        return lines
+
+    def _icon(self, label: Point) -> Point:
+        return label[0], label[1] - self.device.pt(0, ICON_ABOVE_LABEL)[1]
+
+    async def _launch_facebook(self) -> None:
+        """Facebook opened by its icon: on the home screen, where setup puts it, else in the app drawer."""
+        label = match(await self._home_screen(), "Facebook", exact=True)
+        if label:
+            self.log(event="launch", place="home screen")
+        else:
+            label = await self._drawer_label()
+            self.log(event="launch", place="app drawer")
+        await self.device.tap(self._icon(label))
+
+    async def _drawer_label(self) -> Point:
+        """The app drawer opened from the home screen, and the Facebook label in it. A swipe that did not
+        open it is made again from a fresh home screen: never a swipe down, which on the home screen pulls
+        open the notification shade and Quick Settings instead."""
+        dev = self.device
+        for attempt in range(DRAWER_OPENS):
+            if attempt:
+                await dev.key(KEY_HOME)
+                await dev.key(KEY_HOME)
+            await dev.swipe(dev.pt(540, 1900), dev.pt(540, 600))
             lines = await dev.read()
             label = match(lines, "Facebook", exact=True)
             if label:
-                break
+                return label
             self.log(event="retry", step="app drawer", attempt=attempt + 1, screen=texts(lines, 8))
-            if await self.close_interruption(lines):  # it came up after the swipe: close it, swipe again
-                await dev.key(KEY_HOME)
-                await dev.swipe(dev.pt(540, 1900), dev.pt(540, 600))
-                continue
-            await self.scroll(dev.pt(540, 700), dev.pt(540, 1900))
-        if not label:
-            dev.snapshot(f"fail_drawer_{int(time.time())}")
-            raise StepFailed("app drawer: the Facebook icon was not found")
-        await dev.tap((label[0], label[1] - dev.pt(0, 110)[1]))  # the icon sits above its label
+            await self.close_interruption(lines)  # a sheet that took the swipe (Android's contact sharing)
+        dev.snapshot(f"fail_drawer_{int(time.time())}")
+        raise StepFailed("app drawer: the Facebook icon was not found")
+
+    async def pin_to_home_screen(self) -> bool:
+        """Setup: Facebook's icon dragged from the app drawer onto an empty spot of the home screen, so jobs open
+        Facebook with one tap and no drawer swipe. False when it could not be done; jobs then use the drawer."""
+        dev = self.device
+        home = await self._home_screen()
+        if match(home, "Facebook", exact=True):
+            self.log(event="home icon", result="already there")
+            return True
+        spot = home_drop_spot(home, dev.pt)
+        if not spot:
+            self.log(event="home icon", result="skipped", reason="no empty spot", screen=texts(home, 12))
+            return False
+        try:
+            label = await self._drawer_label()
+        except StepFailed as missing:
+            self.log(event="home icon", result="failed", reason=str(missing))
+            return False
+        self.log(event="home icon", action="drag", to=[round(v) for v in spot])
+        await dev.drag(self._icon(label), spot)
+        # Home twice: an app drawer still open (the drag never started) must not pass for the home screen.
+        home = await self._home_screen()
+        if match(home, "Facebook", exact=True) and "launcher" in (await asyncio.to_thread(dev.focus) or "").casefold():
+            self.log(event="home icon", result="added")
+            return True
+        dev.snapshot(f"fail_home_icon_{int(time.time())}")
+        self.log(event="home icon", result="failed", reason="not on the home screen after the drag", screen=texts(home, 12))
+        return False
 
     async def _relaunch_if_left(self, launches: int) -> bool:
         """When the phone's launcher (home screen or app drawer) is in front instead of Facebook, Facebook
-        is opened from the drawer again; Back there does nothing. The drawer's own "Facebook" label must
+        is opened by its icon again; Back there does nothing. The drawer's own "Facebook" label must
         not pass for a Facebook screen either. False when Facebook is in front, or after LAUNCHES tries."""
         focus = await asyncio.to_thread(self.device.focus) or ""
         if launches >= LAUNCHES or "launcher" not in focus.casefold():
             return False
         self.log(event="feed", action="reopen facebook", reason="the phone's home screen is in front", attempt=launches + 1)
-        await self._launch_from_drawer()
+        await self._launch_facebook()
         return True
 
     async def discard_until_feed(self) -> None:
@@ -766,7 +830,8 @@ class Flows:
 
     async def get_ready(self) -> None:
         """First use after login: open the Gallery picker once, so Facebook's own consent screens are
-        answered before any job, then leave without posting."""
+        answered before any job, then leave without posting. Facebook's icon is put on the home screen first."""
+        await self.pin_to_home_screen()
         await self.open_feed()
         await self.open_gallery()
         self.log(event="gallery_ready")
