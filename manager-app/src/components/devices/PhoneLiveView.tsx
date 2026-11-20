@@ -1,5 +1,5 @@
 import { KeyboardEvent, PointerEvent, useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowLeft, Circle, Eye, Hourglass, ImagePlus, MonitorSmartphone, Square, Upload, X } from 'lucide-react';
+import { ArrowLeft, Circle, Eye, Hourglass, ImagePlus, Maximize2, Minimize2, MonitorSmartphone, Square, Upload, X } from 'lucide-react';
 import { AndroidRuntime } from '../../types/device';
 import { deviceLiveUrl, droppedPaths } from '../../services/devices';
 import { isDesktopApp } from '../../services/desktopEnvironment';
@@ -66,6 +66,20 @@ export function PhoneLiveView({ runtime, autoStart = false, screenOnly = false, 
   const [viewOnly, setViewOnly] = useState<string | null>(null);
   const userName = runtime.android_user_name || `User ${runtime.android_user_id}`;
   const frameRef = useRef<HTMLDivElement>(null);
+  // Full screen shows the phone as tall as the monitor. The same element goes full screen, so the
+  // stream, the canvas and its touch mapping carry on without reconnecting.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const update = () => setExpanded(!!rootRef.current && document.fullscreenElement === rootRef.current);
+    document.addEventListener('fullscreenchange', update);
+    return () => document.removeEventListener('fullscreenchange', update);
+  }, []);
+  const toggleExpanded = () => {
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+    else void rootRef.current?.requestFullscreen().then(() => canvasRef.current?.focus()).catch(() => {});
+  };
   const [dropping, setDropping] = useState(false);
   const sendFilesRef = useRef(onSendFiles);
   sendFilesRef.current = onSendFiles;
@@ -367,7 +381,7 @@ export function PhoneLiveView({ runtime, autoStart = false, screenOnly = false, 
     event.preventDefault();
   };
 
-  return <div className={`flex min-h-0 min-w-0 flex-1 flex-col gap-3 ${screenOnly ? '' : 'p-4'}`}>
+  return <div ref={rootRef} className={`flex min-h-0 min-w-0 flex-1 flex-col gap-3 ${expanded ? 'bg-zinc-950 p-4' : screenOnly ? '' : 'p-4'}`}>
     {!screenOnly && <div className="flex items-center gap-2 text-xs text-zinc-400">
       <span className="min-w-0 flex-1 truncate">{state.kind === 'live' ? `Live · ${userName}` : userName}</span>
       {onSendFiles && usable && <SendFilesButton onClick={() => onSendFiles()} />}
@@ -421,6 +435,9 @@ export function PhoneLiveView({ runtime, autoStart = false, screenOnly = false, 
       <IconButton aria-label="Back" disabled={state.kind !== 'live' || !!viewOnly} onClick={() => send({ type: 'key', keycode: KEY_BACK })}><ArrowLeft className="h-4 w-4" /></IconButton>
       <IconButton aria-label="Home" disabled={state.kind !== 'live' || !!viewOnly} onClick={() => send({ type: 'key', keycode: KEY_HOME })}><Circle className="h-4 w-4" /></IconButton>
       <IconButton aria-label="Recent apps" disabled={state.kind !== 'live' || !!viewOnly} onClick={() => send({ type: 'key', keycode: KEY_RECENT })}><Square className="h-3.5 w-3.5" /></IconButton>
+      <IconButton aria-label={expanded ? 'Exit full screen' : 'Full screen'} title={expanded ? 'Exit full screen (Esc)' : 'Full screen'}
+        aria-pressed={expanded} onClick={toggleExpanded}>
+        {expanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}</IconButton>
     </div>
   </div>;
 }
