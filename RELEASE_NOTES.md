@@ -1,3 +1,17 @@
+# Version 2.4.1
+
+- Open Facebook from the home-screen icon added during phone setup, and
+  recover from Android's contact-sharing sheet.
+- Improve phone Reel posting through duplicate ADB connections, slow media
+  pickers, camera-roll permission prompts and selected-media layouts.
+- Focus the caption field before pasting and find the feed's Create button
+  more reliably.
+- Stop gallery uploads when the phone refuses a file and identify a full
+  marker folder in the error.
+
+**Linux only.** After installing, run **Settings → Setup and repair → Install /
+update runtime** when prompted.
+
 # Version 2.4.0
 
 - New AI Reel Studio page: an AI director plans each Reel scene by scene using
