@@ -1,3 +1,15 @@
+# Version 2.4.2
+
+- Replace a Webshare proxy and reassign its accounts to the replacement IP.
+- Offer to move matching proxies from a pasted source into a Webshare source.
+- Show Facebook readiness for each phone user and add a full-screen phone view.
+- Stop the Android user left behind when switching phone accounts.
+- Move multiple accounts to a folder in one request.
+- Clear identity-verification attention after a successful account check.
+
+**Linux only.** After installing, run **Settings → Setup and repair → Install /
+update runtime** when prompted.
+
 # Version 2.4.1
 
 - Open Facebook from the home-screen icon added during phone setup, and
