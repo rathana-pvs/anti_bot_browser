@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Body
 from pydantic import BaseModel, Field, ConfigDict
-from backend.services import proxy_groups
+from backend.services import proxy_groups, proxy_replace_move
 from backend.models.profile import NetworkIntent
 from backend.services.proxy_service import (
     load_proxy_pool,
@@ -225,12 +225,24 @@ def delete_proxy_source(source_id: str):
     return {"success": True}
 
 
+class ReplaceRequest(ProxySelection):
+    # Also stop each proxy's accounts first and move them to the new proxy (proxy_replace_move).
+    move_accounts: bool = False
+
+
+def _move_pc(profile_id: str, proxy_id: str) -> None:
+    from backend.models.profile import ProfileUpdateRequest
+    from backend.routers.profiles import update_profile
+    update_profile(profile_id, ProfileUpdateRequest(network=NetworkIntent(mode="pool", proxy_id=proxy_id)))
+
+
 @router.post("/webshare/replace", status_code=202)
-def start_webshare_replace(request: ProxySelection):
+def start_webshare_replace(request: ReplaceRequest):
     if proxy_check.runner.status().get("state") == "running":
         raise HTTPException(status_code=409, detail="Wait for the proxy check to finish first.")
+    replace_fn = (lambda proxy_id: proxy_replace_move.replace_and_move(proxy_id, _move_pc)) if request.move_accounts else None
     try:
-        return webshare_service.runner.start(request.proxy_ids)
+        return webshare_service.runner.start(request.proxy_ids, replace_fn)
     except webshare_service.WebshareError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:

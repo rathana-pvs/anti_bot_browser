@@ -33,16 +33,46 @@ export function useWebshare(onRefresh: () => void) {
     lastRun.current = undefined;
     const results = run.results || [];
     const replaced = results.filter(r => !r.error);
-    const waiting = replaced.reduce((n, r) => n + (r.accounts || []).length, 0);
-    const lines = results.map(r => r.error
-      ? `✗ ${r.old || r.proxy_id}: ${r.error}`
-      : `✓ ${r.old} → ${r.new}${r.already_replaced ? ' (Webshare had already swapped it; added the new IP)' : ''}${(r.accounts || []).length ? ` · ${(r.accounts || []).length} account(s) marked Proxy replaced` : ''}`);
-    if (waiting) lines.push('', 'New proxies are in Available. Change the proxy of each marked account (right-click → Change proxy) when it can rest.');
+    const moving = replaced.some(r => r.moved !== undefined);
+    const waiting = replaced.reduce((n, r) => n + (r.moved !== undefined ? (r.move_failed || []).length : (r.accounts || []).length), 0);
+    const lines = results.flatMap(r => r.error
+      ? [`✗ ${r.old || r.proxy_id}: ${r.error}`]
+      : [`✓ ${r.old} → ${r.new}${r.already_replaced ? ' (already replaced at Webshare)' : ''}`
+        + (r.moved !== undefined ? (r.moved.length ? ` · ${r.moved.length} account(s) moved to the new IP` : '')
+          : (r.accounts || []).length ? ` · ${(r.accounts || []).length} account(s) marked Proxy replaced` : ''),
+        ...(r.move_failed || []).map(f => `   ✗ ${f.name} stayed on the old IP: ${f.error}`)]);
+    if (moving) lines.push('', 'Moved accounts were left stopped: start them when they have rested.');
+    if (waiting) lines.push('', moving ? 'Accounts that stayed on the old IP: try Replace and move again, or change their proxy (right-click → Change proxy).'
+      : 'New proxies are in Available. Change the proxy of each marked account (right-click → Change proxy) when it can rest.');
     void showAlert(lines.join('\n'), {
       title: `Replaced ${replaced.length} of ${results.length} ${results.length === 1 ? 'proxy' : 'proxies'}`,
       variant: replaced.length === results.length ? 'success' : 'warning',
     });
   }, [run, showAlert]);
+
+  /** Replace and move: each proxy's accounts are stopped first (browser closed; phone on its main user,
+   * the account's user stopped), then moved to the new IP. A job on any of them leaves that proxy alone. */
+  const replaceAndMove = async (ids: string[], accountCount: number) => {
+    if (!ids.length) return;
+    const confirmed = await showConfirm(
+      `Webshare gives ${ids.length === 1 ? 'this proxy' : `each of these ${ids.length} proxies`} a new IP in the same country, `
+      + `and ${accountCount === 1 ? 'its account moves' : `their ${accountCount} accounts move`} to it. Before anything is replaced:`
+      + '\n• a PC account’s browser is stopped'
+      + '\n• a phone goes to its main user and the account’s Android user is stopped'
+      + '\n• a proxy with a job running on any of its accounts is left alone; no job is stopped'
+      + '\n\nEach phone account keeps the new proxy only if traffic gets through; one that doesn’t stays on the old IP and is listed. '
+      + 'Nothing is started again afterwards. This uses your Webshare replacements and cannot be undone.',
+      { title: 'Replace IP and move accounts', confirmLabel: `Replace and move ${accountCount === 1 ? '1 account' : `${accountCount} accounts`}`, variant: 'danger' },
+    );
+    if (!confirmed) return;
+    try {
+      const started = await startWebshareReplace(ids, true);
+      lastRun.current = started.run_id;
+      setRun(started);
+    } catch (err: any) {
+      await showAlert(err.message || String(err), { title: 'Could not replace proxies', variant: 'danger' });
+    }
+  };
 
   const replace = async (ids: string[], accountCount: number) => {
     if (!ids.length) return;
@@ -63,7 +93,7 @@ export function useWebshare(onRefresh: () => void) {
     }
   };
 
-  return { run, running, replace };
+  return { run, running, replace, replaceAndMove };
 }
 
 export const WebshareRunBar: React.FC<{ run: WebshareReplaceRun }> = ({ run }) => run.state !== 'running' ? null : (

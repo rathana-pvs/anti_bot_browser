@@ -32,6 +32,18 @@ def _phone_serial(config: dict) -> str | None:
 
 def running_reason(profile_id: str, config: dict | None = None) -> str | None:
     """Why this account's proxy can't change now, or None when it can."""
+    config = config if config is not None else _config(profile_id)
+    reason = job_reason(profile_id, config)
+    if reason or _phone_serial(config):
+        return reason
+    from backend.services.docker_service import get_container_status
+    if get_container_status(profile_id) in {"running", "paused"}:
+        return "The browser is open. Stop it, then change the proxy."
+    return None
+
+
+def job_reason(profile_id: str, config: dict | None = None) -> str | None:
+    """A job running on this account, or on its phone: never interrupted for a proxy change."""
     from backend.services import automation_service
     config = config if config is not None else _config(profile_id)
     if automation_service.is_task_process_active(automation_service.active_automation_tasks.get(profile_id)):
@@ -47,10 +59,6 @@ def running_reason(profile_id: str, config: dict | None = None) -> str | None:
         from backend.services import android_devices
         if android_devices.job_on(serial):
             return "The phone is running a job. Change the proxy when it finishes."
-        return None
-    from backend.services.docker_service import get_container_status
-    if get_container_status(profile_id) in {"running", "paused"}:
-        return "The browser is open. Stop it, then change the proxy."
     return None
 
 

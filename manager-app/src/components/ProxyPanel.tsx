@@ -115,6 +115,12 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
     const from = sourceById.get(p.source_id || 'default');
     return from?.provider === 'webshare' && from.key_set;
   })());
+  // Replace and move also takes a proxy Webshare already replaced whose accounts are still on its old IP.
+  const movable = proxies.filter(p => selectedIds.has(p.id) && proxyHolders(p).length > 0
+    && (!p.replaced_by || proxies.some(other => other.id === p.replaced_by)) && (() => {
+      const from = sourceById.get(p.source_id || 'default');
+      return from?.provider === 'webshare' && from.key_set;
+    })());
   const allVisibleSelected = selectableIds.length > 0 && selectedVisible === selectableIds.length;
 
   useEffect(() => {
@@ -386,6 +392,12 @@ export const ProxyPanel: React.FC<ProxyPanelProps> = ({
                 title={`Replace: Webshare gives each selected proxy a new IP in the same country, using its own source's key. Accounts stay put until you change their proxy.${replaceable.length < selectedIds.size ? ` ${selectedIds.size - replaceable.length} selected can't be replaced (not from a Webshare source with a key, or already replaced).` : ''}`}
                 className="flex items-center gap-1.5 rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-40">
                 <RefreshCw className="h-3.5 w-3.5" />Replace IP · Webshare ({replaceable.length})
+              </button>}
+              {movable.length > 0 && <button disabled={busy}
+                onClick={() => void webshare.replaceAndMove(movable.map(p => p.id), new Set(movable.flatMap(proxyHolders)).size)}
+                title="Replace and move: stops each proxy's accounts (browser closed; phone on its main user, the account's user stopped), replaces the IP at Webshare, then moves the accounts to the new IP. A proxy with a job running on any of its accounts is left alone."
+                className="flex items-center gap-1.5 rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-40">
+                <RefreshCw className="h-3.5 w-3.5" />Replace and move accounts ({movable.length})
               </button>}
               <button onClick={() => setSelectedIds(new Set())} disabled={busy} className="px-2 py-1.5 text-xs text-zinc-400 hover:text-white disabled:opacity-40">Clear selection</button>
               <button onClick={() => handleDelete([...selectedIds])} disabled={busy || !proxies.some(p => selectedIds.has(p.id) && !inUse(p))}

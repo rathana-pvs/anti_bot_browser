@@ -474,6 +474,9 @@ export interface WebshareReplaceResult {
   accounts?: string[];
   /** Webshare had already swapped this IP; only the pool was caught up. */
   already_replaced?: boolean;
+  /** Replace and move: the accounts now on the new proxy, and those that stayed on the old one. */
+  moved?: string[];
+  move_failed?: { profile_id: string; name: string; error: string }[];
   error: string | null;
 }
 
@@ -486,11 +489,12 @@ export interface WebshareReplaceRun {
   results?: WebshareReplaceResult[];
 }
 
-/** Asks Webshare for a new IP in the same country for each proxy, then moves its accounts there. */
-export async function startWebshareReplace(proxyIds: string[]): Promise<WebshareReplaceRun> {
+/** Asks Webshare for a new IP in the same country for each proxy. With `moveAccounts`, each proxy's
+ * accounts are stopped first and moved to the new proxy afterwards; otherwise they stay on the old IP. */
+export async function startWebshareReplace(proxyIds: string[], moveAccounts = false): Promise<WebshareReplaceRun> {
   const res = await fetch(`${API_BASE}/proxies/webshare/replace`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ proxy_ids: proxyIds }),
+    body: JSON.stringify({ proxy_ids: proxyIds, move_accounts: moveAccounts }),
   });
   if (!res.ok) throw await apiError(res, 'Could not start the Webshare replacement');
   return res.json();
