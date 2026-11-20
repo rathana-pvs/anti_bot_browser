@@ -222,6 +222,13 @@ class FakeAdb:
     def memory(self, serial):
         return {"used_mb": 13300, "total_mb": 15575}
 
+    stopped = ()
+
+    def stop_user(self, serial, user_id):
+        self.stopped = (*self.stopped, user_id)
+        self.users_list = [AndroidUser(u.user_id, u.name, u.flags, u.running and u.user_id != user_id)
+                           for u in self.users_list]
+
     def switch_user(self, serial, user_id):
         self.switched.append(user_id)
         self.current = user_id
@@ -421,13 +428,39 @@ def test_phone_with_accounts_cannot_be_forgotten(phone):
 def test_switch_user_waits_until_user_is_running_awake_and_unlocked(phone):
     result = devices.switch_user("R58M12345ABC", devices.SwitchUserRequest(user_id=11))
     assert result == {"current_user": 11, "running": True, "screen_awake": True,
-                      "lock_screen_showing": False, "ready": True, "reason": None}
+                      "lock_screen_showing": False, "ready": True, "reason": None,
+                      "stopped_user": 10, "stop_error": None}
     assert phone.switched == [11]
     assert (phone.woken, phone.dismissed) == (1, 1)
     assert phone.settings[(11, "secure", "user_setup_complete")] == "1"
     with pytest.raises(HTTPException) as error:
         devices.switch_user("R58M12345ABC", devices.SwitchUserRequest(user_id=42))
     assert error.value.status_code == 404
+
+
+def test_switching_to_the_main_user_stops_the_account_user_it_left(phone):
+    assert phone.current == 10
+    result = devices.switch_user("R58M12345ABC", devices.SwitchUserRequest(user_id=0))
+    assert result["ready"] is True and phone.switched == [0]
+    assert phone.stopped == (10,) and (result["stopped_user"], result["stop_error"]) == (10, None)
+
+
+def test_a_user_android_will_not_stop_is_reported_not_hidden(phone, monkeypatch):
+    def refuses(serial, user_id):
+        raise adb_client.AdbError("Error: can't stop user")
+    monkeypatch.setattr(phone, "stop_user", refuses)
+    result = devices.switch_user("R58M12345ABC", devices.SwitchUserRequest(user_id=0))
+    assert result["ready"] is True and result["stopped_user"] is None and "kept running" in result["stop_error"]
+
+
+def test_every_switch_stops_the_user_it_left_but_never_the_main_user(phone):
+    devices.switch_user("R58M12345ABC", devices.SwitchUserRequest(user_id=11))  # account to account
+    assert phone.stopped == (10,)
+    devices.switch_user("R58M12345ABC", devices.SwitchUserRequest(user_id=0))  # account to main
+    devices.switch_user("R58M12345ABC", devices.SwitchUserRequest(user_id=0))  # already on main: nothing left
+    assert phone.stopped == (10, 11)
+    devices.switch_user("R58M12345ABC", devices.SwitchUserRequest(user_id=11))  # main to account
+    assert phone.stopped == (10, 11)
 
 
 def test_installed_users_reads_every_user_from_one_dumpsys():

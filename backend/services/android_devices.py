@@ -595,11 +595,13 @@ def phone_lock(serial: str, job: bool = False):
 
 def switch_and_wait(client: AdbClient, serial: str, user_id: int,
                     progress: Callable[[str], None] | None = None) -> dict:
-    """Switches, then wakes the screen and dismisses a swipe lock until the user is ready. Hold `phone_lock`.
+    """Switches, then wakes the screen and dismisses a swipe lock until the user is ready; the user it left
+    is then stopped (not the main user). Hold `phone_lock`.
 
     `progress` hears each step, so a viewer can say what the phone is waiting for."""
     report = progress or (lambda _message: None)
-    if client.current_user(serial) != user_id:  # switching to the user on screen would only replay the switch
+    left = client.current_user(serial)
+    if left != user_id:  # switching to the user on screen would only replay the switch
         report("Switching the phone to this user…")
         client.switch_user(serial, user_id)
     deadline = time.monotonic() + SWITCH_READY_TIMEOUT_S
@@ -611,6 +613,9 @@ def switch_and_wait(client: AdbClient, serial: str, user_id: int,
                 # Opening live view also switches users, without running account setup first.
                 report("Finishing the Android user’s setup…")
                 complete_android_user_setup(client, serial, user_id)
+            if left not in (None, CONTROL_USER_ID, user_id):
+                # Every switch stops the user it left: to the main user and from one account to another.
+                state = {**state, **_stop_left_user(client, serial, left, progress)}
             return state
         if time.monotonic() >= deadline:
             return state
@@ -651,6 +656,19 @@ def switch_user(serial: str, user_id: int, progress: Callable[[str], None] | Non
         return {**opened["switch"], "ready": opened["ready"], "reason": opened["reason"]}
     with phone_lock(serial):
         return switch_and_wait(client, serial, user_id, progress)
+
+
+def _stop_left_user(client: AdbClient, serial: str, user_id: int,
+                    progress: Callable[[str], None] | None = None) -> dict:
+    """The user a switch left is stopped, or Android keeps it running in the background, its Facebook
+    still going through its proxy. Android can stop it only once it is off the screen, so this runs
+    after the switch. The main user is never stopped."""
+    (progress or (lambda _message: None))("Stopping the account you left…")
+    try:
+        client.stop_user(serial, user_id)
+    except AdbError as exc:
+        return {"stopped_user": None, "stop_error": f"User {user_id} kept running in the background: {exc}"[:300]}
+    return {"stopped_user": user_id, "stop_error": None}
 
 
 def show_if_on_screen(serial: str, user_id: int) -> bool:

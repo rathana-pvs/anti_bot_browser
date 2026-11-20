@@ -218,10 +218,11 @@ def test_opening_an_account_writes_a_folder_its_stopped_user_missed(two_users, a
     assert synced == ["profile_020"]
 
 
-def test_open_account_side_by_side_matches_proxy_time_without_stopping_other_users(two_users, account):
+def test_open_account_side_by_side_matches_proxy_time_and_stops_only_the_user_it_left(two_users, account):
     android_devices._save_store({"devices": {"PIXEL": {"serial": "PIXEL", "label": "Pixel", "one_account_at_a_time": False}}})
     result = android_network.open_account("profile_020")
-    assert result["ready"] is True and two_users.stopped == []
+    # User 12 was on screen: the switch stops it. Side by side, no other user is stopped.
+    assert result["ready"] is True and two_users.stopped == [12]
     assert result["timezone_set"] == "America/Los_Angeles" and two_users.zone == "America/Los_Angeles"
 
 
