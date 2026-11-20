@@ -11,6 +11,7 @@ import { Dialog } from '../ui/Dialog';
 import { Checkbox } from '../ui/Checkbox';
 import { Select } from '../ui/Select';
 import { formatUtcOffset, phoneTimeReport } from './phoneTime';
+import { Readiness, facebookReadiness } from './phoneReadiness';
 import { API_BASE, fetchAutoWarming, updateAutoWarming } from '../../services/api';
 import { writeHostClipboardText } from '../../services/clipboard';
 import { Alert } from '../ui/Alert';
@@ -464,7 +465,7 @@ export function DevicesPage({ active, profiles, proxies, stats, onImport, onOpen
               onClose={() => setSendingFiles(null)} />}
           </Dialog>}
           </div>
-          <UsersTable device={device} onView={setViewingUser} onSwitch={(user) => void switchTo(device.serial, user)}
+          <UsersTable device={device} profiles={profiles} onView={setViewingUser} onSwitch={(user) => void switchTo(device.serial, user)}
             switchingUserId={switching?.serial === device.serial ? switching.userId : null}
             switchError={switchError?.serial === device.serial ? switchError : null} onImport={(user) => onImport(device, user)}
             onAdopt={(user) => void adopt(device, user)} onOpenAccount={onOpenAccount} />
@@ -710,8 +711,10 @@ function DeviceWarnings({ device, profiles, proxies, onSetTimezone }: {
   </div>;
 }
 
-function UsersTable({ device, onView, onSwitch, switchingUserId, switchError, onImport, onAdopt, onOpenAccount }: {
+function UsersTable({ device, profiles, onView, onSwitch, switchingUserId, switchError, onImport, onAdopt, onOpenAccount }: {
   device: AndroidDevice;
+  /** The linked accounts' setup progress shows whether Facebook is ready for jobs. */
+  profiles: Profile[];
   /** Only the user on screen can be viewed; viewing never switches. */
   onView: (user: AndroidUserRow) => void;
   /** Puts this user on the phone's screen without opening the screen here. */
@@ -744,7 +747,8 @@ function UsersTable({ device, onView, onSwitch, switchingUserId, switchError, on
             <td className="px-3 py-2.5 text-zinc-300">
               {user.control_user ? <span className="text-zinc-500">—</span>
                 : user.facebook_installed == null ? <span className="text-zinc-500">Unknown</span>
-                  : user.facebook_installed ? 'Installed' : <span className="text-amber-300">Not installed</span>}
+                  : user.facebook_installed ? <FacebookCell profile={user.profile_id ? profiles.find(p => p.id === user.profile_id) : undefined} />
+                    : <span className="text-amber-300">Not installed</span>}
             </td>
             <td className="px-3 py-2.5">
               {user.control_user ? <span className="text-zinc-500">Control user</span> : <AgentCell user={user} />}
@@ -779,6 +783,24 @@ function UsersTable({ device, onView, onSwitch, switchingUserId, switchError, on
         ? `the full scan of ${new Date(scan.full_scan_at).toLocaleString()}` : 'their last read'}; use Full scan to read them again. Accounts set up by another PC are read from the phone; adding one here doesn’t change the phone. Automation for phone accounts isn’t available yet.
     </p>
   </div>;
+}
+
+const READINESS_TONE: Record<Readiness['tone'], { text: string; dot: string }> = {
+  ready: { text: 'text-emerald-300', dot: 'bg-emerald-400' },
+  busy: { text: 'text-blue-300', dot: 'bg-blue-400' },
+  warn: { text: 'text-amber-300', dot: 'bg-amber-400' },
+  muted: { text: 'text-zinc-400', dot: 'bg-zinc-500' },
+};
+
+function FacebookCell({ profile }: { profile?: Profile }) {
+  const state = facebookReadiness(profile);
+  const tone = READINESS_TONE[state.tone];
+  return <span className={tone.text}>
+    <span className="inline-flex items-center gap-1.5">
+      <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', tone.dot)} aria-hidden="true" />{state.label}</span>
+    {profile && <span className="block text-[11px] text-zinc-500" title={state.detail}>
+      <span className="block max-w-56 truncate">{state.detail ?? 'Installed'}</span></span>}
+  </span>;
 }
 
 /** What the user's companion app holds: set up (here or by another PC), or nothing yet. */
