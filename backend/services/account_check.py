@@ -3,13 +3,16 @@
 The check is a warming queue item in check mode: it opens the account's own
 profile, verifies the session (login, checkpoint, Page or personal profile),
 captures a screenshot and stops. A pass is recorded in the account history
-like any finished visit, so the account leaves Attention; a failure keeps it
-there with fresh evidence. Checks run only when the user asks for one.
+like any finished visit, so the account leaves Attention, also after an
+identity verification or a locked account: the user ran the check to say it
+is fixed, and a publish Facebook still refuses brings it back. A failure keeps
+it there with fresh evidence. Checks run only when the user asks for one.
 """
 
 from datetime import datetime
 
 CHECK_BATCH_PREFIX = "account_check_"
+CHECK_EXECUTION_PREFIX = "exec_check_"
 CHECK_OPTIONS = {"check": True, "surface": "profile", "max_seconds": 60}
 OPEN_STATUSES = {"pending", "ready", "preparing", "running"}
 
@@ -51,7 +54,7 @@ def add_check(queue: dict, profile_id: str, now: datetime) -> dict:
     index = len(batch["posts"])
     stamp = now.isoformat()
     execution = {
-        "execution_id": f"exec_check_{int(now.timestamp() * 1000)}_{index}",
+        "execution_id": f"{CHECK_EXECUTION_PREFIX}{int(now.timestamp() * 1000)}_{index}",
         "profile_id": profile_id, "scheduled_at": stamp, "batch_iteration_index": index,
         "spun_caption": "", "status": "pending", "stage": "pending",
         "stage_history": [{"stage": "pending", "timestamp": stamp, "reason": "account_check_requested"}],

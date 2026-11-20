@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from backend.config import DATA_DIR, PROFILES_DIR
 from backend.services import account_hold
+from backend.services.account_check import CHECK_EXECUTION_PREFIX
 from backend.services.profile_service import atomic_write_json
 from automation.live_account_status import ACCOUNT_BLOCK_ERRORS
 
@@ -228,8 +229,12 @@ def compute(config: dict, entries: list[dict], now: datetime | None = None) -> d
 
     restriction = next((entry for entry in reversed(entries)
                         if entry.get("attention_reason") in {"identity_verification_required", "account_locked"}), None)
-    last_publication = posts[-1]["at"] if posts else ""
-    if restriction and restriction["at"] > last_publication:
+    # A read-only visit cannot see a publishing block, so only a publication clears it, or a passed Check now:
+    # the user ran it to say the verification is done. A publish Facebook still refuses brings it back.
+    checks = [entry for entry in entries if entry["status"] == "completed"
+              and str(entry.get("execution_id", "")).startswith(CHECK_EXECUTION_PREFIX)]
+    cleared_at = max(posts[-1]["at"] if posts else "", checks[-1]["at"] if checks else "")
+    if restriction and restriction["at"] > cleared_at:
         reason = (ACCOUNT_BLOCK_ERRORS['account_locked'] if restriction['attention_reason'] == 'account_locked'
                   else "Facebook requires identity verification before this Page can publish. Complete the verification requested by Facebook.")
         result.update(stage="attention", reason=reason,

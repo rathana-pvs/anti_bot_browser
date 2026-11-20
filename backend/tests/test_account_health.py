@@ -189,6 +189,21 @@ def test_publishing_identity_restriction_needs_attention_even_after_warming():
     assert compute(config(), history + [entry(.5)], NOW)['stage'] != 'attention'
 
 
+@pytest.mark.parametrize('reason', ['identity_verification_required', 'account_locked'])
+def test_a_passed_check_after_a_publishing_block_clears_attention(reason):
+    block = dict(entry(5, 'skipped_auth_required', kind='reel'), attention_reason=reason, execution_id='blocked')
+    check = dict(entry(1, 'completed', kind='warming'), execution_id='exec_check_1795157256828_0')
+    assert compute(config(), posts(12) + [block, check], NOW)['stage'] != 'attention'
+    # A check from before the block, or one that did not pass, does not clear it.
+    earlier = dict(check, at=entry(6)['at'])
+    assert compute(config(), posts(12) + [earlier, block], NOW)['stage'] == 'attention'
+    refused = dict(check, status='skipped_auth_required')
+    assert compute(config(), posts(12) + [block, refused], NOW)['stage'] == 'attention'
+    # A publish Facebook refuses again after the check brings the account back.
+    again = dict(block, at=entry(.5)['at'], execution_id='blocked_again')
+    assert compute(config(), posts(12) + [block, check, again], NOW)['evidence'][0]['execution_id'] == 'blocked_again'
+
+
 def test_identity_restriction_is_read_from_matching_attempt_and_survives_queue_clear(tmp_path, monkeypatch):
     monkeypatch.setattr(account_health, 'PROFILES_DIR', tmp_path / 'profiles')
     monkeypatch.setattr(account_health, 'HISTORY_FILE', tmp_path / 'history.json')
