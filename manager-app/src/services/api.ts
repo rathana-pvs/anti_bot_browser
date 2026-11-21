@@ -297,6 +297,48 @@ export async function deleteProfile(
   return res.json();
 }
 
+export interface AccountExportResult {
+  /** Where the desktop app saved the file, or the name a browser downloaded it under. */
+  location: string;
+  onHold: boolean;
+}
+
+/** Saves a stopped PC account as one file to import on another PC. */
+export async function exportAccount(profileId: string, options: { password?: string; hold: boolean }): Promise<AccountExportResult> {
+  const desktop = isDesktopApp();
+  const res = await fetch(`${API_BASE}/profiles/${encodeURIComponent(profileId)}/export`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password: options.password || null, hold: options.hold, save_to_downloads: desktop }),
+  });
+  if (!res.ok) throw await apiError(res, 'Couldn’t export this account');
+  if (desktop) {
+    const saved = await res.json() as { path: string; on_hold: boolean };
+    return { location: saved.path, onHold: saved.on_hold };
+  }
+  const disposition = res.headers.get('Content-Disposition') || '';
+  const filename = disposition.match(/filename="?([^";]+)"?/i)?.[1] || `${profileId}.abprofile`;
+  const url = URL.createObjectURL(await res.blob());
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  return { location: filename, onHold: options.hold };
+}
+
+/** Creates a new account on this PC from a file exported on another PC. */
+export async function importAccount(file: File, password: string): Promise<Profile> {
+  const body = new FormData();
+  body.append('file', file);
+  body.append('password', password);
+  const res = await fetch(`${API_BASE}/profiles/import`, { method: 'POST', body });
+  if (!res.ok) throw await apiError(res, 'Couldn’t import this account');
+  return res.json();
+}
+
 export async function fetchSystemStats(): Promise<SystemStats> {
   const res = await fetch(`${API_BASE}/system/stats`);
   if (!res.ok) throw new Error('Failed to fetch system stats');

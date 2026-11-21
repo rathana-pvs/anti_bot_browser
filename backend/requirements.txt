@@ -6,6 +6,7 @@ docker>=7.1.0
 apscheduler>=3.11.0
 psutil>=6.1.0
 httpx>=0.28.0
+cryptography>=42
 anthropic>=2.8,<3
 pydantic>=2.9.0
 pytest>=8.0.0

@@ -348,6 +348,53 @@ def hold_phone_proxy(profile_id: str, host: str, port: int, username: str, passw
         return dict(entry)
 
 
+GEO_KEYS = ("timezone", "country", "country_code", "region", "city", "exit_ip")
+
+
+def adopt_proxy(profile_id: str, proxy: dict, surface: str = "pc") -> dict:
+    """Gives an account arriving from another PC the proxy it used there: the pool entry with the
+    same host, port and username, else a new entry in the first source. The per-proxy limit
+    applies as for any other account, so a full proxy is refused."""
+    host = str(proxy.get("host") or "").strip()
+    try:
+        port = int(proxy.get("port"))
+    except (TypeError, ValueError):
+        port = 0
+    if not host or port <= 0:
+        raise ValueError("The exported account names no usable proxy.")
+    username = str(proxy.get("username") or "")
+    with _proxy_assignment_lock:
+        pool = load_proxy_pool()
+        entry = next((p for p in pool if p.get("host") == host and str(p.get("port")) == str(port)
+                      and (p.get("username") or "") == username), None)
+        limit = account_limit()
+        if entry is not None:
+            if entry.get("replaced_by") and profile_id not in holders(entry):
+                raise ValueError(f"Proxy {host}:{port} was replaced at Webshare on this PC and no longer works. "
+                                 "Import the account after changing its proxy on the other PC.")
+            if not proxy_sources.allowed_on(entry, surface):
+                raise ValueError(proxy_sources.surface_message(entry, surface))
+            if not has_room(entry, profile_id, limit):
+                raise ValueError(_full_message(entry, limit))
+            if not entry.get("password") and proxy.get("password"):
+                entry.update(username=username, password=str(proxy["password"]))
+                entry.pop("held_by_phone", None)
+        else:
+            entry = {"id": f"proxy_{int(time.time() * 1000)}_{str(time.time())[-4:]}", "host": host, "port": port,
+                     "username": username, "password": str(proxy.get("password") or ""),
+                     "type": proxy.get("type") or "socks5", "source_id": proxy_sources.DEFAULT_ID,
+                     "assigned": False, "profile_id": None, "profile_ids": [],
+                     "latency_ms": None, "last_checked": None, "geo_source": "unknown",
+                     **{key: None for key in GEO_KEYS if key != "exit_ip"}}
+            # Geography measured through the exit IP on the other PC is still a measurement.
+            if proxy.get("geo_source") == "proxy_exit_lookup":
+                entry.update({key: proxy.get(key) for key in GEO_KEYS if proxy.get(key)}, geo_source="proxy_exit_lookup")
+            pool.append(entry)
+        _add_holder(pool, entry, profile_id)
+        save_proxy_pool(pool)
+        return dict(entry)
+
+
 def release_proxy(profile_id: str) -> bool:
     with _proxy_assignment_lock:
         pool = load_proxy_pool()

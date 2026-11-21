@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronDown, ChevronRight, ExternalLink, FolderOpen, FolderPlus, ListChecks, Loader2, Monitor, Plus, Rows3, Search, Smartphone, Users, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, ExternalLink, FileUp, FolderOpen, FolderPlus, ListChecks, Loader2, Monitor, Plus, Rows3, Search, Smartphone, Users, X } from 'lucide-react';
 import { Profile } from '../../types/profile';
 import { ProxyItem, proxyHolders } from '../../types/proxy';
 import { QueueExecutionItem } from '../../types/automation';
@@ -49,12 +49,14 @@ function accountSortValue(profile: Profile, key: AccountSortKey,
   }
 }
 
-export function AccountsPage({ profiles, proxies, devices, groups, executions, handlers, folderHandlers, busyIds, onCreate, onOpenDevice, deviceFocus, onDeviceFocused }: {
+export function AccountsPage({ profiles, proxies, devices, groups, executions, handlers, folderHandlers, busyIds, onCreate, onImport, onOpenDevice, deviceFocus, onDeviceFocused }: {
   profiles: Profile[]; proxies: ProxyItem[]; devices: AndroidDevice[]; groups: string[]; executions: QueueExecutionItem[];
   handlers: AccountHandlers; folderHandlers: FolderHandlers;
   /** Accounts with a start/stop request in flight. */
   busyIds: Set<string>;
   onCreate: () => void;
+  /** Opens the import dialog for an account exported on another PC. */
+  onImport: () => void;
   /** Opens the Devices page on this phone serial, or on This PC when null. */
   onOpenDevice: (serial: string | null) => void;
   /** Set by the Devices page's View accounts: shows only that device's accounts. */
@@ -228,7 +230,10 @@ export function AccountsPage({ profiles, proxies, devices, groups, executions, h
     return <div className="flex flex-1 items-center justify-center p-6">
       <EmptyState icon={<Users className="h-6 w-6" />} title="Create your first account"
         description="Each account gets its own isolated browser, cookies, and network."
-        action={<Button onClick={onCreate}><Plus className="h-3.5 w-3.5" />New account</Button>} />
+        action={<div className="flex gap-2">
+          <Button variant="outline" onClick={onImport}><FileUp className="h-3.5 w-3.5" />Import</Button>
+          <Button onClick={onCreate}><Plus className="h-3.5 w-3.5" />New account</Button>
+        </div>} />
     </div>;
   }
 
@@ -256,6 +261,7 @@ export function AccountsPage({ profiles, proxies, devices, groups, executions, h
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500" />
             <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Name, folder, device, or ID" aria-label="Search accounts" className="min-h-8 py-1 pl-8" />
           </div>
+          <Button size="sm" variant="outline" onClick={onImport} title="Import an account exported on another PC"><FileUp className="h-3.5 w-3.5" />Import</Button>
           <Button size="sm" onClick={onCreate}><Plus className="h-3.5 w-3.5" />New account</Button>
         </div>
       </header>

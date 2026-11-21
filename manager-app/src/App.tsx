@@ -43,6 +43,7 @@ import type { PhoneAccountRequest } from './components/devices/PhoneAccountForm'
 import { AccountPage } from './components/accounts/AccountPage';
 import { MoveToGroupDialog } from './components/accounts/MoveToGroupDialog';
 import { ChangeProxyDialog } from './components/accounts/ChangeProxyDialog';
+import { ExportAccountDialog, ImportAccountDialog } from './components/accounts/AccountTransferDialogs';
 import { CleanPhoneDialog } from './components/accounts/CleanPhoneDialog';
 import { PhoneDrop, PhoneFilesDialog } from './components/accounts/PhoneFilesDialog';
 import { PC_DEVICE } from './components/accounts/accountDevices';
@@ -95,6 +96,8 @@ export const App: React.FC = () => {
   const settleMove = (moved: boolean) => { moveDone.current?.(moved); moveDone.current = null; };
   const [folderDialog, setFolderDialog] = useState<FolderDialogState>(null);
   const [changeProxyFor, setChangeProxyFor] = useState<Profile | null>(null);
+  const [exportFor, setExportFor] = useState<Profile | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
   const [cleaning, setCleaning] = useState<{ profile: Profile; initial: CleanProgress } | null>(null);
   const [phoneFilesFor, setPhoneFilesFor] = useState<{ profile: Profile; files?: PhoneDrop[] } | null>(null);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
@@ -419,6 +422,7 @@ export const App: React.FC = () => {
     toggleHold: (profile) => { void toggleHold(profile); },
     cleanPhone,
     changeProxy: setChangeProxyFor,
+    exportAccount: setExportFor,
     phoneFiles: (profile, files) => setPhoneFilesFor({ profile, files }),
     openQueue,
     clearFailures: (profile, before) => { void clearFailures(profile, before); },
@@ -569,7 +573,7 @@ export const App: React.FC = () => {
           {/* Kept mounted behind an open account, so Back returns to the same folder, filters and scroll. */}
           <div className={`flex min-h-0 min-w-0 flex-1 ${currentAccount && openAccount ? 'hidden' : ''}`}>
             <AccountsPage profiles={profiles} proxies={proxies} devices={devices} onOpenDevice={openDevice} groups={profileGroups} executions={executions} handlers={handlers} folderHandlers={folderHandlers}
-              busyIds={busyIds} deviceFocus={accountsDevice} onDeviceFocused={() => setAccountsDevice(null)} onCreate={() => { setPhonePreset(null); setIsCreateModalOpen(true); }} />
+              busyIds={busyIds} deviceFocus={accountsDevice} onDeviceFocused={() => setAccountsDevice(null)} onCreate={() => { setPhonePreset(null); setIsCreateModalOpen(true); }} onImport={() => setImportOpen(true)} />
           </div>
         </main>
 
@@ -637,6 +641,11 @@ export const App: React.FC = () => {
         profile={cleaning.profile} initial={cleaning.initial} onClose={() => setCleaning(null)} onFinished={cleanFinished} />}
       {changeProxyFor && <ChangeProxyDialog profile={changeProxyFor} onClose={() => setChangeProxyFor(null)}
         onChanged={(message) => { showToast(message, 'success'); refreshAccountHealth(); void loadData(); }} />}
+
+      {exportFor && <ExportAccountDialog profile={exportFor} onClose={() => setExportFor(null)}
+        onExported={(message) => { showToast(message, 'success'); refreshAccountHealth(); void loadData(); }} />}
+      {importOpen && <ImportAccountDialog onClose={() => setImportOpen(false)}
+        onImported={(profile) => { showToast(`Imported ${profile.name} as ${profile.id}.`, 'success'); void loadData(); }} />}
 
       {phoneFilesFor && <PhoneFilesDialog profile={phoneFilesFor.profile} initialFiles={phoneFilesFor.files} onClose={() => setPhoneFilesFor(null)} />}
 
