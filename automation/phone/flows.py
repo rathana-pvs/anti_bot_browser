@@ -315,13 +315,14 @@ class Flows:
             own_page_seconds = options["max_seconds"] * random.uniform(0.2, 0.4)
         browsing = {"pace": options["pace"], "reread": options["reread"],
                     "long_breaks": options["long_breaks"], "should_stop": should_stop}
-        scrolls, fallback = 0, False
+        scrolls, fallback, snapshot = 0, False, None
         if requested == "news_feed":
             scrolls += await self.browse(options["max_seconds"] - own_page_seconds, **browsing)
         if own_page_seconds and not should_stop():
             try:
                 await self.discard_until_feed()
                 await self.open_profile()
+                snapshot = await self.read_page_header()
                 self.log(event="warm", action="own page")
                 scrolls += await self.browse(own_page_seconds, read_posts=False, **browsing)
             except StepFailed as unavailable:
@@ -330,11 +331,28 @@ class Flows:
                 await self.discard_until_feed()
                 if requested == "profile":
                     scrolls += await self.browse(own_page_seconds, **browsing)
-        return {"warming_surface_requested": requested,
-                "warming_surface": "news_feed" if fallback else requested,
-                "warming_surface_fallback": fallback, "scroll_actions": scrolls,
-                "duration_seconds": round(dev.now() - begun, 1),
-                "stop_reason": "asked_to_stop" if should_stop() else "finished"}
+        result = {"warming_surface_requested": requested,
+                  "warming_surface": "news_feed" if fallback else requested,
+                  "warming_surface_fallback": fallback, "scroll_actions": scrolls,
+                  "duration_seconds": round(dev.now() - begun, 1),
+                  "stop_reason": "asked_to_stop" if should_stop() else "finished"}
+        if snapshot:
+            result["account_snapshot"] = snapshot
+        return result
+
+    async def read_page_header(self) -> dict | None:
+        """The Page's name and follower count, read at the top of its profile; None for a personal
+        profile or when the header was not readable. Never fails the visit: a reading is optional."""
+        try:
+            await self.profile_to_top()
+            await self.device.settle(timeout=2.0)
+            snapshot = screen.page_header(await self.device.read(), self.device.width)
+        except Exception as error:  # an optional reading never fails a visit
+            self.log(event="page_header", found=False, reason=str(error)[:200])
+            return None
+        self.log(event="page_header", found=bool(snapshot), name=(snapshot or {}).get("name"),
+                 followers=(snapshot or {}).get("followers"))
+        return snapshot
 
     async def browse(self, seconds: float, *, pace: str = "balanced", reread: bool = False, long_breaks: bool = False,
                      read_posts: bool = True, should_stop: Callable[[], bool] = lambda: False) -> int:

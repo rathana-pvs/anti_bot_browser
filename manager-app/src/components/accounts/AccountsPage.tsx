@@ -40,8 +40,8 @@ function accountSortValue(profile: Profile, key: AccountSortKey,
   ctx: { devices: AndroidDevice[]; proxies: ProxyItem[]; activity: Map<string, AccountActivity> }): string | number | null {
   switch (key) {
     case 'name': return profile.name;
-    case 'page': return pageCells(profile.facebook_page, isAndroid(profile)).sortName;
-    case 'followers': return pageCells(profile.facebook_page, isAndroid(profile)).sortFollowers;
+    case 'page': return pageCells(profile.facebook_page).sortName;
+    case 'followers': return pageCells(profile.facebook_page).sortFollowers;
     case 'device': return deviceLabel(profile, ctx.devices);
     case 'status': return isAndroid(profile) ? phoneStatus(profile, ctx.devices)?.label ?? null : STATUS_LABEL[profile.status];
     case 'network': return networkSignal(profile, ctx.proxies).label;
@@ -375,7 +375,7 @@ function AccountRow({ profile, devices, onOpenDevice, network, proxyShare, activ
   const notes = browserNotes(profile);
   const openItems = openItemSignals(activity);
   const phone = isAndroid(profile) ? phoneStatus(profile, devices) : null;
-  const page = pageCells(profile.facebook_page, isAndroid(profile));
+  const page = pageCells(profile.facebook_page);
   const done = [activity.posted && `${activity.posted} posted`, activity.warmed && `${activity.warmed} warmed`].filter(Boolean).join(' · ');
   return <div tabIndex={0} draggable onDragStart={onDragStart} onClick={onOpen} onContextMenu={onContextMenu}
     onKeyDown={(e) => {

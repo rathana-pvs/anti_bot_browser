@@ -1684,6 +1684,49 @@ class WarmingTests(unittest.TestCase):
         self.assertEqual(device.actions[-1], ("key", job.KEY_HOME))
 
 
+class PageHeaderTests(unittest.TestCase):
+    def test_the_name_is_the_line_right_above_the_follower_count(self):
+        header = lines(("Finish setting up", 200), ("DailyScope USA", 520), ("1.2K followers · 16 following", 557),
+                       ("Create reel", 700))
+        self.assertEqual(screen.page_header(header, 576),
+                         {"kind": "page", "name": "DailyScope USA", "followers": 1200})
+
+    def test_a_name_split_by_ocr_is_joined_left_to_right(self):
+        header = [Line("Express Desk", (300.0, 520.0)), Line("The", (120.0, 522.0)),
+                  Line("3,456 followers", (150.0, 560.0))]
+        self.assertEqual(screen.page_header(header, 576)["name"], "The Express Desk")
+
+    def test_no_count_line_or_a_personal_profile_gives_nothing(self):
+        self.assertIsNone(screen.page_header(lines(("DailyScope USA", 520), ("Followers", 560)), 576))
+        self.assertIsNone(screen.page_header(lines(("Dara Sok", 520), ("500 friends", 557)), 576))
+
+    def test_a_name_far_above_is_not_taken_but_the_count_still_is(self):
+        header = lines(("Cover photo text", 100), ("0 followers · 0 following", 557))
+        self.assertEqual(screen.page_header(header, 576), {"kind": "page", "followers": 0})
+
+    def test_a_visit_on_its_own_page_reports_the_header(self):
+        header = lines(("DailyScope USA", 520), ("66K followers · 16 following", 557), ("Posts", 900))
+        device = WarmingTests.device(WarmingTests(), [header])
+        options = {**WarmingTests.OPTIONS, "surface": "profile"}
+
+        async def nothing(self_):
+            return None
+        with patch.object(Flows, "discard_until_feed", nothing), patch.object(Flows, "open_profile", nothing):
+            outcome = run(Flows(device, lambda **e: None).visit(options))
+        self.assertEqual(outcome["account_snapshot"], {"kind": "page", "name": "DailyScope USA", "followers": 66000})
+
+    def test_an_unreadable_header_never_fails_the_visit(self):
+        device = WarmingTests.device(WarmingTests(), [lines(("Posts", 900))])
+        options = {**WarmingTests.OPTIONS, "surface": "profile"}
+
+        async def nothing(self_):
+            return None
+        with patch.object(Flows, "discard_until_feed", nothing), patch.object(Flows, "open_profile", nothing):
+            outcome = run(Flows(device, lambda **e: None).visit(options))
+        self.assertNotIn("account_snapshot", outcome)
+        self.assertFalse(outcome["warming_surface_fallback"])
+
+
 class JobTests(unittest.TestCase):
     def run_job(self, publish=None, wait=None, start=None, comment=None, comment_now=True):
         device = FakeDevice()

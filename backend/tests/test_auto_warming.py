@@ -330,13 +330,14 @@ def test_a_visit_starts_on_the_profile_when_its_page_reading_is_missing_or_old(m
     assert first["profile_id"] == "profile_001" and second["profile_id"] == "profile_002"
 
 
-def test_phone_visits_keep_a_random_surface(monkeypatch):
-    monkeypatch.setattr(auto_warming.facebook_page, "needs_refresh", lambda pid, now=None: True)
+def test_phone_visits_also_start_on_the_profile_when_their_page_reading_is_old(monkeypatch):
     from backend.services import android_jobs
     monkeypatch.setattr(android_jobs, "can_take_auto_visit", lambda config: True)
     phone = config("profile_003", runtime={"kind": "android_user"}, network={"proxy_id": "proxy_1"})
-    [choice] = rank({"profile_003": phone}, {"profile_003": {"stage": "new"}})
-    assert "read_profile" not in choice
+    for stale in (True, False):
+        monkeypatch.setattr(auto_warming.facebook_page, "needs_refresh", lambda pid, now=None, stale=stale: stale)
+        [choice] = rank({"profile_003": phone}, {"profile_003": {"stage": "new"}})
+        assert choice.get("read_profile", False) is stale
 
 
 # One switch per device ------------------------------------------------------

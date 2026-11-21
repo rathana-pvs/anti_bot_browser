@@ -311,6 +311,9 @@ async def execute_queue_warming(claim_res: dict) -> dict:
             if status == "completed":
                 apply_warming_result(ex, result)
         _update(execution_id, lease_id, change)
+        if status == "completed":
+            from backend.services import facebook_page
+            facebook_page.record_from_result(profile_id, result, execution_id)
         asyncio.create_task(_delayed_dispatch(100))
         return {"success": status == "completed", "status": status}
 

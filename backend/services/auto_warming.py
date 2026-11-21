@@ -183,7 +183,7 @@ def candidates(queue: dict, configs: dict, health: dict, history: dict, now_ms: 
             score += 10.0
             reason = "First visit after a proxy change"
         choice = {"profile_id": pid, "stage": stage, "score": round(score, 3), "reason": reason}
-        if not phone and facebook_page.needs_refresh(pid, datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)):
+        if facebook_page.needs_refresh(pid, datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)):
             # Starts on the account's own profile so the visit reads its page name and followers again.
             choice["read_profile"] = True
         ranked.append(choice)

@@ -18,7 +18,7 @@ test('follower counts are shown short', () => {
 });
 
 test('a page shows its name and followers with when warming saw them', () => {
-  const cells = pageCells({ name: 'News 429M', kind: 'page', followers: 3400, seen_at: '2026-11-11T07:00:00Z' }, false, NOW);
+  const cells = pageCells({ name: 'News 429M', kind: 'page', followers: 3400, seen_at: '2026-11-11T07:00:00Z' }, NOW);
   assert.equal(cells.page, 'News 429M');
   assert.equal(cells.followers, '3.4K');
   assert.match(cells.pageHint, /^Page: News 429M · seen 2 h ago while warming$/);
@@ -27,15 +27,15 @@ test('a page shows its name and followers with when warming saw them', () => {
 });
 
 test('a personal profile is marked and an unread count is a dash', () => {
-  const cells = pageCells({ name: 'Dara Sok', kind: 'personal', seen_at: '2026-11-11T08:59:00Z' }, false, NOW);
+  const cells = pageCells({ name: 'Dara Sok', kind: 'personal', seen_at: '2026-11-11T08:59:00Z' }, NOW);
   assert.equal(cells.page, 'Dara Sok (personal)');
   assert.equal(cells.followers, '—');
   assert.equal(cells.sortFollowers, null);
 });
 
 test('no reading yet shows dashes', () => {
-  assert.equal(pageCells(null, false, NOW).page, '—');
-  assert.match(pageCells(undefined, true, NOW).pageHint, /phone/);
+  assert.equal(pageCells(null, NOW).page, '—');
+  assert.match(pageCells(undefined, NOW).pageHint, /next warming visit/);
 });
 
 test('seen times read naturally', () => {
@@ -46,7 +46,7 @@ test('seen times read naturally', () => {
 });
 
 test('a Page whose name could not be read still shows its followers', () => {
-  const cells = pageCells({ kind: 'page', followers: 66000, seen_at: '2026-11-11T07:00:00Z' }, false, NOW);
+  const cells = pageCells({ kind: 'page', followers: 66000, seen_at: '2026-11-11T07:00:00Z' }, NOW);
   assert.equal(cells.page, 'Name not readable');
   assert.equal(cells.followers, '66K');
   assert.match(cells.pageHint, /script the browser can’t display/);

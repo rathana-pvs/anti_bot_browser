@@ -44,10 +44,9 @@ export interface PageCells {
 
 const NOT_YET = 'Read during the next warming visit that opens this account’s profile.';
 
-export function pageCells(snapshot: FacebookPageSnapshot | null | undefined, phone: boolean, now: number = Date.now()): PageCells {
+export function pageCells(snapshot: FacebookPageSnapshot | null | undefined, now: number = Date.now()): PageCells {
   if (!snapshot?.name && typeof snapshot?.followers !== 'number') {
-    const hint = phone ? 'Not read on phone accounts yet.' : NOT_YET;
-    return { page: '—', pageHint: hint, followers: '—', followersHint: hint, sortName: null, sortFollowers: null };
+    return { page: '—', pageHint: NOT_YET, followers: '—', followersHint: NOT_YET, sortName: null, sortFollowers: null };
   }
   const seen = seenAgo(snapshot.seen_at, now);
   const kind = snapshot.kind === 'page' ? 'Page' : snapshot.kind === 'personal' ? 'Personal profile' : 'Profile';

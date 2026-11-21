@@ -271,6 +271,21 @@ def test_a_warming_visit_completes_without_publishing_or_a_post_cooldown(world, 
     assert android_devices.job_on(RUNTIME["device_serial"]) is None
 
 
+def test_a_warming_visit_saves_the_page_name_and_followers_it_read(world, monkeypatch):
+    from backend.services import facebook_page
+    saved = []
+    monkeypatch.setattr(facebook_page, "record", lambda pid, snapshot, execution_id=None: saved.append((pid, snapshot)))
+
+    async def fake(args, record, on_event):
+        record["exit_code"] = 0
+        return {"status": "completed", "warming_surface": "profile", "warming_surface_requested": "profile",
+                "duration_seconds": 60, "scroll_actions": 9,
+                "account_snapshot": {"kind": "page", "name": "DailyScope USA", "followers": 1200}}
+    monkeypatch.setattr(android_jobs, "_run_runner", fake)
+    asyncio.run(android_jobs.execute_queue_phone(warming_claim(world)))
+    assert saved == [("phone_1", {"kind": "page", "name": "DailyScope USA", "followers": 1200})]
+
+
 def test_a_warming_visit_that_finds_the_account_stopped_holds_it(world, monkeypatch):
     held = []
 

@@ -314,3 +314,42 @@ def discard_button(lines: list[Line]) -> Point | None:
             return point
     return (match(lines, "Discard post", exact=True) or match(lines, "Discard video", exact=True)
             or match(lines, "Discard draft", exact=True))
+
+
+# --- the account's own Page header ---------------------------------------------------------------
+
+# A count line has a number: "1.2K followers · 16 following", "500 friends". A tab named Followers has none.
+_COUNT_LINE = re.compile(r"\d[\d.,]*\s*[km]?\s+(followers?|following|friends)\b", re.IGNORECASE)
+_FRIENDS_LINE = re.compile(r"\d[\d.,]*\s*[km]?\s+friends\b", re.IGNORECASE)
+# Lines that can sit right above the count line but are never the Page's name.
+_NOT_A_NAME = {"facebook", "posts", "all", "about", "photos", "reels", "createreel", "editprofile",
+               "managepage", "professionaldashboard", "seeyouraboutinfo"}
+NAME_ABOVE_MAX = 170  # 1080-wide px: the name's centre sits this close above its count line's centre
+SAME_ROW = 22  # 1080-wide px: OCR pieces of one line ("The" + "Express Desk") are this close in height
+MAX_PAGE_NAME = 80
+
+
+def page_header(lines: list[Line], width: float) -> dict | None:
+    """The Page's name and follower count from its profile header, or None when no header is on screen
+    or it is a personal profile (a friends count). The name is the line right above the count line."""
+    scale = width / TEMPLATE_WIDTH
+    from skills.account_snapshot import parse_followers
+    for count in sorted((line for line in lines if _COUNT_LINE.search(line.text)), key=lambda line: line.point[1]):
+        if _FRIENDS_LINE.search(count.text):
+            return None  # a personal profile: only Pages are tracked
+        followers = parse_followers(count.text)
+        above = [line for line in lines if line is not count
+                 and 0 < count.point[1] - line.point[1] <= NAME_ABOVE_MAX * scale
+                 and 2 <= len(line.text.strip()) <= 60 and re.search(r"[^\W\d_]", line.text)
+                 and not _COUNT_LINE.search(line.text) and squash(line.text) not in _NOT_A_NAME]
+        snapshot: dict = {"kind": "page"}
+        if above:
+            title = max(above, key=lambda line: line.point[1])
+            row = sorted((line for line in above if abs(line.point[1] - title.point[1]) <= SAME_ROW * scale),
+                         key=lambda line: line.point[0])
+            snapshot["name"] = re.sub(r"\s+", " ", " ".join(line.text.strip() for line in row)).strip()[:MAX_PAGE_NAME]
+        if followers is not None:
+            snapshot["followers"] = followers
+        if "name" in snapshot or "followers" in snapshot:
+            return snapshot
+    return None
