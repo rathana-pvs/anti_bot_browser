@@ -6,14 +6,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, Body, HTTPException, Query
+import time
+import uuid
+
+from fastapi import APIRouter, Body, File, Form, HTTPException, Query, UploadFile
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 from pydantic import BaseModel, ConfigDict, Field
 from backend.services.profile_groups import list_groups, create_group, rename_group, delete_group
 from backend.services import account_activity, account_hold, proxy_change
 from backend.services.account_health import DAILY_POST_LIMITS, OVERRIDE_STAGES, all_health
 from backend.services.queue_service import load_posting_queue
 
-from backend.config import CPU_THREADS, PROFILES_DIR, TOTAL_MEMORY_GB, FALLBACK_TIMEZONE, get_host_timezone
+from backend.config import CPU_THREADS, DATA_DIR, PROFILES_DIR, TOTAL_MEMORY_GB, FALLBACK_TIMEZONE, get_host_timezone
 from backend.models.profile import NetworkIntent, ProfileCreateRequest, ProfileUpdateRequest
 from backend.services.docker_service import (
     get_container_stats, get_container_status, get_container_statuses, get_profile_disk_usage,
@@ -333,6 +339,94 @@ def move_to_folder(request: MoveToFolderRequest):
     if on_phones:
         android_ownership.sync_details_in_background(on_phones)
     return {"moved": [profile_id for profile_id, _, _ in accounts], "group": request.group}
+
+
+EXPORT_WORK_DIR = DATA_DIR / "profile_exports"
+IMPORT_WORK_DIR = DATA_DIR / "profile_imports"
+
+
+def _clear_stale(directory: Path, older_than_s: float = 6 * 3600) -> None:
+    """Exports a closed window never collected, and imports a crash left half done."""
+    if not directory.is_dir():
+        return
+    cutoff = time.time() - older_than_s
+    for entry in directory.iterdir():
+        try:
+            if entry.stat().st_mtime < cutoff:
+                shutil.rmtree(entry, ignore_errors=True) if entry.is_dir() else entry.unlink(missing_ok=True)
+        except OSError:
+            continue
+
+
+class ExportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    password: str | None = Field(default=None, max_length=200)
+    # Put the account left on this PC on hold, so it never runs on both PCs at once.
+    hold: bool = True
+    # The desktop app saves into Downloads; a browser on another machine downloads the file instead.
+    save_to_downloads: bool = False
+
+
+@router.post("/import", status_code=201)
+async def import_profile(file: UploadFile = File(...), password: str = Form("")):
+    """Creates a new account on this PC from a file exported on another PC."""
+    from backend.services import profile_transfer
+    _clear_stale(IMPORT_WORK_DIR)
+    work = IMPORT_WORK_DIR / uuid.uuid4().hex
+    work.mkdir(parents=True)
+    try:
+        upload = work / "upload"
+        with upload.open("wb") as out:
+            await run_in_threadpool(shutil.copyfileobj, file.file, out, 1024 * 1024)
+        plain = await run_in_threadpool(profile_transfer.open_package, upload, work, password or None)
+        return await run_in_threadpool(profile_transfer.import_package, plain)
+    except ValueError as exc:  # TransferError, or the proxy refused by its per-proxy limit
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        await run_in_threadpool(shutil.rmtree, work, True)
+
+
+@router.post("/{profile_id}/export")
+async def export_profile(profile_id: str, request: ExportRequest):
+    """Saves the account as one file to import on another PC. The browser must be stopped."""
+    from backend.services import container_lifecycle, profile_transfer
+    profile_dir = _profile_dir(profile_id)
+    if not (profile_dir / "config.json").exists():
+        raise HTTPException(status_code=404, detail="Profile not found")
+    if get_container_status(profile_id) != "stopped":
+        raise HTTPException(status_code=409, detail="Stop the browser before exporting, so its login is saved completely.")
+    try:
+        # The same claim the scheduler takes, so no post or warming visit starts the browser mid-copy.
+        token = container_lifecycle.acquire(profile_id, f"profile_export_{uuid.uuid4().hex[:12]}")
+    except RuntimeError:
+        raise HTTPException(status_code=409, detail="The account is busy with a job. Export it when the job ends.") from None
+    _clear_stale(EXPORT_WORK_DIR)
+
+    async def _no_stop(_profile_id):
+        return {"stopped": False}
+
+    try:
+        path, filename = await run_in_threadpool(
+            profile_transfer.build_export, profile_id, EXPORT_WORK_DIR, request.password or None)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        await container_lifecycle.release(profile_id, token, _no_stop)
+    if request.hold:
+        _set_hold(profile_id, "Moved to another PC")
+    if not request.save_to_downloads:
+        return FileResponse(path, filename=filename, media_type="application/octet-stream",
+                            background=BackgroundTask(path.unlink, missing_ok=True))
+    try:
+        folder = profile_transfer.downloads_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        destination = profile_transfer.free_path(folder, filename)
+        await run_in_threadpool(shutil.move, str(path), str(destination))
+    except OSError as exc:
+        path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"Could not save the file to Downloads: {exc}") from exc
+    return {"path": str(destination), "filename": destination.name, "size": destination.stat().st_size,
+            "encrypted": bool(request.password), "on_hold": request.hold}
 
 
 @router.put("/{profile_id}")

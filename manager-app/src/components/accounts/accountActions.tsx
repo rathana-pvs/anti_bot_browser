@@ -1,4 +1,4 @@
-import { Copy, Eye, Eraser, Shuffle, FolderInput, FolderMinus, FolderPlus, Hand, ImagePlus, ListChecks, Pause, PencilLine, Play, Settings2, Square, Trash2, ExternalLink } from 'lucide-react';
+import { Copy, Download, Eye, Eraser, Shuffle, FolderInput, FolderMinus, FolderPlus, Hand, ImagePlus, ListChecks, Pause, PencilLine, Play, Settings2, Square, Trash2, ExternalLink } from 'lucide-react';
 import { Profile } from '../../types/profile';
 import type { ActionMenuItem } from '../ui/ActionMenu';
 import { isAndroid, type AccountTab } from './accountModel';
@@ -23,6 +23,8 @@ export interface AccountHandlers {
   toggleHold: (profile: Profile) => void;
   /** Change: move the account to another proxy already in the pool. */
   changeProxy: (profile: Profile) => void;
+  /** PC accounts: save as one file to import on another PC. */
+  exportAccount: (profile: Profile) => void;
   /** Phone accounts: copy photos and videos into the account's gallery by hand,
    * starting with any files dropped on the phone's screen. */
   phoneFiles: (profile: Profile, files?: PhoneDrop[]) => void;
@@ -100,6 +102,9 @@ export function accountMenu(profile: Profile, handlers: AccountHandlers, { inclu
     { label: 'Edit settings', icon: <Settings2 className={icon} />, onSelect: () => handlers.open(profile.id, 'settings') },
     { label: 'Move to folder…', icon: <FolderInput className={icon} />, onSelect: () => handlers.moveToGroup([profile]) },
     { label: 'Copy account ID', icon: <Copy className={icon} />, onSelect: () => handlers.copyId(profile) },
+    { label: 'Export to another PC…', icon: <Download className={icon} />, disabled: browserOpen(profile),
+      hint: browserOpen(profile) ? 'Stop the browser first.' : 'Save the login, fingerprint and proxy as one file.',
+      onSelect: () => handlers.exportAccount(profile) },
     { label: 'Delete', icon: <Trash2 className={icon} />, danger: true, divider: true, onSelect: () => handlers.remove([profile]) },
   );
   return items;
