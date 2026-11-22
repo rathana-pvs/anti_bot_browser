@@ -343,9 +343,10 @@ class Composition(BaseModel):
                 scenes.append(drawn)
             else:  # a stand-in of the same length, so the timelines line up; another plan draws this scene
                 scenes.append(Scene(seconds=drawn.length(), transition=drawn.transition))
-        # The tag, accent and music follow the recipe whatever the layout; the plan's layout decides the drawing.
+        # The accent and music follow the recipe whatever the layout; the plan's layout decides the drawing.
+        # AI Studio draws no section label (POLITICS, NEWS…) unless the reel came from Reel Studio with one.
         recipe = RECIPE_BY_ID.get(self.recipe or '')
-        return Reel(look=self.look, tag=self.theme.tag or (recipe and recipe.tag), accent=self.theme.accent or (recipe and recipe.accent),
+        return Reel(look=self.look, tag=self.theme.tag or '', accent=self.theme.accent or (recipe and recipe.accent),
                     live=self.theme.live, scenes=scenes,
                     brand=self.brand, logo_id=self.logo_id, source=self.source, dateline=self.dateline, ratio=self.ratio,
                     motion='auto', show_progress=self.show_progress, music=self.music, music_id=self.music_id,
@@ -372,7 +373,7 @@ def from_reel(reel: Reel) -> Composition:
                              transition={None: None, 'fade': None, 'cut': 'cut', 'slide': 'slide'}[s.transition],
                              styles=styles(s.style), seconds=s.seconds, text_position=s.text_position, photo_size=s.photo_size,
                              locked=s.locked))
-    return Composition(recipe=reel.look, ratio=reel.ratio, theme=Theme(accent=reel.accent, tag=reel.tag, live=reel.live), scenes=scenes,
+    return Composition(recipe=reel.look, ratio=reel.ratio, theme=Theme(accent=reel.accent, tag=reel.tag_text, live=reel.live), scenes=scenes,
                        styles=styles(reel.style), brand=reel.brand, logo_id=reel.logo_id, source=reel.source, dateline=reel.dateline,
                        show_progress=reel.show_progress, music=reel.music, music_id=reel.music_id, camera_waits=False,
                        text_drift=False, animate_opening=False)

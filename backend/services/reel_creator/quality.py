@@ -5,14 +5,14 @@ Text that cannot fit its layout is not fixed here; it stays an error that names 
 """
 from dataclasses import dataclass
 
-from .components import RECIPE_BY_ID, part
+from .components import PARTS, RECIPE_BY_ID, part
 from .composition import Composition, CompositionPlan
 
 ROLES = ('headline', 'detail', 'lead')
 CALMER = {'pop': 'rise', 'punch_in': 'rise', 'push_face': 'zoom_in', 'zoom_through': 'crossfade', 'word_pop': 'highlight_sweep'}
 VARIETY = ('rise', 'fade', 'left', 'wipe')
 OVER_PHOTO = {'news_strap', 'big_headline', 'wire_report', 'big_number', 'quote_card', 'centered_card', 'open_photo', 'ruled_photo'}
-MOVABLE = {'news_strap', 'wire_report', 'big_headline', 'open_photo', 'ruled_photo'}  # layouts whose text block can move up or down
+MOVABLE = {p.id for p in PARTS if p.text_moves}  # layouts whose text block can move up or down
 LONG_TYPEWRITER = 90  # characters; letter by letter takes too long beyond this
 MIN_CONTRAST = 4.5
 FACE_SHARE = .26      # a face box is about this share of the photo's width

@@ -30,6 +30,7 @@ class Part:
     needs_photo: bool = False
     loud: bool = False                 # draws attention; the quality checker allows one per scene
     look: str = ''                     # layouts: the renderer layout that draws it
+    text_moves: bool = False           # layouts: the text block floats over the photo, so a scene can move it up or down
 
     def public(self):
         value = asdict(self)
@@ -40,12 +41,12 @@ class Part:
 PARTS = (
     # Layouts: where the photo and the text sit in the frame.
     Part('news_strap', 'layout', 'News strap', 'Breaking or developing news over a full photo, with a ticker.', 'Calm explainers.',
-         mood=('urgent',), look='breaking'),
+         mood=('urgent',), look='breaking', text_moves=True),
     Part('big_headline', 'layout', 'Big headline', 'A short, strong headline over a photo; trending stories.', 'Long headlines.',
-         mood=('energetic',), look='hot'),
+         mood=('energetic',), look='hot', text_moves=True),
     Part('photo_panel', 'layout', 'Photo and panel', 'Photo on top, text on a panel below: politics and analysis.', mood=('serious',), look='politics'),
     Part('light_card', 'layout', 'Light card', 'A photo card on a light page, like a news site: neutral updates.', mood=('calm', 'explainer'), look='clean'),
-    Part('wire_report', 'layout', 'Wire report', 'A straight factual block over a photo.', mood=('serious',), look='wire'),
+    Part('wire_report', 'layout', 'Wire report', 'A straight factual block over a photo.', mood=('serious',), look='wire', text_moves=True),
     Part('magazine', 'layout', 'Magazine', 'Headline on top, photo across the bottom: explainers and analysis.', mood=('calm', 'explainer'), look='editorial'),
     Part('pop_collage', 'layout', 'Pop collage', 'One clear person in a bold collage: entertainment and trends.', 'Tragedy, conflict, politics.',
          mood=('energetic',), needs_photo=True, loud=True, look='pop_art'),
@@ -54,11 +55,11 @@ PARTS = (
     Part('quote_card', 'layout', 'Quote card', 'Someone\'s exact words, large, with the speaker underneath.', 'Reported speech.',
          applies_to=frozenset({'quote'}), mood=('serious', 'calm'), look='quote_card'),
     Part('open_photo', 'layout', 'Open photo', 'A strong photo with the headline low on it, no card: most stories.',
-         'Busy photos where text would not read (use centred card).', mood=('calm', 'serious', 'explainer', 'energetic'), look='open_photo'),
+         'Busy photos where text would not read (use centred card).', mood=('calm', 'serious', 'explainer', 'energetic'), look='open_photo', text_moves=True),
     Part('paper', 'layout', 'Paper page', 'Serious or analytical stories: the photo above, a serif headline printed on a paper page.',
          'Urgent or playful stories.', mood=('serious', 'calm', 'explainer'), look='paper'),
     Part('ruled_photo', 'layout', 'Photo with accent bar', 'A straight report: the text low on the photo, a bright bar beside it.',
-         mood=('serious', 'explainer', 'urgent'), look='ruled_photo'),
+         mood=('serious', 'explainer', 'urgent'), look='ruled_photo', text_moves=True),
     Part('centered_card', 'layout', 'Centred card', 'A key fact on a card over a strong photo; also good for end cards.',
          mood=('calm', 'explainer'), look='centered_card'),
     Part('split', 'layout', 'Split', 'Photo on top, a bold headline on an accent panel: a punchy hook or a new development.',

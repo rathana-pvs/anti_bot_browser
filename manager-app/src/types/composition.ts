@@ -76,7 +76,7 @@ export interface Composition {
   animate_opening?: boolean;
 }
 
-export interface Part { id: string; kind: PartKind; label: string; use_when: string; avoid_when: string; applies_to: SceneKind[]; mood: string[]; needs_photo: boolean; loud: boolean; look: string }
+export interface Part { id: string; kind: PartKind; label: string; use_when: string; avoid_when: string; applies_to: SceneKind[]; mood: string[]; needs_photo: boolean; loud: boolean; look: string; text_moves?: boolean }
 /** studio 'ai' recipes are AI Studio's own; 'reel' ones are Reel Studio's looks. */
 export interface Recipe { id: string; label: string; use_when: string; urgent: boolean; pacing: Pacing; transition: TransitionId; look: string; studio?: 'ai' | 'reel' }
 export interface PartsCatalog { parts: Part[]; recipes: Recipe[] }
