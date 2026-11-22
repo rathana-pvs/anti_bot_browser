@@ -96,7 +96,7 @@ export const App: React.FC = () => {
   const settleMove = (moved: boolean) => { moveDone.current?.(moved); moveDone.current = null; };
   const [folderDialog, setFolderDialog] = useState<FolderDialogState>(null);
   const [changeProxyFor, setChangeProxyFor] = useState<Profile | null>(null);
-  const [exportFor, setExportFor] = useState<Profile | null>(null);
+  const [exportFor, setExportFor] = useState<Profile[] | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [cleaning, setCleaning] = useState<{ profile: Profile; initial: CleanProgress } | null>(null);
   const [phoneFilesFor, setPhoneFilesFor] = useState<{ profile: Profile; files?: PhoneDrop[] } | null>(null);
@@ -422,7 +422,7 @@ export const App: React.FC = () => {
     toggleHold: (profile) => { void toggleHold(profile); },
     cleanPhone,
     changeProxy: setChangeProxyFor,
-    exportAccount: setExportFor,
+    exportAccounts: setExportFor,
     phoneFiles: (profile, files) => setPhoneFilesFor({ profile, files }),
     openQueue,
     clearFailures: (profile, before) => { void clearFailures(profile, before); },
@@ -642,7 +642,7 @@ export const App: React.FC = () => {
       {changeProxyFor && <ChangeProxyDialog profile={changeProxyFor} onClose={() => setChangeProxyFor(null)}
         onChanged={(message) => { showToast(message, 'success'); refreshAccountHealth(); void loadData(); }} />}
 
-      {exportFor && <ExportAccountDialog profile={exportFor} onClose={() => setExportFor(null)}
+      {exportFor && <ExportAccountDialog profiles={exportFor} onClose={() => setExportFor(null)}
         onExported={(message) => { showToast(message, 'success'); refreshAccountHealth(); void loadData(); }} />}
       {importOpen && <ImportAccountDialog onClose={() => setImportOpen(false)}
         onImported={(profile) => { showToast(`Imported ${profile.name} as ${profile.id}.`, 'success'); void loadData(); }} />}

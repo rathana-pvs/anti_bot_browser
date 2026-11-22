@@ -304,12 +304,12 @@ export interface AccountExportResult {
 }
 
 /** Saves a stopped PC account as one file to import on another PC. */
-export async function exportAccount(profileId: string, options: { password?: string; hold: boolean }): Promise<AccountExportResult> {
+export async function exportAccount(profileId: string, options: { hold: boolean }): Promise<AccountExportResult> {
   const desktop = isDesktopApp();
   const res = await fetch(`${API_BASE}/profiles/${encodeURIComponent(profileId)}/export`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password: options.password || null, hold: options.hold, save_to_downloads: desktop }),
+    body: JSON.stringify({ hold: options.hold, save_to_downloads: desktop }),
   });
   if (!res.ok) throw await apiError(res, 'Couldn’t export this account');
   if (desktop) {
@@ -330,10 +330,9 @@ export async function exportAccount(profileId: string, options: { password?: str
 }
 
 /** Creates a new account on this PC from a file exported on another PC. */
-export async function importAccount(file: File, password: string): Promise<Profile> {
+export async function importAccount(file: File): Promise<Profile> {
   const body = new FormData();
   body.append('file', file);
-  body.append('password', password);
   const res = await fetch(`${API_BASE}/profiles/import`, { method: 'POST', body });
   if (!res.ok) throw await apiError(res, 'Couldn’t import this account');
   return res.json();

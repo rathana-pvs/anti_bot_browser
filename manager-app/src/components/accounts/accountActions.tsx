@@ -24,7 +24,7 @@ export interface AccountHandlers {
   /** Change: move the account to another proxy already in the pool. */
   changeProxy: (profile: Profile) => void;
   /** PC accounts: save as one file to import on another PC. */
-  exportAccount: (profile: Profile) => void;
+  exportAccounts: (profiles: Profile[]) => void;
   /** Phone accounts: copy photos and videos into the account's gallery by hand,
    * starting with any files dropped on the phone's screen. */
   phoneFiles: (profile: Profile, files?: PhoneDrop[]) => void;
@@ -104,7 +104,7 @@ export function accountMenu(profile: Profile, handlers: AccountHandlers, { inclu
     { label: 'Copy account ID', icon: <Copy className={icon} />, onSelect: () => handlers.copyId(profile) },
     { label: 'Export to another PC…', icon: <Download className={icon} />, disabled: browserOpen(profile),
       hint: browserOpen(profile) ? 'Stop the browser first.' : 'Save the login, fingerprint and proxy as one file.',
-      onSelect: () => handlers.exportAccount(profile) },
+      onSelect: () => handlers.exportAccounts([profile]) },
     { label: 'Delete', icon: <Trash2 className={icon} />, danger: true, divider: true, onSelect: () => handlers.remove([profile]) },
   );
   return items;
@@ -120,10 +120,15 @@ export function bulkMenu(profiles: Profile[], handlers: AccountHandlers, onDone:
   const stoppable = profiles.filter(p => !isAndroid(p) && (p.status === 'running' || p.status === 'paused'));
   // Phone accounts are removed one at a time with Clean phone user, which also wipes their Android user.
   const deletable = profiles.filter(p => !isAndroid(p));
+  // Only a stopped PC account's login is saved completely; phone accounts stay on their phone.
+  const exportable = profiles.filter(p => !isAndroid(p) && !browserOpen(p));
   return [
     { label: countLabel('Start', startable.length), icon: <Play className={icon} />, disabled: !startable.length, onSelect: () => then(handlers.run(startable, 'start')) },
     { label: countLabel('Stop', stoppable.length), icon: <Square className={icon} />, disabled: !stoppable.length, onSelect: () => then(handlers.run(stoppable, 'stop')) },
     { label: `Move ${count} to folder…`, icon: <FolderInput className={icon} />, divider: true, onSelect: () => then(handlers.moveToGroup(profiles)) },
+    { label: `${countLabel('Export', exportable.length)} to another PC…`, icon: <Download className={icon} />, disabled: !exportable.length,
+      hint: exportable.length < count ? 'Accounts with the browser open, and phone accounts, are left out.' : 'Save each login, fingerprint and proxy as its own file.',
+      onSelect: () => handlers.exportAccounts(exportable) },
     { label: countLabel('Delete', deletable.length), icon: <Trash2 className={icon} />, danger: true, divider: true, disabled: !deletable.length,
       hint: deletable.length < count ? 'Phone accounts are removed with Clean phone user, one at a time.' : undefined,
       onSelect: () => then(handlers.remove(deletable)) },

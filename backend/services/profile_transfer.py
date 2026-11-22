@@ -6,31 +6,21 @@ so the Facebook login moves with it). Caches, crash dumps, Chrome's lock links
 and automation evidence stay behind. The manifest carries the pool proxy the
 account used, credentials included, so the other PC can give it the same IP.
 
-With a password the ZIP is encrypted: scrypt derives a key, and AES-GCM seals the
-file in 1 MiB chunks whose order and end are authenticated, so a cut or reordered
-file is refused rather than imported half.
-
 Import always gives the account a new id and new ports on the receiving PC, and
 the proxy joins that PC's pool under its "Accounts per proxy" limit. The account
 keeps its fingerprint, timezone, name, folder and warming state.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
-import secrets
 import shutil
-import struct
 import subprocess
 import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import BinaryIO, Iterator
-
-from cryptography.exceptions import InvalidTag
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from typing import Iterator
 
 from backend.config import CPU_THREADS, PROFILES_DIR, TOTAL_MEMORY_GB
 from backend.services.profile_service import (
@@ -53,12 +43,9 @@ SKIPPED_CHROME_DIRS = {
 }
 SKIPPED_CHROME_FILES = {"SingletonLock", "SingletonSocket", "SingletonCookie", "BrowserMetrics-spare.pma"}
 
+# Files exported by older versions with a password start with this; they are no longer read.
 ENCRYPTED_MAGIC = b"ABPROFX1"
-SALT_BYTES = 16
-NONCE_PREFIX_BYTES = 4
 CHUNK_BYTES = 1024 * 1024
-SCRYPT = {"n": 2 ** 15, "r": 8, "p": 1}
-MIN_PASSWORD = 8
 
 MAX_FILES = 200_000
 DISK_HEADROOM = 1024 * 1024 * 1024
@@ -68,76 +55,11 @@ class TransferError(ValueError):
     """A problem the user can fix, shown as it is."""
 
 
-# ---------- encryption ----------
-
-def _key(password: str, salt: bytes) -> bytes:
-    return hashlib.scrypt(password.encode("utf-8"), salt=salt, dklen=32, maxmem=128 * 1024 * 1024, **SCRYPT)
-
-
-def _aad(header: bytes, index: int, final: bool) -> bytes:
-    return header + struct.pack(">QB", index, 1 if final else 0)
-
-
-def encrypt_file(source: Path, destination: Path, password: str) -> None:
-    salt = secrets.token_bytes(SALT_BYTES)
-    prefix = secrets.token_bytes(NONCE_PREFIX_BYTES)
-    header = ENCRYPTED_MAGIC + salt + prefix
-    cipher = AESGCM(_key(password, salt))
-    with source.open("rb") as src, destination.open("wb") as dst:
-        dst.write(header)
-        index = 0
-        chunk = src.read(CHUNK_BYTES)
-        while True:
-            following = src.read(CHUNK_BYTES)
-            final = not following
-            sealed = cipher.encrypt(prefix + struct.pack(">Q", index), chunk, _aad(header, index, final))
-            dst.write(struct.pack(">I", len(sealed)))
-            dst.write(sealed)
-            if final:
-                return
-            chunk, index = following, index + 1
-
+# ---------- old password-protected files ----------
 
 def is_encrypted(path: Path) -> bool:
     with path.open("rb") as stream:
         return stream.read(len(ENCRYPTED_MAGIC)) == ENCRYPTED_MAGIC
-
-
-def _read_exact(stream: BinaryIO, size: int) -> bytes:
-    data = stream.read(size)
-    if len(data) != size:
-        raise TransferError("The file is incomplete. Copy it again from the other PC.")
-    return data
-
-
-def decrypt_file(source: Path, destination: Path, password: str) -> None:
-    with source.open("rb") as src, destination.open("wb") as dst:
-        header = _read_exact(src, len(ENCRYPTED_MAGIC) + SALT_BYTES + NONCE_PREFIX_BYTES)
-        salt = header[len(ENCRYPTED_MAGIC):len(ENCRYPTED_MAGIC) + SALT_BYTES]
-        prefix = header[-NONCE_PREFIX_BYTES:]
-        cipher = AESGCM(_key(password, salt))
-        index = 0
-        length = src.read(4)
-        if len(length) != 4:
-            raise TransferError("The file is incomplete. Copy it again from the other PC.")
-        while True:
-            size = struct.unpack(">I", length)[0]
-            if size > CHUNK_BYTES + 16:
-                raise TransferError("This is not an account export file.")
-            sealed = _read_exact(src, size)
-            length = src.read(4)
-            final = not length
-            try:
-                dst.write(cipher.decrypt(prefix + struct.pack(">Q", index), sealed, _aad(header, index, final)))
-            except InvalidTag:
-                if index == 0:
-                    raise TransferError("Wrong password, or the file is damaged.") from None
-                raise TransferError("The file is damaged or incomplete. Copy it again from the other PC.") from None
-            if final:
-                return
-            if len(length) != 4:
-                raise TransferError("The file is incomplete. Copy it again from the other PC.")
-            index += 1
 
 
 # ---------- export ----------
@@ -182,7 +104,7 @@ def export_filename(config: dict) -> str:
     return f"{name or config.get('id', 'account')}-{stamp}{EXTENSION}"
 
 
-def build_export(profile_id: str, work_dir: Path, password: str | None = None) -> tuple[Path, str]:
+def build_export(profile_id: str, work_dir: Path) -> tuple[Path, str]:
     """Writes the export into `work_dir` and returns (file, suggested name). The account must be stopped."""
     if not PROFILE_ID_RE.fullmatch(profile_id):
         raise TransferError("Invalid profile id")
@@ -193,8 +115,6 @@ def build_export(profile_id: str, work_dir: Path, password: str | None = None) -
     config = json.loads(config_path.read_text(encoding="utf-8"))
     if (config.get("runtime") or {}).get("kind") == "android":
         raise TransferError("Phone accounts live on their phone and cannot be exported. Only PC accounts move this way.")
-    if password is not None and len(password) < MIN_PASSWORD:
-        raise TransferError(f"Use a password of at least {MIN_PASSWORD} characters, or none.")
 
     work_dir.mkdir(parents=True, exist_ok=True)
     plain = work_dir / f"{uuid.uuid4().hex}.zip"
@@ -220,12 +140,7 @@ def build_export(profile_id: str, work_dir: Path, password: str | None = None) -
                 "exported_at": utc_now(), "profile_id": profile_id, "name": config.get("name") or "",
                 "browser_files": files, "proxy": _proxy_for_export(config),
             }, indent=2))
-        if not password:
-            return plain, export_filename(config)
-        sealed = work_dir / f"{uuid.uuid4().hex}{EXTENSION}"
-        encrypt_file(plain, sealed, password)
-        plain.unlink(missing_ok=True)
-        return sealed, export_filename(config)
+        return plain, export_filename(config)
     except BaseException:
         plain.unlink(missing_ok=True)
         raise
@@ -282,14 +197,11 @@ def _read_package(zf: zipfile.ZipFile) -> tuple[dict, dict]:
     return manifest, config
 
 
-def open_package(path: Path, work_dir: Path, password: str | None) -> Path:
-    """The plain ZIP for an uploaded file, decrypting it into `work_dir` when it is encrypted."""
+def open_package(path: Path) -> Path:
+    """The uploaded file as a ZIP. A password-protected file from an older version is refused."""
     if is_encrypted(path):
-        if not password:
-            raise TransferError("This file is protected. Enter the password it was exported with.")
-        plain = work_dir / f"{uuid.uuid4().hex}.zip"
-        decrypt_file(path, plain, password)
-        return plain
+        raise TransferError("This file was exported with a password, which this version no longer opens. "
+                            "Export the account again on the other PC.")
     if not zipfile.is_zipfile(path):
         raise TransferError("This is not an account export file.")
     return path

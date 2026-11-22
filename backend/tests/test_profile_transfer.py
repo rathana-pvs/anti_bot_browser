@@ -49,16 +49,17 @@ def _make_account(profiles, config):
     return directory
 
 
-def _move(pc, tmp_path, password=None, import_password=None):
+def _move(pc, tmp_path):
     _make_account(pc, _config())
-    path, name = profile_transfer.build_export("profile_003", tmp_path / "work", password)
+    path, name = profile_transfer.build_export("profile_003", tmp_path / "work")
     assert name.endswith(".abprofile")
     # Arrive on a "new PC": empty profiles and pool.
     for child in pc.iterdir():
         import shutil
         shutil.rmtree(child)
     proxy_service.save_proxy_pool([])
-    plain = profile_transfer.open_package(path, tmp_path / "work", import_password)
+    assert not profile_transfer.is_encrypted(path)
+    plain = profile_transfer.open_package(path)
     return profile_transfer.import_package(plain)
 
 
@@ -73,9 +74,8 @@ def test_export_skips_caches_evidence_and_links(pc, tmp_path):
     assert manifest["proxy"]["host"] == "1.2.3.4" and manifest["proxy"]["password"] == "p"
 
 
-@pytest.mark.parametrize("password", [None, "correct horse"])
-def test_round_trip_keeps_login_fingerprint_and_proxy(pc, tmp_path, password):
-    config = _move(pc, tmp_path, password, password)
+def test_round_trip_keeps_login_fingerprint_and_proxy(pc, tmp_path):
+    config = _move(pc, tmp_path)
     assert config["id"] == "profile_001"
     directory = pc / "profile_001"
     assert (directory / "chrome_data" / "Default" / "Cookies").read_bytes() == b"session-cookie"
@@ -90,31 +90,11 @@ def test_round_trip_keeps_login_fingerprint_and_proxy(pc, tmp_path, password):
     assert not (pc / ".transfer").exists()
 
 
-def test_encrypted_file_needs_the_right_password(pc, tmp_path):
-    _make_account(pc, _config())
-    path, _ = profile_transfer.build_export("profile_003", tmp_path / "work", "correct horse")
-    assert profile_transfer.is_encrypted(path)
-    with pytest.raises(TransferError, match="password"):
-        profile_transfer.open_package(path, tmp_path / "work", None)
-    with pytest.raises(TransferError, match="Wrong password"):
-        profile_transfer.open_package(path, tmp_path / "work", "wrong horse")
-
-
-def test_cut_encrypted_file_is_refused(pc, tmp_path, monkeypatch):
-    monkeypatch.setattr(profile_transfer, "CHUNK_BYTES", 64)
-    _make_account(pc, _config())
-    path, _ = profile_transfer.build_export("profile_003", tmp_path / "work", "correct horse")
-    data = path.read_bytes()
-    first_chunk_end = len(profile_transfer.ENCRYPTED_MAGIC) + 20 + 4 + 64 + 16
-    path.write_bytes(data[:first_chunk_end])  # ends cleanly after a whole chunk
-    with pytest.raises(TransferError, match="damaged|incomplete"):
-        profile_transfer.open_package(path, tmp_path / "work", "correct horse")
-
-
-def test_short_password_is_refused(pc, tmp_path):
-    _make_account(pc, _config())
-    with pytest.raises(TransferError, match="8 characters"):
-        profile_transfer.build_export("profile_003", tmp_path / "work", "short")
+def test_old_password_protected_file_is_refused_with_a_clear_message(tmp_path):
+    old = tmp_path / "old.abprofile"
+    old.write_bytes(profile_transfer.ENCRYPTED_MAGIC + b"\0" * 64)
+    with pytest.raises(TransferError, match="exported with a password.*Export the account again"):
+        profile_transfer.open_package(old)
 
 
 def test_full_proxy_refuses_the_import_and_leaves_nothing(pc, tmp_path):
@@ -190,7 +170,9 @@ def test_routes_export_hold_and_import(pc, tmp_path, monkeypatch):
     assert "busy" in client.post("/api/profiles/profile_003/export", json={}).json()["detail"]
     container_lifecycle._write({})
 
-    res = client.post("/api/profiles/profile_003/export", json={"password": "correct horse"})
+    # Export has no password any more; an old client sending one is refused, not silently ignored.
+    assert client.post("/api/profiles/profile_003/export", json={"password": "correct horse"}).status_code == 422
+    res = client.post("/api/profiles/profile_003/export", json={})
     assert res.status_code == 200 and ".abprofile" in res.headers["content-disposition"]
     exported = res.content
     held = json.loads((pc / "profile_003" / "config.json").read_text())
@@ -198,9 +180,7 @@ def test_routes_export_hold_and_import(pc, tmp_path, monkeypatch):
     assert container_lifecycle._read() == {}
 
     proxy_service.save_proxy_pool([])
-    wrong = client.post("/api/profiles/import", files={"file": ("a.abprofile", exported)}, data={"password": "nope nope"})
-    assert wrong.status_code == 400 and "Wrong password" in wrong.json()["detail"]
-    res = client.post("/api/profiles/import", files={"file": ("a.abprofile", exported)}, data={"password": "correct horse"})
+    res = client.post("/api/profiles/import", files={"file": ("a.abprofile", exported)})
     assert res.status_code == 201, res.text
     created = res.json()
     assert created["id"] == "profile_004" and "on_hold" not in created["account"]

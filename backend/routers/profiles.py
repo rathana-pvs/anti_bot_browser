@@ -9,7 +9,7 @@ from typing import Literal
 import time
 import uuid
 
-from fastapi import APIRouter, Body, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Body, File, HTTPException, Query, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
@@ -360,7 +360,6 @@ def _clear_stale(directory: Path, older_than_s: float = 6 * 3600) -> None:
 
 class ExportRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    password: str | None = Field(default=None, max_length=200)
     # Put the account left on this PC on hold, so it never runs on both PCs at once.
     hold: bool = True
     # The desktop app saves into Downloads; a browser on another machine downloads the file instead.
@@ -368,7 +367,7 @@ class ExportRequest(BaseModel):
 
 
 @router.post("/import", status_code=201)
-async def import_profile(file: UploadFile = File(...), password: str = Form("")):
+async def import_profile(file: UploadFile = File(...)):
     """Creates a new account on this PC from a file exported on another PC."""
     from backend.services import profile_transfer
     _clear_stale(IMPORT_WORK_DIR)
@@ -378,7 +377,7 @@ async def import_profile(file: UploadFile = File(...), password: str = Form(""))
         upload = work / "upload"
         with upload.open("wb") as out:
             await run_in_threadpool(shutil.copyfileobj, file.file, out, 1024 * 1024)
-        plain = await run_in_threadpool(profile_transfer.open_package, upload, work, password or None)
+        plain = await run_in_threadpool(profile_transfer.open_package, upload)
         return await run_in_threadpool(profile_transfer.import_package, plain)
     except ValueError as exc:  # TransferError, or the proxy refused by its per-proxy limit
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -407,7 +406,7 @@ async def export_profile(profile_id: str, request: ExportRequest):
 
     try:
         path, filename = await run_in_threadpool(
-            profile_transfer.build_export, profile_id, EXPORT_WORK_DIR, request.password or None)
+            profile_transfer.build_export, profile_id, EXPORT_WORK_DIR)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
@@ -426,7 +425,7 @@ async def export_profile(profile_id: str, request: ExportRequest):
         path.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail=f"Could not save the file to Downloads: {exc}") from exc
     return {"path": str(destination), "filename": destination.name, "size": destination.stat().st_size,
-            "encrypted": bool(request.password), "on_hold": request.hold}
+            "on_hold": request.hold}
 
 
 @router.put("/{profile_id}")
