@@ -143,18 +143,20 @@ export function PhonePreview({ active, reel, scene, onScene, job, fresh, onCance
   </div>;
 }
 
-type Box = NonNullable<SceneLayout['photo']>;
+export type Box = NonNullable<SceneLayout['photo']>;
 type Focal = Pick<ReelScene, 'focal_x' | 'focal_y'>;
+/** What framing needs from a scene: a Reel Studio scene, or an AI Reel Studio scene's background. */
+export type FramedPhoto = Pick<ReelScene, 'image_id' | 'focal_x' | 'focal_y' | 'zoom'>;
 const percent = (box: Box) => ({ left: `${box.x * 100}%`, top: `${box.y * 100}%`, width: `${box.w * 100}%`, height: `${box.h * 100}%` });
 
 /**
  * The photo's box, dragged to reframe it. While dragging, and until the new preview arrives, it shows the photo
  * itself, cropped the way the renderer crops it.
  */
-function PhotoDrag({ scene, box, onFrame, poster }: { scene: ReelScene; box: Box; onFrame: (patch: Focal) => void; poster: string }) {
+export function PhotoDrag({ scene, box, onFrame, poster }: { scene: FramedPhoto; box: Box; onFrame: (patch: Focal) => void; poster: string }) {
   const { url } = useThumbnail(scene.image_id);
   const photo = useRef<HTMLImageElement>(null);
-  const start = useRef<{ x: number; y: number; width: number; height: number; scene: ReelScene } | null>(null);
+  const start = useRef<{ x: number; y: number; width: number; height: number; scene: FramedPhoto } | null>(null);
   const [framing, setFraming] = useState<Focal | null>(null);
   useEffect(() => { setFraming(null); }, [poster]);
   const view = (width: number, height: number) => photo.current?.naturalWidth
@@ -192,7 +194,7 @@ function PhotoDrag({ scene, box, onFrame, poster }: { scene: ReelScene; box: Box
 }
 
 /** Under the preview: start or finish moving the photo, and go back to the framing the app chose from its faces. */
-function PhotoControls({ scene, moving, onMoving, onFrame }: { scene: ReelScene; moving: boolean; onMoving: (moving: boolean) => void; onFrame: (patch: Focal) => void }) {
+export function PhotoControls({ scene, moving, onMoving, onFrame }: { scene: FramedPhoto; moving: boolean; onMoving: (moving: boolean) => void; onFrame: (patch: Focal) => void }) {
   const [found, setFound] = useState<Focal | null>(null);
   useEffect(() => {
     setFound(null);

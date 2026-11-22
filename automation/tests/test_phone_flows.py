@@ -1642,6 +1642,47 @@ class WarmingTests(unittest.TestCase):
         run(Flows(device, lambda **e: None)._read_post(caption, lambda seconds: asyncio.sleep(0)))
         self.assertIn(("key", phone_device.KEY_BACK), device.actions)
 
+    PROFILE_END = [Line("Last post caption from long ago", (300, 400)), Line("Like", (100, 600)),
+                   Line("Comment", (300, 600)), Line("Share", (500, 600))]
+
+    def own_page_visit(self, device):
+        calls = []
+
+        async def to_feed(self_):
+            calls.append("feed")
+
+        async def to_profile(self_):
+            calls.append("profile")
+        options = dict(self.OPTIONS, surface="profile")
+        with patch.object(Flows, "discard_until_feed", to_feed), patch.object(Flows, "open_profile", to_profile), \
+                patch("phone.flows.random.random", lambda: 0.5):
+            outcome = run(Flows(device, lambda **e: None).visit(options))
+        return outcome, calls
+
+    def test_the_end_of_the_own_page_goes_back_to_the_feed(self):
+        device = self.device([self.PROFILE_END])
+        outcome, calls = self.own_page_visit(device)
+        self.assertEqual(calls, ["feed", "profile", "feed"])  # back to the feed, not swiping at the last post
+        self.assertEqual(outcome["stop_reason"], "finished")
+        self.assertGreater(device.t, 55)  # the rest of the time was spent on the feed
+
+    def test_a_profile_that_still_scrolls_is_browsed_to_the_end_of_its_time(self):
+        device = self.device()
+        swipes = lambda: sum(action[0] == "swipe" for action in device.actions)
+
+        async def moving(self_=None):
+            device.t += 0.3
+            return [Line(f"Post {swipes()} line {i}", (300, 300 + i * 200)) for i in range(4)]
+        device.read = moving
+        _, calls = self.own_page_visit(device)
+        self.assertEqual(calls, ["feed", "profile"])
+
+    def test_a_blank_screen_is_not_the_end_of_a_page(self):
+        self.assertFalse(screen.same_screen([], []))
+        self.assertTrue(screen.same_screen(self.PROFILE_END, self.PROFILE_END))
+        moved = [Line(line.text, (line.point[0], line.point[1] - 300)) for line in self.PROFILE_END]
+        self.assertFalse(screen.same_screen(self.PROFILE_END, moved))
+
     def test_a_request_to_stop_ends_the_session_at_the_next_safe_point(self):
         device = self.device()
         asks = iter([False, False, True])

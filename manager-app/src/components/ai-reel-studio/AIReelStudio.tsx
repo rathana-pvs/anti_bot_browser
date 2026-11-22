@@ -19,6 +19,8 @@ import { DirectorPanel } from '../reel-creator/DirectorPanel';
 import { CoachPanel } from './CoachPanel';
 import { MusicPanel } from './MusicPanel';
 import { Thumb } from '../reel-creator/Thumb';
+import { PhotoControls, PhotoDrag } from '../reel-creator/PhonePreview';
+import { useSceneLayout } from '../../hooks/useSceneLayout';
 
 interface Props { active: boolean; onUseReel: (media: CreatedReelMedia) => void }
 
@@ -26,6 +28,13 @@ const SCENARIOS = ['Calm explainer', 'Breaking update', 'Energetic, for younger 
 const GOALS = [{ value: 'engage', label: 'Get people talking' }, { value: 'readmore', label: 'Send them to the article' }];
 const PACING = [{ value: 'calm', label: 'Calm pace' }, { value: 'normal', label: 'Normal pace' }, { value: 'fast', label: 'Fast pace' }];
 const KIND_LABEL = { story: 'Story', stat: 'Figure', quote: 'Quote', end: 'End card' } as const;
+const TEXT_PLACES = [{ value: '0', label: 'Top' }, { value: '0.25', label: 'Upper' }, { value: '0.5', label: 'Middle' },
+  { value: '0.75', label: 'Lower' }, { value: '1', label: 'Bottom' }];
+
+function textPlaceOptions(position: number | null) {
+  const own = position != null && !TEXT_PLACES.some(p => Number(p.value) === position) ? [{ value: String(position), label: `${Math.round(position * 100)}% down` }] : [];
+  return [{ value: DEFAULT, label: 'Layout default' }, ...TEXT_PLACES, ...own];
+}
 /** The shared Select cannot hold an empty value; this stands for "keep the default". */
 const DEFAULT = '__default';
 
@@ -98,7 +107,8 @@ function Start({ active, busy, recipes, onCompose }: { active: boolean; busy: bo
   </section>;
 }
 
-function Preview({ composition, scene, onScene, video }: { composition: Composition; scene: number; onScene: (i: number) => void; video: string }) {
+function Preview({ composition, scene, onScene, video, onFrame }: { composition: Composition; scene: number; onScene: (i: number) => void; video: string;
+  onFrame: (patch: Pick<CompositionScene['background'], 'focal_x' | 'focal_y'>) => void }) {
   const [poster, setPoster] = useState('');
   const [problem, setProblem] = useState('');
   useEffect(() => {
@@ -113,13 +123,21 @@ function Preview({ composition, scene, onScene, video }: { composition: Composit
     }, 300);
     return () => { window.clearTimeout(timer); controller.abort(); };
   }, [composition, scene]);
+  const [moving, setMoving] = useState(false);
+  const index = Math.min(scene, composition.scenes.length - 1);
+  const background = composition.scenes[index]?.background;
+  useEffect(() => { setMoving(false); }, [scene, background?.image_id]);
+  const layout = useSceneLayout(!video && !!background?.image_id, composition, index);
+  const box = !video && poster ? layout?.photo ?? null : null;
   const tall = composition.ratio === '9:16';
   return <div className="mx-auto w-full max-w-[300px] space-y-2">
     <div className={`relative overflow-hidden rounded-[28px] border-4 border-zinc-800 bg-zinc-900 ${tall ? 'aspect-[9/16]' : 'aspect-[4/5]'}`}>
       {video ? <video src={video} controls playsInline className="h-full w-full object-cover" />
         : poster ? <img src={poster} alt={`Scene ${scene + 1} preview`} className="h-full w-full object-cover" />
         : <div className="flex h-full items-center justify-center"><Spinner label="Drawing the preview" className="text-zinc-500" /></div>}
+      {box && moving && background && <PhotoDrag scene={background} box={box} onFrame={onFrame} poster={poster} />}
     </div>
+    {box && background && <div className="flex justify-center"><PhotoControls scene={background} moving={moving} onMoving={setMoving} onFrame={onFrame} /></div>}
     {problem && <p role="alert" className="text-[11px] text-amber-300">{problem}</p>}
     <div className="flex justify-center gap-1.5" role="tablist" aria-label="Scenes">
       {composition.scenes.map((_, i) => <button key={i} type="button" role="tab" aria-selected={i === scene} aria-label={`Scene ${i + 1}`} onClick={() => onScene(i)}
@@ -133,6 +151,7 @@ function SceneCard({ scene, index, count, catalog, selected, busy, regenerating,
   onSelect: () => void; onEdit: (patch: Partial<CompositionScene>) => void; onRemove: () => void; onRegenerate: () => void;
 }) {
   const role = (r: StyleRole) => scene.styles[r]?.animation ?? '';
+  const textMoves = !!catalog.parts.find(p => p.kind === 'layout' && p.id === scene.layout)?.text_moves;
   const setRole = (r: StyleRole, animation: string) =>
     onEdit({ styles: { ...scene.styles, [r]: { ...(scene.styles[r] ?? {}), animation: animation || null } } });
   const chip = (label: string, kind: PartKind, value: string, change: (v: string) => void, keep?: string) =>
@@ -172,6 +191,11 @@ function SceneCard({ scene, index, count, catalog, selected, busy, regenerating,
     </div>
     <div className="grid grid-cols-2 gap-2 lg:grid-cols-3">
       {chip('Layout', 'layout', scene.layout, layout => onEdit({ layout: layout as CompositionScene['layout'] }))}
+      {textMoves && <div className="min-w-0 space-y-1" title="Move the headline and detail up or down the photo">
+        <p className="text-[10px] uppercase tracking-wide text-zinc-500">Text place</p>
+        <Select ariaLabel={`Scene ${index + 1} text place`} value={scene.text_position == null ? DEFAULT : String(scene.text_position)}
+          options={textPlaceOptions(scene.text_position)} onValueChange={v => onEdit({ text_position: v === DEFAULT ? null : Number(v) })} />
+      </div>}
       {chip('Camera', 'camera', scene.camera ?? '', camera => onEdit({ camera: (camera || null) as CompositionScene['camera'] }), 'Recipe default')}
       {index > 0 && chip('Transition in', 'transition', scene.transition ?? '', t => onEdit({ transition: (t || null) as CompositionScene['transition'] }), 'Crossfade')}
       {chip('Headline', 'animation', role('headline'), a => setRole('headline', a), 'Layout default')}
@@ -285,7 +309,8 @@ export function AIReelStudio({ active, onUseReel }: Props) {
     {!doc ? <Start active={active} busy={busy === 'compose'} recipes={recipes} onCompose={(...args) => { void studio.compose(...args); }} />
       : <div className="grid gap-6 lg:min-h-0 lg:flex-1 lg:grid-cols-[320px_minmax(0,1fr)]">
         <div className="space-y-4 lg:min-h-0 lg:overflow-y-auto lg:overscroll-contain lg:pb-6 lg:pr-1" aria-label="Preview and director">
-          <Preview composition={doc.composition} scene={scene} onScene={setScene} video={video} />
+          <Preview composition={doc.composition} scene={scene} onScene={setScene} video={video}
+            onFrame={patch => studio.editScene(scene, { background: { ...doc.composition.scenes[scene].background, ...patch } })} />
           <DirectorPanel model={modelLabel(loadAISettings(), 'direct')} busy={!!busy} directing={busy === 'direct'} result={studio.directed}
             onDirect={instruction => { void studio.direct(instruction); }} onUndo={studio.undoDirected} onScene={setScene} />
           <div className="mx-auto flex w-full max-w-[300px] flex-col gap-2">

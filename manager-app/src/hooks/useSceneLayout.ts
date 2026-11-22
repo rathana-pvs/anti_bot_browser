@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { reelApi } from '../services/reelCreator';
 import type { Reel, SceneLayout } from '../types/reelCreator';
+import type { Composition } from '../types/composition';
 
 /** Element boxes of the scene preview, fetched with the same pause as the preview image; null while unknown. */
-export function useSceneLayout(active: boolean, reel: Reel, scene: number): SceneLayout | null {
+export function useSceneLayout(active: boolean, reel: Reel | Composition, scene: number): SceneLayout | null {
   const [layout, setLayout] = useState<SceneLayout | null>(null);
   useEffect(() => {
     if (!active) return;

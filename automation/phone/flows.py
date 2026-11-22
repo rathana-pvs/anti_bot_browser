@@ -124,6 +124,8 @@ PROFILE_SCAN_SWIPE_S = 1.2
 # A back-up drag that moves the older post's time label less than this (1080-wide px) did not scroll.
 PROFILE_MOVED_MIN = 40
 # Seconds spent reading between scrolls of a warming session.
+# Forward swipes in a row that leave the screen as it was: the page has no more posts below.
+PAGE_END_SWIPES = 2
 READING_PAUSES = {"quick": (1.0, 3.0), "balanced": (2.5, 5.5), "relaxed": (5.0, 10.0)}
 
 
@@ -324,7 +326,13 @@ class Flows:
                 await self.open_profile()
                 snapshot = await self.read_page_header()
                 self.log(event="warm", action="own page")
-                scrolls += await self.browse(own_page_seconds, read_posts=False, **browsing)
+                started = dev.now()
+                scrolls += await self.browse(own_page_seconds, read_posts=False, until_end=True, **browsing)
+                left = own_page_seconds - (dev.now() - started)
+                if left > 5 and not should_stop():  # the profile ran out of posts first: the rest on the feed
+                    self.log(event="warm", action="end of own page; back to the feed")
+                    await self.discard_until_feed()
+                    scrolls += await self.browse(left, **browsing)
             except StepFailed as unavailable:
                 self.log(event="warm", action="own page unavailable", reason=str(unavailable)[:200])
                 fallback = True
@@ -355,12 +363,17 @@ class Flows:
         return snapshot
 
     async def browse(self, seconds: float, *, pace: str = "balanced", reread: bool = False, long_breaks: bool = False,
-                     read_posts: bool = True, should_stop: Callable[[], bool] = lambda: False) -> int:
+                     read_posts: bool = True, until_end: bool = False,
+                     should_stop: Callable[[], bool] = lambda: False) -> int:
         """Scrolls with reading pauses and, now and then, opens a post by its text. Every pass reads
-        the screen, so a logged-out or stopped account ends the session. Returns the scrolls made."""
+        the screen, so a logged-out or stopped account ends the session. Returns the scrolls made.
+        `until_end` (a profile, whose posts run out) also ends it once forward swipes stop moving the
+        screen, instead of swiping on at the last post."""
         dev = self.device
         until = dev.now() + seconds
         scrolls, reopened = 0, False
+        swiped_from: list[Line] | None = None  # the screen before the last forward swipe
+        stuck = 0
         read_at = random.randint(3, 6)
 
         async def pause(wanted: float) -> None:
@@ -372,7 +385,14 @@ class Flows:
             lines = await dev.read()
             self.check_account(lines)
             if await self.close_interruption(lines):
+                swiped_from = None
                 continue
+            if until_end and swiped_from is not None:
+                stuck = stuck + 1 if screen.same_screen(swiped_from, lines) else 0
+                swiped_from = None
+                if stuck >= PAGE_END_SWIPES:
+                    self.log(event="warm", action="end of page", scrolls=scrolls)
+                    break
             focus = await asyncio.to_thread(dev.focus)
             if focus and "com.facebook" not in focus:
                 if reopened:
@@ -391,6 +411,8 @@ class Flows:
             start, end, duration = self._feed_swipe(back)
             await self.scroll(start, end, duration)
             scrolls += 1
+            if not back:
+                swiped_from = lines
             self.log(event="warm", action="scroll back" if back else "scroll", scrolls=scrolls)
             await pause(random.uniform(*READING_PAUSES[pace]))
             if long_breaks and random.random() < 0.08:

@@ -50,6 +50,16 @@ def match(lines: list[Line], wanted: str, exact: bool = False, whole: bool = Fal
     return None
 
 
+def same_screen(before: list[Line], after: list[Line], tolerance: float = 15.0) -> bool:
+    """True when a swipe did not move the list: nearly every line still reads the same in the same
+    place. Needs a few lines either side, so a blank or loading screen never counts as the end."""
+    if len(before) < 3 or len(after) < 3:
+        return False
+    kept = sum(any(squash(a.text) == squash(b.text) and abs(a.point[1] - b.point[1]) <= tolerance for b in before)
+               for a in after)
+    return kept >= 0.8 * max(len(before), len(after))
+
+
 _UPLOAD_BAR = ("posting", "uploading", "finishingup", "processing", "keepfacebookopen")
 
 

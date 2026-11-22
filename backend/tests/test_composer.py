@@ -171,13 +171,13 @@ def test_chat_edits_set_emphasis_and_exit():
 
 
 
-def test_a_recipe_brings_its_own_type_colour_tag_and_music():
+def test_a_recipe_brings_its_own_type_colour_and_music_but_no_label():
     from backend.services.reel_creator.composer import apply_recipe
     reel = apply_recipe(composition(), 'boxed')
     styles = reel.reel_styles()
     assert styles['headline'].background == '#ffffff' and styles['headline'].animation == 'left'
     drawn = reel.reel_for()
-    assert drawn.accent_color == '#e11d48' and drawn.tag_text == 'UPDATE' and reel.music_preset == 'live_update'
+    assert drawn.accent_color == '#e11d48' and drawn.tag_text == '' and reel.music_preset == 'live_update'
     mine = reel.model_copy(update={'styles': {'headline': PartStyle(animation='rise')}})
     assert mine.reel_styles()['headline'].animation == 'rise' and mine.reel_styles()['headline'].background == '#ffffff'  # yours wins, field by field
 

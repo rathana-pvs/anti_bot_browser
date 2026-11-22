@@ -4,6 +4,7 @@ import { API_BASE } from './api';
 import { isDesktopApp } from './desktopEnvironment';
 import type { AIRequestConfig } from './aiSettings';
 import type { ArticleText, DirectorResult, DirectorTurn, PhotoImport, Reel, ReelAsset, ReelPhoto, ReelRatio, ReelGoal, ReelBrand, ReelCapabilities, HouseStyle, ReelDraft, ReelJob, SceneKind, SceneLayout, WrittenReel } from '../types/reelCreator';
+import type { Composition } from '../types/composition';
 
 export async function request(path: string, init?: RequestInit): Promise<Response> {
   const response = await fetch(`${API_BASE}/reel-creator${path}`, init);
@@ -133,7 +134,7 @@ export const reelApi = {
   thumbnail: async (id: string): Promise<Blob> => (await request(`/assets/${id}/thumbnail`)).blob(),
   poster: async (reel: Reel, scene: number, signal?: AbortSignal): Promise<Blob> =>
     (await request(`/poster?scene=${scene}`, { ...json('POST', reel), signal })).blob(),
-  layout: async (reel: Reel, scene: number, signal?: AbortSignal): Promise<SceneLayout> =>
+  layout: async (reel: Reel | Composition, scene: number, signal?: AbortSignal): Promise<SceneLayout> =>
     (await request(`/layout?scene=${scene}`, { ...json('POST', reel), signal })).json(),
   houseStyles: async (): Promise<HouseStyle[]> => (await request('/house-styles')).json(),
   saveHouseStyle: async (style: HouseStyle): Promise<HouseStyle[]> => (await request(`/house-styles/${style.id}`, json('PUT', style))).json(),
