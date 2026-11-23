@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from backend.services import website_connector as connector
 from backend.config import DATA_DIR, SHARED_MEDIA_DIR
 from backend.services.caption_hook import HookContext, valid_hook
+from backend.services.ai.key_pool import MAX_KEYS
 from backend.services.reel_creator.news_ai import SHORT_COPY_SOURCE_CHARS, provider_generate
 
 ROOT = DATA_DIR / 'website_connections'
@@ -180,6 +181,7 @@ class Prepare(BaseModel):
     # Reviewed captions of this same article, by account: only accounts without one ask the AI.
     known_captions: dict[str, str] = Field(default_factory=dict, max_length=100, exclude=True)  # not part of the fingerprint
     api_key: SecretStr = Field(default_factory=lambda: SecretStr(''))
+    api_keys: list[SecretStr] = Field(default_factory=list, max_length=MAX_KEYS)
     model: str = Field(default='gemini-3.8-flash', pattern=r'^gemini-[a-zA-Z0-9.-]{1,80}$')
 
     def provider_context(self):
@@ -240,6 +242,7 @@ class PrepareCaptions(BaseModel):
     media_file: str = Field(max_length=255)
     known_captions: dict[str, str] = Field(default_factory=dict, max_length=100)
     api_key: SecretStr = Field(default_factory=lambda: SecretStr(''))
+    api_keys: list[SecretStr] = Field(default_factory=list, max_length=MAX_KEYS)
     model: str = Field(default='gemini-3.8-flash', pattern=r'^gemini-[a-zA-Z0-9.-]{1,80}$')
 
 
@@ -252,7 +255,7 @@ def prepare_captions(request):
     title = request.title.strip() or source.splitlines()[0][:300]
     prepared = Prepare(request_id=uuid.uuid4().hex, connection_id='0' * 32, article={'title': title, 'content': source},
                        profiles=request.profiles, post_type=request.post_type, media_file=request.media_file,
-                       known_captions=request.known_captions, api_key=request.api_key, model=request.model)
+                       known_captions=request.known_captions, api_key=request.api_key, api_keys=request.api_keys, model=request.model)
     captions = captions_for(prepared)
     record = {'id': prepared.request_id, 'profiles': request.profiles, 'post_type': request.post_type,
               'media_file': request.media_file, 'caption': '', 'unique_captions': True, 'article_input': prepared.article.model_dump(),
@@ -268,7 +271,7 @@ def article_json(article):
 
 
 def fingerprint(request):
-    value = request.model_dump(exclude={'api_key', 'model', 'request_id'})
+    value = request.model_dump(exclude={'api_key', 'api_keys', 'model', 'request_id'})
     if not value['article']['custom_fields']:
         value['article'].pop('custom_fields')
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
@@ -392,6 +395,7 @@ class RegenerateHook(BaseModel):
     profile_id: str = Field(min_length=1, max_length=200)
     other_captions: list[str] = Field(default_factory=list, max_length=100)
     api_key: SecretStr = Field(default_factory=lambda: SecretStr(''))
+    api_keys: list[SecretStr] = Field(default_factory=list, max_length=MAX_KEYS)
     model: str = Field(default='gemini-3.8-flash', pattern=r'^gemini-[a-zA-Z0-9.-]{1,80}$')
 
 
@@ -401,7 +405,7 @@ def regenerate_hook(request):
         raise ValueError('Prepare unique Read more captions before regenerating a hook.')
     context = Prepare(request_id=record['id'], connection_id='0' * 32, article=record['article_input'],
                       profiles=[request.profile_id], post_type=record['post_type'], media_file=record['media_file'],
-                      api_key=request.api_key, model=request.model)
+                      api_key=request.api_key, api_keys=request.api_keys, model=request.model)
     context._previous = request.other_captions
     return {'caption': generate_hooks(context)[0]}
 

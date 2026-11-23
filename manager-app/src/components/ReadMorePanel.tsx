@@ -3,6 +3,7 @@ import { Checkbox } from './ui/Checkbox';
 import { Select } from './ui/Select';
 import { getSharedMediaUrl, uploadMediaFiles } from '../services/api';
 import { reelApi } from '../services/reelCreator';
+import { geminiFields } from '../services/aiSettings';
 import { articleMissing, articleOptions, captionsFingerprint, defaultWebsite, captionsReady, captionSourceOf, emptyArticle, knownCaptions, readMoreFingerprint, readMoreReady, websiteRequest, openWebsiteManagement, WEBSITE_CONNECTIONS_CHANGED } from '../services/websites';
 import type { ReadMoreDraft, ReelSource, WebsiteArticle, WebsiteConnection, WebsitePreparation } from '../services/websites';
 
@@ -70,11 +71,7 @@ export function ReadMorePanel({ value, onChange, type, media, caption, profiles,
     try { await action(); } catch (error) { if (mounted.current) setMessage(error instanceof Error ? error.message : 'Website request failed.'); }
     finally { if (mounted.current) setBusy(false); }
   };
-  const geminiKeys = () => {
-    let keys: { gemini?: string; gemini_model?: string } = {};
-    try { keys = JSON.parse(localStorage.getItem('app_api_keys') || '{}'); } catch { /* Backend reports missing key. */ }
-    return { api_key: keys.gemini || '', model: keys.gemini_model || 'gemini-3.8-flash' };
-  };
+  const geminiKeys = () => geminiFields(); // the backend reports a missing key
   const generateCaptions = () => run(async () => {
     if (!profiles.length) throw new Error('Choose accounts first.');
     const started = latestCaptions.current;

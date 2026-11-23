@@ -1,4 +1,4 @@
-"""Provider-neutral AI access: one request shape and one JSON call for Gemini, Claude and OpenAI-compatible APIs."""
+"""Provider-neutral AI access: one request shape and one JSON call, answered by Gemini."""
 from .generate import generate_json
 from .request import AIConfig
 

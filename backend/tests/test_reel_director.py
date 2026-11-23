@@ -24,7 +24,7 @@ def reel(**scene_values):
 
 
 def request(instruction='Make it punchier', **values):
-    return DirectRequest(provider='claude', api_key='k', model='claude-sonnet-5-5', reel=values.pop('reel', reel()),
+    return DirectRequest(api_key='k', model='gemini-3.8-flash', reel=values.pop('reel', reel()),
                          instruction=instruction, source_text=ARTICLE, **values)
 
 
@@ -123,7 +123,7 @@ def test_direct_route(monkeypatch):
     body['api_key'] = 'k'
     response = TestClient(app).post('/api/reel-creator/direct', json=body)
     assert response.status_code == 200 and response.json()['reel']['scenes'][0]['motion'] == 'zoom_in'
-    body['model'] = 'gemini-3.8-flash'
+    body['model'] = 'claude-sonnet-5-5'
     assert TestClient(app).post('/api/reel-creator/direct', json=body).status_code == 422
 
 
@@ -152,6 +152,8 @@ def test_gemini_errors_carry_googles_own_words_without_keys():
     bad_key = {'error': {'code': 400, 'message': 'API key not valid. Please pass a valid API key.'}}
     with pytest.raises(ValueError, match='rejected the API key'):
         provider_generate(cfg, client(400, bad_key), system='s', schema=Answer, context={})
+    from backend.services.ai.key_pool import POOL
+    POOL.forget(cfg.keys())  # that key now rests as rejected; these checks are about other errors
     schema = {'error': {'message': 'Invalid JSON payload received. Unknown name "anyOf" for key AIzaSyTESTKEY0000000000000000000'}}
     with pytest.raises(ValueError) as error:
         provider_generate(cfg, client(400, schema), system='s', schema=Answer, context={})

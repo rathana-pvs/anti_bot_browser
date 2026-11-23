@@ -3,12 +3,13 @@ from typing import Annotated
 
 from fastapi import APIRouter, File, HTTPException, Path, Query, UploadFile
 from fastapi.responses import FileResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 from backend.services.website_service import Article
 from backend.services.reel_creator.articles import extract_article
 from backend.services.reel_creator.audio_presets import preset_path
 from backend.services.ai import AIConfig
+from backend.services.ai.key_pool import MAX_KEYS, POOL
 from backend.services.reel_creator.composition import AnyDocument, Composition, DocumentDraftInput, DocumentRenderInput
 from backend.services.reel_creator.quality import review
 from backend.services.reel_creator.coach import CoachRequest
@@ -164,7 +165,7 @@ class VoiceoverInput(AIConfig):
 @router.post('/compositions/voiceover')
 def voiceover(value: VoiceoverInput):
     """Narrate each scene (Gemini text-to-speech) and turn on captions that follow the voice."""
-    config = AIConfig(provider=value.provider, api_key=value.api_key, model=value.model, base_url=value.base_url)
+    config = AIConfig(provider=value.provider, api_key=value.api_key, api_keys=value.api_keys, model=value.model)
     return checked(get_service().add_voiceover, config, value.composition, value.voice)
 
 
@@ -190,7 +191,19 @@ def review_composition(value: Composition):
 
 @router.post('/ai-check')
 def ai_check(value: AIConfig):
+    """Test the given key(s) now, even ones resting after a limit: a test is how a fixed key comes back."""
+    POOL.forget(value.keys())
     return checked(check_model, value)
+
+
+class KeyStatusInput(BaseModel):
+    api_keys: list[SecretStr] = Field(default_factory=list, max_length=MAX_KEYS)
+
+
+@router.post('/ai-keys/status')
+def ai_key_status(value: KeyStatusInput):
+    """What each saved Gemini key is doing, in the order given: ready, cooling down, out of daily quota, or rejected."""
+    return {'keys': [POOL.status(key.get_secret_value().strip()) for key in value.api_keys]}
 
 
 @router.post('/assets/{kind}')

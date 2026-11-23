@@ -11,7 +11,9 @@ import uuid
 import httpx
 from pydantic import BaseModel, Field, SecretStr
 from backend.config import DATA_DIR
-from backend.services.reel_creator.news_ai import log_usage
+from backend.services.ai.key_pool import MAX_KEYS, POOL, KeysExhausted
+from backend.services.ai.request import keys_of
+from backend.services.reel_creator.news_ai import key_limit, log_usage
 from automation.engine.text_entry_policy import contains_link
 
 VERSION = 1
@@ -39,6 +41,7 @@ class HookContext(BaseModel):
 class GenerateRequest(BaseModel):
     context: HookContext
     api_key: SecretStr = Field(default_factory=lambda: SecretStr(''))
+    api_keys: list[SecretStr] = Field(default_factory=list, max_length=MAX_KEYS)
     model: str = Field(default='gemini-3.8-flash', pattern=r'^gemini-[a-zA-Z0-9.-]{1,80}$')
 
 
@@ -108,6 +111,8 @@ def provider_generate(context, key, model, rejected):
               'generationConfig': {'responseMimeType': 'application/json', 'maxOutputTokens': 1500}},
         timeout=30,
     )
+    if response.status_code != 200:
+        key_limit(response)  # a limited or rejected key moves on to the next one
     response.raise_for_status()
     if len(response.content) > 100000:
         raise ValueError('Provider response exceeded the limit')
@@ -143,7 +148,7 @@ def generate(request: GenerateRequest, provider=None):
     candidates = []
     try:
         for _ in range(2):
-            output = provider(context, request.api_key.get_secret_value(), request.model, candidates)
+            output = POOL.run(keys_of(request), lambda key: provider(context, key, request.model, candidates))
             for hook in output:
                 if valid_hook(hook, context, context.recent_hooks + candidates):
                     candidates.append(hook.strip())
@@ -151,6 +156,9 @@ def generate(request: GenerateRequest, provider=None):
                     break
             if len(candidates) == 3 or not output:
                 break
+    except KeysExhausted as exc:
+        # Our own plain message (no key or every key resting); it never holds provider text or a key.
+        return {'status': 'provider_failed', 'message': str(exc), 'candidates': []}
     except Exception:
         # No exception strings: HTTP errors may contain credentials/provider payloads.
         return {'status': 'provider_failed', 'message': 'Hook generation failed. Check the configured key/model and try again.', 'candidates': []}

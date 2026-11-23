@@ -5,7 +5,7 @@ import { Textarea } from '../ui/Textarea';
 import type { DirectorChange, DirectorResult } from '../../types/reelCreator';
 
 interface Props {
-  /** The model the director uses, e.g. "Claude Sonnet 5.5". */
+  /** The model the director uses, e.g. "Gemini 3.8 Flash". */
   model: string;
   busy: boolean;
   /** This step is running. */

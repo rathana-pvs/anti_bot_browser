@@ -10,7 +10,8 @@ from typing import Literal
 import httpx
 from pydantic import ConfigDict, Field, SecretStr
 
-from backend.services.ai.request import AIConfig
+from backend.services.ai.key_pool import POOL, limit_for
+from backend.services.ai.request import AIConfig, keys_of
 
 logger = logging.getLogger(__name__)
 # Short writing (captions, hooks) needs the top of an article, not all of it. Checks still read what they were given.
@@ -47,7 +48,6 @@ def normalize_hashtags(value):
 class NewsRequest(AIConfig):
     """An article to write from, and the AI to write with (Gemini unless the request names another provider)."""
     model_config = ConfigDict(extra='forbid')
-    api_key: SecretStr
     text: str = Field(min_length=80, max_length=120000)
     source_url: str = Field(default='', max_length=2048)
     source_title: str = Field(default='', max_length=300)
@@ -68,25 +68,43 @@ def numbers(value):
     return set(re.findall(r'\d+(?:[.,]\d+)*', value))
 
 
-def provider_said(response, limit=240):
-    """The provider's own short error text, for the operator. Anything shaped like a key is removed."""
+def provider_error(response, limit=240):
+    """(the provider's own short error text, the whole error body) for an error response. Key-shaped text is removed."""
     try:
-        raw = response.read()[:8000]
-        error = json.loads(raw).get('error', {})
+        body = json.loads(response.read()[:8000])
+        error = body.get('error', {})
         text = error.get('message', '') if isinstance(error, dict) else str(error)
     except (ValueError, AttributeError, httpx.HTTPError):
-        return ''
+        return '', {}
     text = re.sub(r'AIza[0-9A-Za-z_-]{20,}|sk-[0-9A-Za-z_-]{16,}', '[key]', ' '.join(str(text).split()))
-    return text[:limit].rstrip() + ('…' if len(text) > limit else '')
+    return text[:limit].rstrip() + ('…' if len(text) > limit else ''), body
+
+
+def provider_said(response, limit=240):
+    """The provider's own short error text, for the operator. Anything shaped like a key is removed."""
+    return provider_error(response, limit)[0]
+
+
+def key_limit(response):
+    """Raise KeyLimited when this error is about the key (rate limit, quota, rejected), so the next key is tried.
+    Returns Google's own words otherwise."""
+    said, body = provider_error(response)
+    limited = limit_for(response.status_code, said, body)
+    if limited:
+        raise type(limited)(f'{limited} Gemini said: {said}' if said else str(limited), limited.kind, limited.retry_after)
+    return said
 
 
 def provider_generate(request, client_factory=httpx.Client, *, system, schema, action='news', context=None, prefix='', usage=None, images=()):
-    """One Gemini call that answers in `schema`. `prefix` is stable text sent before the per-call `context`."""
-    key = request.api_key.get_secret_value().strip()
-    if not key:
-        raise ValueError('Add your Gemini API key in Settings first.')
+    """One Gemini call that answers in `schema`, with each of the request's keys in turn until one is not limited.
+    `prefix` is stable text sent before the per-call `context`."""
+    return POOL.run(keys_of(request), lambda key: gemini_answer(request, key, client_factory, system=system, schema=schema, action=action,
+                                                                 context=context, prefix=prefix, usage=usage, images=images))
+
+
+def gemini_answer(request, key, client_factory, *, system, schema, action, context, prefix, usage, images):
     if context is None:
-        context = request.provider_context() if hasattr(request, 'provider_context') else request.model_dump(exclude={'api_key', 'model', 'provider', 'base_url'})
+        context = request.provider_context() if hasattr(request, 'provider_context') else request.model_dump(exclude={'api_key', 'api_keys', 'model', 'provider'})
     import base64
     pictures = [{'inlineData': {'mimeType': mime, 'data': base64.b64encode(data).decode()}} for mime, data in images]
     parts = ([{'text': prefix}] if prefix else []) + pictures + [{'text': json.dumps(context, ensure_ascii=False)}]
@@ -105,9 +123,7 @@ def provider_generate(request, client_factory=httpx.Client, *, system, schema, a
                                 403: 'Gemini access was denied. Check the API key and model in Settings.',
                                 404: 'The selected Gemini model is unavailable. Choose an available model in Settings.',
                                 429: 'Gemini quota or rate limit reached. Wait or check your API quota.'}
-                    said = provider_said(response)
-                    if response.status_code == 400 and 'api key' in said.lower():
-                        raise ValueError('Gemini rejected the API key. Check Settings.')
+                    said = key_limit(response)
                     message = messages.get(response.status_code, f'Gemini could not answer (error {response.status_code}).')
                     raise ValueError(f'{message} Gemini said: {said}' if said else message)
                 data = bytearray()

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Checkbox } from './ui/Checkbox';
 import { API_BASE } from '../services/api';
+import { configuredAI } from '../services/aiSettings';
 
 import { HookDraft, hookFingerprint, hookIsApproved } from '../services/captionHooks';
 export { hookIsApproved } from '../services/captionHooks';
@@ -31,10 +32,8 @@ export function CaptionHookEditor({ caption, media, type, value, recentHooks, on
         if (draft.sourceFingerprint !== fingerprint) throw new Error('Context changed. Generate hooks again.');
         body = { generation_id: draft.generationId, hook: draft.selected };
       } else {
-        let keys: { gemini?: string; gemini_model?: string } = {};
-        try { keys = JSON.parse(localStorage.getItem('app_api_keys') || '{}'); } catch { /* handled below */ }
-        if (!keys.gemini) throw new Error('Add your Gemini key in Settings first.');
-        body = { api_key: keys.gemini, model: keys.gemini_model || 'gemini-3.8-flash', context: {
+        const { api_key, api_keys, model } = configuredAI();
+        body = { api_key, api_keys, model, context: {
           original_caption: caption, media_file: media, post_type: type,
           description: draft.description || '', audience: draft.audience || '',
           language: draft.language || 'Match caption', tone: draft.tone || 'Friendly',
