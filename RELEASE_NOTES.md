@@ -1,3 +1,19 @@
+# Version 2.5.0
+
+- Export a PC account to a file and import it on another PC, with its login,
+  fingerprint and proxy; export several accounts at once.
+- Gemini is now the only AI provider. Add several Gemini keys: they take turns,
+  and a request moves to the next key when one hits a rate limit or its quota.
+- Phone warming visits read the Page name and follower count.
+- Better phone warming and AI Reel framing controls.
+- Turn on web access sets Tailscale up by itself on a new PC: it installs
+  Tailscale if needed, asks for the PC's password once, and opens the pages to
+  sign in, turn on MagicDNS/HTTPS and allow sharing.
+- Fix web access saying port 5176 is already in use after Tailscale timed out.
+
+**Linux only.** After installing, run **Settings → Setup and repair → Install /
+update runtime** when prompted.
+
 # Version 2.4.2
 
 - Replace a Webshare proxy and reassign its accounts to the replacement IP.
