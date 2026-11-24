@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Check, CircleAlert, Copy, Eye, EyeOff, Loader2, MonitorSmartphone, RefreshCw } from 'lucide-react';
+import { Check, CircleAlert, Copy, ExternalLink, Eye, EyeOff, Loader2, MonitorSmartphone, RefreshCw } from 'lucide-react';
 import { fetchWebAccess, newWebAccessPassword, setWebAccess, type WebAccessStatus } from '../services/webAccess';
 
 function CopyField({ label, value, secret = false }: { label: string; value: string; secret?: boolean }) {
@@ -46,6 +46,19 @@ export function WebAccessSettings() {
     const timer = waiting ? window.setInterval(() => { void load(); }, 3000) : undefined;
     return () => { active = false; if (timer) window.clearInterval(timer); };
   }, [waiting]);
+
+  // Turning on can wait for a password window or a Tailscale page; show what it is waiting for.
+  const [setup, setSetup] = useState<Pick<WebAccessStatus, 'setup_step' | 'action_url'> | null>(null);
+  useEffect(() => {
+    if (!busy) { setSetup(null); return; }
+    let active = true;
+    const timer = window.setInterval(() => {
+      fetchWebAccess()
+        .then((next) => { if (active) setSetup({ setup_step: next.setup_step, action_url: next.action_url }); })
+        .catch(() => { /* The status read is only a progress hint while turning on. */ });
+    }, 1500);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [busy]);
 
   const on = Boolean(status && (status.enabled || status.remembered));
   const [confirmNew, setConfirmNew] = useState(false);
@@ -98,6 +111,19 @@ export function WebAccessSettings() {
         {!status && !error && <Loader2 className="h-4 w-4 animate-spin text-zinc-500" aria-label="Loading" />}
       </div>
 
+      {busy && setup?.setup_step && <div role="status" className="space-y-2 rounded-lg border border-blue-500/30 bg-blue-500/5 px-3 py-2">
+        <p className="flex items-start gap-1.5 text-xs leading-5 text-blue-200">
+          <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden="true" />{setup.setup_step}
+        </p>
+        {setup.action_url && <>
+          <a href={setup.action_url} target="_blank" rel="noreferrer"
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-300 hover:text-blue-200">
+            <ExternalLink className="h-3.5 w-3.5" />Open the Tailscale page
+          </a>
+          <CopyField label="If the page did not open, open this address in a browser" value={setup.action_url} />
+        </>}
+      </div>}
+
       {status?.enabled && status.url && <div className="space-y-3 border-t border-zinc-800 pt-3">
         <CopyField label="Address" value={status.url} />
         {status.username && <CopyField label="Username" value={status.username} />}
@@ -130,6 +156,7 @@ export function WebAccessSettings() {
     <ul className="list-disc space-y-1.5 pl-5 text-[11px] leading-5 text-zinc-500">
       <li>Only devices signed in to your Tailscale network can reach the address, and every visit asks for the username and password.</li>
       <li>It stays on when the app or PC restarts. The username and password stay the same, even if you turn it off and on, until you make a new password.</li>
+      <li>The first time on a PC, the app installs Tailscale if needed, asks for this PC's password, and opens Tailscale pages to sign in and allow sharing.</li>
       <li>Install Tailscale on your phone or other computer and sign in to the same account to use it.</li>
     </ul>
   </div>;
