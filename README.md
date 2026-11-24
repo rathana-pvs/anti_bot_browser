@@ -332,8 +332,14 @@ to the same Tailscale network. Settings shows the address, username and
 password. It stays on across app and PC restarts (retrying until Tailscale is
 ready) until you turn it off. The username and password stay the same, even
 when you turn it off and on, until you press **Make a new password**. It never enables Funnel and leaves other Serve/Funnel
-rules alone. Tailscale must be signed in on this
-PC, and the first time it needs `sudo tailscale set --operator=$USER`. Web
+rules alone. The first time on a PC, **Turn on web access** does the Tailscale
+setup itself: it installs Tailscale if it is missing (Tailscale's official
+installer) and runs `tailscale set --operator=$USER`, asking for the PC's
+password in Ubuntu's password window, then opens the Tailscale pages to sign in
+to allow sharing (Serve/HTTPS) and, if this PC has no `*.ts.net` name yet, to
+turn on MagicDNS and HTTPS Certificates, and continues once they are done. Settings
+shows each step and the page address. Turning back on after a restart never
+asks for a password or opens pages; it only retries. Web
 visitors cannot turn it on or off or see the password.
 
 To open the running web app from another device on the same trusted Wi-Fi,

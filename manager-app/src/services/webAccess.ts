@@ -14,6 +14,10 @@ export interface WebAccessStatus {
   https_port: number;
   web_app_built: boolean;
   opened_from_web: boolean;
+  /** While Turn on sets Tailscale up on this PC: what it is waiting for. */
+  setup_step: string | null;
+  /** The Tailscale page the person must finish (sign in, or allow sharing); also opened in the browser. */
+  action_url: string | null;
 }
 
 export async function fetchWebAccess(): Promise<WebAccessStatus> {
