@@ -8,9 +8,9 @@ import { StorageControl } from './StorageControl';
 import { WebsiteConnectionsSettings } from './WebsiteConnectionsSettings';
 import { WebAccessSettings } from './WebAccessSettings';
 import { MANAGE_WEBSITE_CONNECTIONS } from '../services/websites';
-import { CLAUDE_MODELS, GEMINI_MODELS, PROVIDERS, loadAISettings, providerConfig, saveAISettings, type AIProvider, type AISettings } from '../services/aiSettings';
+import { GEMINI_MODELS, MAX_KEYS, loadAISettings, newKeyRow, providerConfig, saveAISettings, type AISettings, type GeminiKey, type GeminiKeyStatus } from '../services/aiSettings';
 import { reelApi } from '../services/reelCreator';
-import { Check, CircleAlert, Cpu, Eye, EyeOff, Globe, HardDrive, KeyRound, Loader2, MonitorSmartphone, Settings, X } from 'lucide-react';
+import { Check, CircleAlert, Cpu, Eye, EyeOff, Globe, HardDrive, KeyRound, Loader2, MonitorSmartphone, Plus, Settings, Trash2, X } from 'lucide-react';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -22,7 +22,7 @@ interface SettingsModalProps {
 type Section = 'api-keys' | 'updates' | 'resources' | 'storage' | 'websites' | 'web-access';
 
 const SECTION_COPY: Record<Section, { title: string; description: string }> = {
-  'api-keys': { title: 'AI models', description: 'Connect Gemini, Claude or another AI, and choose which one writes and directs reels.' },
+  'api-keys': { title: 'AI models', description: 'Your Gemini keys, used in turn: when one hits a limit, the next one takes over.' },
   updates: { title: 'App updates', description: 'Check published versions and update the whole app.' },
   resources: { title: 'Resources', description: 'Control how much automation runs at once and which OCR engine it uses.' },
   websites: { title: 'Websites', description: 'Connect websites once, then select them when posting.' },
@@ -30,7 +30,7 @@ const SECTION_COPY: Record<Section, { title: string; description: string }> = {
   'web-access': { title: 'Web access', description: 'Use this app from your phone or another computer through Tailscale.' },
 };
 
-type KeyId = 'gemini' | 'claude' | 'openai';
+type KeyId = string;
 
 interface KeyFieldProps { id: KeyId; label: string; value: string; placeholder?: string; visible: boolean; onToggle: () => void; onChange: (value: string) => void }
 
@@ -51,18 +51,19 @@ function KeyField({ id, label, value, placeholder = 'API key', visible, onToggle
 type CheckState = { state: 'idle' } | { state: 'checking' } | { state: 'ok'; text: string } | { state: 'failed'; text: string };
 
 /** One tiny request in the director's own answer format, with the values on screen (saved or not). */
-function ModelCheck({ settings, provider }: { settings: AISettings; provider: AIProvider }) {
+function ModelCheck({ settings, onlyKey, onChecked }: { settings: AISettings; onlyKey?: string; onChecked?: () => void }) {
   const [check, setCheck] = useState<CheckState>({ state: 'idle' });
-  const config = (() => { try { return JSON.stringify(providerConfig(settings, provider)); } catch { return ''; } })();
+  const config = (() => { try { return JSON.stringify(providerConfig(settings, onlyKey)); } catch { return ''; } })();
   useEffect(() => { setCheck({ state: 'idle' }); }, [config]);
   const run = async () => {
     setCheck({ state: 'checking' });
     try {
-      const result = await reelApi.checkAI(providerConfig(settings, provider));
+      const result = await reelApi.checkAI(providerConfig(settings, onlyKey));
       setCheck({ state: 'ok', text: `Works: ${result.model} answered in ${result.seconds.toFixed(1)} s.` });
     } catch (err) {
       setCheck({ state: 'failed', text: err instanceof Error ? err.message : 'The check failed.' });
     }
+    onChecked?.();
   };
   return <div className="flex items-start gap-3">
     <button type="button" onClick={() => { void run(); }} disabled={check.state === 'checking'}
@@ -72,18 +73,66 @@ function ModelCheck({ settings, provider }: { settings: AISettings; provider: AI
     <p role="status" aria-live="polite" className={`min-w-0 pt-1.5 text-[11px] leading-4 ${check.state === 'failed' ? 'text-red-400' : check.state === 'ok' ? 'text-emerald-400' : 'text-zinc-500'}`}>
       {check.state === 'checking' ? 'Asking the model…' : check.state === 'ok' ? <span className="inline-flex items-start gap-1"><Check className="mt-px h-3 w-3 shrink-0" />{check.text}</span>
         : check.state === 'failed' ? <span className="inline-flex items-start gap-1"><CircleAlert className="mt-px h-3 w-3 shrink-0" />{check.text}</span>
-        : 'Sends one tiny request to check the key and model.'}
+        : onlyKey !== undefined ? 'Sends one tiny request with this key, even while it rests.' : 'Sends one tiny request to check the key and model.'}
     </p>
   </div>;
 }
 
+function waitText(seconds: number | null) {
+  if (seconds === null) return '';
+  if (seconds < 90) return `${seconds} s`;
+  if (seconds < 5400) return `${Math.ceil(seconds / 60)} min`;
+  return `${(seconds / 3600).toFixed(1)} h`;
+}
+
+function KeyStatusBadge({ status }: { status?: GeminiKeyStatus }) {
+  if (!status) return null;
+  const [text, tone] = status.state === 'ready' ? ['Ready', 'border-emerald-500/30 text-emerald-300']
+    : status.state === 'rate' ? [`Cooling down · ${waitText(status.seconds_left)}`, 'border-amber-500/30 text-amber-300']
+    : status.state === 'quota' ? [`Daily quota used · back in ${waitText(status.seconds_left)}`, 'border-amber-500/30 text-amber-300']
+    : ['Rejected · check this key', 'border-red-500/30 text-red-300'];
+  return <span role="status" className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium ${tone}`}>{text}</span>;
+}
+
+interface GeminiKeysProps {
+  settings: AISettings; statuses: Record<string, GeminiKeyStatus>; visible: Set<KeyId>;
+  onToggle: (id: KeyId) => void; onChange: (keys: GeminiKey[]) => void; onChecked: () => void;
+}
+
+/** Every saved Gemini key: a label, the key, what it is doing now, and a test of that key alone. */
+function GeminiKeys({ settings, statuses, visible, onToggle, onChange, onChecked }: GeminiKeysProps) {
+  const rows = settings.gemini_keys;
+  const update = (id: string, patch: Partial<GeminiKey>) => onChange(rows.map(row => row.id === id ? { ...row, ...patch } : row));
+  return <div className="space-y-3">
+    {rows.length === 0 && <p className="text-[11px] text-zinc-500">No key yet. Add one from Google AI Studio.</p>}
+    {rows.map((row, index) => <div key={row.id} className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
+      <div className="flex items-center gap-2">
+        <input aria-label={`Name of Gemini key ${index + 1}`} value={row.label} onChange={(event) => update(row.id, { label: event.target.value })}
+          placeholder={`Key ${index + 1}`} maxLength={40} autoComplete="off"
+          className="min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1.5 py-1 text-xs font-medium text-zinc-100 outline-none hover:border-zinc-800 focus:border-blue-500" />
+        <KeyStatusBadge status={statuses[row.key.trim()]} />
+        <button type="button" onClick={() => onChange(rows.filter(other => other.id !== row.id))} aria-label={`Remove ${row.label || `key ${index + 1}`}`}
+          className="rounded p-1 text-zinc-500 hover:bg-zinc-800 hover:text-red-300"><Trash2 className="h-3.5 w-3.5" /></button>
+      </div>
+      <KeyField id={row.id} label={row.label || `Gemini key ${index + 1}`} value={row.key} visible={visible.has(row.id)}
+        onToggle={() => onToggle(row.id)} onChange={(key) => update(row.id, { key })} />
+      {row.key.trim() && <ModelCheck settings={settings} onlyKey={row.key} onChecked={onChecked} />}
+    </div>)}
+    {rows.length < MAX_KEYS && <button type="button" onClick={() => onChange([...rows, newKeyRow(`Key ${rows.length + 1}`)])}
+      className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-900">
+      <Plus className="h-3.5 w-3.5" />Add key
+    </button>}
+  </div>;
+}
+
 const card = 'space-y-3 rounded-xl border border-zinc-800 bg-zinc-950/60 p-4';
-const textInput = 'mt-2 w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2.5 text-xs text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-blue-500';
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, onOpenSetup, onRequestOpen }) => {
   const [section, setSection] = useState<Section>('api-keys');
   const [apiKeys, setApiKeys] = useState<AISettings>(loadAISettings);
   const [visibleKeys, setVisibleKeys] = useState<Set<KeyId>>(new Set());
+  const [keyStatuses, setKeyStatuses] = useState<Record<string, GeminiKeyStatus>>({});
+  const [statusTick, setStatusTick] = useState(0);
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const savedTimer = useRef<number>();
@@ -116,6 +165,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
   useEffect(() => () => {
     if (savedTimer.current) window.clearTimeout(savedTimer.current);
   }, []);
+
+  // What each key on screen is doing (ready, cooling down, out of quota, rejected), refreshed while this page is open.
+  const draftKeys = [...new Set(apiKeys.gemini_keys.map(row => row.key.trim()).filter(Boolean))];
+  const draftKeysKey = draftKeys.join('\n');
+  useEffect(() => {
+    if (!isOpen || section !== 'api-keys' || !draftKeys.length) { setKeyStatuses({}); return; }
+    let live = true;
+    const refresh = () => reelApi.keyStatus(draftKeys).then(({ keys }) => {
+      if (live) setKeyStatuses(Object.fromEntries(draftKeys.map((key, index) => [key, keys[index]])));
+    }).catch(() => { /* The badges stay as they were; calls still report limits themselves. */ });
+    void refresh();
+    const timer = window.setInterval(refresh, 5000);
+    return () => { live = false; window.clearInterval(timer); };
+    // draftKeysKey stands for draftKeys; statusTick refreshes right after a Test.
+  }, [isOpen, section, draftKeysKey, statusTick]);
 
   if (!isOpen) return null;
 
@@ -186,55 +250,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
             {section === 'api-keys' ? (
               <div className="max-w-xl space-y-5">
                 <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-xs leading-5 text-amber-200/80">
-                  Keys and model choices are saved on this computer. Each key is sent only to its own provider, when you use it.
+                  Your keys and model choice are saved on this computer. Keys are sent only to Google, when you use them.
                 </div>
                 <div className={card}>
-                  <p className="text-xs font-semibold text-zinc-100">Google Gemini</p>
-                  <KeyField id="gemini" label="Google Gemini" value={apiKeys.gemini} visible={visibleKeys.has('gemini')} onToggle={() => toggle('gemini')} onChange={(gemini) => change({ gemini })} />
-                  <div className="space-y-2">
-                    <p className="text-xs font-medium text-zinc-300">Model</p>
-                    <Select ariaLabel="Gemini model version" value={apiKeys.gemini_model} options={GEMINI_MODELS} onValueChange={(gemini_model) => change({ gemini_model })} />
-                    <p className="text-[11px] text-zinc-500">Model availability depends on your API key. Legacy models require existing access.</p>
+                  <div>
+                    <p className="text-xs font-semibold text-zinc-100">Google Gemini keys</p>
+                    <p className="mt-1 text-[11px] leading-5 text-zinc-500">Keys take turns. When one hits a rate limit or its daily quota, or Google rejects it, the same request moves on to the next key, and that key rests until it can answer again.</p>
                   </div>
-                  <ModelCheck settings={apiKeys} provider="gemini" />
+                  <GeminiKeys settings={apiKeys} statuses={keyStatuses} visible={visibleKeys} onToggle={toggle}
+                    onChange={(gemini_keys) => change({ gemini_keys })} onChecked={() => setStatusTick((tick) => tick + 1)} />
                 </div>
                 <div className={card}>
-                  <p className="text-xs font-semibold text-zinc-100">Claude</p>
-                  <KeyField id="claude" label="Claude" value={apiKeys.claude} visible={visibleKeys.has('claude')} onToggle={() => toggle('claude')} onChange={(claude) => change({ claude })} />
-                  <div className="space-y-2">
-                    <p className="text-xs font-medium text-zinc-300">Model</p>
-                    <Select ariaLabel="Claude model" value={apiKeys.claude_model} options={CLAUDE_MODELS} onValueChange={(claude_model) => change({ claude_model })} />
-                  </div>
-                  <ModelCheck settings={apiKeys} provider="claude" />
-                </div>
-                <div className={card}>
-                  <p className="text-xs font-semibold text-zinc-100">OpenAI-compatible</p>
-                  <p className="text-[11px] leading-5 text-zinc-500">OpenAI, OpenRouter, or a model on this computer such as Ollama (http://localhost:11434/v1) or LM Studio. A local model needs no key.</p>
-                  <label className="block text-xs font-medium text-zinc-300">Address
-                    <input aria-label="OpenAI-compatible address" value={apiKeys.openai_base_url} onChange={(event) => change({ openai_base_url: event.target.value })}
-                      placeholder="https://api.openai.com/v1" autoComplete="off" className={textInput} />
-                  </label>
-                  <KeyField id="openai" label="OpenAI-compatible" value={apiKeys.openai} placeholder="API key (optional for a local model)" visible={visibleKeys.has('openai')} onToggle={() => toggle('openai')} onChange={(openai) => change({ openai })} />
-                  <label className="block text-xs font-medium text-zinc-300">Model
-                    <input aria-label="OpenAI-compatible model" value={apiKeys.openai_model} onChange={(event) => change({ openai_model: event.target.value })}
-                      placeholder="gpt-5.5, llama3.3, …" autoComplete="off" className={textInput} />
-                  </label>
-                  <ModelCheck settings={apiKeys} provider="openai" />
-                </div>
-                <div className={card}>
-                  <p className="text-xs font-semibold text-zinc-100">Use in Reel Studio</p>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <div className="space-y-2">
-                      <p className="text-xs font-medium text-zinc-300">Writing</p>
-                      <Select ariaLabel="AI for writing reels" value={apiKeys.write_provider} options={PROVIDERS} onValueChange={(write_provider) => change({ write_provider: write_provider as AIProvider })} />
-                      <p className="text-[11px] text-zinc-500">First drafts, hooks and captions.</p>
-                    </div>
-                    <div className="space-y-2">
-                      <p className="text-xs font-medium text-zinc-300">Director</p>
-                      <Select ariaLabel="AI for directing reels" value={apiKeys.direct_provider} options={PROVIDERS} onValueChange={(direct_provider) => change({ direct_provider: direct_provider as AIProvider })} />
-                      <p className="text-[11px] text-zinc-500">Chat edits to a reel. A fast, low-cost model works well.</p>
-                    </div>
-                  </div>
+                  <p className="text-xs font-semibold text-zinc-100">Model</p>
+                  <Select ariaLabel="Gemini model version" value={apiKeys.gemini_model} options={GEMINI_MODELS} onValueChange={(gemini_model) => change({ gemini_model })} />
+                  <p className="text-[11px] text-zinc-500">Every key uses this model. Model availability depends on your API key. Legacy models require existing access.</p>
                 </div>
                 {saveError && <p role="alert" className="text-xs text-red-400">{saveError}</p>}
                 <div className="flex items-center justify-end gap-3 pt-2">

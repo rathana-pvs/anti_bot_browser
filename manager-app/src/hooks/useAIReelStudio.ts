@@ -223,7 +223,7 @@ export function useAIReelStudio(active: boolean, onUseReel: (media: CreatedReelM
   const addVoiceover = (voice: string) => attempt('voice', async () => {
     const base = docRef.current;
     if (!base) return;
-    const result = await compositionApi.voiceover({ ...providerConfig(loadAISettings(), 'gemini'), composition: base.composition, voice });
+    const result = await compositionApi.voiceover({ ...providerConfig(loadAISettings()), composition: base.composition, voice });
     setComposition(() => result.composition);
     setVoiceNote(result.characters ? `Voiced ${result.characters.toLocaleString()} characters.` : 'Voiceover is up to date; nothing new was voiced.');
   });

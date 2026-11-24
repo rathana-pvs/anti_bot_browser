@@ -38,9 +38,13 @@ def wav_seconds(data):
 
 
 def synthesize(config, text, voice='Kore', model=DEFAULT_MODEL, style='', client_factory=httpx.Client):
-    """The narration as WAV bytes. English only for now. Raises ValueError with a plain message."""
-    if config.provider != 'gemini':
-        raise ValueError('Voiceover needs a Gemini key for now. Add one in Settings → AI models.')
+    """The narration as WAV bytes. English only for now. Raises ValueError with a plain message.
+    Each of the request's keys is tried in turn when one hits a rate limit, a quota or is rejected."""
+    from .key_pool import POOL
+    return POOL.run(config.keys(), lambda key: speak(key, text, voice, model, style, client_factory))
+
+
+def speak(key, text, voice, model, style, client_factory):
     if model not in MODELS:
         raise ValueError('Choose an available voice model.')
     if voice not in VOICES:
@@ -56,14 +60,12 @@ def synthesize(config, text, voice='Kore', model=DEFAULT_MODEL, style='', client
     started = time.monotonic()
     try:
         with client_factory(timeout=httpx.Timeout(90, connect=10), trust_env=False, follow_redirects=False) as client:
-            with client.stream('POST', ENDPOINT, headers={'x-goog-api-key': config.key()}, json=payload) as response:
+            with client.stream('POST', ENDPOINT, headers={'x-goog-api-key': key}, json=payload) as response:
                 if response.status_code != 200:
-                    from backend.services.reel_creator.news_ai import provider_said
-                    said = provider_said(response)
+                    from backend.services.reel_creator.news_ai import key_limit
+                    said = key_limit(response)
                     messages = {401: 'Gemini rejected the API key. Check Settings.', 403: 'Gemini access to voices was denied. Check the key.',
                                 404: 'The voice model is unavailable for this key.', 429: 'Gemini quota or rate limit reached. Wait and try again.'}
-                    if response.status_code == 400 and 'api key' in said.lower():
-                        raise ValueError(messages[401])
                     message = messages.get(response.status_code, f'Gemini could not make the voiceover (error {response.status_code}).')
                     raise ValueError(f'{message} Gemini said: {said}' if said else message)
                 data = bytearray()

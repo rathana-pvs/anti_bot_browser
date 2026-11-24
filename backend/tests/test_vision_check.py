@@ -10,7 +10,7 @@ from PIL import Image
 from backend.services.ai import AIConfig, generate_json
 from backend.services.reel_creator.composition import Background, Composition, CScene
 from backend.services.reel_creator.vision_check import VisionRequest, check_with_ai, contact_sheet
-from test_ai_providers import Answer, FakeClaude, claude_reply, openai_client
+from test_ai_providers import Answer
 
 
 @pytest.fixture(autouse=True)
@@ -25,18 +25,7 @@ def png(color='#336699', size=(90, 160)):
     return out.getvalue()
 
 
-def test_each_provider_gets_the_image_its_own_way():
-    fake = FakeClaude(claude_reply('{"words": "ok"}'))
-    generate_json(AIConfig(provider='claude', api_key='k', model='claude-sonnet-5-5'), system='S', schema=Answer, context={}, action='t',
-                  images=[png()], client_factory=lambda key: fake)
-    block = fake.calls[0]['messages'][0]['content'][0]
-    assert block['type'] == 'image' and block['source']['media_type'] == 'image/png'
-    seen = []
-    body = {'choices': [{'finish_reason': 'stop', 'message': {'content': '{"words": "ok"}'}}]}
-    generate_json(AIConfig(provider='openai', api_key='k', model='gpt-test'), system='S', schema=Answer, context={}, action='t',
-                  images=[png()], client_factory=openai_client(body=body, seen=seen))
-    content = json.loads(seen[0].content)['messages'][1]['content']
-    assert content[0]['image_url']['url'].startswith('data:image/png;base64,') and content[1]['type'] == 'text'
+def test_gemini_gets_the_image_inline():
     sent = []
 
     def gemini(**kwargs):
@@ -64,7 +53,7 @@ def test_contact_sheet_is_a_numbered_grid_within_the_width():
 
 
 def request(composition):
-    return VisionRequest(provider='claude', api_key='k', model='claude-sonnet-5-5', composition=composition)
+    return VisionRequest(api_key='k', model='gemini-3.8-flash', composition=composition)
 
 
 def test_visual_fixes_pass_the_same_checks_and_never_touch_words():

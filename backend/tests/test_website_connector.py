@@ -179,7 +179,7 @@ def test_schema_required_fields_types_and_content_conversion():
 
 def test_legacy_preparation_fingerprint_does_not_change_for_empty_custom_fields():
     request = web.Prepare(request_id='a'*32, connection_id='b'*32, article={'title': 'Story', 'excerpt': 'Summary', 'content': 'Body'}, profiles=['a'], post_type='photo', media_file='a.jpg')
-    old = request.model_dump(exclude={'api_key', 'model', 'request_id'})
+    old = request.model_dump(exclude={'api_key', 'api_keys', 'model', 'request_id'})
     old['article'].pop('custom_fields')
     expected = hashlib.sha256(json.dumps(old, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
     assert web.fingerprint(request) == expected

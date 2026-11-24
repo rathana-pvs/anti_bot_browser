@@ -2,7 +2,7 @@ import type { ReelArticleLink } from './websites';
 import { invoke } from '@tauri-apps/api/core';
 import { API_BASE } from './api';
 import { isDesktopApp } from './desktopEnvironment';
-import type { AIRequestConfig } from './aiSettings';
+import type { AIRequestConfig, GeminiKeyStatus } from './aiSettings';
 import type { ArticleText, DirectorResult, DirectorTurn, PhotoImport, Reel, ReelAsset, ReelPhoto, ReelRatio, ReelGoal, ReelBrand, ReelCapabilities, HouseStyle, ReelDraft, ReelJob, SceneKind, SceneLayout, WrittenReel } from '../types/reelCreator';
 import type { Composition } from '../types/composition';
 
@@ -29,7 +29,7 @@ export interface DirectRequest extends AIRequestConfig {
 }
 
 export interface WriteRequest {
-  provider?: AIRequestConfig['provider']; base_url?: string;
+  provider?: AIRequestConfig['provider']; api_keys?: string[];
   api_key: string; model: string; text: string; source_url: string; source_title: string; publisher: string;
   look: 'auto' | Reel['look'];
   goal?: ReelGoal;
@@ -73,6 +73,8 @@ export const reelApi = {
   article: async (url: string, signal?: AbortSignal): Promise<ArticleText> => (await request('/article', { ...json('POST', { url }), signal })).json(),
   write: async (value: WriteRequest, signal?: AbortSignal): Promise<WrittenReel> => (await request('/write', { ...json('POST', value), signal })).json(),
   checkAI: async (value: AIRequestConfig): Promise<{ ok: boolean; model: string; seconds: number }> => (await request('/ai-check', json('POST', value))).json(),
+  /** What each Gemini key is doing now, in the order given. */
+  keyStatus: async (apiKeys: string[]): Promise<{ keys: GeminiKeyStatus[] }> => (await request('/ai-keys/status', json('POST', { api_keys: apiKeys }))).json(),
   direct: async (value: DirectRequest): Promise<DirectorResult> => (await request('/direct', json('POST', value))).json(),
   upload: async (kind: ReelAsset['kind'], file: File): Promise<ReelAsset> => {
     const data = new FormData();

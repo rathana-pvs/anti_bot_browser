@@ -108,7 +108,7 @@ def composition():
 
 
 def direct_request(instruction, reel=None):
-    return ComposeDirectRequest(provider='claude', api_key='k', model='claude-sonnet-5-5', reel=reel or composition(),
+    return ComposeDirectRequest(api_key='k', model='gemini-3.8-flash', reel=reel or composition(),
                                 instruction=instruction, source_text=ARTICLE)
 
 

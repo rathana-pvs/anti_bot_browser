@@ -63,10 +63,10 @@ def test_gemini_speech_request_and_reply():
 def test_gemini_speech_errors_are_plain():
     with pytest.raises(ValueError, match='rejected the API key'):
         synthesize(GEMINI, 'Hi.', client_factory=gemini({'error': {'message': 'API key not valid.'}}, status=400))
+    from backend.services.ai.key_pool import POOL
+    POOL.forget(GEMINI.keys())  # the rejected key rests; the checks below are about other errors
     with pytest.raises(ValueError, match='no audio'):
         synthesize(GEMINI, 'Hi.', client_factory=gemini({'steps': []}))
-    with pytest.raises(ValueError, match='Gemini key'):
-        synthesize(AIConfig(provider='claude', model='claude-opus-5-5', api_key='k'), 'Hi.')
     with pytest.raises(ValueError, match='voices'):
         synthesize(GEMINI, 'Hi.', voice='Nobody')
 
