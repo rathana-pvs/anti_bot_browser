@@ -54,6 +54,9 @@ import { AccountTab, clearableFailures, phoneOf, useQueueExecutions } from './co
 import { fetchSetupStatus, isDesktopApp, SetupSnapshot } from './services/setup';
 import { useAppDialog } from './components/ui/AppDialogProvider';
 import { setVisibleInterval } from './services/visibleInterval';
+import { MiniStatus } from './components/mini/MiniStatus';
+import { useStatusPanel } from './components/mini/useStatusPanel';
+import { liveTargetOf, useLiveWindows } from './components/live/liveWindows';
 
 interface ProfileActionError {
   profileId: string;
@@ -311,6 +314,16 @@ export const App: React.FC = () => {
     setQueueRequest({ profileId, executionId, key: Date.now() });
   };
 
+  const liveWindows = useLiveWindows();
+  const popOutLive = (profile: Profile) => {
+    liveWindows.open?.(liveTargetOf(profile)).catch((error) => showToast(`Couldn’t open the live window: ${String(error)}`, 'error'));
+  };
+
+  const statusPanel = useStatusPanel((target) => {
+    if (target.page === 'live') openAccountPage(target.profileId, 'browser');
+    else openQueue(target.profileId, target.executionId);
+  });
+
   const clearFailures = async (profile: Profile, before?: number) => {
     const items = clearableFailures(profile.id, executions, before);
     const when = before === undefined ? '' : new Date(before).toDateString() === new Date().toDateString()
@@ -549,7 +562,7 @@ export const App: React.FC = () => {
   return (
     <div
       onContextMenu={(e) => { if (!allowsNativeMenu(e.target)) e.preventDefault(); }}
-      className="w-screen h-screen flex flex-col bg-background text-zinc-100 overflow-hidden font-sans"
+      className="relative w-screen h-screen flex flex-col bg-background text-zinc-100 overflow-hidden font-sans"
     >
       <div className="flex-1 flex overflow-hidden">
         {/* An account opened from Phones stays under Phones in the rail; leaving it by the rail closes it. */}
@@ -560,7 +573,8 @@ export const App: React.FC = () => {
             if (fromPhones || (next === 'accounts' && page === 'accounts')) setOpenAccount(null);
           }}
           onOpenSettings={() => setIsSettingsOpen(true)}
-          badges={{ accounts: accountsAttention, queue: campaignAttention }} />
+          badges={{ accounts: accountsAttention, queue: campaignAttention }}
+          statusOpen={statusPanel.place !== 'hidden'} onToggleStatus={statusPanel.toggle} />
 
         <main className={`flex-1 flex min-w-0 overflow-hidden ${page === 'accounts' ? '' : 'hidden'}`}>
           {currentAccount && openAccount && <AccountPage key={currentAccount.id} profile={currentAccount} devices={devices} tab={openAccount.tab}
@@ -569,7 +583,9 @@ export const App: React.FC = () => {
               onBack={() => { const from = openAccount.from; setOpenAccount(null); if (from === 'devices') setPage('devices'); }}
               onOpenDevice={openDevice} handlers={handlers} busy={busyIds.has(currentAccount.id)}
               executions={executions} proxies={proxies} profiles={profiles} groups={profileGroups} onSave={handleUpdate}
-              onOpenQueue={(executionId) => openQueue(currentAccount.id, executionId)} onReload={loadData} />}
+              onOpenQueue={(executionId) => openQueue(currentAccount.id, executionId)} onReload={loadData}
+              poppedOut={liveWindows.popped.has(currentAccount.id)}
+              onPopOut={liveWindows.open ? () => popOutLive(currentAccount) : undefined} />}
           {/* Kept mounted behind an open account, so Back returns to the same folder, filters and scroll. */}
           <div className={`flex min-h-0 min-w-0 flex-1 ${currentAccount && openAccount ? 'hidden' : ''}`}>
             <AccountsPage profiles={profiles} proxies={proxies} devices={devices} onOpenDevice={openDevice} groups={profileGroups} executions={executions} handlers={handlers} folderHandlers={folderHandlers}
@@ -615,6 +631,23 @@ export const App: React.FC = () => {
           />
         </main>
       </div>
+
+      {statusPanel.place === 'docked' && (
+        <div className="pointer-events-none absolute bottom-10 right-4 z-40 w-[340px]">
+          <div className="pointer-events-auto">
+            <MiniStatus mode="docked"
+              onOpenQueue={(executionId, profileId) => openQueue(profileId, executionId)}
+              onOpenLive={(target) => {
+                if (!liveWindows.open) { openAccountPage(target.id, 'browser'); return; }
+                liveWindows.open(target).catch(() => openAccountPage(target.id, 'browser'));
+              }}
+              onPopOut={statusPanel.popOut ? () => {
+                statusPanel.popOut!().catch((error) => showToast(`Couldn’t open the status window: ${String(error)}`, 'error'));
+              } : undefined}
+              onClose={() => statusPanel.setPlace('hidden')} />
+          </div>
+        </div>
+      )}
 
       <TelemetryFooter stats={systemStats} loading={!statsLoaded} />
 

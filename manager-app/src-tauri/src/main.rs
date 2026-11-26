@@ -11,6 +11,8 @@ use uuid::Uuid;
 struct BackendProcess(Mutex<Option<Child>>);
 struct SetupProcess(Mutex<bool>);
 mod app_updates;
+mod live_window;
+mod mini_window;
 mod reel_export;
 mod reel_import;
 mod setup_output;
@@ -1401,7 +1403,16 @@ fn main() {
             app_updates::check_app_update,
             app_updates::download_app_update,
             app_updates::install_app_update,
-            app_updates::app_update_version
+            app_updates::app_update_version,
+            mini_window::open_mini_window,
+            mini_window::show_main_window,
+            mini_window::dock_mini_window,
+            mini_window::set_mini_on_top,
+            mini_window::set_mini_height,
+            live_window::open_live_window,
+            live_window::list_live_windows,
+            live_window::set_window_on_top,
+            live_window::dock_live_window
         ])
         .setup(|app| {
             let handle = app.handle();
@@ -1429,6 +1440,9 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if mini_window::handle_window_event(window, event) {
+                return;
+            }
             if let tauri::WindowEvent::Destroyed = event {
                 // When main window is destroyed, terminate the backend server process
                 if window.label() == "main" {

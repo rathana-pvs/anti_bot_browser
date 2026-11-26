@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { AlertTriangle, ArrowLeft, Pause, Play, Smartphone, Square } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, ExternalLink, Pause, Play, Smartphone, Square } from 'lucide-react';
 import { openAccountOnPhone } from '../../services/devices';
 import { Profile, ProfileUpdateRequest } from '../../types/profile';
 import { ProxyItem } from '../../types/proxy';
@@ -27,7 +27,7 @@ const TABS: { value: AccountTab; label: string }[] = [
   { value: 'activity', label: 'Activity' },
 ];
 
-export function AccountPage({ profile, devices, tab: requestedTab, onTabChange, onBack, backLabel = 'Accounts', onOpenDevice, handlers, busy, executions, proxies, profiles, groups, onSave, onOpenQueue, onReload }: {
+export function AccountPage({ profile, devices, tab: requestedTab, onTabChange, onBack, backLabel = 'Accounts', onOpenDevice, handlers, busy, executions, proxies, profiles, groups, onSave, onOpenQueue, onReload, poppedOut = false, onPopOut }: {
   profile: Profile; devices: AndroidDevice[]; tab: AccountTab; onTabChange: (tab: AccountTab) => void; onBack: () => void;
   /** Opens the Devices page on this phone serial, or on This PC when null. */
   backLabel?: string; onOpenDevice?: (serial: string | null) => void;
@@ -36,6 +36,10 @@ export function AccountPage({ profile, devices, tab: requestedTab, onTabChange, 
   onSave: (profileId: string, updates: ProfileUpdateRequest) => Promise<void>;
   onOpenQueue: (executionId?: string) => void;
   onReload: () => Promise<void> | void;
+  /** The account's screen is showing in its own window, so this page doesn't stream it too. */
+  poppedOut?: boolean;
+  /** Opens the screen in its own window, or brings that window forward. */
+  onPopOut?: () => void;
 }) {
   const { showAlert, showToast } = useAppDialog();
   const [opening, setOpening] = useState(false);
@@ -89,6 +93,9 @@ export function AccountPage({ profile, devices, tab: requestedTab, onTabChange, 
                 : <Button size="sm" variant="outline" loading={busy} onClick={() => run('pause')} title="Pause keeps memory but uses no CPU"><Pause className="h-3 w-3" />Pause</Button>}
               <Button size="sm" variant="outline" disabled={busy} onClick={() => run('stop')}><Square className="h-3 w-3" />Stop</Button>
             </>}
+          {onPopOut && <Button size="sm" variant="outline" onClick={onPopOut}
+            title={poppedOut ? 'Bring this account’s screen window to the front' : 'Show this account’s screen in its own window'}>
+            <ExternalLink className="h-3 w-3" />{poppedOut ? 'Show window' : 'Pop out'}</Button>}
           <ActionMenu ariaLabel={`More actions for ${profile.name}`}
             items={accountMenu(profile, handlers, { includeOpen: false, onScreen: isOnScreen(profile, devices) }).filter(item => !['Start', 'Stop', 'Pause', 'Resume', 'Edit settings'].includes(item.label))} />
         </div>
@@ -107,7 +114,14 @@ export function AccountPage({ profile, devices, tab: requestedTab, onTabChange, 
       <span className="flex-1">Saved settings aren’t active yet. {profile.status === 'running' ? 'Stop and start' : 'Start'} this account to apply them.</span>
     </div>}
 
-    {tab === 'browser' && android && profile.runtime
+    {tab === 'browser' && poppedOut
+      ? <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
+        <ExternalLink aria-hidden="true" className="h-6 w-6 text-zinc-500" />
+        <p className="text-sm font-semibold text-zinc-200">This screen is open in its own window</p>
+        <p className="max-w-sm text-xs text-zinc-500">One view at a time keeps the stream smooth. Dock that window back to see the screen here.</p>
+        {onPopOut && <Button size="sm" variant="outline" onClick={onPopOut}>Bring to front</Button>}
+      </div>
+      : tab === 'browser' && android && profile.runtime
       ? <div className="flex min-h-0 flex-1"><PhoneLiveView key={profile.id} runtime={profile.runtime} onScreen={isOnScreen(profile, devices)}
         onSendFiles={(dropped) => handlers.phoneFiles(profile, dropped)} /></div>
       : tab === 'browser'

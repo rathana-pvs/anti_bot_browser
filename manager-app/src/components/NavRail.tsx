@@ -1,5 +1,5 @@
 import { ReactNode } from 'react';
-import { Clock, Film, Globe, Send, MonitorSmartphone, Settings, Users, Wand2 } from 'lucide-react';
+import { Activity, Clock, Film, Globe, Send, MonitorSmartphone, Settings, Users, Wand2 } from 'lucide-react';
 import { cn } from './ui/cn';
 
 export type AppPage = 'accounts' | 'post' | 'queue' | 'reel_studio' | 'ai_studio' | 'devices' | 'proxies';
@@ -15,9 +15,11 @@ const ITEMS: { value: AppPage; label: string; icon: ReactNode }[] = [
 ];
 
 /** App-wide navigation. Badges show counts that need the user on that page. */
-export function NavRail({ page, onPageChange, onOpenSettings, badges = {} }: {
+export function NavRail({ page, onPageChange, onOpenSettings, badges = {}, statusOpen, onToggleStatus }: {
   page: AppPage; onPageChange: (page: AppPage) => void; onOpenSettings: () => void;
   badges?: Partial<Record<AppPage, number>>;
+  /** The worker status panel: shown (docked or in its own window) or not. */
+  statusOpen?: boolean; onToggleStatus?: () => void;
 }) {
   const item = (label: string, icon: ReactNode, active: boolean, onClick: () => void, badge?: number) => (
     <button key={label} type="button" onClick={onClick} aria-current={active ? 'page' : undefined}
@@ -30,6 +32,7 @@ export function NavRail({ page, onPageChange, onOpenSettings, badges = {} }: {
   return <nav aria-label="Main" className="flex w-[4.5rem] shrink-0 flex-col items-center gap-1 border-r border-border bg-surface py-3 select-none">
     {ITEMS.map(entry => item(entry.label, entry.icon, page === entry.value, () => onPageChange(entry.value), badges[entry.value]))}
     <div className="flex-1" />
+    {onToggleStatus && item('Status', <Activity className="h-5 w-5" />, !!statusOpen, onToggleStatus)}
     {item('Settings', <Settings className="h-5 w-5" />, false, onOpenSettings)}
   </nav>;
 }
