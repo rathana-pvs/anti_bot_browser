@@ -844,8 +844,13 @@ class Flows:
                     raise
                 self.log(event="retry", step="composer", detail=str(missed)[:200])
                 await self.discard_until_feed()
+        photo = self._photo_icon_left_of(entry) if found == "GIF" else None
         if found == "composer_photo":
             await dev.tap(entry)
+        elif photo:
+            # The centred bar holds four or five icons (photo, [effects,] GIF, sticker, video), so the photo
+            # icon's slot left of GIF varies; its picture on GIF's row says where it is.
+            await dev.tap(photo)
         elif found == "GIF":
             # A full-width bar starts at the left edge; the newer floating bar is centred, with the photo
             # icon two slots (about 128 px each at 1080 wide) left of GIF.
@@ -868,13 +873,64 @@ class Flows:
             raise StepFailed(f"picker: still asking for camera roll access; {texts(lines)}")
         return point
 
+    def _photo_icon_left_of(self, gif: Point) -> Point | None:
+        """The composer's photo icon on the GIF label's row and left of it, or None when not seen there."""
+        icon = self.device.find_icon("composer_photo")
+        if not icon:
+            return None
+        same_row = abs(icon[1] - gif[1]) < self.device.pt(0, 60)[1]
+        return icon if same_row and icon[0] < gif[0] else None
+
+    async def open_reel_picker(self) -> bool:
+        """From the feed: + then Reel, past Facebook's camera roll consent, to the reel picker's grid. Nothing
+        is picked. False, back on the feed, when this feed's + menu has no Reel. An older stuck reel offered
+        back is discarded, as this step has made nothing of its own."""
+        if not await self._reel_from_create_menu():
+            return False
+        dev = self.device
+        anchors = ["Gallery", "Recents", "Allow access", "Allow Facebook to access"]
+        for _ in range(CONSENT_TAPS + 2):
+            found, point, lines = await self.wait_for("reel picker", anchors, timeout=15, whole=("Gallery", "Recents"))
+            if await self._discard_unfinished_reel(lines):
+                continue
+            asking = match(lines, "Allow access") or match(lines, "Allow Facebook to access")
+            if found in ("Gallery", "Recents") and not asking:
+                return True
+            target = match(lines, "Allow", exact=True) or match(lines, "Allow access", exact=True)
+            if not target:
+                dev.snapshot(f"fail_reel_picker_{int(time.time())}")
+                raise StepFailed(f"reel picker: camera roll consent without an Allow button; {texts(lines)}")
+            self.log(event="interruption", kind="camera roll consent", step="reel picker", answer="Allow")
+            await dev.tap(target)
+        dev.snapshot(f"fail_reel_picker_{int(time.time())}")
+        raise StepFailed(f"reel picker: still asking for camera roll access; {texts(lines)}")
+
     async def get_ready(self) -> None:
-        """First use after login: open the Gallery picker once, so Facebook's own consent screens are
-        answered before any job, then leave without posting. Facebook's icon is put on the home screen first."""
+        """First use after login: open a media picker once, so Facebook's own consent screens are answered
+        before any job, then leave without posting. Facebook's icon is put on the home screen first. The
+        picker is reached through + then Reel; the post composer's Gallery is the fallback, for a feed whose +
+        menu has no Reel or whose reel picker did not open."""
         await self.pin_to_home_screen()
         await self.open_feed()
-        await self.open_gallery()
-        self.log(event="gallery_ready")
+        reel_error = None
+        try:
+            if await self.open_reel_picker():
+                self.log(event="gallery_ready", route="reel")
+                await self.device.key(KEY_BACK)  # the picker; nothing was picked
+                await self.discard_until_feed()
+                return
+        except StepFailed as missed:
+            reel_error = missed
+            self.log(event="route", step="get ready", reason=f"reel picker: {str(missed)[:200]}")
+            await self.device.key(KEY_BACK)
+            await self.discard_until_feed()
+        try:
+            await self.open_gallery()
+        except StepFailed as composer_error:
+            if reel_error:
+                raise StepFailed(f"{reel_error}; then the post composer: {composer_error}") from composer_error
+            raise
+        self.log(event="gallery_ready", route="composer")
         await self.device.key(KEY_BACK)  # the picker, then the empty composer is discarded
         await self.discard_until_feed()
 

@@ -1497,6 +1497,78 @@ class GetReadyTests(unittest.TestCase):
         self.assertIn(("key", 4), device.actions)
         self.assertNotIn("about_to_publish", kinds)
 
+    def _ready(self, device, gallery=None):
+        events = []
+        flows = Flows(device, lambda **e: events.append(e))
+
+        async def ok():
+            return None
+        patches = [patch.object(flows, "open_feed", ok), patch.object(flows, "discard_until_feed", ok),
+                   patch.object(flows, "pin_to_home_screen", ok)]
+        if gallery:
+            patches.append(patch.object(flows, "open_gallery", gallery))
+        for p in patches:
+            p.start()
+        try:
+            run(flows.get_ready())
+        finally:
+            for p in patches:
+                p.stop()
+        return events
+
+    def test_get_ready_goes_through_reel_and_allows_camera_roll_access(self):
+        menu = lines(("Create story", 530), ("Post", 158), ("Story", 229), ("B Reel", 297), ("Live", 369))
+        device = FakeDevice([menu, lines(("Allow Facebook to access your camera roll", 400), ("Allow", 1100)),
+                             lines(("Recents", 300), ("Gallery", 200))])
+        device.icons["create"] = (426.0, 90.0)
+
+        async def composer():
+            raise AssertionError("the composer route is only a fallback")
+        events = self._ready(device, composer)
+        taps = [a[1] for a in device.actions if a[0] == "tap"]
+        self.assertEqual(taps, [(426.0, 90.0), (100.0, 297.0), (100.0, 1100.0)])
+        self.assertIn({"event": "gallery_ready", "route": "reel"}, events)
+        self.assertIn(("key", 4), device.actions)
+        self.assertNotIn("about_to_publish", [e["event"] for e in events])
+
+    def test_get_ready_uses_the_composer_when_the_plus_menu_has_no_reel(self):
+        device = FakeDevice([lines(("Create story", 530), ("Post", 158), ("Story", 229), ("Live", 369))])
+        device.icons["create"] = (426.0, 90.0)
+        called = []
+
+        async def composer():
+            called.append(True)
+            return (100.0, 200.0)
+        events = self._ready(device, composer)
+        self.assertEqual(called, [True])
+        self.assertIn({"event": "gallery_ready", "route": "composer"}, events)
+
+    def test_get_ready_falls_back_to_the_composer_when_the_reel_picker_does_not_open(self):
+        menu = lines(("Create story", 530), ("Post", 158), ("Story", 229), ("B Reel", 297), ("Live", 369))
+        device = FakeDevice([menu, lines(("Something else", 400))])
+        device.icons["create"] = (426.0, 90.0)
+        called = []
+
+        async def composer():
+            called.append(True)
+            return (100.0, 200.0)
+        events = self._ready(device, composer)
+        self.assertEqual(called, [True])
+        self.assertIn("route", [e["event"] for e in events])
+        self.assertIn({"event": "gallery_ready", "route": "composer"}, events)
+
+    def test_get_ready_reports_both_routes_when_both_fail(self):
+        menu = lines(("Create story", 530), ("Post", 158), ("Story", 229), ("B Reel", 297), ("Live", 369))
+        device = FakeDevice([menu, lines(("Something else", 400))])
+        device.icons["create"] = (426.0, 90.0)
+
+        async def composer():
+            raise StepFailed("picker: none of ['Gallery'] appeared")
+        with self.assertRaises(StepFailed) as failed:
+            self._ready(device, composer)
+        self.assertIn("reel picker", str(failed.exception))
+        self.assertIn("then the post composer: picker", str(failed.exception))
+
     def test_composer_with_a_photo_video_row_opens_the_picker(self):
         device = FakeDevice([lines(("What's on your mind?", 300)), lines(("Photo/video", 700)), lines(("Gallery", 200))])
         run(Flows(device, lambda **e: None).open_gallery())
@@ -1515,6 +1587,31 @@ class GetReadyTests(unittest.TestCase):
                              [Line("New post", (100.0, 90.0)), Line("GIF", (gif_x, 1390.0))],
                              lines(("New post", 90), ("Gallery", 200))])
         run(Flows(device, lambda **e: None).open_gallery())
+        self.assertIn(("tap", (gif_x - device.pt(255, 0)[0], 1390.0)), device.actions)
+
+    def test_four_icon_bar_taps_the_photo_icon_one_slot_left_of_gif(self):
+        # "New post" with Music/People/Location chips and a bar of photo, GIF, sticker, video: the photo icon
+        # is one slot left of GIF, so the five-icon bar's two-slot offset would tap empty space.
+        device = FakeDevice()
+        gif = (device.pt(476, 0)[0], 1396.0)
+        photo = (device.pt(349, 0)[0], 1396.0)
+        device.screens = [lines(("What's on your mind?", 300)),
+                          [Line("New post", (100.0, 90.0)), Line("Done", (990.0, 90.0)), Line("Music", (140.0, 530.0)),
+                           Line("What's on your mind?", (280.0, 690.0)), Line("GIF", gif), Line("::", (60.0, 1550.0))],
+                          lines(("New post", 90), ("Gallery", 200))]
+        device.icons["composer_photo"] = photo
+        run(Flows(device, lambda **e: None).open_gallery())
+        self.assertIn(("tap", photo), device.actions)
+        self.assertNotIn(("tap", (gif[0] - device.pt(255, 0)[0], gif[1])), device.actions)
+
+    def test_photo_icon_off_the_gif_row_is_not_tapped(self):
+        gif_x = FakeDevice().pt(540, 0)[0]
+        device = FakeDevice([lines(("What's on your mind?", 300)),
+                             [Line("New post", (100.0, 90.0)), Line("GIF", (gif_x, 1390.0))],
+                             lines(("New post", 90), ("Gallery", 200))])
+        device.icons["composer_photo"] = (100.0, 400.0)
+        run(Flows(device, lambda **e: None).open_gallery())
+        self.assertNotIn(("tap", (100.0, 400.0)), device.actions)
         self.assertIn(("tap", (gif_x - device.pt(255, 0)[0], 1390.0)), device.actions)
 
     def test_composer_icon_bar_without_a_readable_gif_is_found_by_the_photo_icon(self):
