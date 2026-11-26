@@ -50,3 +50,28 @@ def regenerate_hook(request: service.RegenerateHook):
 @router.post('/{connection_id}/test')
 def test_connection(connection_id: str):
     return checked(service.test_connection, connection_id)
+
+
+@router.post('/summarize')
+def summarize(request: service.SummarizeArticle):
+    return checked(service.summarize_article, request)
+
+
+@router.post('/summarize/prompt')
+def summary_prompt(request: service.SummarizeArticle):
+    return checked(service.summary_prompt, request)
+
+
+@router.post('/summarize/pasted')
+def pasted_summary(request: service.PastedSummary):
+    return checked(service.pasted_summary, request)
+
+
+@router.post('/captions/prompt')
+def caption_prompt(request: service.PrepareCaptions):
+    return checked(service.caption_prompt, request)
+
+
+@router.post('/captions/pasted')
+def pasted_captions(request: service.PastedCaptions):
+    return checked(service.pasted_captions, request)

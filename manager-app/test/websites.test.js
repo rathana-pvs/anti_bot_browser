@@ -151,3 +151,10 @@ test('the article summary names what is missing', () => {
   assert.deepEqual(web.articleMissing(article, { 'custom_fields.topic': { required: true, label: 'Topic' }, excerpt: { required: true }, tags: {} }), ['Topic', 'excerpt']);
   assert.deepEqual(web.articleMissing(article, { 'custom_fields.topic': { required: true, default: 'news' }, title: { required: true } }), []);
 });
+test('summary format stays inside the backend limits', () => {
+  assert.equal(web.summaryFormatProblem(web.defaultSummaryFormat()), '');
+  assert.match(web.summaryFormatProblem({ paragraphs: 0, wordsPerParagraph: 60 }), /paragraphs/);
+  assert.match(web.summaryFormatProblem({ paragraphs: 3, wordsPerParagraph: 10 }), /words per paragraph/);
+  assert.match(web.summaryFormatProblem({ paragraphs: 12, wordsPerParagraph: 150 }), /in total/);
+  assert.match(web.summaryFormatProblem({ paragraphs: 2.5, wordsPerParagraph: 60 }), /paragraphs/);
+});

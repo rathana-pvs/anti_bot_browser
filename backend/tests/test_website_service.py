@@ -309,3 +309,82 @@ def test_regenerating_a_caption_works_without_a_website(monkeypatch):
     record = web.prepare_captions(captions_request())
     result = web.regenerate_hook(web.RegenerateHook(preparation_id=record['id'], profile_id='page-a', other_captions=[]))
     assert 'Neighbors' in result['caption']
+
+
+def summary_request(**changes):
+    words = ' '.join(['The council met in 2026 to discuss the park plan with residents.'] * 40)
+    return web.SummarizeArticle(**{'title': 'Park plan', 'content': words, 'paragraphs': 2, 'words_per_paragraph': 20,
+                                   'api_key': 'private-provider-key', **changes})
+
+
+def paragraph(count, extra=''):
+    return ' '.join(['word'] * (count - len(extra.split()))) + (' ' + extra if extra else '')
+
+
+def test_summary_returns_requested_paragraphs_joined_by_blank_lines():
+    provider = Mock(return_value={'paragraphs': [paragraph(20), paragraph(18, 'in 2026')]})
+    result = web.summarize_article(summary_request(), provider)
+    assert result['content'].split('\n\n') == result['paragraphs'] and len(result['paragraphs']) == 2
+    assert provider.call_count == 1
+    assert 'private-provider-key' not in json.dumps(summary_request().provider_context())
+
+
+def test_summary_retries_wrong_shape_and_new_numbers_then_explains():
+    provider = Mock(side_effect=[{'paragraphs': [paragraph(20)]},
+                                 {'paragraphs': [paragraph(20), paragraph(40)]},
+                                 {'paragraphs': [paragraph(20), paragraph(20, '999 parks')]}])
+    with pytest.raises(ValueError, match='number that is not in the article'):
+        web.summarize_article(summary_request(), provider)
+    assert provider.call_count == 3
+
+
+def test_summary_rejects_impossible_lengths_without_asking_the_ai():
+    provider = Mock()
+    with pytest.raises(ValueError, match='at most 1,500'):
+        web.summarize_article(summary_request(paragraphs=12, words_per_paragraph=150), provider)
+    with pytest.raises(ValueError, match='fewer than'):
+        web.summarize_article(summary_request(content='Too short to summarize.'), provider)
+    provider.assert_not_called()
+
+
+def test_reply_parser_reads_json_fences_lists_and_plain_text():
+    assert web.parse_reply('Sure!\n```json\n{"hooks": ["One", "Two"]}\n```\nEnjoy.', 'hooks') == ['One', 'Two']
+    assert web.parse_reply('{"paragraphs": ["A", " B "]}', 'paragraphs') == ['A', 'B']
+    assert web.parse_reply('["A", "B"]', 'hooks') == ['A', 'B']
+    assert web.parse_reply('Here: {"captions": ["A"]} ok', 'hooks') == ['A']
+    assert web.parse_reply('1. First hook\n2) Second hook\n- Third', 'hooks') == ['First hook', 'Second hook', 'Third']
+    assert web.parse_reply('First paragraph\nstill first.\n\nSecond.', 'paragraphs') == ['First paragraph still first.', 'Second.']
+    with pytest.raises(ValueError, match='Paste'):
+        web.parse_reply('  ', 'hooks')
+
+
+def test_summary_prompt_carries_rules_and_article_but_no_key():
+    prompt = web.summary_prompt(summary_request())['prompt']
+    assert 'exactly 2 paragraphs' in prompt and '{"paragraphs"' in prompt and 'The council met in 2026' in prompt
+    assert 'private-provider-key' not in prompt
+
+
+def test_pasted_summary_is_used_with_a_warning_when_it_misses_the_shape():
+    good = web.pasted_summary(web.PastedSummary(**summary_request().model_dump(), reply=json.dumps({'paragraphs': [paragraph(20), paragraph(20)]})))
+    assert good['warning'] == '' and len(good['content'].split('\n\n')) == 2
+    short = web.pasted_summary(web.PastedSummary(**summary_request().model_dump(), reply=paragraph(20)))
+    assert 'paragraphs instead of 2' in short['warning'] and short['content'] == paragraph(20)
+
+
+def test_caption_prompt_asks_only_for_accounts_without_a_caption(monkeypatch):
+    monkeypatch.setattr(web, 'provider_generate', Mock(side_effect=AssertionError('No AI')))
+    result = web.caption_prompt(captions_request(known_captions={'page-a': HOOKS[0]}))
+    assert result['count'] == 1 and 'exactly 1 hooks' in result['prompt'] and '"profiles": [\n  0\n ]' in result['prompt'] and HOOKS[0] in result['prompt']
+    assert 'page-b' not in result['prompt'] and 'private-provider-key' not in result['prompt']
+
+
+def test_pasted_captions_are_checked_then_saved_without_ai(monkeypatch):
+    monkeypatch.setattr(web, 'provider_generate', Mock(side_effect=AssertionError('No AI')))
+    bad = web.pasted_captions(web.PastedCaptions(**captions_request().model_dump(), reply=json.dumps({'hooks': [HOOKS[0], 'Too short']})))
+    assert bad['record'] is None and bad['captions']['page-a']['problem'] == '' and '2 words' in bad['captions']['page-b']['problem']
+    fixed = web.pasted_captions(web.PastedCaptions(**captions_request().model_dump(), captions={'page-a': HOOKS[0], 'page-b': HOOKS[1]}))
+    assert fixed['record']['captions'] == HOOKS
+    post = web.snapshot_post({'type': 'reel', 'media_file': 'video.mp4', 'read_more': {'preparation_id': fixed['record']['id']}}, ['page-a', 'page-b'])
+    assert web.execution_variant(post, 'page-b')['spun_caption'] == HOOKS[1]
+    with pytest.raises(ValueError, match='2 accounts need one'):
+        web.pasted_captions(web.PastedCaptions(**captions_request().model_dump(), reply=HOOKS[0]))

@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { Checkbox } from './ui/Checkbox';
 import { Select } from './ui/Select';
+import { ChatFallback } from './ChatFallback';
 import { getSharedMediaUrl, uploadMediaFiles } from '../services/api';
 import { reelApi } from '../services/reelCreator';
 import { geminiFields } from '../services/aiSettings';
-import { articleMissing, articleOptions, captionsFingerprint, defaultWebsite, captionsReady, captionSourceOf, emptyArticle, knownCaptions, readMoreFingerprint, readMoreReady, websiteRequest, openWebsiteManagement, WEBSITE_CONNECTIONS_CHANGED } from '../services/websites';
-import type { ReadMoreDraft, ReelSource, WebsiteArticle, WebsiteConnection, WebsitePreparation } from '../services/websites';
+import { articleMissing, articleOptions, captionsFingerprint, defaultWebsite, captionsReady, captionSourceOf, emptyArticle, knownCaptions, loadSummaryFormat, readMoreFingerprint, saveSummaryFormat, summaryFormatProblem, readMoreReady, websiteRequest, openWebsiteManagement, WEBSITE_CONNECTIONS_CHANGED } from '../services/websites';
+import type { ReadMoreDraft, SummaryFormat, ReelSource, WebsiteArticle, WebsiteConnection, WebsitePreparation } from '../services/websites';
 
 interface Catalog { articles: (WebsiteArticle & { status: string })[]; categories: { id: string; name: string }[]; authors: { id: string; name: string }[] }
 const cls = 'w-full rounded-lg border border-zinc-700 bg-zinc-950 px-2.5 py-2 text-xs text-zinc-200';
@@ -24,6 +25,13 @@ export function ReadMorePanel({ value, onChange, type, media, caption, profiles,
   // An article that arrives complete, such as from Reel Studio, opens as a summary.
   const [editing, setEditing] = useState(() => articleMissing(draft.article).length > 0);
   const ids = profiles.map(profile => profile.id);
+  const [summaryFormat, setSummaryFormat] = useState<SummaryFormat>(loadSummaryFormat);
+  // The text before the last AI summary, so one summary can be undone.
+  const [beforeSummary, setBeforeSummary] = useState<string | null>(null);
+  // Which "use any AI chat" panel is open; an AI failure opens the one for that action.
+  const [chatOpen, setChatOpen] = useState<'' | 'captions' | 'summary'>('');
+  // Pasted captions that broke a rule, by account, for fixing in place.
+  const [pastedCaptions, setPastedCaptions] = useState<Record<string, { caption: string; problem: string }> | null>(null);
   const activeConnection = connections.find(connection => connection.id === draft.connectionId);
   const activeSchema = activeConnection?.schema;
   const fieldLimit = (name: string, fallback: number, cap: number) => Math.min(activeSchema?.fields[name]?.maxLength || fallback, cap);
@@ -66,25 +74,78 @@ export function ReadMorePanel({ value, onChange, type, media, caption, profiles,
     if (connectionId) update({ connectionId });
   }, [draft.enabled, draft.connectionId, connections]); // eslint-disable-line react-hooks/exhaustive-deps
   const article = (patch: Partial<WebsiteArticle>) => update({ article: { ...draft.article, ...patch } });
-  const run = async (action: () => Promise<void>) => {
+  const run = async (action: () => Promise<void>, fallback?: 'captions' | 'summary') => {
     setBusy(true); setMessage('');
-    try { await action(); } catch (error) { if (mounted.current) setMessage(error instanceof Error ? error.message : 'Website request failed.'); }
+    try { await action(); } catch (error) {
+      if (!mounted.current) return;
+      const text = error instanceof Error ? error.message : 'Website request failed.';
+      setMessage(fallback ? `${text} You can also write it in any AI chat below.` : text);
+      if (fallback) setChatOpen(fallback);
+    }
     finally { if (mounted.current) setBusy(false); }
   };
   const geminiKeys = () => geminiFields(); // the backend reports a missing key
+  const formatProblem = summaryFormatProblem(summaryFormat);
+  const changeFormat = (patch: Partial<SummaryFormat>) => {
+    const next = { ...summaryFormat, ...patch }; setSummaryFormat(next);
+    if (!summaryFormatProblem(next)) saveSummaryFormat(next);
+  };
+  const summarize = () => run(async () => {
+    if (formatProblem) throw new Error(formatProblem);
+    const original = draft.article.content;
+    const result = await websiteRequest<{ content: string }>('/summarize', {
+      title: draft.article.title, content: original, paragraphs: summaryFormat.paragraphs,
+      words_per_paragraph: summaryFormat.wordsPerParagraph, ...geminiKeys(),
+    });
+    if (!mounted.current) return;
+    setBeforeSummary(original);
+    article({ content: result.content });
+    setMessage('Article summarized. Nothing was published. Review the text before publishing.');
+  }, 'summary');
+  const summaryBody = () => ({ title: draft.article.title, content: draft.article.content, paragraphs: summaryFormat.paragraphs,
+    words_per_paragraph: summaryFormat.wordsPerParagraph });
+  const summaryPrompt = async () => {
+    if (formatProblem) throw new Error(formatProblem);
+    return (await websiteRequest<{ prompt: string }>('/summarize/prompt', summaryBody())).prompt;
+  };
+  const pasteSummary = async (reply: string) => {
+    const original = draft.article.content;
+    const result = await websiteRequest<{ content: string; warning: string }>('/summarize/pasted', { ...summaryBody(), reply });
+    if (!mounted.current) return;
+    setBeforeSummary(original);
+    article({ content: result.content });
+    setChatOpen('');
+    setMessage(result.warning ? `Summary pasted, but ${result.warning}. Edit the text or paste again before publishing.` : 'Summary pasted. Nothing was published. Review the text before publishing.');
+  };
   const generateCaptions = () => run(async () => {
     if (!profiles.length) throw new Error('Choose accounts first.');
     const started = latestCaptions.current;
     const known = knownCaptions(draft, caption, ids);
-    const result = await websiteRequest<WebsitePreparation>('/captions', {
-      title: draft.article.title, content: draft.article.content, caption, profiles: [...ids].sort(), post_type: type, media_file: media,
-      known_captions: known, ...geminiKeys(),
-    });
+    const result = await websiteRequest<WebsitePreparation>('/captions', { ...captionsBody(known), ...geminiKeys() });
     if (!mounted.current || latestCaptions.current !== started) return;
+    applyCaptions(result, known, started);
+  }, 'captions');
+  const captionsBody = (known: Record<string, string>) => ({ title: draft.article.title, content: draft.article.content, caption,
+    profiles: [...ids].sort(), post_type: type, media_file: media, known_captions: known });
+  const applyCaptions = (result: WebsitePreparation, known: Record<string, string>, started: string) => {
+    setPastedCaptions(null);
     onChange({ ...draft, captionsPreparationId: result.id, captionsFor: started, captionSource: captionSourceOf(draft.article, caption),
       captions: Object.fromEntries(ids.map(id => [id, known[id] ?? result.destinations[id].caption])) });
     setMessage('Captions ready. Nothing was published. Review them above.');
-  });
+  };
+  const captionPrompt = async () => {
+    if (!profiles.length) throw new Error('Choose accounts first.');
+    return (await websiteRequest<{ prompt: string }>('/captions/prompt', captionsBody(knownCaptions(draft, caption, ids)))).prompt;
+  };
+  type Pasted = { captions: Record<string, { caption: string; problem: string }>; record: WebsitePreparation | null };
+  const pasteCaptions = async (body: { reply?: string; captions?: Record<string, string> }) => {
+    const started = latestCaptions.current;
+    const known = knownCaptions(draft, caption, ids);
+    const result = await websiteRequest<Pasted>('/captions/pasted', { ...captionsBody(known), ...body });
+    if (!mounted.current || latestCaptions.current !== started) return;
+    if (result.record) { applyCaptions(result.record, known, started); setChatOpen(''); }
+    else { setPastedCaptions(result.captions); setMessage('Some pasted captions break a rule. Fix them below, then use them.'); }
+  };
   const prepare = () => run(async () => {
     if (!profiles.length) throw new Error('Choose accounts first.');
     if (!draft.connectionId) throw new Error('Connect and choose a website first.');
@@ -126,6 +187,16 @@ export function ReadMorePanel({ value, onChange, type, media, caption, profiles,
       <p className="text-zinc-400">Written by AI from {draft.article.content.trim() ? 'the article text' : 'your caption'}. Nothing is published to a website.</p>
       <button type="button" className={button} onClick={generateCaptions} disabled={!profiles.length || busy || haveCaptions}>{busy ? 'Working…' : someCaptions ? 'Generate captions for new accounts' : 'Generate captions'}</button>
       {!profiles.length && <p className="text-amber-300">Choose accounts first.</p>}
+      {!haveCaptions && <ChatFallback what="captions" open={chatOpen === 'captions'} onToggle={open => setChatOpen(open ? 'captions' : '')} busy={busy}
+        disabled={!profiles.length} getPrompt={captionPrompt} onReply={reply => pasteCaptions({ reply })} />}
+      {pastedCaptions && !haveCaptions && <div className="space-y-2">
+        {profiles.filter(profile => pastedCaptions[profile.id]).map(profile => <label key={profile.id} className="block space-y-1 rounded-lg bg-zinc-950 p-2 text-zinc-300">{profile.name}
+          <textarea rows={2} className={cls} value={pastedCaptions[profile.id].caption}
+            onChange={event => setPastedCaptions({ ...pastedCaptions, [profile.id]: { caption: event.target.value, problem: '' } })} />
+          {pastedCaptions[profile.id].problem && <span className="block text-amber-300">{pastedCaptions[profile.id].problem}</span>}
+        </label>)}
+        <button type="button" className={button} onClick={() => run(() => pasteCaptions({ captions: Object.fromEntries(Object.entries(pastedCaptions).map(([id, item]) => [id, item.caption])) }))}>Use these captions</button>
+      </div>}
       {haveCaptions && profiles.map(profile => <div key={profile.id} className="space-y-1 rounded-lg bg-zinc-950 p-2">
         <label className="block text-zinc-300">{profile.name}<textarea rows={2} className={cls} value={draft.captions?.[profile.id] ?? ''}
           onChange={event => update({ captions: { ...draft.captions, [profile.id]: event.target.value } })} /></label>
@@ -159,6 +230,20 @@ export function ReadMorePanel({ value, onChange, type, media, caption, profiles,
       <input className={cls} aria-label="Article title" placeholder="Article title" maxLength={fieldLimit('title', 300, 300)} value={draft.article.title} onChange={event => article({ title: event.target.value })} />
       <textarea className={cls} aria-label="Article excerpt" placeholder={`Article excerpt (up to ${fieldLimit('excerpt', 160, 1000)} characters)`} maxLength={fieldLimit('excerpt', 160, 1000)} rows={2} value={draft.article.excerpt} onChange={event => article({ excerpt: event.target.value })} />
       <textarea className={cls} aria-label="Article content" placeholder="Full article text" maxLength={120000} rows={5} value={draft.article.content} onChange={event => article({ content: event.target.value })} />
+      <div className="space-y-2 rounded-lg bg-zinc-950 p-2">
+        <p className="text-zinc-300">Summarize with AI before publishing</p>
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="block space-y-1 text-zinc-400">Paragraphs<input type="number" min={1} max={12} className={`${cls} w-24`} value={summaryFormat.paragraphs}
+            onChange={event => changeFormat({ paragraphs: Number(event.target.value) })} /></label>
+          <label className="block space-y-1 text-zinc-400">Words per paragraph<input type="number" min={20} max={150} className={`${cls} w-32`} value={summaryFormat.wordsPerParagraph}
+            onChange={event => changeFormat({ wordsPerParagraph: Number(event.target.value) })} /></label>
+          <button type="button" className={button} onClick={summarize} disabled={busy || !draft.article.content.trim() || Boolean(formatProblem)}>{busy ? 'Working…' : 'Summarize article'}</button>
+          {beforeSummary !== null && <button type="button" className={button} onClick={() => { article({ content: beforeSummary }); setBeforeSummary(null); setMessage('Original article text restored.'); }}>Undo summary</button>}
+        </div>
+        <p className={formatProblem ? 'text-amber-300' : 'text-zinc-500'}>{formatProblem || `About ${summaryFormat.paragraphs * summaryFormat.wordsPerParagraph} words. Replaces the article text above; each paragraph may be up to 20% shorter or longer.`}</p>
+        <ChatFallback what="the summary" open={chatOpen === 'summary'} onToggle={open => setChatOpen(open ? 'summary' : '')} busy={busy}
+          disabled={!draft.article.content.trim() || Boolean(formatProblem)} getPrompt={summaryPrompt} onReply={pasteSummary} />
+      </div>
       <div className="flex flex-wrap items-center gap-2 text-zinc-400">
         <label className={`${button} cursor-pointer`}>Choose cover image<input type="file" accept="image/jpeg,image/png,image/webp,image/avif" className="hidden" onChange={event => {
           const file = event.currentTarget.files?.[0]; event.currentTarget.value = '';

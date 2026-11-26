@@ -137,3 +137,27 @@ export function parseWebsiteConnectionJson(text: string): {
   return { configuration, email: (email || username || '') as string,
     password: (password || '') as string, apiToken: (api_token || '') as string };
 }
+
+/** The shape an AI summary of the article text should have. Limits match the backend's. */
+export interface SummaryFormat { paragraphs: number; wordsPerParagraph: number }
+export const SUMMARY_LIMITS = { paragraphs: [1, 12], wordsPerParagraph: [20, 150], totalWords: 1500 } as const;
+const SUMMARY_FORMAT = 'read_more_summary_format';
+export const defaultSummaryFormat = (): SummaryFormat => ({ paragraphs: 4, wordsPerParagraph: 60 });
+export function summaryFormatProblem(format: SummaryFormat) {
+  const [minP, maxP] = SUMMARY_LIMITS.paragraphs, [minW, maxW] = SUMMARY_LIMITS.wordsPerParagraph;
+  if (!Number.isInteger(format.paragraphs) || format.paragraphs < minP || format.paragraphs > maxP) return `Choose ${minP}–${maxP} paragraphs.`;
+  if (!Number.isInteger(format.wordsPerParagraph) || format.wordsPerParagraph < minW || format.wordsPerParagraph > maxW) return `Choose ${minW}–${maxW} words per paragraph.`;
+  if (format.paragraphs * format.wordsPerParagraph > SUMMARY_LIMITS.totalWords) return `Choose at most ${SUMMARY_LIMITS.totalWords.toLocaleString()} words in total.`;
+  return '';
+}
+/** The last format used, as a convenience for this computer only. */
+export function loadSummaryFormat(): SummaryFormat {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SUMMARY_FORMAT) || 'null');
+    if (saved && !summaryFormatProblem(saved)) return { paragraphs: saved.paragraphs, wordsPerParagraph: saved.wordsPerParagraph };
+  } catch { /* fall back to the default */ }
+  return defaultSummaryFormat();
+}
+export function saveSummaryFormat(format: SummaryFormat) {
+  try { localStorage.setItem(SUMMARY_FORMAT, JSON.stringify(format)); } catch { /* remembering is optional */ }
+}
